@@ -1,6 +1,7 @@
 import { ChevronsDown, ChevronsUp, Filter, List } from 'lucide-react';
 import { DEFAULT_FOCUS_SORT_BY, FOCUS_SORT_OPTIONS, tFallback, type SortField } from '@stride/core';
 
+import { ViewHeader } from '../../ui/ViewHeader';
 import { ToolbarButton } from '../list/list-toolbar';
 import { ViewControls } from '../list/ViewControls';
 import { FOCUS_AXES, type NextGroupBy } from '../list/next-grouping';
@@ -50,15 +51,10 @@ export function AgendaHeader({
         : tFallback(t, 'agenda.expandOtherSections', 'Expand sections');
 
     return (
-        <header className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-                <h2 className="text-3xl font-bold tracking-tight">
-                    {t('agenda.title')}
-                </h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                    {nextActionsCount} {tFallback(t, 'list.next', t('agenda.nextActions'))}
-                </p>
-            </div>
+        <ViewHeader
+            title={t('agenda.title')}
+            count={`${nextActionsCount} ${tFallback(t, 'list.next', t('agenda.nextActions'))}`}
+            actions={
             <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
                 <ToolbarButton
                     onClick={onToggleOtherSections}
@@ -81,7 +77,7 @@ export function AgendaHeader({
                 >
                     <span>{filtersLabel}</span>
                     {filterCount > 0 && (
-                        <span className="ml-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary">
+                        <span className="ml-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-semibold leading-none text-accent-text">
                             {filterCount}
                         </span>
                     )}
@@ -106,6 +102,7 @@ export function AgendaHeader({
                     {detailsLabel}
                 </ToolbarButton>
             </div>
-        </header>
+            }
+        />
     );
 }

@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ErrorBoundary } from '../ErrorBoundary';
+import { ViewHeader } from '../ui/ViewHeader';
 import {
     createTaskFilterPredicate,
     formatTimeEstimateLabel,
@@ -562,18 +563,19 @@ export function ArchiveView() {
     return (
         <ErrorBoundary>
             <div className={shouldFillAvailableHeight ? "flex h-full min-h-0 flex-col gap-6" : "flex flex-col gap-6"}>
-            <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-                <div className="space-y-1">
-                <div className="flex items-center gap-3">
-                    <h2 className="text-3xl font-bold tracking-tight">{t('archived.title')}</h2>
-                    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                <div className="min-w-0 space-y-2">
+                <ViewHeader
+                    title={t('archived.title')}
+                    actions={
+                    <div className="inline-flex gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset">
                         <button
                             type="button"
                             onClick={() => handleSegmentChange('tasks')}
                             className={cn(
-                                'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                                'h-7 px-2.5 rounded-[8px] text-[13px] font-medium transition-colors focus-ring',
                                 segment === 'tasks'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'bg-card text-foreground shadow-soft-sm'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
@@ -583,16 +585,17 @@ export function ArchiveView() {
                             type="button"
                             onClick={() => handleSegmentChange('projects')}
                             className={cn(
-                                'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                                'h-7 px-2.5 rounded-[8px] text-[13px] font-medium transition-colors focus-ring',
                                 segment === 'projects'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'bg-card text-foreground shadow-soft-sm'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
                             {t('projects.title')}
                         </button>
                     </div>
-                </div>
+                    }
+                />
                 <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
                     <span>
                         {segment === 'tasks'
@@ -600,7 +603,7 @@ export function ArchiveView() {
                             : `${archivedProjects.length} ${t('projects.title')}`}
                     </span>
                     {segment === 'tasks' && hasFilters && (
-                        <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary sm:max-w-[420px]">
+                        <span className="inline-flex max-w-full items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent-text sm:max-w-[420px]">
                             <SlidersHorizontal className="h-3 w-3 shrink-0" aria-hidden="true" />
                             <span className="truncate">{filterSummaryLabel}{filterSummarySuffix}</span>
                         </span>
@@ -644,7 +647,7 @@ export function ArchiveView() {
                         </div>
                     </ViewHeaderActions>
                 )}
-            </header>
+            </div>
 
             {segment === 'tasks' && (filtersOpen || hasFilterChips) && (
                 <ListFiltersPanel
@@ -695,7 +698,7 @@ export function ArchiveView() {
                             type="button"
                             onClick={() => { void handleBulkRestore(); }}
                             disabled={selectedIds.size === 0}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 rounded-control bg-card shadow-soft-sm px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <Undo2 className="h-3.5 w-3.5" />
                             {t('trash.restoreToInbox')}

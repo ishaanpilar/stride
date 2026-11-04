@@ -51,21 +51,21 @@ export function PanelCalendarStrip({ refreshKey, allDayLabel, moreLabel }: {
             {visible.map((event) => (
                 <li
                     key={event.id}
-                    className="flex items-center gap-2 rounded-lg bg-foreground/[0.04] py-1.5 pl-2 pr-2.5"
+                    className="flex items-center gap-2 rounded-control bg-foreground/[0.05] py-1.5 pl-2 pr-2.5"
                 >
                     <span
                         aria-hidden
                         className={cn('h-5 w-[3px] shrink-0 rounded-full bg-primary')}
                         style={event.color ? { backgroundColor: event.color } : undefined}
                     />
-                    <span className="w-[68px] shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
+                    <span className="w-[68px] shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
                         {event.allDay ? allDayLabel : safeFormatDate(event.start, 'p')}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-xs text-foreground">{event.title}</span>
                 </li>
             ))}
             {events.length > visible.length && (
-                <li className="px-2 text-[11px] text-muted-foreground">{moreLabel(events.length - visible.length)}</li>
+                <li className="px-2 text-xs text-muted-foreground">{moreLabel(events.length - visible.length)}</li>
             )}
         </ul>
     );

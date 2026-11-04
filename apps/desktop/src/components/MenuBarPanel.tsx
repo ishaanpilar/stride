@@ -80,7 +80,7 @@ async function refreshData(): Promise<void> {
 
 function SectionHeader({ title, count }: { title: string; count?: number }) {
     return (
-        <h2 className="flex items-baseline gap-1.5 px-2.5 pb-1 pt-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <h2 className="flex items-baseline gap-1.5 px-2.5 pb-1 pt-2.5 text-xs font-semibold text-muted-foreground">
             {title}
             {count !== undefined && <span className="font-medium tabular-nums opacity-70">{count}</span>}
         </h2>
@@ -95,10 +95,10 @@ function IconButton({ label, onClick, children, danger }: { label: string; onCli
             aria-label={label}
             title={label}
             className={cn(
-                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors',
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-muted-foreground transition-colors',
                 'hover:bg-foreground/[0.08] hover:text-foreground active:bg-foreground/[0.12]',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
-                danger && 'hover:bg-destructive/10 hover:text-destructive',
+                'focus-ring',
+                danger && 'hover:bg-destructive/10 hover:text-danger-text',
             )}
         >
             {children}
@@ -360,7 +360,7 @@ export function MenuBarPanel() {
             <div className="min-w-0 flex-1">
                 <h1 className="truncate text-[15px] font-semibold leading-tight tracking-tight">{dateLabel}</h1>
                 {!locked && briefing?.headline && (
-                    <p className="mt-1 flex items-center gap-1 text-xs leading-tight text-primary">
+                    <p className="mt-1 flex items-center gap-1 text-xs leading-tight text-accent-text">
                         <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
                         <span className="truncate" title={briefing.headline}>{briefing.headline}</span>
                     </p>
@@ -419,6 +419,7 @@ export function MenuBarPanel() {
             completing={completing.has(task.id)}
             completeLabel={completeLabel}
             todayLabel={todayLabel}
+            priorityLabel={task.priority ? tr(`priority.${task.priority}`, task.priority) : undefined}
             onComplete={completeTask}
             onOpen={openTask}
             onRowKeyDown={onRowKeyDown}
@@ -498,25 +499,25 @@ export function MenuBarPanel() {
                             placeholder={tr('menubar.quickAdd', 'Add a task…')}
                             aria-label={tr('nav.addTask', 'Add task')}
                             title={tr('menubar.quickAddHint', 'Supports /due:tomorrow @context #tag +Project')}
-                            className="h-9 w-full rounded-xl border border-border/70 bg-foreground/[0.05] pl-8 pr-3 text-[13px] placeholder:text-muted-foreground/80 transition-shadow focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            className="h-9 w-full rounded-control bg-foreground/[0.06] shadow-soft-inset pl-8 pr-3 text-[13px] placeholder:text-tertiary transition-shadow focus-ring"
                         />
                     </form>
                     <button
                         type="button"
                         onClick={openCapture}
                         title={tr('menubar.aiCaptureHint', 'Brain dump with AI in Stride')}
-                        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-primary/10 px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 active:bg-primary/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                        className="btn-gradient inline-flex h-9 shrink-0 items-center gap-1.5 px-3 text-xs focus-ring"
                     >
                         <Sparkles className="h-3.5 w-3.5" aria-hidden />
                         {tr('menubar.aiCapture', 'AI Capture')}
                     </button>
                 </div>
-                <div className="h-4 pt-1 text-[11px] leading-none" aria-live="polite">
-                    {notice && <span className="text-success">{notice}</span>}
+                <div className="h-4 pt-1 text-xs leading-none" aria-live="polite">
+                    {notice && <span className="text-success-text">{notice}</span>}
                 </div>
             </div>
 
-            <div role="tablist" aria-label={tr('menubar.tabs', 'Lists')} className="mx-3 mb-1 flex gap-0.5 rounded-[10px] bg-foreground/[0.07] p-0.5">
+            <div role="tablist" aria-label={tr('menubar.tabs', 'Lists')} className="mx-3 mb-1 flex gap-0.5 rounded-control bg-foreground/[0.07] shadow-soft-inset p-0.5">
                 {TAB_ORDER.map((id) => {
                     const meta = tabMeta[id];
                     const active = tab === id;
@@ -528,10 +529,10 @@ export function MenuBarPanel() {
                             aria-selected={active}
                             onClick={() => selectTab(id)}
                             className={cn(
-                                'flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1 text-xs font-medium transition-all duration-150',
-                                'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+                                'flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-1 text-xs font-medium transition-all duration-200 motion-reduce:transition-none',
+                                'focus-ring',
                                 active
-                                    ? 'bg-background text-foreground shadow-sm'
+                                    ? 'bg-card text-foreground shadow-soft-sm'
                                     : 'text-muted-foreground hover:text-foreground',
                             )}
                         >
@@ -539,8 +540,8 @@ export function MenuBarPanel() {
                             <span
                                 data-testid={`menubar-tab-count-${id}`}
                                 className={cn(
-                                    'rounded-full px-1.5 text-[10px] font-semibold tabular-nums leading-[16px]',
-                                    active ? 'bg-primary/15 text-primary' : 'bg-foreground/[0.08] text-muted-foreground',
+                                    'rounded-full px-1.5 text-[11px] font-semibold tabular-nums leading-[16px]',
+                                    active ? 'bg-accent-soft text-accent-text' : 'bg-foreground/[0.08] text-muted-foreground',
                                     meta.count === 0 && 'opacity-50',
                                 )}
                             >
@@ -556,16 +557,16 @@ export function MenuBarPanel() {
             </div>
 
             {undo && (
-                <div className="mx-3 mb-2 flex items-center gap-2 rounded-xl bg-foreground px-3 py-2 text-xs text-background shadow-lg" role="status">
+                <div className="mx-3 mb-2 flex items-center gap-2 rounded-card bg-foreground px-3 py-2 text-xs text-background shadow-soft" role="status">
                     <span className="min-w-0 flex-1 truncate">{tr('menubar.completed', 'Completed')}: {undo.title}</span>
                     <button type="button" onClick={() => void undoComplete()} className="font-semibold underline-offset-2 hover:underline">
                         {tr('common.undo', 'Undo')}
                     </button>
                 </div>
             )}
-            {message && <p className="px-4 pb-1 text-xs text-destructive" role="alert">{message}</p>}
+            {message && <p className="px-4 pb-1 text-xs text-danger-text" role="alert">{message}</p>}
 
-            <div className="space-y-2 border-t border-border/60 px-3 pb-3 pt-2.5">
+            <div className="space-y-2 px-3 pb-3 pt-2.5">
                 {pomodoroEnabled && <PanelPomodoro candidates={pomodoroCandidates} tr={tr} />}
                 <form onSubmit={submitAsk} className="relative">
                     <input
@@ -573,13 +574,13 @@ export function MenuBarPanel() {
                         onChange={(event) => setAsk(event.target.value)}
                         placeholder={tr('menubar.ask', 'Ask the Assistant…')}
                         aria-label={tr('menubar.askLabel', 'Ask the Assistant')}
-                        className="h-9 w-full rounded-xl border border-border/70 bg-foreground/[0.05] pl-3 pr-10 text-[13px] placeholder:text-muted-foreground/80 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        className="h-9 w-full rounded-control bg-foreground/[0.06] shadow-soft-inset pl-3 pr-10 text-[13px] placeholder:text-tertiary focus-ring"
                     />
                     <button
                         type="submit"
                         aria-label={tr('menubar.askSend', 'Send to Assistant')}
                         disabled={!ask.trim()}
-                        className="absolute right-1 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-opacity disabled:bg-transparent disabled:text-muted-foreground disabled:opacity-60"
+                        className="absolute right-1 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center btn-gradient rounded-lg transition-opacity disabled:bg-none disabled:shadow-none disabled:text-muted-foreground disabled:opacity-60"
                     >
                         <Send className="h-3.5 w-3.5" aria-hidden />
                     </button>

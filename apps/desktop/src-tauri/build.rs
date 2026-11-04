@@ -33,6 +33,10 @@ fn main() {
             .file("src/macos_app_lock_bridge.m")
             .flag("-fobjc-arc")
             .compile("stride_macos_app_lock_bridge");
+        cc::Build::new()
+            .file("src/macos_system_accent_bridge.m")
+            .flag("-fobjc-arc")
+            .compile("stride_macos_system_accent_bridge");
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=UserNotifications");
         println!("cargo:rustc-link-lib=framework=AppKit");
@@ -49,6 +53,7 @@ fn main() {
         println!("cargo:rerun-if-changed=src/macos_widget_bridge.m");
         println!("cargo:rerun-if-changed=src/macos_notification_bridge.m");
         println!("cargo:rerun-if-changed=src/macos_app_lock_bridge.m");
+        println!("cargo:rerun-if-changed=src/macos_system_accent_bridge.m");
 
         let team_id = std::env::var("APPLE_TEAM_ID").unwrap_or_default();
         let app_group = if team_id.trim().is_empty() {

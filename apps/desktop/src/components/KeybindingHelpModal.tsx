@@ -182,11 +182,11 @@ export function KeybindingHelpModal({
         <Dialog
             onClose={onClose}
             labelledBy={titleId}
-            panelClassName="max-w-2xl mx-4 max-h-[80vh] bg-card rounded-lg border-border shadow-xl"
+            panelClassName="max-w-2xl mx-4 max-h-[80vh]"
         >
-            <DialogHeader className="p-6 border-b border-border flex items-center justify-between">
+            <DialogHeader className="p-6 flex items-center justify-between">
                 <div>
-                    <h3 id={titleId} className="text-xl font-semibold">{t('keybindings.helpTitle')}</h3>
+                    <h3 id={titleId} className="text-[17px] font-semibold">{t('keybindings.helpTitle')}</h3>
                     <p className="text-sm text-muted-foreground mt-1">
                         {t('keybindings.helpSubtitle')}
                     </p>
@@ -201,8 +201,8 @@ export function KeybindingHelpModal({
                     <h4 className="font-medium mb-3">{t('keybindings.section.global')}</h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {globalItems.map((item, index) => (
-                            <div key={`${item.labelKey}-${index}`} className="flex items-center justify-between bg-muted/30 rounded-md px-3 py-2">
-                                <code className="text-xs bg-muted px-2 py-0.5 rounded">{item.keys}</code>
+                            <div key={`${item.labelKey}-${index}`} className="flex items-center justify-between bg-well rounded-control px-3 py-2">
+                                <code className="text-xs bg-card shadow-soft-sm px-2 py-0.5 rounded-md">{item.keys}</code>
                                 <span className="text-sm">{resolveItemLabel(item)}</span>
                             </div>
                         ))}
@@ -213,8 +213,8 @@ export function KeybindingHelpModal({
                     <h4 className="font-medium mb-3">{t('keybindings.section.taskList')}</h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {listItems.map((item) => (
-                            <div key={item.keys} className="flex items-center justify-between bg-muted/30 rounded-md px-3 py-2">
-                                <code className="text-xs bg-muted px-2 py-0.5 rounded">{item.keys}</code>
+                            <div key={item.keys} className="flex items-center justify-between bg-well rounded-control px-3 py-2">
+                                <code className="text-xs bg-card shadow-soft-sm px-2 py-0.5 rounded-md">{item.keys}</code>
                                 <span className="text-sm">{resolveItemLabel(item)}</span>
                             </div>
                         ))}
@@ -225,8 +225,8 @@ export function KeybindingHelpModal({
                     <h4 className="font-medium mb-3">{t('keybindings.section.quickAddSyntax')}</h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {quickAddSyntax.map((item) => (
-                            <div key={item.keys} className="flex items-center justify-between gap-3 bg-muted/30 rounded-md px-3 py-2">
-                                <code className="text-xs bg-muted px-2 py-0.5 rounded whitespace-nowrap overflow-x-auto">{item.keys}</code>
+                            <div key={item.keys} className="flex items-center justify-between gap-3 bg-well rounded-control px-3 py-2">
+                                <code className="text-xs bg-card shadow-soft-sm px-2 py-0.5 rounded-md whitespace-nowrap overflow-x-auto">{item.keys}</code>
                                 <span className="text-sm text-right shrink-0">{resolveItemLabel(item)}</span>
                             </div>
                         ))}
@@ -238,11 +238,11 @@ export function KeybindingHelpModal({
                 </p>
             </DialogBody>
 
-            <DialogFooter className="p-4 border-t border-border flex justify-end">
+            <DialogFooter className="p-4 flex justify-end">
                 <button
                     type="button"
                     onClick={onClose}
-                    className="px-4 py-2 rounded-md text-sm font-medium bg-muted hover:bg-muted/80 transition-colors"
+                    className="px-4 py-2 rounded-md text-sm font-medium bg-card border border-border shadow-soft-sm hover:bg-accent transition-colors"
                 >
                     Esc
                 </button>

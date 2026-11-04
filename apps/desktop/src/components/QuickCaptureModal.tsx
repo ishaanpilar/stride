@@ -40,9 +40,9 @@ const KIND_SINGULAR: Record<MindSweepKind, string> = {
     next: 'Next action', waiting: 'Waiting for', calendar: 'Calendar', someday: 'Someday', reference: 'Reference', inbox: 'Inbox',
 };
 
-const btnPrimary = 'px-4 py-2 rounded-lg text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50';
-const btnSecondary = 'px-4 py-2 rounded-lg text-sm border border-border hover:bg-accent transition-colors disabled:opacity-50';
-const chipClass = 'inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground';
+const btnPrimary = 'btn-gradient h-9 px-4 rounded-control text-[13px] font-semibold focus-ring disabled:opacity-50 disabled:pointer-events-none';
+const btnSecondary = 'h-9 px-4 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent transition-colors focus-ring disabled:opacity-50';
+const chipClass = 'inline-flex h-[26px] items-center gap-1 rounded-pill bg-well px-2.5 text-xs font-medium text-muted-foreground';
 
 export function QuickCaptureModal(props: QuickCaptureModalProps) {
     const { t: rawT } = useLanguage();
@@ -155,7 +155,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
         const projectLabel = row.projectName ?? (row.projectRef ? projectsById.get(row.projectRef)?.title : undefined);
         const dateValue = row.dueDate ?? row.startTime;
         return (
-            <li key={row.key} className={`flex flex-wrap items-center gap-2 py-1 ${nested ? 'pl-6' : ''}`}>
+            <li key={row.key} className={`mb-2 flex flex-wrap items-center gap-2 rounded-card bg-card px-3 py-2 shadow-soft-sm ${nested ? 'ml-6' : ''}`}>
                 <input
                     type="checkbox"
                     checked={row.included}
@@ -166,7 +166,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                     value={row.title}
                     onChange={(event) => updateRow(row.key, { title: event.target.value })}
                     aria-label={t('quickCapture.taskTitle', 'Task title')}
-                    className={`min-w-[10rem] flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm hover:border-border focus:border-border focus:outline-none focus:ring-2 focus:ring-primary/40 ${row.included ? '' : 'text-muted-foreground line-through'}`}
+                    className={`min-w-[10rem] flex-1 rounded-control bg-transparent px-2 py-1 text-[15px] font-semibold hover:bg-well focus-ring ${row.included ? '' : 'text-muted-foreground line-through'}`}
                 />
                 {dateValue && (
                     <span className={chipClass}>
@@ -196,7 +196,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                     value={row.kind}
                     onChange={(event) => updateRow(row.key, { kind: event.target.value as MindSweepKind })}
                     aria-label={t('quickCapture.kind', 'Type')}
-                    className="rounded-md border border-border bg-background px-1.5 py-1 text-xs"
+                    className="rounded-control bg-well px-2 py-1 text-xs focus-ring"
                 >
                     {KIND_ORDER.map((kind) => (
                         <option key={kind} value={kind}>{KIND_SINGULAR[kind]}</option>
@@ -222,11 +222,11 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
         >
             <DialogBody className="space-y-4 p-6">
                 <div className="flex items-center justify-between">
-                    <h2 id={titleId} className="flex items-center gap-2 text-lg font-semibold">
+                    <h2 id={titleId} className="flex items-center gap-2 text-[17px] font-semibold">
                         <Brain className="h-5 w-5" />
                         {t('quickCapture.title', 'Capture')}
                     </h2>
-                    <button onClick={close} aria-label={t('common.close', 'Close')} className="text-muted-foreground hover:text-foreground">
+                    <button onClick={close} aria-label={t('common.close', 'Close')} className="inline-flex h-8 w-8 items-center justify-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground focus-ring">
                         <X className="h-5 w-5" />
                     </button>
                 </div>
@@ -248,7 +248,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                             autoFocus
                             aria-label={t('quickCapture.title', 'Capture')}
                             placeholder={t('quickCapture.placeholder', 'Empty your head — tasks, worries, ideas, follow-ups…')}
-                            className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="w-full resize-none rounded-card bg-well shadow-soft-inset px-4 py-3 text-base placeholder:text-tertiary focus-ring"
                         />
                         <div className="flex items-center justify-between">
                             <span className="text-xs text-muted-foreground">{t('quickCapture.hint', 'Cmd/Ctrl+Enter to continue')}</span>
@@ -273,14 +273,14 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                                     <p className="text-sm text-muted-foreground">{proposal.summary}</p>
                                 )}
                                 {proposal.source === 'fallback' && (
-                                    <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                                    <p className="rounded-card bg-well px-3 py-2 text-sm text-muted-foreground">
                                         {proposal.fallbackReason === 'disabled'
                                             ? t('quickCapture.aiOff', 'AI is off — added to Inbox')
                                             : t('quickCapture.aiFailed', "AI couldn't process this, kept as Inbox items")}
                                         {proposal.fallbackReason === 'disabled' && props.onOpenAiSettings && (
                                             <>
                                                 {' '}
-                                                <button type="button" className="underline" onClick={() => { close(); props.onOpenAiSettings?.(); }}>
+                                                <button type="button" className="underline focus-ring rounded-sm" onClick={() => { close(); props.onOpenAiSettings?.(); }}>
                                                     {t('quickCapture.openAiSettings', 'Settings → AI')}
                                                 </button>
                                             </>
@@ -291,7 +291,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                                     {rows.length === 0 && <p className="text-sm text-muted-foreground">{t('quickCapture.empty', 'Nothing to add.')}</p>}
                                     {visibleProjects.length > 0 && (
                                         <section>
-                                            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quickCapture.newProjects', 'New projects')}</h3>
+                                            <h3 className="mb-1 text-[13px] font-semibold text-muted-foreground">{t('quickCapture.newProjects', 'New projects')}</h3>
                                             {visibleProjects.map((project) => (
                                                 <div key={project.ref} className="mb-2">
                                                     <div className="flex items-center gap-2 text-sm font-medium">
@@ -309,7 +309,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                                         if (list.length === 0) return null;
                                         return (
                                             <section key={kind}>
-                                                <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                                <h3 className="mb-1 text-[13px] font-semibold text-muted-foreground">
                                                     {t(`quickCapture.group.${kind}`, KIND_FALLBACK[kind])}
                                                 </h3>
                                                 <ul>{list.map((r) => renderRow(r, false))}</ul>
@@ -343,7 +343,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                                     .replace('{{projects}}', String(addedProjects))}
                         </p>
                         {applied.failed.length > 0 && !undone && (
-                            <p className="text-sm text-destructive">{t('quickCapture.someFailed', '{{count}} items could not be added').replace('{{count}}', String(applied.failed.length))}</p>
+                            <p className="text-sm text-danger-text">{t('quickCapture.someFailed', '{{count}} items could not be added').replace('{{count}}', String(applied.failed.length))}</p>
                         )}
                         <div className="flex justify-between pt-2">
                             <button onClick={() => void handleUndo()} disabled={undone} className={btnSecondary}>{t('common.undo', 'Undo')}</button>

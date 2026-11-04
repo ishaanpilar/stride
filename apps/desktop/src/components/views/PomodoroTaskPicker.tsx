@@ -117,7 +117,7 @@ export function PomodoroTaskPicker({
                 aria-label={label}
                 aria-haspopup="listbox"
                 aria-expanded={open}
-                className="w-full flex items-center justify-between gap-2 text-sm bg-background border border-border rounded px-3 py-2 text-foreground"
+                className="w-full flex items-center justify-between gap-2 h-9 rounded-control bg-well px-3 text-sm text-foreground shadow-soft-inset focus-ring"
             >
                 <span className="flex items-center gap-1.5 min-w-0">
                     {!selectedTask && <Timer className="w-3.5 h-3.5 opacity-70 shrink-0" />}
@@ -132,7 +132,7 @@ export function PomodoroTaskPicker({
                     <div
                         ref={dropdownRef}
                         style={fixedDropdownStyle}
-                        className="z-[70] rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1 text-sm"
+                        className="z-[70] rounded-control bg-popover text-popover-foreground shadow-soft p-1 text-sm"
                         onKeyDown={handleDropdownKeyDown}
                     >
                         <input
@@ -142,7 +142,7 @@ export function PomodoroTaskPicker({
                             onKeyDown={handleSearchKeyDown}
                             placeholder={searchPlaceholder}
                             aria-label={searchPlaceholder}
-                            className="w-full mb-1 rounded border border-border bg-muted/40 px-2 py-1 text-[inherit]"
+                            className="w-full mb-1 rounded-control bg-well px-2 py-1 focus-ring text-[inherit]"
                         />
                         <div role="listbox" aria-label={label}>
                             <button

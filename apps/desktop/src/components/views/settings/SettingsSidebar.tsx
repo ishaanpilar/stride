@@ -87,14 +87,14 @@ export function SettingsSidebar({
     return (
         <aside className="w-full lg:w-48 xl:w-52 shrink-0 space-y-4">
             <div>
-                <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-                <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+                <h1 className="text-xl font-bold tracking-tight">{title}</h1>
+                <p className="text-[13px] text-muted-foreground mt-0.5">{subtitle}</p>
             </div>
             <select
                 value={activeId}
                 onChange={(event) => { onSelect(event.target.value); setSearch(''); }}
                 aria-label={title}
-                className="h-10 w-full rounded-lg border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 lg:hidden"
+                className="h-10 w-full rounded-control bg-well shadow-soft-inset px-3 text-sm text-foreground focus-ring lg:hidden"
             >
                 {items.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
@@ -114,7 +114,7 @@ export function SettingsSidebar({
                     aria-controls={isSearching ? resultsId : undefined}
                     aria-activedescendant={isSearching && matches[activeIndex] ? `${resultsId}-${activeIndex}` : undefined}
                     aria-autocomplete="list"
-                    className="w-full h-11 lg:h-8 pl-8 pr-3 text-sm lg:text-xs bg-card border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    className="w-full h-11 lg:h-9 pl-8 pr-3 text-sm bg-well shadow-soft-inset rounded-control text-foreground placeholder:text-tertiary focus-ring"
                 />
             </div>
             {isSearching ? (
@@ -135,19 +135,19 @@ export function SettingsSidebar({
                                 onMouseEnter={() => setActiveIndex(index)}
                                 onClick={() => pick(result)}
                                 className={cn(
-                                    'w-full min-h-11 lg:min-h-0 rounded-lg px-3 py-2 text-left transition-colors',
-                                    index === activeIndex ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted/60',
+                                    'focus-ring w-full min-h-11 lg:min-h-0 rounded-control px-3 py-2 text-left transition-colors',
+                                    index === activeIndex ? 'bg-accent-soft text-accent-text' : 'text-foreground hover:bg-accent',
                                 )}
                             >
                                 <div className="truncate text-[13px] font-medium">{result.title}</div>
-                                <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                <div className="mt-0.5 truncate text-xs text-muted-foreground">
                                     {formatSettingsSearchPath(result)}
                                 </div>
                             </button>
                         </li>
                     ))}
                     {matches.length === 0 ? (
-                        <li className="px-3 py-2 text-[11px] text-muted-foreground">
+                        <li className="px-3 py-2 text-xs text-muted-foreground">
                             {noResultsLabel ?? 'No matches'}
                         </li>
                     ) : null}
@@ -163,10 +163,10 @@ export function SettingsSidebar({
                             onClick={() => onSelect(item.id)}
                             aria-current={isActive ? 'page' : undefined}
                             className={cn(
-                                "w-full flex items-start gap-2.5 px-3 py-2 rounded-lg text-left text-[13px] font-medium transition-colors",
+                                "focus-ring w-full flex items-start gap-2.5 px-3 py-2 rounded-control text-left text-sm transition-colors",
                                 isActive
-                                    ? "bg-primary/10 text-primary"
-                                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                                    ? "bg-accent-soft text-accent-text font-semibold"
+                                    : "text-muted-foreground font-normal hover:bg-accent hover:text-foreground",
                             )}
                         >
                             <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />

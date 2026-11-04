@@ -120,7 +120,7 @@ export function SettingsGmailCaptureSection({ isTauri, showSaved }: Props) {
     const displayedError = error ?? (status.lastError ? gmailCaptureErrorTranslation(status.lastError) : null);
 
     return (
-        <div className="bg-card border border-border rounded-lg">
+        <div className="soft-surface rounded-card">
             <button
                 type="button"
                 data-settings-key="gmailCapture"
@@ -151,7 +151,7 @@ export function SettingsGmailCaptureSection({ isTauri, showSaved }: Props) {
                                             value={labelId}
                                             onChange={(event) => setLabelId(event.target.value)}
                                             disabled={busy}
-                                            className="block w-full bg-muted p-2 rounded text-sm border border-border focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                                            className="block w-full p-2 text-sm disabled:opacity-50 bg-well shadow-soft-inset rounded-control focus-ring"
                                         >
                                             <option value="">{t('settings.gmailCaptureChooseLabel')}</option>
                                             {labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}
@@ -166,19 +166,19 @@ export function SettingsGmailCaptureSection({ isTauri, showSaved }: Props) {
                                     {t(operation === 'connect' ? 'settings.gmailCaptureConnecting' : config?.connected ? 'settings.gmailCaptureReconnect' : 'settings.gmailCaptureConnect')}
                                 </button>
                                 {operation === 'connect' && (
-                                    <button type="button" onClick={() => { void cancel(); }} className={`${buttonClass} bg-muted hover:bg-muted/80`}>
+                                    <button type="button" onClick={() => { void cancel(); }} className={`${buttonClass} bg-card border border-border shadow-soft-sm hover:bg-accent`}>
                                         {t('settings.gmailCaptureCancel')}
                                     </button>
                                 )}
                                 {config?.connected && (
                                     <>
-                                        <button type="button" onClick={() => { void disconnect(); }} disabled={operation === 'disconnect' || operation === 'cancel'} className={`${buttonClass} bg-muted hover:bg-muted/80`}>
+                                        <button type="button" onClick={() => { void disconnect(); }} disabled={operation === 'disconnect' || operation === 'cancel'} className={`${buttonClass} bg-card border border-border shadow-soft-sm hover:bg-accent`}>
                                             {t('settings.gmailCaptureDisconnect')}
                                         </button>
                                         <button type="button" onClick={() => { void check(); }} disabled={busy || !config.enabled || status.terminal} className={`${buttonClass} bg-secondary text-secondary-foreground hover:bg-secondary/90`}>
                                             {t(operation === 'check' ? 'settings.gmailCaptureChecking' : 'settings.gmailCaptureCheckNow')}
                                         </button>
-                                        <button type="button" onClick={() => { void save(); }} disabled={busy || !labelId} className={`${buttonClass} bg-primary text-primary-foreground hover:bg-primary/90`}>
+                                        <button type="button" onClick={() => { void save(); }} disabled={busy || !labelId} className={`${buttonClass} btn-gradient focus-ring`}>
                                             {t(operation === 'save' ? 'settings.gmailCaptureSaving' : 'settings.gmailCaptureSave')}
                                         </button>
                                     </>

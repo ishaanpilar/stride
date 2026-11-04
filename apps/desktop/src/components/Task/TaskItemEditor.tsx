@@ -347,7 +347,7 @@ export function TaskItemEditor({
                                 ? tFallback(t, 'task.completeBackdateHint', 'Right-click to complete with a different time')
                                 : t('status.done')}
                             className={cn(
-                                'mt-0.5 inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-card motion-reduce:transition-none',
+                                'focus-ring mt-0.5 inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border transition-colors motion-reduce:transition-none',
                                 isDoneActionActive
                                     ? 'border-success bg-success text-success-foreground shadow-sm'
                                     : 'border-border bg-muted/30 text-muted-foreground hover:border-success/50 hover:bg-success/10 hover:text-success'
@@ -372,7 +372,7 @@ export function TaskItemEditor({
                         placeholder={t('taskEdit.titleLabel')}
                         ariaLabel={t('taskEdit.titleLabel')}
                         className={cn(
-                            'w-full rounded-sm bg-transparent border-b border-primary/60 px-1 pb-1.5 pt-0 font-semibold text-foreground placeholder:text-muted-foreground transition-colors focus:border-primary focus:ring-0 focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-1 focus-visible:ring-offset-card outline-none motion-reduce:transition-none',
+                            'focus-ring w-full rounded-control bg-well px-3 py-2 font-semibold text-foreground placeholder:text-tertiary transition-shadow motion-reduce:transition-none',
                             isModalEditor ? 'text-2xl leading-9' : 'text-lg leading-7',
                         )}
                         containerClassName="flex-1 min-w-0"
@@ -386,7 +386,7 @@ export function TaskItemEditor({
                             aria-pressed={focusStar.isFocused}
                             title={focusStar.title}
                             className={cn(
-                                'p-2 rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40',
+                                'focus-ring p-2 rounded-control transition-colors',
                                 focusStar.isFocused
                                     ? 'text-warning hover:bg-warning/10'
                                     : 'text-muted-foreground hover:text-warning hover:bg-muted/60',
@@ -489,7 +489,7 @@ export function TaskItemEditor({
                         )}
                         onCreateSection={onCreateSomedaySection}
                         t={t}
-                        className="w-full rounded border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="w-full rounded-control bg-well focus-ring px-3 py-2 text-sm text-foreground"
                     />
                 </div>
             )}
@@ -546,14 +546,14 @@ export function TaskItemEditor({
                         aria-expanded={editorLayoutHelpOpen}
                         title={taskEditorLayoutHelpLabel}
                         onClick={() => setEditorLayoutHelpOpen((open) => !open)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-ring"
                     >
                         <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
                     {editorLayoutHelpOpen && (
                         <div
                             role="note"
-                            className="absolute bottom-9 left-0 z-30 w-72 rounded-md border border-border bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-lg"
+                            className="absolute bottom-9 left-0 z-30 w-72 rounded-control border border-border bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-soft"
                         >
                             {taskEditorLayoutHelpText}
                         </div>
@@ -563,7 +563,7 @@ export function TaskItemEditor({
                     <button
                         type="button"
                         onClick={() => setField('status', 'next')}
-                        className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="inline-flex items-center gap-1.5 rounded-control border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-ring"
                     >
                         <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                         {t('reference.convertToAction')}
@@ -573,7 +573,7 @@ export function TaskItemEditor({
                     <button
                         type="button"
                         onClick={onPromoteToProject}
-                        className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="inline-flex items-center gap-1.5 rounded-control border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-ring"
                     >
                         <FolderPlus className="h-3.5 w-3.5" aria-hidden="true" />
                         {t('task.createProjectFromTask')}
@@ -583,7 +583,7 @@ export function TaskItemEditor({
                     <button
                         type="button"
                         onClick={onConvertToSection}
-                        className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="inline-flex items-center gap-1.5 rounded-control border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-ring"
                     >
                         <Rows3 className="h-3.5 w-3.5" aria-hidden="true" />
                         {t('task.convertToSection')}
@@ -593,7 +593,7 @@ export function TaskItemEditor({
                     <button
                         type="button"
                         onClick={onDeleteTask}
-                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
+                        className="focus-ring inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-control bg-danger/10 text-danger-text hover:bg-danger/15 transition-colors"
                     >
                         <Trash2 className="w-3 h-3" aria-hidden="true" />
                         {t('common.delete')}
@@ -604,8 +604,8 @@ export function TaskItemEditor({
                         disabled={isImportingFiles}
                         type="submit"
                         className={cn(
-                            'bg-primary text-primary-foreground hover:bg-primary/90',
-                            isModalEditor ? 'min-h-10 rounded-md px-4 py-2 text-sm' : 'rounded px-3 py-1.5 text-xs',
+                            'btn-gradient focus-ring font-semibold disabled:opacity-50',
+                            isModalEditor ? 'min-h-10 rounded-control px-4 py-2 text-sm' : 'min-h-8 rounded-control px-3 py-1.5 text-[13px]',
                         )}
                     >
                         {t('common.save')}
@@ -614,8 +614,8 @@ export function TaskItemEditor({
                         type="button"
                         onClick={onCancel}
                         className={cn(
-                            'bg-muted text-muted-foreground hover:bg-muted/80',
-                            isModalEditor ? 'min-h-10 rounded-md px-4 py-2 text-sm' : 'rounded px-3 py-1.5 text-xs',
+                            'focus-ring border border-border bg-card text-muted-foreground shadow-soft-sm hover:bg-accent hover:text-accent-foreground',
+                            isModalEditor ? 'min-h-10 rounded-control px-4 py-2 text-sm' : 'min-h-8 rounded-control px-3 py-1.5 text-[13px]',
                         )}
                     >
                         {t('common.cancel')}

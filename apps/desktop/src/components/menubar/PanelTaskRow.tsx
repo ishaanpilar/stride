@@ -10,16 +10,12 @@ interface PanelTaskRowProps {
     completing: boolean;
     completeLabel: string;
     todayLabel: string;
+    /** Translated priority name; shown only for high and urgent tasks (as text, never colour alone). */
+    priorityLabel?: string;
     onComplete: (task: Task) => void;
     onOpen: (task: Task) => void;
     onRowKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>, task: Task) => void;
 }
-
-const PRIORITY_ACCENT: Record<string, string> = {
-    urgent: 'bg-destructive',
-    high: 'bg-warning',
-    medium: 'bg-info/70',
-};
 
 export function metaLabel(task: Task, tone: PanelRowTone, todayLabel: string): string {
     const value = task.dueDate ?? task.startTime;
@@ -31,35 +27,32 @@ export function metaLabel(task: Task, tone: PanelRowTone, todayLabel: string): s
 }
 
 export function PanelTaskRow({
-    task, project, tone, completing, completeLabel, todayLabel, onComplete, onOpen, onRowKeyDown,
+    task, project, tone, completing, completeLabel, todayLabel, priorityLabel, onComplete, onOpen, onRowKeyDown,
 }: PanelTaskRowProps) {
     const meta = metaLabel(task, tone, todayLabel);
-    const accent = PRIORITY_ACCENT[task.priority ?? ''];
     const projectColor = project ? (project.colorOverride || project.color) : undefined;
+    const showPriority = Boolean(priorityLabel) && (task.priority === 'high' || task.priority === 'urgent');
     return (
         <li
             data-testid="menubar-row"
             className={cn(
-                'group relative flex items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-150 hover:bg-foreground/[0.06] focus-within:bg-foreground/[0.06]',
+                'group relative mb-1 flex items-start gap-2.5 rounded-card px-3 py-2.5 transition-colors duration-200 hover:bg-foreground/[0.06] focus-within:bg-foreground/[0.06]',
                 'motion-safe:animate-[menubar-row-in_160ms_ease-out]',
                 completing && 'opacity-60',
             )}
         >
-            {accent && (
-                <span aria-hidden className={cn('absolute left-0.5 top-2.5 bottom-2.5 w-[3px] rounded-full', accent)} />
-            )}
             <button
                 type="button"
                 aria-label={`${completeLabel}: ${task.title}`}
                 onClick={() => onComplete(task)}
                 className={cn(
                     'mt-px flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-[1.5px] transition-all duration-150 active:scale-90 motion-reduce:transition-none motion-reduce:active:scale-100',
-                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                    'focus-ring',
                     completing
-                        ? 'border-primary bg-primary text-primary-foreground'
+                        ? 'border-primary bg-primary text-on-accent'
                         : tone === 'overdue'
-                            ? 'border-destructive/70 hover:bg-destructive/10'
-                            : 'border-muted-foreground/50 hover:border-primary hover:bg-primary/10',
+                            ? 'border-danger hover:bg-destructive/10'
+                            : 'border-muted-foreground/50 hover:border-primary hover:bg-accent-soft',
                 )}
             >
                 <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -77,28 +70,36 @@ export function PanelTaskRow({
                 data-row-main
                 onClick={() => onOpen(task)}
                 onKeyDown={(event) => onRowKeyDown(event, task)}
-                className="min-w-0 flex-1 rounded-sm text-left focus:outline-none"
+                className="min-w-0 flex-1 rounded-sm text-left focus-ring"
             >
                 <span
                     className={cn(
-                        'line-clamp-2 text-[13px] font-medium leading-snug text-foreground transition-colors',
+                        'line-clamp-2 text-sm font-semibold leading-snug text-foreground transition-colors',
                         completing && 'text-muted-foreground line-through',
                     )}
                 >
                     {task.title}
                 </span>
-                {(meta || project) && (
-                    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] leading-none">
+                {(meta || project || showPriority) && (
+                    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs leading-none">
                         {meta && (
                             <span
                                 className={cn(
-                                    'rounded-md px-1.5 py-[3px] font-medium tabular-nums',
-                                    tone === 'overdue' && 'bg-destructive/10 text-destructive',
-                                    tone === 'today' && 'bg-primary/10 text-primary',
-                                    tone === 'default' && 'bg-muted text-muted-foreground',
+                                    'rounded-pill px-2 py-[4px] font-medium tabular-nums',
+                                    tone === 'overdue' && 'bg-destructive/10 text-danger-text',
+                                    tone === 'today' && 'bg-accent-soft text-accent-text',
+                                    tone === 'default' && 'bg-well text-muted-foreground',
                                 )}
                             >
                                 {meta}
+                            </span>
+                        )}
+                        {showPriority && (
+                            <span
+                                data-testid="menubar-row-priority"
+                                className="rounded-pill bg-destructive/10 px-2 py-[4px] font-medium text-danger-text"
+                            >
+                                {priorityLabel}
                             </span>
                         )}
                         {project && (

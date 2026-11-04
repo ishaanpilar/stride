@@ -13,7 +13,7 @@ import type { SettingsLabels } from './labels';
 import { SettingRow, SettingsCard, SettingsSectionHeader } from './SettingRow';
 
 const selectCls =
-    'rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40';
+    'rounded-md border border-border bg-well px-2.5 py-1.5 text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40';
 
 type AppLockSettingsSectionProps = {
     t: SettingsLabels;
@@ -87,7 +87,7 @@ export function AppLockSettingsSection({ t, availability }: AppLockSettingsSecti
                         </select>
                     </SettingRow>
                 )}
-                {message && <div role="status" className="px-4 pb-3 text-xs text-destructive">{message}</div>}
+                {message && <div role="status" className="px-4 pb-3 text-xs text-danger-text">{message}</div>}
             </SettingsCard>
         </>
     );

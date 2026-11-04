@@ -180,14 +180,14 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                     </button>
                 </div>
                 <DialogBody className="space-y-4 p-4">
-                    <div className="inline-flex rounded-md border border-border bg-muted/40 p-1">
+                    <div className="inline-flex rounded-control bg-well p-1">
                         <button
                             type="button"
                             onClick={() => updateTaskComposerMode('new')}
                             className={cn(
                                 "h-8 rounded px-3 text-xs font-medium transition-colors",
                                 taskComposer.mode === 'new'
-                                    ? "bg-primary text-primary-foreground"
+                                    ? "bg-accent-soft text-accent-text"
                                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                             )}
                         >
@@ -199,7 +199,7 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                             className={cn(
                                 "h-8 rounded px-3 text-xs font-medium transition-colors",
                                 taskComposer.mode === 'existing'
-                                    ? "bg-primary text-primary-foreground"
+                                    ? "bg-accent-soft text-accent-text"
                                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                             )}
                         >
@@ -221,7 +221,7 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                                 contexts={quickAddSuggestionTokens}
                                 contextHistory={quickAddContextHistory}
                                 areas={areas}
-                                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-normal focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                className="w-full rounded-control bg-well px-3 py-2 text-sm font-normal focus-ring"
                                 placeholder={t('calendar.addTask')}
                             />
                             <p className="text-xs font-normal text-muted-foreground">
@@ -239,12 +239,12 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                                         type="text"
                                         value={taskComposer.query}
                                         onChange={(event) => updateTaskComposerQuery(event.target.value)}
-                                        className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm font-normal focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                        className="w-full rounded-control bg-well py-2 pl-9 pr-3 text-sm font-normal focus-ring"
                                         placeholder={t('calendar.schedulePlaceholder')}
                                     />
                                 </div>
                             </label>
-                            <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-border bg-background/60 p-1">
+                            <div className="max-h-44 space-y-1 overflow-y-auto rounded-control bg-well p-1">
                                 {taskComposerCandidates.map((task) => {
                                     const selected = task.id === taskComposer.selectedTaskId;
                                     return (
@@ -254,7 +254,7 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                                             onClick={() => selectTaskComposerTask(task)}
                                             className={cn(
                                                 "flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm",
-                                                selected ? "bg-primary/10 text-primary" : "hover:bg-muted"
+                                                selected ? "bg-accent-soft text-accent-text" : "hover:bg-muted"
                                             )}
                                         >
                                             <span className="min-w-0 flex-1 truncate">{task.title}</span>
@@ -279,7 +279,7 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                     <div className="grid gap-3 sm:grid-cols-4">
                         {
                                                            }
-                        <div className="space-y-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        <div className="space-y-1 text-[13px] font-semibold text-muted-foreground">
                             {dateLabel}
                             <DateField
                                 t={t}
@@ -288,35 +288,35 @@ export function CalendarTaskComposerModal({ controller }: CalendarTaskComposerMo
                                 selectedDate={safeParseDate(taskComposer.startDateValue)}
                                 dateFormatSetting={dateFormatSetting}
                                 nativeDateInputLocale={nativeDateInputLocale}
-                                dateInputClassName="h-10 rounded-md border border-border bg-background px-2 text-sm font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                dateInputClassName="h-10 rounded-control bg-well px-2 text-sm font-normal text-foreground focus-ring"
                                 className="max-w-none"
                                 onDateChange={(value) => updateTaskComposerStart({ startDateValue: value })}
                             />
                         </div>
-                        <label className="space-y-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        <label className="space-y-1 text-[13px] font-semibold text-muted-foreground">
                             {resolveText('calendar.start', 'Start')}
                             <TimeInput
                                 lang={nativeDateInputLocale}
                                 value={taskComposer.startTimeValue}
                                 onChange={(startTimeValue) => updateTaskComposerStart({ startTimeValue })}
-                                className="h-10 w-full rounded-md border border-border bg-background px-2 text-sm font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                className="h-10 w-full rounded-control bg-well px-2 text-sm font-normal text-foreground focus-ring"
                             />
                         </label>
-                        <label className="space-y-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        <label className="space-y-1 text-[13px] font-semibold text-muted-foreground">
                             {resolveText('calendar.end', 'End')}
                             <TimeInput
                                 lang={nativeDateInputLocale}
                                 value={taskComposer.endTimeValue}
                                 onChange={updateTaskComposerEndTime}
-                                className="h-10 w-full rounded-md border border-border bg-background px-2 text-sm font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                className="h-10 w-full rounded-control bg-well px-2 text-sm font-normal text-foreground focus-ring"
                             />
                         </label>
-                        <label className="space-y-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        <label className="space-y-1 text-[13px] font-semibold text-muted-foreground">
                             {resolveText('calendar.duration', 'Duration')}
                             <select
                                 value={taskComposer.durationMinutes}
                                 onChange={(event) => updateTaskComposerDuration(Number(event.target.value))}
-                                className="h-10 w-full rounded-md border border-border bg-background px-2 text-sm font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                className="h-10 w-full rounded-control bg-well px-2 text-sm font-normal text-foreground focus-ring"
                             >
                                 {CALENDAR_TIME_ESTIMATE_OPTIONS.map((option) => (
                                     <option key={option.estimate} value={option.minutes}>

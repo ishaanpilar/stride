@@ -9,6 +9,7 @@ import { STRIDE_NAVIGATE_EVENT } from '../../lib/navigation-events';
 import { selectToolbarOption } from '../../test/toolbar-select';
 import { expectScrolledEndGap } from '../../test/list-end-gap';
 import { holdSyncSave } from '../../test/hold-sync-save';
+import { formatTaskDateChipLabel } from '../Task/task-item-helpers';
 
 
 let capturedFocusDndProps: { onDragEnd?: (event: unknown) => void } = {};
@@ -233,8 +234,9 @@ describe('AgendaView', () => {
         const { getByTestId } = renderAgenda();
 
         const sectionClassName = getByTestId('todays-focus-section').className;
-        expect(sectionClassName).toContain('bg-card/70');
-        expect(sectionClassName).toContain('border-l-amber-400');
+        expect(sectionClassName).toContain('bg-card');
+        expect(sectionClassName).toContain('rounded-card');
+        expect(sectionClassName).not.toContain('border-l-amber-400');
         expect(sectionClassName).not.toContain('dark:from-yellow');
         expect(sectionClassName).not.toContain('dark:to-amber');
     });
@@ -535,7 +537,7 @@ describe('AgendaView', () => {
         expect(upcomingSection).not.toBeNull();
 
 
-        expect(getAllByText(safeFormatDate(inThreeDays, 'P'))).toHaveLength(1);
+        expect(getAllByText(formatTaskDateChipLabel(dateOnlyStart, (key) => key))).toHaveLength(1);
     });
 
     it('shows an empty state when active tasks do not produce agenda sections', () => {

@@ -41,7 +41,7 @@ export function TaskEditorSection({ title, count, open, onToggle, children }: Ta
     }, [open]);
 
     return (
-        <div ref={sectionRef} className="border-t border-border">
+        <div ref={sectionRef} className="border-t border-border/60">
             <button
                 ref={headerRef}
                 type="button"
@@ -49,14 +49,14 @@ export function TaskEditorSection({ title, count, open, onToggle, children }: Ta
                     revealOnOpen.current = !open;
                     onToggle();
                 }}
-                className="w-full flex items-center justify-between py-3 text-xs uppercase tracking-wide text-muted-foreground font-semibold hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+                className="focus-ring-inset w-full flex items-center justify-between py-3 text-[13px] text-muted-foreground font-semibold hover:text-foreground"
                 aria-expanded={open}
                 aria-controls={contentId}
             >
                 <span className="flex items-center gap-2">
                     {title}
                     {count > 0 && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary">{count}</span>
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-accent-soft text-accent-text">{count}</span>
                     )}
                 </span>
                 {open

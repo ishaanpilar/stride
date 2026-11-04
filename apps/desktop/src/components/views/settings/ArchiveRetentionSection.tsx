@@ -61,7 +61,7 @@ export function ArchiveRetentionSection({ t }: { t: SettingsSyncLabels }) {
     return (
         <section className="space-y-3">
             <h2 data-settings-key="archiveRetention" className="text-lg font-semibold">{t.archiveRetention}</h2>
-            <div className="bg-card border border-border rounded-lg p-6 space-y-3 text-sm">
+            <div className="p-6 space-y-3 text-sm soft-surface rounded-card">
                 <p className="text-muted-foreground">{t.archiveRetentionDesc}</p>
                 <p className="text-muted-foreground">{t.archiveRetentionSafety}</p>
                 <p>{t.archiveRetentionCurrent}: {days > 0 ? t.archiveRetentionDays.replace('{days}', String(days)) : t.archiveRetentionNever}</p>
@@ -76,7 +76,7 @@ export function ArchiveRetentionSection({ t }: { t: SettingsSyncLabels }) {
                             inputMode="numeric"
                             value={draft}
                             onChange={(event) => { setDraft(event.target.value); setError(''); }}
-                            className="w-28 rounded-md border border-border bg-background px-2 py-1.5"
+                            className="w-28 px-2 py-1.5 bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </label>
                     <button type="button" disabled={!valid || busy || Number(draft) === days} onClick={() => void save(Number(draft))} className="rounded-md bg-muted px-3 py-1.5 disabled:opacity-50">
@@ -86,8 +86,8 @@ export function ArchiveRetentionSection({ t }: { t: SettingsSyncLabels }) {
                         {t.archiveRetentionNever}
                     </button>
                 </div>
-                {draft && !valid && <p role="alert" className="text-destructive">{t.archiveRetentionInvalid}</p>}
-                {error && <p role="alert" className="text-destructive">{error}</p>}
+                {draft && !valid && <p role="alert" className="text-danger-text">{t.archiveRetentionInvalid}</p>}
+                {error && <p role="alert" className="text-danger-text">{error}</p>}
             </div>
             {confirmModal}
         </section>

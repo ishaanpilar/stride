@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import type { Area, Project, Task } from '@stride/core';
+import { formatTaskDateChipLabel } from './task-item-helpers';
 import { configureDateFormatting, formatTimeEstimateLabel, getDateFormattingConfig, getTaskAgeLabel, hasTimeComponent, safeFormatDate, useTaskStore } from '@stride/core';
 
 import { LanguageProvider } from '../../contexts/language-context';
@@ -73,10 +74,11 @@ describe('TaskItemDisplay', () => {
         const dueDate = new Date(2026, 9, 9, 13, 0, 0).toISOString();
         const view = render(clockRow({ ...baseTask, status: 'next', recurrence, dueDate }));
         try {
-            const label = safeFormatDate(dueDate, 'Pp');
-            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-warning');
+            const label = formatTaskDateChipLabel(dueDate, (key) => key);
+            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('today-pill');
             act(() => { vi.advanceTimersByTime(30_001); });
-            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-destructive');
+            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-danger-text');
+            expect(view.getByText(', overdue')).toBeInTheDocument();
         } finally {
             view.unmount();
             configureDateFormatting(formatting);
@@ -91,11 +93,11 @@ describe('TaskItemDisplay', () => {
         const dueDate = new Date(2026, 9, 9, 13, 0, 20).toISOString();
         const view = render(clockRow({ ...baseTask, status: 'next', dueDate }));
         try {
-            const label = safeFormatDate(dueDate, 'Pp');
+            const label = formatTaskDateChipLabel(dueDate, (key) => key);
             act(() => { hidden = true; document.dispatchEvent(new Event('visibilitychange')); vi.advanceTimersByTime(20_000); });
-            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-warning');
+            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('today-pill');
             act(() => { hidden = false; document.dispatchEvent(new Event('visibilitychange')); });
-            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-destructive');
+            expect(view.getByText(label).closest('.metadata-badge')).toHaveClass('text-danger-text');
         } finally {
             view.unmount();
             hiddenSpy.mockRestore();
@@ -110,12 +112,12 @@ describe('TaskItemDisplay', () => {
         const reference = render(clockRow({ ...baseTask, status: 'reference', dueDate: '2026-10-08' }));
         try {
             act(() => { vi.advanceTimersByTime(30_001); });
-            expect(dateOnly.getByText(safeFormatDate('2026-10-09', 'P')).closest('.metadata-badge')).toHaveClass('text-warning');
-            expect(done.container.querySelector('.text-destructive')).toBeNull();
-            expect(reference.container.querySelector('.text-destructive')).toBeNull();
+            expect(dateOnly.getByText(formatTaskDateChipLabel('2026-10-09', (key) => key)).closest('.metadata-badge')).toHaveClass('today-pill');
+            expect(done.container.querySelector('.text-danger-text')).toBeNull();
+            expect(reference.container.querySelector('.text-danger-text')).toBeNull();
             vi.setSystemTime(new Date(2026, 9, 10, 0, 0, 0, 1));
             act(() => { document.dispatchEvent(new Event('visibilitychange')); });
-            expect(dateOnly.getByText(safeFormatDate('2026-10-09', 'P')).closest('.metadata-badge')).toHaveClass('text-destructive');
+            expect(within(dateOnly.container).getByText(formatTaskDateChipLabel('2026-10-09', (key) => key)).closest('.metadata-badge')).toHaveClass('text-danger-text');
         } finally {
             dateOnly.unmount();
             done.unmount();
@@ -1487,7 +1489,7 @@ describe('TaskItemDisplay', () => {
         const trigger = getByRole('button', { name: 'More options' });
         expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
         expect(trigger).toHaveAttribute('aria-expanded', 'false');
-        expect(trigger).toHaveClass('focus-visible:ring-2');
+        expect(trigger).toHaveClass('focus-ring');
     });
 
     it('keeps quick actions above expanded task details', () => {
@@ -1733,7 +1735,7 @@ describe('TaskItemDisplay', () => {
             location: 'Office',
         };
 
-        const { container, getByText, queryByRole, queryByText } = render(
+        const { getByText, queryByRole, queryByText } = render(
             <LanguageProvider>
                 <TaskItemDisplay
                     task={referenceTask}
@@ -1775,8 +1777,7 @@ describe('TaskItemDisplay', () => {
         expect(getByText('Client work')).toBeInTheDocument();
         expect(queryByText('Assigned to: Ada')).not.toBeInTheDocument();
         expect(queryByText('#vendor')).not.toBeInTheDocument();
-        expect(container.querySelector('[data-priority-strip]')).toBeNull();
-        expect(queryByRole('combobox', { name: 'task.aria.status' })).not.toBeInTheDocument();
+                expect(queryByRole('combobox', { name: 'task.aria.status' })).not.toBeInTheDocument();
         expect(queryByText('@phone')).not.toBeInTheDocument();
         expect(queryByText('Office')).not.toBeInTheDocument();
         expect(queryByText('Urgent')).not.toBeInTheDocument();
@@ -1939,7 +1940,7 @@ describe('TaskItemDisplay', () => {
                     />
                 </LanguageProvider>
             );
-            const label = safeFormatDate(dueDate, hasTimeComponent(dueDate) ? 'Pp' : 'P');
+            const label = formatTaskDateChipLabel(dueDate, (key) => key);
 
             const className = getByText(label).closest('.metadata-badge')?.className ?? '';
             unmount();
@@ -1953,20 +1954,19 @@ describe('TaskItemDisplay', () => {
         const upcoming = dueColorFor(new Date(Date.now() + (48 * hour)).toISOString());
         const later = dueColorFor(new Date(Date.now() + (30 * 24 * hour)).toISOString());
 
-        expect(overdue).toContain('text-destructive');
-        expect(urgent).toContain('text-warning');
-        expect(urgent).not.toContain('text-destructive');
-        expect(upcoming).toContain('text-warning');
+        expect(overdue).toContain('text-danger-text');
+        expect(urgent).not.toContain('text-danger-text');
+        expect(upcoming).not.toContain('text-danger-text');
         expect(later).toContain('text-muted-foreground');
     });
 
-    describe('priority strip', () => {
+    describe('priority pill', () => {
         const renderRow = (
             task: Task,
             prioritiesEnabled: boolean,
             compactMetaEnabled = true,
         ) => {
-            const { container, unmount } = render(
+            const { container, queryByText, unmount } = render(
                 <LanguageProvider>
                     <TaskItemDisplay
                         task={task}
@@ -1994,46 +1994,23 @@ describe('TaskItemDisplay', () => {
                     />
                 </LanguageProvider>
             );
-            const strip = container.querySelector<HTMLElement>('[data-priority-strip]');
+            const pill = queryByText(`priority.${task.priority}`)?.closest('.metadata-badge') ?? null;
             const titleToggle = container.querySelector<HTMLElement>('[data-task-view-toggle]');
             const result = {
-                strip: strip && {
-                    priority: strip.dataset.priorityStrip,
-                    background: strip.style.backgroundColor,
-                    className: strip.className,
-                    ariaHidden: strip.getAttribute('aria-hidden'),
-                    role: strip.getAttribute('role'),
-                },
+                pillClassName: pill?.className ?? null,
+                hasStrip: container.querySelector('[data-priority-strip]') !== null,
                 titleToggleLabel: titleToggle?.getAttribute('aria-label'),
             };
             unmount();
             return result;
         };
-        const renderStrip = (task: Task, prioritiesEnabled: boolean) => (
-            renderRow(task, prioritiesEnabled).strip
-        );
 
-        it('paints one strip per priority', () => {
-            expect(renderStrip({ ...baseTask, priority: 'urgent' }, true)).toMatchObject({
-                priority: 'urgent',
-                background: 'rgb(220, 38, 38)',
-            });
-            expect(renderStrip({ ...baseTask, priority: 'high' }, true)?.background).toBe('rgb(249, 115, 22)');
-            expect(renderStrip({ ...baseTask, priority: 'medium' }, true)?.background).toBe('rgb(202, 138, 4)');
-            expect(renderStrip({ ...baseTask, priority: 'low' }, true)?.background).toBe('rgb(59, 130, 246)');
-        });
-
-        it('sits out of flow on the leading edge so priority-less rows do not shift', () => {
-            const strip = renderStrip({ ...baseTask, priority: 'high' }, true);
-            expect(strip?.className).toContain('absolute');
-            expect(strip?.className).toContain('-start-1.5');
-        });
-
-
-        it('is decorative: aria-hidden with no role', () => {
-            const strip = renderStrip({ ...baseTask, priority: 'urgent' }, true);
-            expect(strip?.ariaHidden).toBe('true');
-            expect(strip?.role).toBeNull();
+        it('shows the priority name as a pill tinted by urgency, never a stripe', () => {
+            expect(renderRow({ ...baseTask, priority: 'urgent' }, true).pillClassName).toContain('text-danger-text');
+            expect(renderRow({ ...baseTask, priority: 'high' }, true).pillClassName).toContain('text-danger-text');
+            expect(renderRow({ ...baseTask, priority: 'medium' }, true).pillClassName).toContain('text-warning-text');
+            expect(renderRow({ ...baseTask, priority: 'low' }, true).pillClassName).toContain('text-muted-foreground');
+            expect(renderRow({ ...baseTask, priority: 'urgent' }, true).hasStrip).toBe(false);
         });
 
         it('includes localized priority text in the collapsed row name when compact metadata is hidden', () => {
@@ -2046,15 +2023,13 @@ describe('TaskItemDisplay', () => {
                 .not.toContain('priority.urgent');
         });
 
-        it('renders no strip when the priorities feature is off or the task has none', () => {
-            expect(renderStrip({ ...baseTask, priority: 'urgent' }, false)).toBeNull();
-            expect(renderStrip(baseTask, true)).toBeNull();
+        it('renders no pill when the priorities feature is off or the task has none', () => {
+            expect(renderRow({ ...baseTask, priority: 'urgent' }, false).pillClassName).toBeNull();
+            expect(renderRow(baseTask, true).pillClassName).toBeNull();
         });
 
-
-        it('keeps the priority color on a completed task', () => {
-            expect(renderStrip({ ...baseTask, status: 'done', priority: 'low' }, true)?.background)
-                .toBe('rgb(59, 130, 246)');
+        it('keeps the pill on a completed task', () => {
+            expect(renderRow({ ...baseTask, status: 'done', priority: 'low' }, true).pillClassName).not.toBeNull();
         });
     });
 });

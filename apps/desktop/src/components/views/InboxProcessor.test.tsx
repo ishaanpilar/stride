@@ -321,10 +321,10 @@ describe('InboxProcessor', () => {
         });
 
         fireEvent.click(getByRole('button', { name: /process\.btn/i }));
-        expect(getByText('process.quickDesc').closest('.rounded-xl')).toHaveClass('overflow-visible');
+        expect(getByText('process.quickDesc').closest('.rounded-card')).toHaveClass('overflow-visible');
 
         fireEvent.click(getByRole('button', { name: 'process.modeGuided' }));
-        expect(getByText('process.refineDesc').closest('.rounded-xl')).toHaveClass('overflow-visible');
+        expect(getByText('process.refineDesc').closest('.rounded-card')).toHaveClass('overflow-visible');
     });
 
     it('routes actionable multi-step tasks directly to project conversion', async () => {

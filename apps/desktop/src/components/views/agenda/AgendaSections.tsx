@@ -35,9 +35,8 @@ export function AgendaCollapsibleSection({
                     aria-expanded={expanded}
                     aria-controls={controlsId}
                     className={cn(
-                        'flex w-full items-center gap-2 rounded-md text-left font-semibold transition-colors',
-                        'focus:outline-none focus:ring-2 focus:ring-primary/30',
-                        color,
+                        'flex w-full items-center gap-2 rounded-control px-1 py-1 text-left text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground',
+                        'focus-ring',
                     )}
                 >
                     {expanded ? (
@@ -45,7 +44,7 @@ export function AgendaCollapsibleSection({
                     ) : (
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
                     )}
-                    <Icon className="h-5 w-5" />
+                    <Icon className={cn('h-4 w-4', color)} />
                     <span>{title}</span>
                     <span className="font-normal text-muted-foreground">({count})</span>
                 </button>
@@ -100,14 +99,14 @@ export function AgendaProjectSection({
                         aria-label={`${tFallback(t, 'common.open', 'Open')} ${project.title}`}
                         onClick={() => onProjectPress(project.id)}
                         className={cn(
-                            'flex w-full items-center justify-between rounded-lg border border-border bg-card/80 px-3 py-2 text-left',
-                            'transition-colors hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/30',
+                            'flex w-full items-center justify-between rounded-card bg-card shadow-soft-sm px-3 py-2 text-left',
+                            'transition-shadow hover:bg-accent focus-ring',
                         )}
                     >
                         <div className="flex items-center gap-2">
                             <Folder className="h-4 w-4" style={{ color: getProjectAccentColor(project, areaById) }} />
                             <span className="text-sm font-medium text-foreground">{project.title}</span>
-                            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                            <span className="rounded-full bg-well px-2 py-0.5 text-xs text-muted-foreground">
                                 {t(`status.${project.status}`)}
                             </span>
                         </div>

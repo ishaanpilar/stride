@@ -20,7 +20,6 @@ import {
     BookOpen,
     AlertTriangle,
     Plus,
-    Brain,
     RefreshCw,
     type LucideIcon,
 } from 'lucide-react';
@@ -38,6 +37,9 @@ import { showSyncErrorToast } from '../lib/sync-error-toast';
 import { ToastHost } from './ToastHost';
 import { areaFilterSelectionToFilters, isTaskVisibleInInbox, resolveAreaFilterSelection, type AreaFilterSelection } from '@stride/core';
 import { SyncService } from '../lib/sync-service';
+import { Button } from './ui/Button';
+import { IconButton } from './ui/IconButton';
+import { SearchField } from './ui/SearchField';
 import { SidebarAreaFilter } from './ui/SidebarAreaFilter';
 import { SidebarWorkspaceSwitcher } from './workspaces/SidebarWorkspaceSwitcher';
 import { getCalendarTaskDragTaskId, hasCalendarTaskDragData } from '../lib/calendar-task-drag';
@@ -599,7 +601,7 @@ export function Layout({
     const inboxLabel = tFallback(t, 'nav.inbox', 'Inbox');
     const inboxCaptureLabel = `${addTaskLabel} (${inboxLabel})`;
     const searchTitleLabel = tFallback(t, 'search.title', 'Search');
-    const searchScopeLabel = tFallback(t, 'search.scopeHint', 'Tasks, projects, people');
+    const searchPlaceholder = tFallback(t, 'search.placeholder', 'Search tasks, projects, or tags...');
 
     const savedSearches = settings?.savedSearches || [];
 
@@ -802,86 +804,64 @@ export function Layout({
             </a>
             {             }
             {!isFocusMode && (
-                <aside className={cn(
-                    "border-r border-border bg-card flex flex-col",
-                    isCollapsed ? "w-16 shrink-0 p-2" : "w-64 shrink-0 px-3 pt-5 pb-3"
-                )}>
-                <div className={cn(
-                    "flex items-center gap-2 px-1.5 mb-6",
-                    isCollapsed && "flex-col justify-center"
-                )}>
+                <aside
+                    className={cn(
+                        "relative isolate flex flex-col overflow-hidden",
+                        isCollapsed
+                            ? "w-16 shrink-0 px-2 pb-2 pt-[calc(var(--titlebar-inset)+0.5rem)]"
+                            : "w-64 shrink-0 px-3 pb-3 pt-[calc(var(--titlebar-inset)+0.75rem)]"
+                    )}
+                    style={{ backgroundColor: 'hsl(var(--sidebar) / var(--sidebar-opacity, 1))' }}
+                >
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -bottom-20 -left-20 -z-10 h-72 w-72 rounded-full"
+                    style={{ background: 'radial-gradient(circle at center, hsl(var(--accent) / 0.15), transparent 70%)' }}
+                />
+                <div
+                    data-tauri-drag-region
+                    className={cn(
+                        "flex items-center gap-2.5 px-1.5 mb-4",
+                        isCollapsed && "flex-col justify-center"
+                    )}
+                >
                     {!isCollapsed && (
                         <img
                             src="/logo.png"
                             alt="Stride"
-                            className="w-7 h-7 rounded-md"
+                            className="w-8 h-8 rounded-[10px]"
                         />
                     )}
-                    {!isCollapsed && <h1 className="text-base font-semibold tracking-tight">{t('app.name')}</h1>}
+                    {!isCollapsed && <h1 className="text-xl font-bold tracking-tight">{t('app.name')}</h1>}
                     <div className={cn("ml-auto flex items-center gap-1", isCollapsed && "ml-0 flex-col")}>
-                        <button
+                        <IconButton
+                            variant="ghost"
                             onClick={toggleSidebar}
-                            className={cn(
-                                "inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-                                compactViewport && "hidden"
-                            )}
+                            className={cn(compactViewport && "hidden")}
                             title={t('keybindings.toggleSidebar')}
                             aria-label={t('keybindings.toggleSidebar')}
                         >
                             {isCollapsed ? <ChevronsRight className="w-4 h-4" /> : <ChevronsLeft className="w-4 h-4" />}
-                        </button>
+                        </IconButton>
                     </div>
                 </div>
 
-                {                   }
                 <button
-                    onClick={triggerSearch}
-                    className={cn(
-                        "w-full flex items-center gap-2.5 px-2.5 py-2 mb-4 rounded-md border border-border/70 bg-background/60 text-[13px] font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-primary/40",
-                        isCollapsed && "justify-center px-2"
-                    )}
-                    title={`${searchTitleLabel} (${searchShortcutHint})`}
-                    aria-label={searchTitleLabel}
-                >
-                    <Search className="w-3.5 h-3.5 text-primary" />
-                    {!isCollapsed && (
-                        <>
-                            <span className="flex min-w-0 flex-1 flex-col text-left leading-tight">
-                                <span>{searchTitleLabel}</span>
-                                <span className="truncate text-[11px] font-normal text-muted-foreground">{searchScopeLabel}</span>
-                            </span>
-                            <span className="rounded border border-border/70 bg-muted/35 px-1.5 py-0.5 text-[10px] text-muted-foreground">{searchShortcutHint}</span>
-                        </>
-                    )}
-                </button>
-
-                <button
-                    onClick={triggerInboxCapture}
-                    className={cn(
-                        "w-full flex h-9 items-center gap-2.5 px-2.5 mb-2 rounded-md border border-primary/40 bg-primary/5 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 hover:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/40",
-                        isCollapsed && "h-10 justify-center px-2"
-                    )}
-                    title={inboxCaptureLabel}
-                    aria-label={inboxCaptureLabel}
-                >
-                    <Plus className="w-4 h-4" />
-                    {!isCollapsed && (
-                        <span className="flex-1 text-left">{addTaskLabel}</span>
-                    )}
-                </button>
-
-                <button
+                    type="button"
                     onClick={openQuickCapture}
                     className={cn(
-                        "w-full flex h-9 items-center gap-2.5 px-2.5 mb-6 rounded-md border border-primary/40 bg-primary/5 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 hover:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/40",
-                        isCollapsed && "h-10 justify-center px-2"
+                        "focus-ring mb-5 flex w-full items-center gap-2.5 rounded-control border border-border bg-card text-sm font-medium text-foreground shadow-soft-sm transition-[background-color,box-shadow] duration-200 ease-out hover:bg-accent active:shadow-soft-inset motion-reduce:transition-none",
+                        isCollapsed ? "h-10 justify-center px-2" : "h-11 px-2.5"
                     )}
                     title={captureLabel}
                     aria-label={captureLabel}
                 >
-                    <Brain className="w-4 h-4" />
+                    <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
                     {!isCollapsed && (
-                        <span className="flex-1 text-left">{tFallback(t, 'quickCapture.button', 'Capture')}</span>
+                        <>
+                            <span className="flex-1 text-left">{tFallback(t, 'quickCapture.button', 'Capture')}</span>
+                            <kbd aria-hidden="true" className="font-sans text-[13px] text-tertiary">{captureShortcutLabel}</kbd>
+                        </>
                     )}
                 </button>
 
@@ -891,7 +871,7 @@ export function Layout({
                     {savedSearches.length > 0 && (
                         <div className={cn("mb-2 space-y-1", isCollapsed && "mb-2")}>
                             {!isCollapsed && (
-                                <div className="px-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.16em]">
+                                <div className="px-2.5 text-xs font-semibold text-muted-foreground">
                                     {t('search.savedSearches')}
                                 </div>
                             )}
@@ -900,10 +880,10 @@ export function Layout({
                                     key={search.id}
                                     onClick={() => onViewChange(`savedSearch:${search.id}`)}
                                     className={cn(
-                                        "w-full flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset",
+                                        "focus-ring-inset w-full flex h-9 items-center gap-2.5 rounded-control px-2.5 text-sm transition-colors",
                                         currentView === `savedSearch:${search.id}`
-                                            ? "bg-primary/5 text-primary"
-                                            : "hover:bg-accent text-muted-foreground",
+                                            ? "bg-accent-soft font-semibold text-foreground"
+                                            : "font-normal hover:bg-accent text-foreground",
                                         isCollapsed && "justify-center px-2"
                                     )}
                                     title={search.name}
@@ -915,7 +895,7 @@ export function Layout({
                         </div>
                     )}
 
-                    <nav className="space-y-3.5 pb-2" data-sidebar-nav>
+                    <nav className="space-y-4 pb-2" data-sidebar-nav>
                         {navSections.map((section) => {
                             const isSectionCollapsed = !isCollapsed && collapsedSections.has(section.key) && dragOpenedSectionKey !== section.key;
                             const sectionId = `sidebar-section-${section.key}`;
@@ -934,7 +914,7 @@ export function Layout({
                                         aria-expanded={!isSectionCollapsed}
                                         aria-controls={sectionId}
                                         data-sidebar-section-toggle
-                                        className="group w-full flex h-7 items-center gap-1 rounded-md px-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.16em] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 cursor-pointer"
+                                        className="focus-ring-inset group w-full flex h-7 items-center gap-1 rounded-control px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
                                     >
                                         <ChevronDown
                                             className={cn(
@@ -954,24 +934,9 @@ export function Layout({
                                     const itemLabel = item.labelKey ? tFallback(t, item.labelKey, item.fallbackLabel ?? item.id) : (item.fallbackLabel ?? item.id);
                                     const isActiveItem = currentView === item.id || item.activeIds?.includes(currentView) === true;
                                     const isDropTarget = item.id === 'calendar' || NAV_DROP_STATUSES[item.id] !== undefined;
-                                    const tone = item.tone ?? 'normal';
-                                    const inactiveItemClass = tone === 'primary'
-                                        ? 'text-foreground hover:bg-accent/80 hover:text-foreground'
-                                        : tone === 'recessed'
-                                            ? 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
-                                            : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground';
-                                    const inactiveIconClass = tone === 'primary'
-                                        ? 'text-primary/80'
-                                        : tone === 'recessed'
-                                            ? 'text-muted-foreground/80'
-                                            : 'text-muted-foreground';
-                                    const itemWeightClass = isActiveItem
-                                        ? 'font-medium'
-                                        : tone === 'primary'
-                                            ? 'font-semibold'
-                                            : tone === 'recessed'
-                                                ? 'font-normal'
-                                                : 'font-medium';
+                                    const inactiveItemClass = 'text-foreground hover:bg-accent';
+                                    const inactiveIconClass = 'text-muted-foreground';
+                                    const itemWeightClass = isActiveItem ? 'font-semibold' : 'font-normal';
                                     return (
                                     <button
                                         key={item.id}
@@ -984,9 +949,9 @@ export function Layout({
                                         data-view={item.id}
                                         data-active-views={item.activeIds?.join(' ')}
                                         className={cn(
-                                            "w-full flex items-center rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset",
+                                            "focus-ring-inset w-full flex items-center rounded-control text-sm transition-colors",
                                             itemWeightClass,
-                                            isActiveItem ? "bg-primary/5 text-primary" : inactiveItemClass,
+                                            isActiveItem ? "bg-accent-soft text-foreground" : inactiveItemClass,
                                             isCollapsed ? "h-10 justify-center px-2" : "h-9 justify-between px-2.5",
 
 
@@ -997,16 +962,11 @@ export function Layout({
                                         title={itemLabel}
                                     >
                                         <div className={cn("flex min-w-0 items-center gap-2.5", isCollapsed && "gap-0")}>
-                                            <item.icon className={cn("w-4 h-4 shrink-0", isActiveItem ? "text-primary" : inactiveIconClass)} />
+                                            <item.icon className={cn("w-[18px] h-[18px] shrink-0", isActiveItem ? "text-accent-text" : inactiveIconClass)} aria-hidden="true" />
                                             {!isCollapsed && <span className="truncate">{itemLabel}</span>}
                                         </div>
                                         {!isCollapsed && item.count !== undefined && item.count > 0 && (
-                                            <span className={cn(
-                                                "inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold",
-                                                isActiveItem
-                                                    ? "bg-primary text-primary-foreground"
-                                                    : "bg-muted text-muted-foreground"
-                                            )}>
+                                            <span className="text-[13px] font-normal tabular-nums text-muted-foreground">
                                                 {item.count}
                                             </span>
                                         )}
@@ -1052,7 +1012,7 @@ export function Layout({
                     </>}
                 </div>
 
-                <div className="mt-auto border-t border-border/60 px-2 py-1.5" data-sidebar-footer>
+                <div className="mt-auto px-2 py-1.5" data-sidebar-footer>
                     <div className={cn("pb-1.5", isCollapsed && "flex flex-col items-center")}>
                         <SidebarWorkspaceSwitcher collapsed={isCollapsed} />
                         <SidebarAreaFilter
@@ -1066,17 +1026,17 @@ export function Layout({
                             collapsed={isCollapsed}
                         />
                     </div>
-                    <div className={cn(!isCollapsed && "border-t border-border/50 pt-1.5")}>
+                    <div className={cn(!isCollapsed && "pt-1.5")}>
                         <div className={cn("flex gap-1.5", isCollapsed ? "flex-col items-center" : "items-center")}>
                             <button
                                 type="button"
                                 onClick={() => onViewChange('settings')}
                                 className={cn(
-                                    "group relative w-full rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset",
+                                    "focus-ring-inset group relative w-full rounded-control text-left transition-colors",
                                     isCollapsed ? "flex h-10 items-center justify-center px-0" : "h-9 min-w-0 flex-1 px-2",
                                     currentView === 'settings'
-                                        ? "bg-primary/5 text-primary"
-                                        : "text-muted-foreground hover:bg-accent/70 hover:text-accent-foreground"
+                                        ? "bg-accent-soft font-semibold text-foreground"
+                                        : "text-foreground hover:bg-accent"
                                 )}
                                 aria-current={currentView === 'settings' ? 'page' : undefined}
                                 title={t('nav.settings')}
@@ -1089,7 +1049,7 @@ export function Layout({
                                 {isCollapsed && !syncOff && (
                                     <span
                                         className={cn(
-                                            "absolute right-1.5 top-1.5 h-2 w-2 rounded-full ring-2 ring-card",
+                                            "absolute right-1.5 top-1.5 h-2 w-2 rounded-full ring-2 ring-background",
                                             syncFreshnessDotClass,
                                             syncBusy && "animate-pulse"
                                         )}
@@ -1102,7 +1062,7 @@ export function Layout({
                                 <button
                                     type="button"
                                     onClick={onOpenSyncSettings ?? (() => onViewChange('settings'))}
-                                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md px-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset"
+                                    className="focus-ring-inset inline-flex h-9 shrink-0 items-center gap-1.5 rounded-control px-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                                     title={syncStatusDescription}
                                     aria-label={syncStatusDescription}
                                     data-sidebar-sync-status
@@ -1130,8 +1090,8 @@ export function Layout({
 
 
                                     className={cn(
-                                        "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60",
-                                        "hover:bg-accent/70 hover:text-accent-foreground",
+                                        "focus-ring inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control text-muted-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                                        "hover:bg-accent hover:text-accent-foreground",
                                         isCollapsed ? "h-10 w-10" : "h-9 w-9"
                                     )}
                                     title={`${syncNowLabel}. ${syncTooltip}`}
@@ -1146,12 +1106,50 @@ export function Layout({
                 </aside>
             )}
 
-            {                  }
+            <div className="flex min-w-0 flex-1 flex-col bg-background">
+            {isFocusMode ? (
+                <div data-tauri-drag-region className="h-[var(--titlebar-inset)] shrink-0" aria-hidden="true" />
+            ) : (
+                <header
+                    data-tauri-drag-region
+                    className="relative z-10 flex h-14 shrink-0 items-center gap-3 px-4 lg:px-6 2xl:px-8 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-4 after:bg-gradient-to-b after:from-background after:to-transparent"
+                    data-app-toolbar
+                >
+                    <SearchField
+                        readOnly
+                        value=""
+                        placeholder={searchPlaceholder}
+                        aria-label={searchTitleLabel}
+                        title={`${searchTitleLabel} (${searchShortcutHint})`}
+                        shortcutHint={searchShortcutHint}
+                        wrapperClassName="h-10 min-w-0 max-w-xl flex-1 cursor-pointer"
+                        className="cursor-pointer"
+                        onClick={triggerSearch}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
+                                event.preventDefault();
+                                triggerSearch();
+                            }
+                        }}
+                    />
+                    <div data-tauri-drag-region className="h-full min-w-4 flex-1" aria-hidden="true" />
+                    <Button
+                        variant="primary"
+                        onClick={triggerInboxCapture}
+                        className="h-8 px-3"
+                        title={inboxCaptureLabel}
+                        aria-label={inboxCaptureLabel}
+                        leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}
+                    >
+                        {addTaskLabel}
+                    </Button>
+                </header>
+            )}
             <main
                 id="main-content"
 
 
-                className="flex-1 overflow-auto focus:outline-none"
+                className="flex-1 overflow-auto bg-background focus:outline-none"
                 data-main-content
                 tabIndex={-1}
                 role="main"
@@ -1175,29 +1173,26 @@ export function Layout({
                         <div
                             role="alert"
                             aria-live="assertive"
-                            className="mb-4 flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                            className="mb-4 flex items-start gap-3 rounded-card bg-card px-4 py-3 text-sm text-foreground shadow-soft-sm"
                         >
-                            <span>{error}</span>
-                            <button
-                                type="button"
-                                className="text-destructive/80 hover:text-destructive underline underline-offset-2"
-                                onClick={() => setError(null)}
-                            >
+                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-danger-text" aria-hidden="true" />
+                            <span className="flex-1">{error}</span>
+                            <Button variant="ghost" size="xs" onClick={() => setError(null)}>
                                 {dismissText}
-                            </button>
+                            </Button>
                         </div>
                     )}
                     {cleartextSyncWarning && (
                         <div
                             role="status"
                             aria-live="polite"
-                            className="mb-4 flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+                            className="mb-4 flex items-start gap-3 rounded-card bg-card px-4 py-3 text-sm text-foreground shadow-soft-sm"
                         >
-                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-text" aria-hidden="true" />
                             <span className="flex-1">{cleartextSyncWarning.message}</span>
-                            <button
-                                type="button"
-                                className="shrink-0 underline underline-offset-2 hover:text-muted-foreground"
+                            <Button
+                                variant="ghost"
+                                size="xs"
                                 onClick={() => {
                                     dismissedCleartextDestinations.current.add(cleartextSyncWarning.destination);
                                     dismissCleartextSyncWarning(cleartextSyncWarning.destination);
@@ -1205,12 +1200,13 @@ export function Layout({
                                 }}
                             >
                                 {tFallback(t, 'settings.cleartextSyncDismiss', 'Dismiss for this sync destination')}
-                            </button>
+                            </Button>
                         </div>
                     )}
                     {children}
                 </div>
             </main>
+            </div>
             <ToastHost />
         </div>
         </ViewSidebarContext.Provider>

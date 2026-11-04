@@ -1,7 +1,7 @@
 import { ViewSidebarContext } from '../../contexts/view-sidebar-context';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Area, Project, Task } from '@stride/core';
-import { safeFormatDate, useTaskStore } from '@stride/core';
+import { useTaskStore } from '@stride/core';
 import * as core from '@stride/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LanguageProvider } from '../../contexts/language-context';
@@ -14,6 +14,7 @@ import { useUiStore } from '../../store/ui-store';
 import { CALENDAR_TASK_DRAG_MIME, setCalendarTaskDragData } from '../../lib/calendar-task-drag';
 import { clearUndoableAction, takeUndoableAction } from '../../lib/undo-registry';
 import { holdSyncSave } from '../../test/hold-sync-save';
+import { formatTaskDateChipLabel } from '../Task/task-item-helpers';
 
 
 const CONTEXTS_GROUP_COLLAPSE_STORAGE_KEY = 'stride:view:contexts:groups:v1';
@@ -547,7 +548,7 @@ describe('ContextsView', () => {
         })];
         useTaskStore.setState({ tasks, _allTasks: tasks });
         const view = renderContextsView();
-        const formattedDueDate = safeFormatDate(dueDate, 'P');
+        const formattedDueDate = formatTaskDateChipLabel(dueDate, (key) => key);
 
         expect(view.getByRole('button', { name: 'Show details' })).toBeInTheDocument();
         expect(view.queryByText(formattedDueDate)).not.toBeInTheDocument();
@@ -740,7 +741,7 @@ describe('ContextsView', () => {
         fireEvent.click(nextButton);
 
         expect(nextButton).toHaveAttribute('aria-pressed', 'true');
-        expect(nextButton).toHaveClass('bg-primary', 'text-primary-foreground');
+        expect(nextButton).toHaveClass('bg-accent-soft', 'text-accent-text');
         expect(getByText('Next office task')).toBeInTheDocument();
         expect(queryByText('Waiting office task')).not.toBeInTheDocument();
         expect(queryByText('Done office task')).not.toBeInTheDocument();

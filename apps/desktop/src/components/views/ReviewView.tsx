@@ -362,21 +362,21 @@ export function ReviewView() {
                     }}
                 />
                 <div className="flex flex-wrap items-center gap-3">
-                    <div className="inline-flex rounded-lg border border-border p-1" role="group" aria-label={t('review.title')}>
+                    <div className="inline-flex gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset" role="group" aria-label={t('review.title')}>
                         {(['due', 'all'] as const).map((choice) => (
                             <button
                                 key={choice}
                                 type="button"
                                 aria-pressed={scope === choice}
                                 onClick={() => { if (choice !== scope) { exitSelectionMode(); setFilterStatus('all'); setScope(choice); } }}
-                                className={`rounded-md px-3 py-1.5 text-sm ${scope === choice ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+                                className={`h-7 rounded-[8px] px-3 text-[13px] font-medium focus-ring ${scope === choice ? 'bg-card text-foreground shadow-soft-sm' : 'text-muted-foreground hover:text-foreground'}`}
                             >
                                 {t(choice === 'due' ? 'review.scopeDue' : 'review.scopeAll')}
                             </button>
                         ))}
                     </div>
                     <span className="text-sm text-muted-foreground">{t(scope === 'due' ? 'review.dueHelp' : 'review.overviewHelp')}</span>
-                    {scope === 'all' && <button type="button" aria-label={`${t('nav.done')} ${t('common.tasks')}`} onClick={() => setFilterStatus('done')} className="text-sm text-primary hover:underline">{t('nav.done')}</button>}
+                    {scope === 'all' && <button type="button" aria-label={`${t('nav.done')} ${t('common.tasks')}`} onClick={() => setFilterStatus('done')} className="rounded-control text-sm text-accent-text hover:underline focus-ring">{t('nav.done')}</button>}
                 </div>
                 {reviewSavePending && (
                     <button type="button" onClick={() => { void retryReviewSave(); }} disabled={reviewWriteBusy} className="rounded border border-destructive px-3 py-2 text-sm text-destructive disabled:opacity-50">
@@ -393,7 +393,7 @@ export function ReviewView() {
                         onChange={(event) => setSearchQuery(event.target.value)}
 
 
-                        className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 lg:min-w-48"
+                        className="h-9 min-w-0 flex-1 rounded-control bg-well px-3 text-sm focus-ring lg:min-w-48"
                     />
                     <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                         {scope === 'all' && <ReviewFiltersBar

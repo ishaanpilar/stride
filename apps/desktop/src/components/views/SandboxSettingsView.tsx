@@ -1,4 +1,5 @@
 import { FlaskConical, RotateCcw } from 'lucide-react';
+import { ViewHeader } from '../ui/ViewHeader';
 import { useState } from 'react';
 import {
     flushPendingSave,
@@ -45,7 +46,7 @@ export function SandboxSettingsView() {
         void save({ appearance }, setting);
     };
 
-    const selectClassName = 'min-h-9 w-44 max-w-full rounded-md border border-border bg-background px-2 text-sm';
+    const selectClassName = 'min-h-9 w-44 max-w-full rounded-control bg-well px-2 text-sm';
 
     const run = (action: () => void) => {
         setError(null);
@@ -59,21 +60,25 @@ export function SandboxSettingsView() {
     return (
         <div className="h-full overflow-y-auto">
             <div className={`mx-auto max-w-3xl space-y-6 px-4 pt-3 ${LIST_END_GAP}`} data-sandbox-settings>
-                <header>
-                    <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                        <FlaskConical className="h-5 w-5 text-primary" aria-hidden="true" />
-                        {t('sandbox.title')}
-                    </h2>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">{t('sandbox.description')}</p>
-                </header>
+                <div className="space-y-2">
+                    <ViewHeader
+                        title={(
+                            <span className="inline-flex items-center gap-2">
+                                <FlaskConical className="h-6 w-6 text-accent-text" aria-hidden="true" />
+                                {t('sandbox.title')}
+                            </span>
+                        )}
+                    />
+                    <p className="text-sm leading-6 text-muted-foreground">{t('sandbox.description')}</p>
+                </div>
 
-                <section className="rounded-lg border border-border bg-card p-5">
+                <section className="rounded-card bg-card shadow-soft-sm p-5">
                     <p className="text-sm text-foreground">{t('sandbox.notice')}</p>
                     <div className="mt-4 flex flex-wrap gap-2">
                         <button
                             type="button"
                             onClick={() => run(() => resetDesktopSandbox(settings))}
-                            className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted"
+                            className="inline-flex items-center gap-2 rounded-control bg-well px-3 py-2 text-sm font-medium hover:bg-muted"
                             data-sandbox-settings-reset
                         >
                             <RotateCcw className="h-4 w-4" aria-hidden="true" />
@@ -82,7 +87,7 @@ export function SandboxSettingsView() {
                         <button
                             type="button"
                             onClick={() => run(() => exitDesktopSandbox())}
-                            className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+                            className="btn-gradient h-9 px-4 focus-ring"
                             data-sandbox-settings-exit
                         >
                             {t('sandbox.exit')}

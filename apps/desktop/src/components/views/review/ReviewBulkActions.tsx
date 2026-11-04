@@ -56,7 +56,7 @@ export function ReviewBulkActions({
                             onChangeMoveToStatus(nextStatus);
                             await onMoveToStatus(nextStatus);
                         }}
-                        className="text-xs bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="text-xs bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted transition-colors focus-ring"
                     >
                         <option value="" disabled>
                             {t('bulk.moveTo')}
@@ -74,7 +74,7 @@ export function ReviewBulkActions({
                     type="button"
                     onClick={onMarkReviewed}
                     disabled={markReviewedBusy}
-                    className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground disabled:opacity-50"
+                    className="text-xs px-2 py-1 rounded btn-gradient disabled:opacity-50"
                 >
                     {t('review.markReviewed')}
                 </button>}

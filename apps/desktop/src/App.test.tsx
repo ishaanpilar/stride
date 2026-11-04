@@ -101,7 +101,7 @@ describe('App', () => {
         await waitFor(() => {
             expect(getByRole('heading', { name: 'Focus' })).toBeInTheDocument();
             expect(window.location.search).toBe('?view=agenda');
-            expect(container.querySelector('[data-sidebar-item][data-view="agenda"]')).toHaveClass('bg-primary/5');
+            expect(container.querySelector('[data-sidebar-item][data-view="agenda"]')).toHaveClass('bg-accent-soft');
             expect(getByRole('main')).not.toHaveClass('max-w-screen-2xl');
         });
     });

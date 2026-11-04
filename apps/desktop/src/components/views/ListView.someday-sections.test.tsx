@@ -182,7 +182,7 @@ describe('desktop Someday section actions', () => {
         };
         const groupOf = (view: ReturnType<typeof renderSomeday>, title: string) => {
             const header = view.getByText(title, { selector: 'span.truncate' });
-            return header.closest('div.rounded-md') as HTMLElement;
+            return header.closest('div[data-task-group]') as HTMLElement;
         };
 
         it('draws each parked project in its section, before the tasks, with no top block', () => {

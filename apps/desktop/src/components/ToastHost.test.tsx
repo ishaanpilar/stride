@@ -23,7 +23,7 @@ describe('ToastHost', () => {
         vi.useRealTimers();
     });
 
-    it('uses an opaque surface while retaining severity borders', () => {
+    it('uses an opaque surface while retaining severity rings', () => {
         showToast('Success', 'success', 0);
         showToast('Error', 'error', 0);
         showToast('Info', 'info', 0);
@@ -31,9 +31,9 @@ describe('ToastHost', () => {
 
         const statuses = screen.getAllByRole('status');
         statuses.forEach((toast) => expect(toast).toHaveClass('bg-popover', 'text-popover-foreground'));
-        expect(statuses[0]).toHaveClass('border-success');
-        expect(statuses[1]).toHaveClass('border-destructive');
-        expect(statuses[2]).toHaveClass('border-border');
+        expect(statuses[0]).toHaveClass('ring-success-fill/40');
+        expect(statuses[1]).toHaveClass('ring-danger/50');
+        expect(statuses[2]).toHaveClass('ring-border');
         statuses.forEach((toast) => {
             expect(toast.className).not.toContain('bg-success/10');
             expect(toast.className).not.toContain('bg-destructive/10');

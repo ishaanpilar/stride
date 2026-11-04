@@ -2618,6 +2618,14 @@ export const svOverrides: Record<string, string> = {
 
         'mindSweep.launchButton': 'Tankerensning',
 
+        'calendar.tomorrow': 'I morgon',
+
+        'calendar.yesterday': 'I går',
+
+        'list.todayProgress': 'I dag: {done} av {total} klara',
+
+        'list.todayRemaining': '{left} kvar · cirka {duration}',
+
         'mindSweep.guidedLabel': 'Guidad tankerensning',
 
         'quickCapture.button': 'Fånga',

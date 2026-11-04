@@ -21,7 +21,7 @@ export function InboxProcessingSectionField({
     value,
     onChange,
     onCreateSection,
-    controlClassName = 'bg-card rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none',
+    controlClassName = 'bg-card rounded-lg px-3 py-2 text-sm focus-ring focus:outline-none',
     labelClassName = 'text-xs text-muted-foreground font-medium',
 }: InboxProcessingSectionFieldProps) {
     const projectSections = getProjectSectionsForView(project, sections);

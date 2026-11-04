@@ -436,7 +436,7 @@ export function ObsidianView() {
     if (!isInitialized || isLoadingConfig) {
         return (
             <div className={pageShellClassName}>
-                <div className={cn(pageContentClassName, 'rounded-2xl border border-border bg-card p-8 text-sm text-muted-foreground')}>
+                <div className={cn(pageContentClassName, 'rounded-card bg-card shadow-soft-sm p-8 text-sm text-muted-foreground')}>
                     {resolveText('common.loading', 'Loading...')}
                 </div>
             </div>
@@ -450,15 +450,15 @@ export function ObsidianView() {
     return (
         <div className={pageShellClassName}>
             <div className={cn(pageContentClassName, 'space-y-6', LIST_END_GAP)} data-list-end>
-                <section className="rounded-3xl border border-border bg-card/95 p-8 shadow-sm">
+                <section className="rounded-card bg-card shadow-soft-sm p-8 shadow-sm">
                     <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
                         <div className="space-y-3">
-                            <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/70 px-3 py-1 text-xs font-medium text-muted-foreground">
+                            <div className="inline-flex items-center gap-2 rounded-full bg-well px-3 py-1 text-xs font-medium text-muted-foreground">
                                 <BookOpen className="h-3.5 w-3.5" />
                                 {resolveText('nav.obsidian', 'Obsidian')}
                             </div>
                             <div className="space-y-2">
-                                <h1 className="text-3xl font-semibold tracking-tight">
+                                <h1 className="text-[30px] font-bold leading-9 tracking-[-0.02em]">
                                     {resolveText('obsidian.title', 'Obsidian Tasks')}
                                 </h1>
                                 <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -519,7 +519,7 @@ export function ObsidianView() {
                         <button
                             type="button"
                             onClick={navigateToSettings}
-                            className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+                            className="inline-flex items-center gap-2 rounded-control bg-well px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
                         >
                             <Settings className="h-4 w-4" />
                             {resolveText('nav.settings', 'Settings')}
@@ -531,7 +531,7 @@ export function ObsidianView() {
                             className={cn(
                                 'inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors',
                                 canScan && !isScanning
-                                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                    ? 'bg-accent-soft text-accent-text hover:opacity-90'
                                     : 'bg-muted text-muted-foreground'
                             )}
                         >
@@ -548,7 +548,7 @@ export function ObsidianView() {
                                     : resolveText('obsidian.showCompleted', 'Show completed')}
                                 aria-pressed={showCompleted}
                                 onClick={() => setShowCompleted((current) => !current)}
-                                className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+                                className="inline-flex items-center gap-2 rounded-control bg-well px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
                             >
                                 {showCompleted
                                     ? resolveText('obsidian.hideCompleted', 'Hide completed')
@@ -565,7 +565,7 @@ export function ObsidianView() {
                 </section>
 
                 {canScan && (
-                    <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+                    <section className="rounded-card bg-card shadow-soft-sm p-5 shadow-sm">
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
                             <div className="min-w-0 flex-1">
                                 <label htmlFor="obsidian-add-task" className="text-sm font-medium">
@@ -602,7 +602,7 @@ export function ObsidianView() {
                                     placeholder={effectiveNewTaskFormat === 'tasknotes'
                                         ? resolveText('obsidian.addTaskNotesPlaceholder', 'Create a new TaskNotes task...')
                                         : resolveText('obsidian.addTaskPlaceholder', 'Capture a task into your Obsidian inbox note...')}
-                                    className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                                    className="flex-1 rounded-control bg-well px-3 py-2 text-sm focus-ring"
                                 />
                                 <button
                                     type="button"
@@ -611,7 +611,7 @@ export function ObsidianView() {
                                     className={cn(
                                         'inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors',
                                         !isCreatingTask && newTaskText.trim()
-                                            ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                            ? 'bg-accent-soft text-accent-text hover:opacity-90'
                                             : 'bg-muted text-muted-foreground'
                                     )}
                                 >
@@ -665,7 +665,7 @@ export function ObsidianView() {
                 )}
 
                 {!hasVault && (
-                    <section className="rounded-2xl border border-dashed border-border bg-card p-8">
+                    <section className="rounded-card bg-card shadow-soft-sm p-8">
                         <h2 className="text-lg font-semibold">{resolveText('obsidian.setupTitle', 'Set up an Obsidian vault')}</h2>
                         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                             {resolveText(
@@ -676,7 +676,7 @@ export function ObsidianView() {
                         <button
                             type="button"
                             onClick={navigateToSettings}
-                            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                            className="mt-5 inline-flex items-center gap-2 btn-gradient h-9 px-4 focus-ring"
                         >
                             <Settings className="h-4 w-4" />
                             {resolveText('obsidian.openSettings', 'Open settings')}
@@ -685,7 +685,7 @@ export function ObsidianView() {
                 )}
 
                 {hasVault && !config.enabled && (
-                    <section className="rounded-2xl border border-border bg-card p-8">
+                    <section className="rounded-card bg-card shadow-soft-sm p-8">
                         <h2 className="text-lg font-semibold">{resolveText('obsidian.disabledTitle', 'Enable the integration')}</h2>
                         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                             {resolveText(
@@ -697,7 +697,7 @@ export function ObsidianView() {
                 )}
 
                 {canScan && visibleTasks.length === 0 && tasks.length > 0 && hiddenCompletedCount > 0 && hasCompletedScan && !isScanning && (
-                    <section className="rounded-2xl border border-border bg-card p-8">
+                    <section className="rounded-card bg-card shadow-soft-sm p-8">
                         <h2 className="text-lg font-semibold">
                             {resolveText('obsidian.completedOnlyTitle', 'Only completed tasks are hidden')}
                         </h2>
@@ -711,7 +711,7 @@ export function ObsidianView() {
                 )}
 
                 {canScan && tasks.length === 0 && hasCompletedScan && !isScanning && (
-                    <section className="rounded-2xl border border-border bg-card p-8">
+                    <section className="rounded-card bg-card shadow-soft-sm p-8">
                         <h2 className="text-lg font-semibold">{resolveText('obsidian.emptyTitle', 'No tasks found')}</h2>
                         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                             {resolveText(
@@ -736,7 +736,7 @@ export function ObsidianView() {
                             return (
                                 <article
                                     key={task.id}
-                                    className="rounded-2xl border border-border bg-card p-5 shadow-sm transition-colors hover:border-primary/30"
+                                    className="rounded-card bg-card shadow-soft-sm p-5 shadow-sm transition-colors hover:border-primary/30"
                                 >
                                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                                         <div className="min-w-0 space-y-3">
@@ -825,7 +825,7 @@ export function ObsidianView() {
                                                                     {metadata.contexts.map((context) => (
                                                                         <span
                                                                             key={`${task.id}-context-${context}`}
-                                                                            className="rounded-full border border-border/70 bg-background px-2.5 py-1"
+                                                                            className="rounded-full bg-well px-2.5 py-1"
                                                                         >
                                                                             @{context}
                                                                         </span>
@@ -833,7 +833,7 @@ export function ObsidianView() {
                                                                     {metadata.projects.map((project) => (
                                                                         <span
                                                                             key={`${task.id}-project-${project}`}
-                                                                            className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background px-2.5 py-1"
+                                                                            className="inline-flex items-center gap-1 rounded-full bg-well px-2.5 py-1"
                                                                         >
                                                                             <FolderKanban className="h-3 w-3" />
                                                                             {project}
@@ -863,7 +863,7 @@ export function ObsidianView() {
                                                     {task.wikiLinks.map((link) => (
                                                         <span
                                                             key={`${task.id}-link-${link}`}
-                                                            className="rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground"
+                                                            className="rounded-full bg-well px-2.5 py-1 text-xs text-muted-foreground"
                                                         >
                                                             [[{link}]]
                                                         </span>
@@ -877,7 +877,7 @@ export function ObsidianView() {
                                                 type="button"
                                                 onClick={() => void handleBringIntoStride(task)}
                                                 disabled={isBringingIntoStride}
-                                                className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                                                className="inline-flex items-center gap-2 rounded-control bg-well px-3 py-2 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isBringingIntoStride ? (
                                                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -892,7 +892,7 @@ export function ObsidianView() {
                                                 type="button"
                                                 onClick={() => void handleToggleTask(task)}
                                                 disabled={isPending}
-                                                className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                                                className="inline-flex items-center gap-2 rounded-control bg-well px-3 py-2 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 {isPending ? (
                                                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -910,7 +910,7 @@ export function ObsidianView() {
                                             <button
                                                 type="button"
                                                 onClick={() => handleOpenTask(task.source)}
-                                                className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium transition-colors hover:bg-accent"
+                                                className="inline-flex items-center gap-2 rounded-control bg-well px-3 py-2 text-sm font-medium transition-colors hover:bg-accent"
                                             >
                                                 <ExternalLink className="h-4 w-4" />
                                                 {resolveText('obsidian.openTask', 'Open in Obsidian')}

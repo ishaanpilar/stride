@@ -669,7 +669,7 @@ export function TaskInput({
                 <div
                     id={listboxId}
                     role="listbox"
-                    className="absolute z-20 mt-2 w-64 max-h-60 overflow-y-auto rounded-md border border-border bg-popover shadow-lg p-1 text-xs"
+                    className="absolute z-20 mt-2 w-64 max-h-60 overflow-y-auto rounded-control border border-border bg-popover shadow-soft p-1 text-xs"
                 >
                     {options.map((option, index) => (
                         <button

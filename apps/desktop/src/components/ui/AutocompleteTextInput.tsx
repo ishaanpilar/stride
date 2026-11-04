@@ -148,7 +148,7 @@ export function AutocompleteTextInput({
 
 
                     onMouseDown={(event) => event.preventDefault()}
-                    className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-popover text-popover-foreground shadow-lg"
+                    className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-control border border-border bg-popover text-popover-foreground shadow-soft-sm"
                 >
                     {matches.map((option, index) => (
                         <button

@@ -211,7 +211,7 @@ export function InboxProcessingQuickPanel({
     const somedaySections = settings?.gtd?.viewSections?.someday ?? [];
     const somedaySectionField = (
         <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground font-medium">
+            <label className="text-[13px] text-muted-foreground font-medium">
                 {tFallback(t, 'viewSections.somedaySection', 'Someday section')}
             </label>
             <SomedaySectionSelector
@@ -223,7 +223,7 @@ export function InboxProcessingQuickPanel({
                 )}
                 onCreateSection={onCreateSomedaySection}
                 t={t}
-                className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                className="w-full rounded-card bg-card shadow-soft-sm px-3 py-2 text-sm focus-ring"
             />
         </div>
     );
@@ -250,7 +250,7 @@ export function InboxProcessingQuickPanel({
         <div className="space-y-3">
             {!selectedProjectId && showAreaField ? (
                 <div className="space-y-1">
-                    <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.areaLabel')}</label>
+                    <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.areaLabel')}</label>
                     <AreaSelector
                         areas={areas}
                         value={selectedAreaId ?? ''}
@@ -259,14 +259,14 @@ export function InboxProcessingQuickPanel({
                         noAreaLabel={t('projects.noArea')}
                         searchPlaceholder={t('areas.search')}
                         noMatchesLabel={t('common.noMatches')}
-                        controlClassName="rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                        controlClassName="rounded-lg px-3 py-2 text-sm focus-ring focus:outline-none"
                         menuClassName="text-sm"
                     />
                 </div>
             ) : null}
             {showProjectField ? (
                 <div className="space-y-1">
-                    <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.projectLabel')}</label>
+                    <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.projectLabel')}</label>
                     <ProjectSelector
                         projects={filteredProjects}
                         allProjects={sortedProjects}
@@ -291,7 +291,7 @@ export function InboxProcessingQuickPanel({
                         deferredLabel={t('projects.deferredSection')}
                         emptyLabel={projectFilterAreaId ? t('projects.noProjectsInArea') : undefined}
                         createProjectLabel={t('projects.create')}
-                        controlClassName="rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                        controlClassName="rounded-lg px-3 py-2 text-sm focus-ring focus:outline-none"
                         menuClassName="text-sm"
                     />
                 </div>
@@ -304,8 +304,8 @@ export function InboxProcessingQuickPanel({
                     value={draft.sectionId}
                     onChange={(sectionId) => setField('sectionId', sectionId)}
                     onCreateSection={onCreateSection}
-                    labelClassName="text-[11px] text-muted-foreground font-medium"
-                    controlClassName="rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                    labelClassName="text-[13px] text-muted-foreground font-medium"
+                    controlClassName="rounded-lg px-3 py-2 text-sm focus-ring focus:outline-none"
                 />
             ) : null}
         </div>
@@ -314,7 +314,7 @@ export function InboxProcessingQuickPanel({
         <div className="grid gap-3 md:grid-cols-2">
             {showContextsField ? (
                 <div className="space-y-2">
-                    <label htmlFor="quick-processing-contexts" className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.contextsLabel')}</label>
+                    <label htmlFor="quick-processing-contexts" className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.contextsLabel')}</label>
                     <TokenAutocompleteInput
                         id="quick-processing-contexts"
                         aria-label={t('taskEdit.contextsLabel')}
@@ -323,7 +323,7 @@ export function InboxProcessingQuickPanel({
                         suggestions={[...suggestedContexts, ...allContexts]}
                         prefix="@"
                         placeholder={t('taskEdit.contextsPlaceholder')}
-                        className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                        className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                     />
                     {suggestedContexts.length > 0 ? (
                         <div className="flex flex-wrap gap-2">
@@ -335,8 +335,8 @@ export function InboxProcessingQuickPanel({
                                     className={cn(
                                         'px-2.5 py-1 rounded-full text-xs font-medium transition-colors border',
                                         selectedContexts.includes(ctx)
-                                            ? 'bg-primary text-primary-foreground border-primary'
-                                            : 'bg-muted/40 border-border hover:bg-muted/70'
+                                            ? 'bg-accent-soft text-accent-text border-transparent'
+                                            : 'bg-well border-transparent hover:bg-muted'
                                     )}
                                 >
                                     {ctx}
@@ -348,7 +348,7 @@ export function InboxProcessingQuickPanel({
             ) : null}
             {showTagsField ? (
                 <div className="space-y-2">
-                    <label htmlFor="quick-processing-tags" className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.tagsLabel')}</label>
+                    <label htmlFor="quick-processing-tags" className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.tagsLabel')}</label>
                     <TokenAutocompleteInput
                         id="quick-processing-tags"
                         aria-label={t('taskEdit.tagsLabel')}
@@ -357,7 +357,7 @@ export function InboxProcessingQuickPanel({
                         suggestions={[...suggestedTags, ...allTags]}
                         prefix="#"
                         placeholder={t('taskEdit.tagsPlaceholder')}
-                        className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                        className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                     />
                     {suggestedTags.length > 0 ? (
                         <div className="flex flex-wrap gap-2">
@@ -370,7 +370,7 @@ export function InboxProcessingQuickPanel({
                                         'px-2.5 py-1 rounded-full text-xs font-medium transition-colors border',
                                         selectedTags.includes(tag)
                                             ? 'bg-success text-success-foreground border-success'
-                                            : 'bg-muted/40 border-border hover:bg-muted/70'
+                                            : 'bg-well border-transparent hover:bg-muted'
                                     )}
                                 >
                                     {tag}
@@ -420,7 +420,7 @@ export function InboxProcessingQuickPanel({
     return (
         <div
             ref={panelRef}
-            className="bg-card border border-border rounded-xl animate-in fade-in overflow-visible"
+            className="bg-card rounded-card shadow-soft animate-in fade-in overflow-visible"
             onKeyDown={handlePanelKeyDown}
         >
             <div className="flex items-center justify-between gap-3 px-5 py-3.5">
@@ -434,14 +434,14 @@ export function InboxProcessingQuickPanel({
                     </span>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5">
+                    <div className="inline-flex rounded-control bg-well p-0.5">
                         <button
                             type="button"
                             onClick={() => onModeChange('guided')}
                             className={cn(
                                 'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                                 processingMode === 'guided'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'bg-accent-soft text-accent-text'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
@@ -453,7 +453,7 @@ export function InboxProcessingQuickPanel({
                             className={cn(
                                 'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                                 processingMode === 'quick'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'bg-accent-soft text-accent-text'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
@@ -501,7 +501,7 @@ export function InboxProcessingQuickPanel({
 
                 <div className="space-y-3">
                     <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground font-medium">
+                        <label className="text-[13px] text-muted-foreground font-medium">
                             {t(convertToProject ? 'projects.projectName' : 'taskEdit.titleLabel')}
                         </label>
                         <input
@@ -509,18 +509,18 @@ export function InboxProcessingQuickPanel({
                             aria-label={t(convertToProject ? 'projects.projectName' : 'taskEdit.titleLabel')}
                             value={processingTitle}
                             onChange={(event) => setProcessingTitle(event.target.value)}
-                            className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                            className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                         />
                     </div>
                     <InboxSimilarTasks t={t} tasks={similarTasks} projects={projects} />
                     <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.descriptionLabel')}</label>
+                        <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.descriptionLabel')}</label>
                         <textarea
                             aria-label={t('taskEdit.descriptionLabel')}
                             value={processingDescription}
                             onChange={(event) => setProcessingDescription(event.target.value)}
                             placeholder={t('taskEdit.descriptionPlaceholder')}
-                            className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none resize-none"
+                            className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none resize-none"
                             rows={3}
                         />
                     </div>
@@ -538,8 +538,8 @@ export function InboxProcessingQuickPanel({
                             className={cn(
                                 'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                 actionabilityChoice === 'actionable'
-                                    ? 'bg-primary text-primary-foreground border-primary'
-                                    : 'bg-muted/40 border-border hover:bg-muted/70'
+                                    ? 'bg-accent-soft text-accent-text border-transparent'
+                                    : 'bg-well border-transparent hover:bg-muted'
                             )}
                         >
                             <CheckCircle className="w-3.5 h-3.5 inline mr-1.5" />
@@ -552,7 +552,7 @@ export function InboxProcessingQuickPanel({
                                 'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                 actionabilityChoice === 'later'
                                     ? 'bg-info/15 text-info border-info/40'
-                                    : 'bg-muted/40 border-border hover:bg-muted/70'
+                                    : 'bg-well border-transparent hover:bg-muted'
                             )}
                         >
                             <StartLaterIcon className="w-3.5 h-3.5 inline mr-1.5" />
@@ -565,7 +565,7 @@ export function InboxProcessingQuickPanel({
                                 'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                 actionabilityChoice === 'trash'
                                     ? 'bg-destructive/15 text-destructive border-destructive/40'
-                                    : 'bg-muted/40 border-border hover:bg-muted/70'
+                                    : 'bg-well border-transparent hover:bg-muted'
                             )}
                         >
                             <Trash2 className="w-3.5 h-3.5 inline mr-1.5" />
@@ -578,7 +578,7 @@ export function InboxProcessingQuickPanel({
                                 'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                 actionabilityChoice === 'someday'
                                     ? 'bg-status-someday/15 text-status-someday border-status-someday/40'
-                                    : 'bg-muted/40 border-border hover:bg-muted/70'
+                                    : 'bg-well border-transparent hover:bg-muted'
                             )}
                         >
                             <SomedayIcon className="w-3.5 h-3.5 inline mr-1.5" />
@@ -591,7 +591,7 @@ export function InboxProcessingQuickPanel({
                                 'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                 actionabilityChoice === 'incubate'
                                     ? 'bg-status-someday/15 text-status-someday border-status-someday/40'
-                                    : 'bg-muted/40 border-border hover:bg-muted/70'
+                                    : 'bg-well border-transparent hover:bg-muted'
                             )}
                         >
                             <IncubateIcon className="w-3.5 h-3.5 inline mr-1.5" />
@@ -605,7 +605,7 @@ export function InboxProcessingQuickPanel({
                                     'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                     actionabilityChoice === 'reference'
                                         ? 'bg-status-reference/15 text-status-reference border-status-reference/40'
-                                        : 'bg-muted/40 border-border hover:bg-muted/70'
+                                        : 'bg-well border-transparent hover:bg-muted'
                                 )}
                             >
                                 <ReferenceIcon className="w-3.5 h-3.5 inline mr-1.5" />
@@ -674,7 +674,7 @@ export function InboxProcessingQuickPanel({
                                     'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                     twoMinuteChoice === 'yes'
                                         ? 'bg-success text-success-foreground border-success'
-                                        : 'bg-muted/40 border-border hover:bg-muted/70'
+                                        : 'bg-well border-transparent hover:bg-muted'
                                 )}
                             >
                                 {t('process.doneIt')}
@@ -685,8 +685,8 @@ export function InboxProcessingQuickPanel({
                                 className={cn(
                                     'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                     twoMinuteChoice === 'no'
-                                        ? 'bg-primary text-primary-foreground border-primary'
-                                        : 'bg-muted/40 border-border hover:bg-muted/70'
+                                        ? 'bg-accent-soft text-accent-text border-transparent'
+                                        : 'bg-well border-transparent hover:bg-muted'
                                 )}
                             >
                                 {t('process.takesLonger')}
@@ -718,8 +718,8 @@ export function InboxProcessingQuickPanel({
                                     className={cn(
                                         'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                         executionChoice === 'defer'
-                                            ? 'bg-primary text-primary-foreground border-primary'
-                                            : 'bg-muted/40 border-border hover:bg-muted/70'
+                                            ? 'bg-accent-soft text-accent-text border-transparent'
+                                            : 'bg-well border-transparent hover:bg-muted'
                                     )}
                                 >
                                     <NextIcon className="w-3.5 h-3.5 inline mr-1.5" />
@@ -732,7 +732,7 @@ export function InboxProcessingQuickPanel({
                                         'rounded-lg px-3 py-2 text-xs font-medium transition-colors border',
                                         executionChoice === 'delegate'
                                             ? 'bg-warning text-warning-foreground border-warning'
-                                            : 'bg-muted/40 border-border hover:bg-muted/70'
+                                            : 'bg-well border-transparent hover:bg-muted'
                                     )}
                                 >
                                     <User className="w-3.5 h-3.5 inline mr-1.5" />
@@ -746,7 +746,7 @@ export function InboxProcessingQuickPanel({
                 {showDelegationFields ? (
                     <div className="space-y-3">
                         <div className="space-y-1">
-                            <label className="text-[11px] text-muted-foreground font-medium">{t('process.delegateWhoLabel')}</label>
+                            <label className="text-[13px] text-muted-foreground font-medium">{t('process.delegateWhoLabel')}</label>
                             <AutocompleteTextInput
                                 aria-label={t('process.delegateWhoLabel')}
                                 value={delegateWho}
@@ -755,11 +755,11 @@ export function InboxProcessingQuickPanel({
                                 createLabel={tFallback(t, 'people.new', 'New Person')}
                                 onCreate={onCreatePerson}
                                 placeholder={t('process.delegateWhoPlaceholder')}
-                                className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                             />
                         </div>
                         <div className="space-y-1">
-                            <label className="text-[11px] text-muted-foreground font-medium">{t('process.delegateFollowUpLabel')}</label>
+                            <label className="text-[13px] text-muted-foreground font-medium">{t('process.delegateFollowUpLabel')}</label>
                             <QuickDateChips
                                 t={t}
                                 selectedDate={safeParseDate(delegateFollowUp)}
@@ -772,7 +772,7 @@ export function InboxProcessingQuickPanel({
                                 selectedDate={safeParseDate(delegateFollowUp)}
                                 dateFormatSetting={dateFormatSetting}
                                 nativeDateInputLocale={nativeDateInputLocale}
-                                dateInputClassName="bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                dateInputClassName="bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                                 className="max-w-none"
                                 hasValue={Boolean(delegateFollowUp)}
                                 onDateChange={setDelegateFollowUp}
@@ -804,7 +804,7 @@ export function InboxProcessingQuickPanel({
                                 className={cn(
                                     'px-3 py-1.5 rounded-full text-xs font-medium transition-colors border',
                                     convertToProject
-                                        ? 'bg-primary text-primary-foreground border-primary'
+                                        ? 'bg-accent-soft text-accent-text border-transparent'
                                         : 'bg-muted/40 border-border text-muted-foreground hover:text-foreground hover:bg-muted/70'
                                 )}
                             >
@@ -816,7 +816,7 @@ export function InboxProcessingQuickPanel({
                             <div className="space-y-3">
                                 {showAreaField ? (
                                     <div className="space-y-1">
-                                        <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.areaLabel')}</label>
+                                        <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.areaLabel')}</label>
                                         <AreaSelector
                                             areas={areas}
                                             value={selectedAreaId ?? ''}
@@ -825,7 +825,7 @@ export function InboxProcessingQuickPanel({
                                             noAreaLabel={t('projects.noArea')}
                                             searchPlaceholder={t('areas.search')}
                                             noMatchesLabel={t('common.noMatches')}
-                                            controlClassName="rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                            controlClassName="rounded-lg px-3 py-2 text-sm focus-ring focus:outline-none"
                                             menuClassName="text-sm"
                                         />
                                     </div>
@@ -846,7 +846,7 @@ export function InboxProcessingQuickPanel({
 
                         {showPriorityField ? (
                             <div className="space-y-2">
-                                <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.priorityLabel')}</label>
+                                <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.priorityLabel')}</label>
                                 <div className="flex flex-wrap gap-2">
                                     {PRIORITY_OPTIONS.map((priority) => {
                                         const isSelected = selectedPriority === priority;
@@ -858,8 +858,8 @@ export function InboxProcessingQuickPanel({
                                                 className={cn(
                                                     'px-2.5 py-1 rounded-full text-xs font-medium transition-colors border',
                                                     isSelected
-                                                        ? 'bg-primary text-primary-foreground border-primary'
-                                                        : 'bg-muted/40 border-border hover:bg-muted/70'
+                                                        ? 'bg-accent-soft text-accent-text border-transparent'
+                                                        : 'bg-well border-transparent hover:bg-muted'
                                                 )}
                                             >
                                                 <PriorityFlag priority={priority} />
@@ -875,12 +875,12 @@ export function InboxProcessingQuickPanel({
                             <div className="grid gap-3 md:grid-cols-2">
                                 {showEnergyLevelField ? (
                                     <div className="space-y-2">
-                                        <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.energyLevel')}</label>
+                                        <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.energyLevel')}</label>
                                         <select
                                             aria-label={t('taskEdit.energyLevel')}
                                             value={selectedEnergyLevel ?? ''}
                                             onChange={(event) => setSelectedEnergyLevel((event.target.value || undefined) as Task['energyLevel'])}
-                                            className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                            className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                                         >
                                             <option value="">{t('common.none')}</option>
                                             {ENERGY_LEVEL_OPTIONS.map((energyLevel) => (
@@ -893,12 +893,12 @@ export function InboxProcessingQuickPanel({
                                 ) : null}
                                 {showTimeEstimateField ? (
                                     <div className="space-y-2">
-                                        <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.timeEstimateLabel')}</label>
+                                        <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.timeEstimateLabel')}</label>
                                         <select
                                             aria-label={t('taskEdit.timeEstimateLabel')}
                                             value={selectedTimeEstimate ?? ''}
                                             onChange={(event) => setSelectedTimeEstimate((event.target.value || undefined) as TimeEstimate | undefined)}
-                                            className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                            className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                                         >
                                             <option value="">{t('common.none')}</option>
                                             {timeEstimateOptions.map((estimate) => (
@@ -911,7 +911,7 @@ export function InboxProcessingQuickPanel({
                                 ) : null}
                                 {showAssignedToField ? (
                                     <div className="space-y-2">
-                                        <label className="text-[11px] text-muted-foreground font-medium">{t('taskEdit.assignedTo')}</label>
+                                        <label className="text-[13px] text-muted-foreground font-medium">{t('taskEdit.assignedTo')}</label>
                                         <AutocompleteTextInput
                                             aria-label={t('taskEdit.assignedTo')}
                                             value={selectedAssignedTo}
@@ -920,7 +920,7 @@ export function InboxProcessingQuickPanel({
                                             createLabel={tFallback(t, 'people.new', 'New Person')}
                                             onCreate={onCreatePerson}
                                             placeholder={t('taskEdit.assignedToPlaceholder')}
-                                            className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/40 focus:outline-none"
+                                            className="w-full bg-well rounded-control px-3 py-2 text-sm focus-ring focus:outline-none"
                                         />
                                     </div>
                                 ) : null}
@@ -941,7 +941,7 @@ export function InboxProcessingQuickPanel({
                         onClick={() => {
                             void onSubmit();
                         }}
-                        className="flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors shrink-0"
+                        className="flex items-center gap-2 btn-gradient px-6 py-2 text-[13px] transition-colors shrink-0"
                     >
                         {t('process.next')} <ArrowRight className="w-3.5 h-3.5" />
                     </button>

@@ -23,7 +23,7 @@ export function InboxNextActionDrafts({
     labelClassName,
     inputClassName,
 }: Props) {
-    const inputClass = cn('w-full border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary', inputClassName);
+    const inputClass = cn('w-full border border-border rounded-lg py-2 px-3 text-sm focus-ring', inputClassName);
     return (
         <div className="space-y-1">
             <label className={cn('text-xs text-muted-foreground font-medium', labelClassName)}>{t('process.nextAction')}</label>

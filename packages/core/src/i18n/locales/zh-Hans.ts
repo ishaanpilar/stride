@@ -2587,6 +2587,18 @@ export const zhHans: Record<string, string> = {
         'mindSweep.launchButton': '思绪清扫',
 
 
+        'calendar.tomorrow': '明天',
+
+
+        'calendar.yesterday': '昨天',
+
+
+        'list.todayProgress': '今天：已完成 {done}/{total}',
+
+
+        'list.todayRemaining': '剩余 {left} 项 · 约 {duration}',
+
+
         'mindSweep.guidedLabel': '引导式清扫',
 
 

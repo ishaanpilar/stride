@@ -45,6 +45,7 @@ import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import { useLocalDayKey } from '../../hooks/useLocalDayKey';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import { checkBudget } from '../../config/performanceBudgets';
+import { ViewHeader } from '../ui/ViewHeader';
 import { ListEmptyState } from './list/ListEmptyState';
 import { CalendarOpenTaskModal } from './calendar/CalendarModals';
 import { resolveCalendarLocale } from './calendar-locale';
@@ -130,8 +131,8 @@ function hexChannels(hex: string): string | null {
 export function taskBarTint(color: string | undefined): { fill: string; border: string } {
     const channels = color ? hexChannels(color) : null;
     return channels
-        ? { fill: `rgba(${channels}, 0.25)`, border: `rgba(${channels}, 0.7)` }
-        : { fill: 'hsl(var(--primary) / 0.25)', border: 'hsl(var(--primary) / 0.7)' };
+        ? { fill: `rgba(${channels}, 0.15)`, border: `rgba(${channels}, 0.7)` }
+        : { fill: 'hsl(var(--primary) / 0.15)', border: 'hsl(var(--primary) / 0.7)' };
 }
 
 
@@ -724,7 +725,7 @@ export function TimelineView() {
                         onKeyDown={(event) => dateEditing.onKeyDown(event, target, edge)}
                         onClick={(event) => { event.stopPropagation(); dateEditing.consumeClick(target); }}
                         style={{ top: -8, [edge === 'start' ? 'left' : 'right']: 0, width: 10, height: 8 }}
-                        className="absolute z-20 cursor-ew-resize rounded-sm border border-border bg-background opacity-0 touch-none group-hover/timeline-row:opacity-100 group-hover/timeline-bar:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait"
+                        className="absolute z-20 cursor-ew-resize rounded-control bg-well opacity-0 touch-none group-hover/timeline-row:opacity-100 group-hover/timeline-bar:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait"
                     />
                 ))}
             </>
@@ -1041,13 +1042,11 @@ export function TimelineView() {
             <SortableContext items={rows.map((row) => `timeline:${row.kind}:${row.key}`)} strategy={() => null}>
             <div className="sr-only" aria-live="assertive">{keyboardOrderAnnouncement}</div>
             <div className="flex h-full min-h-0 flex-col">
-                <div className="flex shrink-0 items-center justify-between pb-3">
-                    <div className="flex items-baseline gap-3">
-                        <h2 className="text-2xl font-bold tracking-tight">{tFallback(t, 'nav.timeline', 'Timeline')}</h2>
-                        <span className="text-xs text-muted-foreground">
-                            {taskRowCount} {t('common.tasks')}
-                        </span>
-                    </div>
+                <ViewHeader
+                    className="shrink-0 pb-3"
+                    title={tFallback(t, 'nav.timeline', 'Timeline')}
+                    count={`${taskRowCount} ${t('common.tasks')}`}
+                    actions={
                     <div className="flex items-center gap-2">
                         <div ref={statusFilterRef}>
                             <button
@@ -1058,7 +1057,7 @@ export function TimelineView() {
                                 aria-controls={statusFilterOpen ? statusPanelId : undefined}
                                 aria-label={statusFilterLabel}
                                 onClick={() => setStatusFilterOpen((open) => !open)}
-                                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                                className="flex h-8 items-center gap-1.5 rounded-control border border-border bg-card shadow-soft-sm px-3 text-[13px] font-medium text-foreground hover:bg-accent focus-ring"
                             >
                                 {statusFilterLabel}
                                 {hasStatusFilter && <span className="text-muted-foreground">{statuses.length}</span>}
@@ -1071,7 +1070,7 @@ export function TimelineView() {
                                     role="dialog"
                                     aria-label={statusFilterLabel}
                                     style={{ ...fixedDropdownStyle, width: 180, maxHeight: listMaxHeight }}
-                                    className="z-50 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-lg"
+                                    className="z-50 overflow-y-auto rounded-control bg-popover shadow-soft-sm p-1 shadow-lg"
                                     onBlur={(event) => {
                                         const target = event.relatedTarget as Node | null;
                                         if (target && !event.currentTarget.contains(target) && !statusFilterRef.current?.contains(target)) {
@@ -1112,13 +1111,13 @@ export function TimelineView() {
                             <button
                                 type="button"
                                 onClick={scrollToToday}
-                                className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                className="h-8 rounded-control border border-border bg-card shadow-soft-sm px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-ring"
                             >
                                 {tFallback(t, 'calendar.today', 'Today')}
                             </button>
                         )}
                         <div
-                            className="flex items-center rounded-md border border-border bg-card p-0.5"
+                            className="flex items-center rounded-control bg-well p-0.5 shadow-soft-inset"
                             role="group"
                             aria-label={tFallback(t, 'timeline.zoomLabel', 'Timeline zoom')}
                         >
@@ -1129,9 +1128,9 @@ export function TimelineView() {
                                     aria-pressed={zoom === level}
                                     onClick={() => setPersistedViewState((current) => ({ ...current, zoom: level }))}
                                     className={cn(
-                                        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                                        'h-7 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors focus-ring',
                                         zoom === level
-                                            ? 'bg-muted text-foreground'
+                                            ? 'bg-card text-foreground shadow-soft-sm'
                                             : 'text-muted-foreground hover:text-foreground',
                                     )}
                                 >
@@ -1140,7 +1139,8 @@ export function TimelineView() {
                             ))}
                         </div>
                     </div>
-                </div>
+                    }
+                />
 
                 {dateEditing.preview && (
                     <div role="status" data-testid="timeline-date-preview" className="mb-2 text-xs text-muted-foreground">
@@ -1166,7 +1166,7 @@ export function TimelineView() {
                         {omittedCount > 0 && (
                             <div
                                 data-testid="timeline-omitted-notice"
-                                className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+                                className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-control bg-well px-3 py-2"
                             >
                                 <span className="text-xs text-muted-foreground">
                                     {t('timeline.omittedItems').replace('{{count}}', String(omittedCount))}
@@ -1176,7 +1176,7 @@ export function TimelineView() {
                                         <button
                                             type="button"
                                             onClick={showEarlierWindow}
-                                            className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                                            className="rounded-control border border-border bg-card shadow-soft-sm px-3 py-1 text-[13px] font-medium text-foreground transition-colors hover:bg-accent focus-ring"
                                         >
                                             {tFallback(t, 'list.completedGroup.earlier', 'Earlier')}
                                         </button>
@@ -1185,7 +1185,7 @@ export function TimelineView() {
                                         <button
                                             type="button"
                                             onClick={showLaterWindow}
-                                            className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                                            className="rounded-control border border-border bg-card shadow-soft-sm px-3 py-1 text-[13px] font-medium text-foreground transition-colors hover:bg-accent focus-ring"
                                         >
                                             {tFallback(t, 'settings.later', 'Later')}
                                         </button>
@@ -1197,7 +1197,7 @@ export function TimelineView() {
 
 
                             <div className="min-h-0 flex-1 pb-4">
-                        <div className="flex max-h-full flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+                        <div className="flex max-h-full flex-col overflow-hidden rounded-card bg-card shadow-soft-sm">
                             {
 
                                                                               }
@@ -1251,8 +1251,8 @@ export function TimelineView() {
                                                     className="pointer-events-none absolute bottom-0 flex flex-col items-center"
                                                     style={{ left: todayLeft - 3, top: 18, width: 6 }}
                                                 >
-                                                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                                                    <span className="w-0.5 flex-1 bg-primary" />
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-accent-fill" />
+                                                    <span className="w-0.5 flex-1 bg-accent-fill" />
                                                 </div>
                                             )}
                                         </div>
@@ -1286,7 +1286,7 @@ export function TimelineView() {
                                         {todayVisible && (
                                             <div
                                                 data-testid="timeline-today-line"
-                                                className="pointer-events-none absolute inset-y-0 z-[5] w-0.5 bg-primary"
+                                                className="pointer-events-none absolute inset-y-0 z-[5] w-0.5 bg-accent-fill"
                                                 style={{ left: GUTTER_WIDTH + todayLeft - 1 }}
                                             />
                                         )}

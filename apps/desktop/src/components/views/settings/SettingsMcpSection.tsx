@@ -13,7 +13,7 @@ import { logInfo, logWarn } from '../../../lib/app-log';
 import { Switch } from '../../ui/Switch';
 import { SettingRow, SettingsDisclosureCard } from './SettingRow';
 
-const actionClass = 'px-3 py-2 bg-muted rounded-md text-sm font-medium hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed';
+const actionClass = 'px-3 py-2 bg-muted rounded-md text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed';
 const POLL_INTERVAL_MS = 3000;
 
 export function SettingsMcpSection({ isTauri }: { isTauri: boolean }) {
@@ -177,7 +177,7 @@ export function SettingsMcpSection({ isTauri }: { isTauri: boolean }) {
                     <p className="text-sm" role="status">
                         {busy || (!status && !error) ? t('common.loading') : t(status?.running ? 'settings.mcpRunning' : 'settings.mcpStopped')}
                     </p>
-                    {error && <p className="text-sm text-destructive" role="alert">{t(`settings.mcpError.${error}`)}</p>}
+                    {error && <p className="text-sm text-danger-text" role="alert">{t(`settings.mcpError.${error}`)}</p>}
                     {(error || (status?.enabled && !status.running)) && <button type="button" className={actionClass} disabled={busy}
                         onClick={() => void runAction(status ? { enabled: status.enabled, allowWrite: status.allowWrite } : undefined)}>{t('common.retry')}</button>}
                     {status?.enabled && <>
@@ -224,10 +224,10 @@ export function SettingsMcpSection({ isTauri }: { isTauri: boolean }) {
                                     <input id="mcp-port" type="number" min={1024} max={65535} step={1}
                                         aria-describedby="mcp-port-hint" aria-invalid={portInvalid} disabled={busy}
                                         value={portDraft ?? status.port} onChange={(event) => { setPortDraft(event.target.value); setPortInvalid(false); }}
-                                        className="w-28 bg-background border border-border rounded-md px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                                        className="w-28 px-3 py-2 text-sm bg-well shadow-soft-inset rounded-control focus-ring" />
                                     <button type="submit" className={actionClass} disabled={busy || portDraft === null || portDraft === String(status.port)}>{t('common.save')}</button>
                                 </div>
-                                {portInvalid && <p className="text-sm text-destructive" role="alert">{t('settings.mcpError.invalid_port')}</p>}
+                                {portInvalid && <p className="text-sm text-danger-text" role="alert">{t('settings.mcpError.invalid_port')}</p>}
                             </form>
                         </div>
                     </SettingsDisclosureCard>}

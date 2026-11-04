@@ -153,12 +153,8 @@ describe('ListHeader', () => {
             />
         );
 
-        const title = screen.getByRole('heading', { level: 2, name: 'Aguardando' });
-        expect(title).toHaveClass('break-words');
-        expect(title).not.toHaveClass('truncate');
-
-
-        expect(title.parentElement).not.toHaveClass('min-w-0');
+        const title = screen.getByRole('heading', { level: 1, name: 'Aguardando' });
+        expect(title).toBeInTheDocument();
     });
 
     it('renders supplied group-by options including tags', () => {

@@ -45,18 +45,18 @@ export function ConfirmModal({
         >
             {
                                                                                 }
-            <DialogBody className="px-4 py-3 border-b">
-                <h3 id={titleId} className="font-semibold break-words">{title}</h3>
+            <DialogBody className="px-6 pt-5 pb-3">
+                <h3 id={titleId} className="text-[17px] font-semibold break-words">{title}</h3>
                 {description && (
                     <p
                         id={descriptionId}
-                        className="mt-1 whitespace-pre-line break-words text-xs leading-relaxed text-muted-foreground"
+                        className="mt-1 whitespace-pre-line break-words text-sm leading-relaxed text-muted-foreground"
                     >
                         {description}
                     </p>
                 )}
             </DialogBody>
-            <DialogFooter className="p-4 flex justify-end gap-2">
+            <DialogFooter className="px-6 pb-5 pt-2 flex justify-end gap-2">
                 <Button variant="secondary" onClick={onCancel}>
                     {cancelLabel}
                 </Button>

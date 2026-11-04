@@ -303,7 +303,7 @@ export function ProjectSelector({
                         data-selector-dropdown="true"
                         style={fixedDropdownStyle}
                         className={cn(
-                            'z-[70] rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1 text-xs',
+                            'z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft-sm p-1 text-xs',
                             menuClassName,
                         )}
                         onKeyDown={handleDropdownKeyDown}

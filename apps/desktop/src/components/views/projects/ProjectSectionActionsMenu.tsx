@@ -135,7 +135,7 @@ export function ProjectSectionActionsMenu({
                     ref={panelRef}
                     role="menu"
                     style={menuStyle}
-                    className="z-50 min-w-[200px] overscroll-contain rounded-md border border-border bg-card p-1 shadow-lg"
+                    className="z-50 min-w-[200px] overscroll-contain rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                 >
                     <button
                         type="button"
@@ -172,7 +172,7 @@ export function ProjectSectionActionsMenu({
                     </button>
                     {flow && (
                         <div role="group" aria-label={flow.label}>
-                            <div className="px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                            <div className="px-3 pb-1 pt-2 text-[13px] font-semibold text-muted-foreground">
                                 {flow.label}
                             </div>
                             {([false, true] as const).map((sequential) => (

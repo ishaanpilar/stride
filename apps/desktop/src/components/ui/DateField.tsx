@@ -489,7 +489,7 @@ export function DateField({
                     ref={calendarRef}
                     role="dialog"
                     aria-label={calendarAriaLabel}
-                    className="fixed z-50 flex rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+                    className="fixed z-50 flex rounded-control border border-border bg-popover text-popover-foreground shadow-soft-sm"
                     style={{ top: calendarPosition.top, left: calendarPosition.left }}
                 >
                     <div className="w-72 p-3">

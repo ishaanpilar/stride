@@ -58,12 +58,7 @@ const renderGrouped = (collapsedGroupIds: Set<string>, virtualized: boolean) => 
         expanded: header.getAttribute('aria-expanded'),
 
 
-        cardTokens: ['border-border/40', 'bg-card/30'].filter((token) => (
-            (header.className.includes('bg-card')
-                ? header.className
-                : header.closest('[class*="bg-card"]')?.className ?? ''
-            ).includes(token)
-        )),
+        cardTokens: ['uppercase', 'tracking-wide'].filter((token) => header.className.includes(token)),
     }));
     const titles = Array.from(document.querySelectorAll('[data-task-id]')).map((row) => row.textContent);
     view.unmount();
@@ -82,8 +77,8 @@ describe('GroupedTaskList', () => {
         expect(virtualized.headers.map((header) => header.name)).toEqual(plain.headers.map((header) => header.name));
         expect(virtualized.headers.map((header) => header.expanded)).toEqual(['true', 'true']);
         expect(plain.headers.map((header) => header.cardTokens)).toEqual([
-            ['border-border/40', 'bg-card/30'],
-            ['border-border/40', 'bg-card/30'],
+            [],
+            [],
         ]);
         expect(virtualized.headers.map((header) => header.cardTokens))
             .toEqual(plain.headers.map((header) => header.cardTokens));

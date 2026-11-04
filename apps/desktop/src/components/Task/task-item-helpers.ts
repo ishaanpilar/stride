@@ -5,6 +5,10 @@ import {
     type RecurrenceRule,
     type RecurrenceStrategy,
     getRecurrenceRRuleValue,
+    hasTimeComponent,
+    safeFormatDate,
+    safeParseDate,
+    tFallback,
 } from '@stride/core';
 import { joinDateTime, splitDateTime } from '@stride/core/date-draft';
 
@@ -71,4 +75,26 @@ export function getRecurrenceStrategyValue(recurrence: Task['recurrence']): Recu
         return 'fluid';
     }
     return 'strict';
+}
+
+
+/**
+ * Compact date chip label: "Today", "Tomorrow", "Yesterday" or "Sat, 8 Nov"
+ * (year added when it is not the current year). Timed values append the time.
+ */
+export function formatTaskDateChipLabel(
+    value: string | undefined,
+    t: (key: string) => string,
+    now: Date = new Date(),
+): string {
+    const parsed = safeParseDate(value);
+    if (!parsed || !value) return '';
+    const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const diffDays = Math.round((startOfDay(parsed) - startOfDay(now)) / 86_400_000);
+    let day: string;
+    if (diffDays === 0) day = tFallback(t, 'calendar.today', 'Today');
+    else if (diffDays === 1) day = tFallback(t, 'calendar.tomorrow', 'Tomorrow');
+    else if (diffDays === -1) day = tFallback(t, 'calendar.yesterday', 'Yesterday');
+    else day = safeFormatDate(parsed, parsed.getFullYear() === now.getFullYear() ? 'EEE, d MMM' : 'EEE, d MMM yyyy');
+    return hasTimeComponent(value) ? `${day}, ${safeFormatDate(value, 'p')}` : day;
 }

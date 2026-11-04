@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useLanguage } from '../contexts/language-context';
 import { useUiStore } from '../store/ui-store';
@@ -53,10 +53,10 @@ export function ToastHost() {
                 <div
                     key={toast.id}
                     className={cn(
-                        "min-w-[220px] max-w-[360px] rounded-md border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg flex items-start gap-3 animate-in fade-in slide-in-from-bottom-2",
-                        toast.tone === 'success' && "border-success",
-                        toast.tone === 'error' && "border-destructive",
-                        toast.tone === 'info' && "border-border"
+                        "min-w-[220px] max-w-[360px] rounded-card bg-popover px-4 py-3 text-sm text-popover-foreground shadow-soft flex items-start gap-3 animate-in fade-in slide-in-from-bottom-2",
+                        toast.tone === 'success' && "ring-1 ring-success-fill/40",
+                        toast.tone === 'error' && "ring-1 ring-danger/50",
+                        toast.tone === 'info' && "ring-1 ring-border"
                     )}
                     role="status"
                     aria-live="polite"
@@ -67,6 +67,8 @@ export function ToastHost() {
                         resumeToast(toast.id, 'focus');
                     }}
                 >
+                    {toast.tone === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success-text" aria-hidden="true" />}
+                    {toast.tone === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger-text" aria-hidden="true" />}
                     <span className="flex-1">{toast.message}</span>
                     {toast.action && (
                         <button
@@ -75,7 +77,7 @@ export function ToastHost() {
                                 toast.action?.onClick();
                                 dismissToast(toast.id);
                             }}
-                            className="text-xs font-medium text-primary hover:underline cursor-pointer"
+                            className="rounded-sm text-xs font-semibold text-accent-text hover:underline cursor-pointer focus-ring"
                         >
                             {toast.action.label}
                         </button>
@@ -83,7 +85,7 @@ export function ToastHost() {
                     <button
                         type="button"
                         onClick={() => dismissToast(toast.id)}
-                        className="text-muted-foreground hover:text-foreground cursor-pointer transition-colors -mr-1"
+                        className="rounded-sm text-muted-foreground hover:text-foreground cursor-pointer transition-colors -mr-1 focus-ring"
                         aria-label={dismissText}
                     >
                         <X className="w-3.5 h-3.5" />

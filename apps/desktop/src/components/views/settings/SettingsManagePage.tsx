@@ -59,7 +59,7 @@ function SortableAreaRow({
                 type="button"
                 {...attributes}
                 {...listeners}
-                className="h-8 w-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center shrink-0"
+                className="h-8 w-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0"
                 title={translate('projects.sortAreas')}
             >
                 <GripVertical className="w-4 h-4" />
@@ -85,12 +85,12 @@ function SortableAreaRow({
                         e.currentTarget.blur();
                     }
                 }}
-                className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm min-w-0"
+                className="flex-1 px-2 py-1 text-sm min-w-0 bg-well shadow-soft-inset rounded-control focus-ring"
             />
             <button
                 type="button"
                 onClick={() => onDelete(area.id)}
-                className="text-destructive hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
+                className="text-danger-text hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
                 title={translate('common.delete')}
             >
                 <Trash2 className="w-4 h-4" />
@@ -128,7 +128,7 @@ function SortableViewSectionRow({
                 type="button"
                 {...attributes}
                 {...listeners}
-                className="h-8 w-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center shrink-0"
+                className="h-8 w-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0"
                 title={translate('projects.reorderSections')}
             >
                 <GripVertical className="w-4 h-4" />
@@ -146,12 +146,12 @@ function SortableViewSectionRow({
                         event.currentTarget.blur();
                     }
                 }}
-                className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm min-w-0"
+                className="flex-1 px-2 py-1 text-sm min-w-0 bg-well shadow-soft-inset rounded-control focus-ring"
             />
             <button
                 type="button"
                 onClick={() => onDelete(section.id)}
-                className="text-destructive hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
+                className="text-danger-text hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
                 title={translate('common.delete')}
             >
                 <Trash2 className="w-4 h-4" />
@@ -203,14 +203,14 @@ function NewTokenRow({ kind, onCreate, translate, disabled = false }: {
                     disabled={saving || disabled || failed}
                     aria-invalid={failed}
                     aria-describedby={failed ? `manage-new-${kind}-error` : undefined}
-                    className="min-h-11 min-w-0 flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm"
+                    className="min-h-11 min-w-0 flex-1 px-2 py-1 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                 />
                 <button type="button" onClick={() => void save()} disabled={saving || disabled || !name.trim()}
-                    className="min-h-11 px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+                    className="min-h-11 px-3 py-1.5 rounded-control text-sm btn-gradient focus-ring disabled:opacity-50">
                     {translate(saving ? 'common.loading' : 'common.add')}
                 </button>
             </div>
-            {failed && <p id={`manage-new-${kind}-error`} role="alert" className="text-sm text-destructive">{translate('settings.feedback.saveFailed')}</p>}
+            {failed && <p id={`manage-new-${kind}-error`} role="alert" className="text-sm text-danger-text">{translate('settings.feedback.saveFailed')}</p>}
             {failed && <button type="button" onClick={() => { setName(''); setFailed(false); }} disabled={saving} className="text-sm text-muted-foreground hover:text-foreground">{translate('common.close')}</button>}
         </div>
     );
@@ -253,27 +253,27 @@ function TokenRow({ value, state, disabled, onEdit, onDraft, onSave, onDelete, o
                             if (event.key === 'Escape' && !busy && !state.failed) onCancel();
                         }}
                         autoFocus
-                        className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm min-w-0"
+                        className="flex-1 px-2 py-1 text-sm min-w-0 bg-well shadow-soft-inset rounded-control focus-ring"
                     />
                     <button type="button" disabled={busy || !state.draft.trim()} onClick={onSave}
-                        className="text-primary hover:bg-primary/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
+                        className="text-accent-text hover:bg-primary/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
                         title={translate('common.save')}><Check className="w-4 h-4" /></button>
                     <button type="button" disabled={busy} onClick={onCancel}
-                        className="text-muted-foreground hover:bg-muted h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
+                        className="text-muted-foreground hover:bg-accent h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
                         title={translate(state.failed ? 'common.close' : 'common.cancel')}><X className="w-4 h-4" /></button>
                 </div>
             ) : (
                 <div className="flex items-center gap-2 group">
                     <span className="flex-1 px-2 py-1 text-sm min-w-0 truncate">{value}</span>
                     <button type="button" disabled={busy || state?.failed} onClick={onEdit}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:bg-accent hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
                         title={translate('common.edit')}><Pencil className="w-3.5 h-3.5" /></button>
                     <button type="button" disabled={busy} onClick={onDelete}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive opacity-0 transition-colors hover:bg-destructive/10 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-danger-text opacity-0 transition-colors hover:bg-destructive/10 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
                         title={translate('common.delete')}><Trash2 className="w-4 h-4" /></button>
                 </div>
             )}
-            {state?.failed && <p role="alert" className="text-sm text-destructive">{translate('settings.feedback.saveFailed')}</p>}
+            {state?.failed && <p role="alert" className="text-sm text-danger-text">{translate('settings.feedback.saveFailed')}</p>}
             {state?.failed && !state.editing && <button type="button" onClick={onCancel} className="text-sm text-muted-foreground hover:text-foreground">{translate('common.close')}</button>}
         </>
     );
@@ -334,7 +334,7 @@ function PersonRow({
     const canOpenReferenceLink = isSafePersonReferenceLink(person.referenceLink);
 
     return (
-        <div className="rounded-md border border-border/70 bg-muted/20 p-3">
+        <div className="rounded-md border border-border/70 bg-well p-3">
             <div className="flex items-center gap-2">
                 <input
                     key={`${person.id}-name-${person.updatedAt}`}
@@ -349,13 +349,13 @@ function PersonRow({
                         }
                     }}
                     aria-label={resolveText('people.name', 'Name')}
-                    className="min-w-0 flex-1 bg-background border border-border rounded px-2 py-1 text-sm"
+                    className="min-w-0 flex-1 px-2 py-1 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                 />
                 <button
                     type="button"
                     onClick={() => onReview(person)}
                     aria-label={`${person.name}: ${taskCount} ${translate('common.tasks')} · ${translate('search.title')}`}
-                    className="shrink-0 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="shrink-0 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                     {taskCount} {translate('common.tasks')}
                 </button>
@@ -363,7 +363,7 @@ function PersonRow({
                     type="button"
                     onClick={() => void openReferenceLink()}
                     disabled={!canOpenReferenceLink}
-                    className="text-muted-foreground hover:text-foreground hover:bg-muted h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+                    className="text-muted-foreground hover:text-foreground hover:bg-accent h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
                     title={resolveText('people.openReference', 'Open reference link')}
                 >
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -371,7 +371,7 @@ function PersonRow({
                 <button
                     type="button"
                     onClick={() => onDelete(person.id)}
-                    className="text-destructive hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
+                    className="text-danger-text hover:bg-destructive/10 h-8 w-8 rounded-md transition-colors flex items-center justify-center shrink-0"
                     title={translate('common.delete')}
                 >
                     <Trash2 className="w-4 h-4" />
@@ -384,7 +384,7 @@ function PersonRow({
                     onBlur={(e) => commitNote(e.target.value)}
                     placeholder={resolveText('people.notePlaceholder', 'Note')}
                     aria-label={resolveText('people.note', 'Note')}
-                    className="min-w-0 bg-background border border-border rounded px-2 py-1 text-xs"
+                    className="min-w-0 px-2 py-1 text-xs bg-well shadow-soft-inset rounded-control focus-ring"
                 />
                 <input
                     key={`${person.id}-reference-${person.updatedAt}`}
@@ -392,7 +392,7 @@ function PersonRow({
                     onBlur={(e) => commitReferenceLink(e.target.value)}
                     placeholder={resolveText('people.referencePlaceholder', 'Reference link, including obsidian://')}
                     aria-label={resolveText('people.referenceLink', 'Reference link')}
-                    className="min-w-0 bg-background border border-border rounded px-2 py-1 text-xs"
+                    className="min-w-0 px-2 py-1 text-xs bg-well shadow-soft-inset rounded-control focus-ring"
                 />
             </div>
         </div>
@@ -416,12 +416,12 @@ function ManageSection({
     const [open, setOpen] = useState(defaultOpen);
 
     return (
-        <div className="rounded-lg border border-border bg-card overflow-visible">
+        <div className="overflow-visible soft-surface rounded-card">
             <button
                 type="button"
                 data-settings-key={settingsKey}
                 onClick={() => setOpen((prev) => !prev)}
-                className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-accent transition-colors"
             >
                 {open ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
                 <span className="font-medium text-sm">{title}</span>
@@ -612,7 +612,7 @@ export function SettingsManagePage({ t: _t, translate, requestConfirmation }: Se
                             <button
                                 type="button"
                                 onClick={handleSortAreasByName}
-                                className="text-xs px-2 py-1 rounded border border-border bg-muted/50 hover:bg-muted"
+                                className="text-xs px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                             >
                                 {translate('projects.sortByName')}
                             </button>
@@ -634,7 +634,7 @@ export function SettingsManagePage({ t: _t, translate, requestConfirmation }: Se
                     </>
                 )}
                 <div className="border-t border-border/50 pt-3 space-y-2">
-                    <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">
+                    <label className="text-xs text-muted-foreground font-medium">
                         {resolveText('areas.new', 'New Area')}
                     </label>
                     <div className="flex items-center gap-2">
@@ -659,19 +659,19 @@ export function SettingsManagePage({ t: _t, translate, requestConfirmation }: Se
                                 }
                             }}
                             placeholder={resolveText('areas.namePlaceholder', 'Area name')}
-                            className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm"
+                            className="flex-1 px-2 py-1 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                         <button
                             type="button"
                             onClick={() => void handleCreateArea()}
                             disabled={isCreatingArea || !newAreaName.trim() || newAreaNameTaken}
-                            className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            className="px-3 py-1.5 rounded-control text-sm btn-gradient focus-ring disabled:opacity-50"
                         >
                             {isCreatingArea ? resolveText('common.loading', 'Loading...') : resolveText('areas.create', 'Create')}
                         </button>
                     </div>
                     {newAreaNameTaken && (
-                        <p className="text-xs text-destructive">
+                        <p className="text-xs text-danger-text">
                             {resolveText('areas.nameExists', 'An area with this name already exists.')}
                         </p>
                     )}
@@ -703,7 +703,7 @@ export function SettingsManagePage({ t: _t, translate, requestConfirmation }: Se
                     />
                 ))}
                 <div className="border-t border-border/50 pt-3 space-y-2">
-                    <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">
+                    <label className="text-xs text-muted-foreground font-medium">
                         {resolveText('people.new', 'New Person')}
                     </label>
                     <div className="flex items-center gap-2">
@@ -719,13 +719,13 @@ export function SettingsManagePage({ t: _t, translate, requestConfirmation }: Se
                                 }
                             }}
                             placeholder={resolveText('people.namePlaceholder', 'Person name')}
-                            className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm"
+                            className="flex-1 px-2 py-1 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                         <button
                             type="button"
                             onClick={() => void handleCreatePerson()}
                             disabled={isCreatingPerson || !newPersonName.trim()}
-                            className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            className="px-3 py-1.5 rounded-control text-sm btn-gradient focus-ring disabled:opacity-50"
                         >
                             {isCreatingPerson ? resolveText('common.loading', 'Loading...') : resolveText('people.create', 'Create')}
                         </button>

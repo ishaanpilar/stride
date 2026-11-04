@@ -302,23 +302,23 @@ describe('InboxProcessingQuickPanel draft editing', () => {
     it('derives the selected contexts from the typed token text', () => {
         const { getByLabelText, getByRole } = render(<QuickPanelHarness />);
 
-        expect(getByRole('button', { name: '@home' })).not.toHaveClass('bg-primary');
+        expect(getByRole('button', { name: '@home' })).not.toHaveClass('bg-accent-soft');
         fireEvent.change(getByLabelText('taskEdit.contextsLabel'), { target: { value: '@home' } });
 
-        expect(getByRole('button', { name: '@home' })).toHaveClass('bg-primary');
-        expect(getByRole('button', { name: '@office' })).not.toHaveClass('bg-primary');
+        expect(getByRole('button', { name: '@home' })).toHaveClass('bg-accent-soft');
+        expect(getByRole('button', { name: '@office' })).not.toHaveClass('bg-accent-soft');
     });
 
     it('clears an optional field when its chip is toggled off', () => {
         const { getByRole } = render(<QuickPanelHarness />);
 
         fireEvent.click(getByRole('button', { name: 'priority.high' }));
-        expect(getByRole('button', { name: 'priority.high' })).toHaveClass('bg-primary');
+        expect(getByRole('button', { name: 'priority.high' })).toHaveClass('bg-accent-soft');
         expect(getByRole('button', { name: 'priority.high' }).querySelector('[data-priority-flag="high"]'))
             .toHaveAttribute('stroke', '#f97316');
 
         fireEvent.click(getByRole('button', { name: 'priority.high' }));
-        expect(getByRole('button', { name: 'priority.high' })).not.toHaveClass('bg-primary');
+        expect(getByRole('button', { name: 'priority.high' })).not.toHaveClass('bg-accent-soft');
     });
 
     it('offers Area and Project controls before filing a Someday item', () => {
@@ -416,7 +416,7 @@ describe('InboxProcessingWizard draft editing', () => {
         expect((getByLabelText('taskEdit.energyLevel') as HTMLSelectElement).value).toBe('high');
 
         fireEvent.click(getByRole('button', { name: 'priority.urgent' }));
-        expect(getByRole('button', { name: 'priority.urgent' })).toHaveClass('bg-primary');
+        expect(getByRole('button', { name: 'priority.urgent' })).toHaveClass('bg-accent-soft');
     });
 
     it('offers Area and Project controls before confirming Someday', () => {

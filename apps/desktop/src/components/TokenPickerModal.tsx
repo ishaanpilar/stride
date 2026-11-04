@@ -78,8 +78,8 @@ export function TokenPickerModal({
             overlayClassName="pt-[16vh]"
             panelClassName="max-w-lg max-h-[70vh]"
         >
-            <DialogHeader className="border-b px-4 py-3">
-                <h3 id={titleId} className="font-semibold">{title}</h3>
+            <DialogHeader className="px-5 pt-5 pb-1">
+                <h3 id={titleId} className="text-[17px] font-semibold">{title}</h3>
                 {description && (
                     <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">
                         {description}
@@ -115,9 +115,9 @@ export function TokenPickerModal({
                         }
                     }}
                     placeholder={placeholder}
-                    className="w-full rounded-lg border border-border bg-card px-3 py-2 shadow-sm transition-colors focus:border-transparent focus:ring-2 focus:ring-primary"
+                    className="w-full rounded-lg bg-well shadow-soft-inset px-3 py-2 transition-colors focus-ring"
                 />
-                <div className="flex max-h-64 flex-wrap gap-2 overflow-y-auto rounded-lg border border-border/80 bg-card/60 p-3">
+                <div className="flex max-h-64 flex-wrap gap-2 overflow-y-auto rounded-card bg-well shadow-soft-inset p-3">
                     {filteredTokens.length > 0 ? filteredTokens.map((token) => {
                         const isActive = selectedTokens.includes(token);
                         return (
@@ -129,7 +129,7 @@ export function TokenPickerModal({
                                 className={cn(
                                     'rounded-full border px-3 py-1.5 text-xs transition-colors',
                                     isActive
-                                        ? 'border-primary bg-primary/10 text-primary'
+                                        ? 'border-primary bg-accent-soft text-accent-text'
                                         : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'
                                 )}
                             >
@@ -146,7 +146,7 @@ export function TokenPickerModal({
                     <button
                         type="button"
                         onClick={onCancel}
-                        className="rounded-md bg-muted px-3 py-1.5 text-sm hover:bg-muted/80"
+                        className="rounded-md bg-muted px-3 py-1.5 text-sm hover:bg-accent"
                     >
                         {cancelLabel}
                     </button>
@@ -158,7 +158,7 @@ export function TokenPickerModal({
                             }
                         }}
                         disabled={!canConfirm}
-                        className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-control btn-gradient px-3 py-1.5 text-sm focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         {confirmLabel}
                     </button>

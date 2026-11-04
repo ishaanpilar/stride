@@ -53,15 +53,15 @@ export function AppAnnouncementModal({
             overlayClassName="z-[60] px-4 pt-[18vh]"
 
 
-            panelClassName="max-h-[78vh] rounded-lg border-border"
+            panelClassName="max-h-[78vh] rounded-sheet"
         >
-            <DialogBody className="flex items-start justify-between gap-4 border-b border-border px-4 py-3">
+            <DialogBody className="flex items-start justify-between gap-4 px-4 py-3">
                 <div className="flex min-w-0 items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-text">
                         <Megaphone className="h-4 w-4" aria-hidden="true" />
                     </div>
                     <div className="min-w-0">
-                        <h3 id={titleId} className="text-base font-semibold leading-6">
+                        <h3 id={titleId} className="text-[17px] font-semibold leading-6">
                             {announcement.title}
                         </h3>
                         <p id={bodyId} className="mt-1 text-sm leading-6 text-muted-foreground">
@@ -71,7 +71,7 @@ export function AppAnnouncementModal({
                 </div>
                 <button
                     type="button"
-                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Dismiss announcement"
                     onClick={onDismiss}
                 >

@@ -220,7 +220,7 @@ export function SettingsFeedbackModal({
                             {t.feedbackGitHubDesc.split('{channel}')[0]}
                             <button
                                 type="button"
-                                className="inline rounded-sm text-primary underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="inline rounded-sm text-accent-text underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 onClick={() => onOpenGitHub(category)}
                             >
                                 {category === 'other' ? t.feedbackOpenGitHubDiscussion : t.feedbackOpenGitHubIssue}
@@ -231,7 +231,7 @@ export function SettingsFeedbackModal({
                 </div>
                 <button
                     type="button"
-                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     aria-label={t.close}
                     onClick={onClose}
                 >
@@ -251,7 +251,7 @@ export function SettingsFeedbackModal({
             ) : (
                 <DialogBody className="space-y-4 p-4">
                     <div className="space-y-2">
-                        <label id={categoryLabelId} className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <label id={categoryLabelId} className="text-xs font-semibold text-muted-foreground">
                             {t.feedbackCategory}
                         </label>
                         <div
@@ -270,8 +270,8 @@ export function SettingsFeedbackModal({
                                         className={cn(
                                             'flex min-h-10 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors',
                                             selected
-                                                ? 'border-primary bg-primary/10 text-primary'
-                                                : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground',
+                                                ? 'border-primary bg-accent-soft text-accent-text'
+                                                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
                                         )}
                                         onClick={() => setCategory(item)}
                                     >
@@ -285,7 +285,7 @@ export function SettingsFeedbackModal({
 
                     {category === 'bug' && (
                         <label className="block space-y-2">
-                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            <span className="text-xs font-semibold text-muted-foreground">
                                 {t.feedbackWhere}
                             </span>
                             <select
@@ -295,7 +295,7 @@ export function SettingsFeedbackModal({
                                     setError(null);
                                 }}
                                 aria-label={t.feedbackWhere}
-                                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-primary/40"
+                                className="h-10 w-full px-3 text-sm text-foreground outline-none bg-well shadow-soft-inset rounded-control focus-ring"
                             >
                                 <option value="">{t.feedbackWherePlaceholder}</option>
                                 {feedbackLocations.map((location) => (
@@ -308,7 +308,7 @@ export function SettingsFeedbackModal({
                     )}
 
                     <label className="block space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <span className="text-xs font-semibold text-muted-foreground">
                             {t.feedbackMessage}
                         </span>
                         <textarea
@@ -320,12 +320,12 @@ export function SettingsFeedbackModal({
                             }}
                             placeholder={messagePlaceholders[category]}
                             maxLength={4000}
-                            className="min-h-32 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/40"
+                            className="min-h-32 w-full resize-y px-3 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </label>
 
                     <label className="block space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <span className="text-xs font-semibold text-muted-foreground">
                             {t.feedbackEmail}
                         </span>
                         <input
@@ -337,12 +337,12 @@ export function SettingsFeedbackModal({
                                 setError(null);
                             }}
                             placeholder={t.feedbackEmailPlaceholder}
-                            className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/40"
+                            className="h-10 w-full px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </label>
 
                     {category === 'bug' && (
-                        <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card px-3 py-3">
+                        <div className="flex items-start justify-between gap-4 px-3 py-3 soft-surface rounded-card">
                             <div>
                                 <span className="block text-sm font-medium">{t.feedbackIncludeDiagnostics}</span>
                                 <span
@@ -362,14 +362,14 @@ export function SettingsFeedbackModal({
                     )}
 
                     {!isConfigured && (
-                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger-text">
                             <div className="font-medium">{t.feedbackUnavailable}</div>
                             <div className="mt-1 text-xs leading-5">{t.feedbackUnavailableDesc}</div>
                         </div>
                     )}
 
                     {visibleError && (
-                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-danger-text">
                             {visibleError}
                         </div>
                     )}

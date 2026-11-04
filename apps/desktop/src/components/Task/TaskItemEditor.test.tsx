@@ -329,7 +329,7 @@ describe('TaskItemEditor', () => {
 
         const doneButton = getByRole('button', { name: 'Done' });
         expect(doneButton).toHaveAttribute('aria-pressed', 'false');
-        expect(doneButton).toHaveClass('focus-visible:ring-2');
+        expect(doneButton).toHaveClass('focus-ring');
         expect(doneButton).not.toHaveClass('focus:ring-2');
         fireEvent.click(doneButton);
 
@@ -379,7 +379,7 @@ describe('TaskItemEditor', () => {
             'text-lg',
             'font-semibold',
             'text-foreground',
-            'focus-visible:ring-2'
+            'focus-ring'
         );
     });
 

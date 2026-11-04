@@ -4,7 +4,8 @@ import * as core from '@stride/core';
 import { act, render, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TaskItem } from '../components/TaskItem';
-import { Area, Project, Section, Task, configureDateFormatting, safeFormatDate, useTaskStore } from '@stride/core';
+import { formatTaskDateChipLabel } from './Task/task-item-helpers';
+import { Area, Project, Section, Task, configureDateFormatting, useTaskStore } from '@stride/core';
 import { LanguageProvider } from '../contexts/language-context';
 import { useUiStore } from '../store/ui-store';
 import { holdSyncSave } from '../test/hold-sync-save';
@@ -1424,7 +1425,7 @@ describe('TaskItem', () => {
                 <TaskItem task={taskWithDueDate} compactMetaEnabled />
             </LanguageProvider>
         );
-        expect(getByText(safeFormatDate('2026-03-20', 'P'))).toBeInTheDocument();
+        expect(getByText(formatTaskDateChipLabel('2026-03-20', (key) => key))).toBeInTheDocument();
     });
 
     it('opens the task quick actions menu on right-click', async () => {

@@ -45,7 +45,7 @@ export function SettingsUpdateModal({
             labelledBy={titleId}
 
             closeOnBackdrop={false}
-            panelClassName="max-w-lg mx-4 max-h-[80vh] bg-card rounded-lg border-border shadow-xl"
+            panelClassName="max-w-lg mx-4 max-h-[80vh]"
         >
             <DialogHeader className="p-6 border-b border-border">
                 <h3 id={titleId} className="text-xl font-semibold text-success flex items-center gap-2">{t.updateAvailable}</h3>
@@ -55,7 +55,7 @@ export function SettingsUpdateModal({
             </DialogHeader>
             <DialogBody className="p-6 flex-1">
                 <h4 className="font-medium mb-2">{t.changelog}</h4>
-                <div className="bg-muted/50 rounded-md p-4 text-sm whitespace-pre-wrap max-h-60 overflow-y-auto">
+                <div className="bg-well rounded-md p-4 text-sm whitespace-pre-wrap max-h-60 overflow-y-auto">
                     {updateInfo.releaseNotes || t.noChangelog}
                 </div>
                 {recommendedDownload && (
@@ -83,7 +83,7 @@ export function SettingsUpdateModal({
                 <button
                     onClick={onClose}
                     disabled={isDownloading}
-                    className="px-4 py-2 rounded-md text-sm font-medium bg-muted hover:bg-muted/80 transition-colors"
+                    className="px-4 py-2 rounded-md text-sm font-medium bg-card border border-border shadow-soft-sm hover:bg-accent transition-colors"
                 >
                     {t.later}
                 </button>

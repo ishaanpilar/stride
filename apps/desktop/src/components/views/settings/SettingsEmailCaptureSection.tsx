@@ -156,7 +156,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
     return (
         <>
         <SettingsGmailCaptureSection isTauri={isTauri} showSaved={showSaved} />
-        <div className="bg-card border border-border rounded-lg">
+        <div className="soft-surface rounded-card">
             <div className="p-4 flex items-start justify-between gap-4">
                 <div className="min-w-0 flex-1 space-y-2">
                     <button data-settings-key="emailCapture" data-settings-section="emailCapture"
@@ -175,7 +175,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                         href={getDocsGuideUrl('power-users/email-capture', language)}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                        className="inline-flex items-center gap-1 text-sm font-medium text-accent-text hover:underline"
                     >
                         {t.emailCaptureGuideTitle}
                         <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
@@ -197,7 +197,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                                 aria-label={t.emailCaptureHost}
                                 onChange={(event) => setHost(event.target.value)}
                                 placeholder="imap.gmail.com"
-                                className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                                className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                             />
                         </SettingField>
                         <SettingField settingsKey="emailCapturePort" title={t.emailCapturePort}>
@@ -208,7 +208,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                                 onChange={(event) => setPortText(event.target.value)}
                                 min={1}
                                 max={65535}
-                                className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                                className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                             />
                         </SettingField>
                     </div>
@@ -221,7 +221,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                             onChange={(event) => setUsername(event.target.value)}
                             placeholder="you@example.com"
                             autoComplete="off"
-                            className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                            className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </SettingField>
 
@@ -233,7 +233,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                             onChange={(event) => setPassword(event.target.value)}
                             placeholder={hasPassword ? '••••••••' : ''}
                             autoComplete="new-password"
-                            className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                            className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                         <p className="text-xs text-muted-foreground">
                             {hasPassword ? t.emailCapturePasswordStored : t.emailCapturePasswordHint}
@@ -247,7 +247,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                             aria-label={t.emailCaptureFolder}
                             onChange={(event) => setFolder(event.target.value)}
                             placeholder={DEFAULT_EMAIL_CAPTURE_FOLDER}
-                            className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                            className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                         <p className="text-xs text-muted-foreground">{t.emailCaptureFolderHint}</p>
                     </SettingField>
@@ -273,7 +273,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                                 type="button"
                                 onClick={handleRemove}
                                 disabled={isSaving || !host.trim()}
-                                className="px-4 py-2 bg-muted text-muted-foreground rounded-md text-sm font-medium hover:bg-muted/80 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="px-4 py-2 bg-muted text-muted-foreground rounded-md text-sm font-medium hover:bg-accent whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {t.emailCaptureRemove}
                             </button>
@@ -289,7 +289,7 @@ export function SettingsEmailCaptureSection({ t, isTauri, showSaved }: SettingsE
                                 type="button"
                                 onClick={handleSave}
                                 disabled={isSaving || !isTauri}
-                                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 whitespace-nowrap disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed"
+                                className="px-4 py-2 btn-gradient rounded-control text-sm font-medium focus-ring whitespace-nowrap disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed"
                             >
                                 {t.emailCaptureSave}
                             </button>

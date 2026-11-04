@@ -107,7 +107,7 @@ export function ProjectDetailsFields({
             >
             <div data-project-details-grid className="grid grid-cols-1 gap-x-2 gap-y-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
                 {onColorChange && <div className="min-w-0 space-y-1">
-                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{resolveText('projects.color', 'Project color')}</div>
+                    <div className="text-[13px] font-semibold text-muted-foreground">{resolveText('projects.color', 'Project color')}</div>
                     <fieldset disabled={colorSaving} className="flex items-center gap-2">
                         <AreaColorPicker value={project.colorOverride ?? undefined} onChange={(value) => { void saveColor(value ?? null); }}
                             title={resolveText('projects.color', 'Project color')}
@@ -122,14 +122,14 @@ export function ProjectDetailsFields({
                     </div>}
                 </div>}
                 <div className="min-w-0 space-y-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <Signal className="h-3.5 w-3.5" />
                         {t('projects.statusLabel')}
                     </label>
                     <select
                         value={status}
                         onChange={(e) => onChangeStatus(e.target.value as Project['status'])}
-                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        className="h-8 w-full rounded-control bg-well px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                         disabled={status === 'archived'}
                     >
                         <option value="active">{t('status.active')}</option>
@@ -139,7 +139,7 @@ export function ProjectDetailsFields({
                 </div>
 
                 <div className="min-w-0 space-y-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <ListOrdered className="h-3.5 w-3.5" />
                         {resolvedSequenceModeLabel}
                     </label>
@@ -152,7 +152,7 @@ export function ProjectDetailsFields({
                             : flowMode === 'perSection'
                                 ? resolveText('projects.perSectionTooltip', 'Per section: each section is Parallel or Sequential, chosen from its menu.')
                                 : t('projects.parallelTooltip')}
-                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                        className="h-8 w-full rounded-control bg-well px-2 text-sm text-foreground"
                     >
                         <option value="parallel">{t('projects.parallel')}</option>
                         <option value="sequential">{t('projects.sequential')}</option>
@@ -162,14 +162,14 @@ export function ProjectDetailsFields({
 
                 {flowMode === 'sequential' && (
                     <div className="min-w-0 space-y-1">
-                        <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                        <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                             <ListOrdered className="h-3.5 w-3.5" />
                             {resolveText('projects.sequentialScope', 'Sequential Scope')}
                         </label>
                         <select
                             value={resolvedSequentialScope}
                             onChange={(e) => onSequentialScopeChange(e.target.value as Project['sequentialScope'])}
-                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                            className="h-8 w-full rounded-control bg-well px-2 text-sm text-foreground"
                         >
                             <option value="project">
                                 {resolveText('projects.sequentialAcrossSections', 'Across sections')}
@@ -182,7 +182,7 @@ export function ProjectDetailsFields({
                 )}
 
                 <div className="min-w-0 space-y-1 sm:col-span-2 xl:col-span-2 2xl:col-span-2">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <FolderOpenDot className="h-3.5 w-3.5" />
                         {t('projects.areaLabel')}
                     </label>
@@ -191,7 +191,7 @@ export function ProjectDetailsFields({
                             key={`${project.id}-area`}
                             value={selectedAreaId}
                             onChange={(e) => onAreaChange(e.target.value)}
-                            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                            className="h-8 min-w-0 flex-1 rounded-control bg-well px-2 text-sm text-foreground"
                         >
                             <option value={noAreaId}>{t('projects.noArea')}</option>
                             {sortedAreas.map((area) => (
@@ -203,7 +203,7 @@ export function ProjectDetailsFields({
                         <button
                             type="button"
                             onClick={onNewArea}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-control bg-well text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
                             title={t('projects.create')}
                             aria-label={t('projects.create')}
                         >
@@ -212,7 +212,7 @@ export function ProjectDetailsFields({
                         <button
                             type="button"
                             onClick={onManageAreas}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-control bg-well text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
                             title={t('projects.manageAreas')}
                             aria-label={t('projects.manageAreas')}
                         >
@@ -222,7 +222,7 @@ export function ProjectDetailsFields({
                 </div>
 
                 <div className="min-w-0 space-y-1 sm:col-span-2 xl:col-span-2 2xl:col-span-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <Tags className="h-3.5 w-3.5" />
                         {t('taskEdit.tagsLabel')}
                     </label>
@@ -242,12 +242,12 @@ export function ProjectDetailsFields({
                             }
                         }}
                         placeholder="#feature, #client"
-                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                        className="h-8 w-full rounded-control bg-well px-2 text-sm text-foreground"
                     />
                 </div>
 
                 <div className="min-w-0 space-y-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <CalendarRange className="h-3.5 w-3.5" />
                         {t('taskEdit.startDateLabel')}
                     </label>
@@ -259,7 +259,7 @@ export function ProjectDetailsFields({
                         selectedDate={safeParseDate(startDateValue)}
                         dateFormatSetting={dateFormatSetting}
                         nativeDateInputLocale={nativeDateInputLocale}
-                        dateInputClassName="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                        dateInputClassName="h-8 rounded-control bg-well px-2 text-sm text-foreground"
                         className="max-w-none"
                         hasValue={Boolean(startDateValue)}
                         onDateChange={onStartDateChange}
@@ -268,7 +268,7 @@ export function ProjectDetailsFields({
                 </div>
 
                 <div className="min-w-0 space-y-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <Calendar className="h-3.5 w-3.5" />
                         {t('taskEdit.dueDateLabel')}
                     </label>
@@ -280,7 +280,7 @@ export function ProjectDetailsFields({
                         selectedDate={safeParseDate(dueDateValue)}
                         dateFormatSetting={dateFormatSetting}
                         nativeDateInputLocale={nativeDateInputLocale}
-                        dateInputClassName="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                        dateInputClassName="h-8 rounded-control bg-well px-2 text-sm text-foreground"
                         className="max-w-none"
                         hasValue={Boolean(dueDateValue)}
                         onDateChange={onDueDateChange}
@@ -289,7 +289,7 @@ export function ProjectDetailsFields({
                 </div>
 
                 <div className="min-w-0 space-y-1">
-                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5 truncate">
+                    <label className="text-[13px] text-muted-foreground font-semibold flex items-center gap-1.5 truncate">
                         <CalendarClock className="h-3.5 w-3.5" />
                         {t('projects.reviewAt')}
                     </label>
@@ -299,7 +299,7 @@ export function ProjectDetailsFields({
                         defaultValue={reviewAtValue}
                         onBlur={(e) => onReviewAtChange(e.target.value)}
                         aria-describedby="project-review-date-hint"
-                        className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                        className="h-8 w-full rounded-control bg-well px-2 text-sm text-foreground"
                     />
                 </div>
             </div>

@@ -104,13 +104,13 @@ export function ShareCardDialog({
             closeOnEscape={!busy}
             panelClassName="mx-4 max-w-4xl bg-card"
         >
-            <DialogHeader className="flex items-center justify-between border-b border-border px-5 py-4">
+            <DialogHeader className="flex items-center justify-between px-5 py-4">
                 <h2
                     id="share-card-dialog-title"
-                    className="flex items-center gap-2 text-base font-semibold"
+                    className="flex items-center gap-2 text-[17px] font-semibold"
                 >
                     <ImageIcon
-                        className="h-4 w-4 text-primary"
+                        className="h-4 w-4 text-accent-text"
                         aria-hidden="true"
                     />
                     {t('shareCard.title')}
@@ -165,7 +165,7 @@ export function ShareCardDialog({
                             {t('shareCard.styleLabel')}
                         </span>
                         <div
-                            className="grid grid-cols-3 gap-1 rounded-lg bg-muted/60 p-1"
+                            className="grid grid-cols-3 gap-1 rounded-control bg-well shadow-soft-inset p-1"
                             role="group"
                             aria-label={t('shareCard.styleLabel')}
                         >
@@ -181,9 +181,9 @@ export function ShareCardDialog({
                                             setMessage(null);
                                             setStyle(option.id);
                                         }}
-                                        className={`min-h-11 rounded-md px-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
+                                        className={`min-h-11 rounded-lg px-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                                             selected
-                                                ? 'bg-card text-foreground shadow-sm'
+                                                ? 'bg-card text-foreground shadow-soft-sm'
                                                 : 'text-muted-foreground hover:bg-card/60 hover:text-foreground'
                                         }`}
                                     >
@@ -215,7 +215,7 @@ export function ShareCardDialog({
                             }}
                             placeholder={t('shareCard.reflectionPlaceholder')}
                             rows={5}
-                            className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2.5 text-sm font-normal leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                            className="w-full resize-none rounded-control bg-well shadow-soft-inset px-3 py-2.5 text-sm font-normal leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                         />
                         {!reflection.trim() && (
                             <p className="text-xs leading-4 text-muted-foreground">
@@ -240,7 +240,7 @@ export function ShareCardDialog({
                             <span
                                 className={
                                     errorMessage === t('shareCard.error')
-                                        ? 'text-destructive'
+                                        ? 'text-danger-text'
                                         : 'text-muted-foreground'
                                 }
                             >
@@ -251,7 +251,7 @@ export function ShareCardDialog({
                 </div>
             </DialogBody>
 
-            <DialogFooter className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/20 px-5 py-4">
+            <DialogFooter className="flex flex-wrap items-center justify-end gap-2 bg-well px-5 py-4">
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
                     {t('shareCard.close')}
                 </Button>

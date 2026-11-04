@@ -173,7 +173,7 @@ function SuggestionList({
     return (
         <div
             role="listbox"
-            className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-lg"
+            className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-control border border-border bg-popover text-popover-foreground shadow-soft"
         >
             {suggestions.map((suggestion, index) => (
                 <button
@@ -408,7 +408,7 @@ function ToggleTokenField({
                     }}
                     onBlur={() => setFocused(false)}
                     placeholder={placeholder}
-                    className="text-xs bg-muted/50 border border-border rounded px-2 py-1 w-full text-foreground placeholder:text-muted-foreground"
+                    className="text-xs bg-well rounded-control focus-ring px-2 py-1 w-full text-foreground placeholder:text-muted-foreground"
                 />
                 <SuggestionList
                     activeIndex={activeIndex}
@@ -555,12 +555,12 @@ function AutocompleteTextField({
                     onFocus={() => setFocused(true)}
                     onBlur={() => setFocused(false)}
                     placeholder={placeholder}
-                    className="text-xs bg-muted/50 border border-border rounded px-2 py-1 w-full text-foreground"
+                    className="text-xs bg-well rounded-control focus-ring px-2 py-1 w-full text-foreground"
                 />
                 {optionCount > 0 && (
                     <div
                         role="listbox"
-                        className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-lg"
+                        className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-control border border-border bg-popover text-popover-foreground shadow-soft"
                     >
                         {suggestions.map((suggestion, index) => (
                             <button
@@ -812,7 +812,7 @@ export function TimeEstimateField({
                     }
                     onChange(next as TimeEstimate | '');
                 }}
-                className="text-xs bg-muted/50 border border-border rounded px-2 py-1 w-full text-foreground"
+                className="text-xs bg-well rounded-control focus-ring px-2 py-1 w-full text-foreground"
             >
                 <option value="">{t('common.none')}</option>
                 {
@@ -842,7 +842,7 @@ export function TimeEstimateField({
                     }}
                     placeholder="2h30"
                     aria-label={`${t('task.aria.timeEstimate')} custom`}
-                    className="text-xs bg-muted/50 border border-border rounded px-2 py-1 w-full text-foreground"
+                    className="text-xs bg-well rounded-control focus-ring px-2 py-1 w-full text-foreground"
                 />
             )}
         </div>
@@ -939,7 +939,7 @@ export function TimeSpentField({
                     onChange(Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined);
                 }}
                 placeholder={t('taskEdit.timeSpentPlaceholder')}
-                className="text-xs bg-muted/50 border border-border rounded px-2 py-1 w-full text-foreground placeholder:text-muted-foreground"
+                className="text-xs bg-well rounded-control focus-ring px-2 py-1 w-full text-foreground placeholder:text-muted-foreground"
             />
         </div>
     );

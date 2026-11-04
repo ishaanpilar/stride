@@ -1,4 +1,5 @@
 import { useMemo, useCallback, useEffect, useState, useRef } from 'react';
+import { ViewHeader } from '../ui/ViewHeader';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ErrorBoundary } from '../ErrorBoundary';
 import {
@@ -213,16 +214,11 @@ export function SearchView({ savedSearchId, onDelete }: SearchViewProps) {
         <ErrorBoundary>
             <div className={cn("flex flex-col gap-4", shouldVirtualize && "h-full min-h-0")}>
             <header className="flex items-center justify-between">
-                <div className="space-y-1">
-                    <h2 className="text-2xl font-bold tracking-tight">
-                        {savedSearch?.name || t('search.savedSearches')}
-                    </h2>
-                    {query && (
-                        <p className="text-sm text-muted-foreground">
-                            {query}
-                        </p>
-                    )}
-                </div>
+                <ViewHeader
+                    className="min-w-0"
+                    title={savedSearch?.name || t('search.savedSearches')}
+                    count={query || undefined}
+                />
                 {savedSearch && (
                     <div className="flex items-center gap-2">
                         <SortBySelect
@@ -240,20 +236,20 @@ export function SearchView({ savedSearchId, onDelete }: SearchViewProps) {
                             data-task-selection-toggle
                             onClick={toggleSelectionMode}
                             className={cn(
-                                "text-xs px-3 py-1 rounded-md border transition-colors",
+                                "h-8 rounded-control border px-3 text-[13px] font-medium shadow-soft-sm transition-colors focus-ring",
                                 selectionMode
-                                    ? "bg-primary/10 text-primary border-primary"
-                                    : "bg-muted/50 text-muted-foreground border-border hover:bg-muted hover:text-foreground"
+                                    ? "border-transparent bg-accent-soft text-accent-text"
+                                    : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground"
                             )}
                         >
                             {selectionMode ? t('bulk.exitSelect') : t('bulk.select')}
                         </button>
                         <button
                             onClick={handleDelete}
-                            className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-ring"
                             title={tFallback(t, 'common.delete', 'Delete')}
                         >
-                            <Trash2 className="w-5 h-5" />
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
                         </button>
                     </div>
                 )}

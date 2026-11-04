@@ -1283,27 +1283,27 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
             )}
             panelRef={modalRef}
         >
-                <div className="px-4 py-3 border-b flex items-center justify-between">
-                    <h3 id={titleId} className="font-semibold">{t('nav.addTask')}</h3>
+                <div className="px-5 pt-4 pb-1 flex items-center justify-between">
+                    <h3 id={titleId} className="text-[17px] font-semibold">{t('nav.addTask')}</h3>
                     <button
                         onClick={handleClose}
                         disabled={isSubmitting}
                         tabIndex={-1}
                         aria-label={t('common.close')}
-                        className="text-sm text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-control px-2 py-1 text-[13px] text-muted-foreground hover:bg-accent hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Esc
                     </button>
                 </div>
-                <div className="px-4 pt-4">
-                    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-1">
+                <div className="px-5 pt-3">
+                    <div className="inline-flex rounded-control bg-well shadow-soft-inset p-1">
                         <button
                             type="button"
                             onClick={() => setCaptureMode('text')}
                             disabled={captureModeLocked}
                             className={cn(
-                                'px-3 py-1 text-xs rounded-md transition-colors',
-                                captureMode === 'text' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                                'px-3 py-1 text-xs font-medium rounded-lg transition-colors focus-ring',
+                                captureMode === 'text' ? 'bg-card text-foreground shadow-soft-sm' : 'text-muted-foreground hover:text-foreground',
                                 captureModeLocked && 'cursor-not-allowed opacity-50',
                             )}
                         >
@@ -1315,8 +1315,8 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                             disabled={isSandboxMode() || captureModeLocked}
                             title={isSandboxMode() ? t('sandbox.unavailable') : undefined}
                             className={cn(
-                                'px-3 py-1 text-xs rounded-md transition-colors',
-                                captureMode === 'audio' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                                'px-3 py-1 text-xs font-medium rounded-lg transition-colors focus-ring',
+                                captureMode === 'audio' ? 'bg-card text-foreground shadow-soft-sm' : 'text-muted-foreground hover:text-foreground',
                                 captureModeLocked && 'cursor-not-allowed opacity-50',
                             )}
                         >
@@ -1325,7 +1325,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                     </div>
                 </div>
                 {captureMode === 'text' ? (
-                    <form onSubmit={handleSubmit} className="p-4 space-y-2" aria-busy={isSubmitting}>
+                    <form onSubmit={handleSubmit} className="p-5 space-y-3" aria-busy={isSubmitting}>
                         <div className="relative">
                             <TaskInput
                                 value={value}
@@ -1364,7 +1364,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 }}
                                 placeholder={t('nav.addTask')}
                                 className={cn(
-                                    "w-full rounded-lg border border-border bg-card py-3 pl-4 pr-12 shadow-sm transition-colors focus:border-transparent focus:ring-2 focus:ring-primary",
+                                    "w-full rounded-card bg-well shadow-soft-inset py-3 pl-4 pr-12 transition-colors focus-ring",
                                 )}
                             />
                             {
@@ -1381,7 +1381,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                     setFocusNewTask((current) => !current);
                                 }}
                                 className={cn(
-                                    'absolute right-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                    'absolute right-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-control transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                                     focusNewTask
                                         ? 'text-warning hover:bg-warning/15'
                                         : 'text-muted-foreground/70 hover:text-warning hover:bg-muted/60',
@@ -1411,16 +1411,16 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                             pastedImageAttachmentsRef.current = next;
                                             setPastedImageAttachments(next);
                                             setPastedImageError(null);
-                                        }} className="text-primary underline">{t('attachments.remove')}</button>
+                                        }} className="text-accent-text underline">{t('attachments.remove')}</button>
                                     </div>
                                 ))}
                             </div>
                         ) : null}
                         {pastedImageError ? (
-                            <p className="text-xs text-destructive">{pastedImageError}</p>
+                            <p className="text-xs text-danger-text">{pastedImageError}</p>
                         ) : null}
                         {bulkQuickAddError && !bulkQuickAddLines ? (
-                            <p className="text-xs text-destructive">{bulkQuickAddError}</p>
+                            <p className="text-xs text-danger-text">{bulkQuickAddError}</p>
                         ) : null}
                         {showAreaSelector && (
                             <div className="flex flex-col gap-1">
@@ -1478,7 +1478,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 }}
                                 disabled={isSandboxMode() || isSubmitting}
                                 title={isSandboxMode() ? t('sandbox.unavailable') : undefined}
-                                className="px-3 py-1.5 rounded-md text-sm border border-border bg-background hover:bg-muted/60"
+                                className={'h-9 px-3.5 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent focus-ring'}
                             >
                                 {tFallback(t, 'quickAdd.bulkImportTextFile', 'Import .txt')}
                             </button>
@@ -1487,7 +1487,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 onClick={handleClose}
                                 disabled={isSubmitting}
                                 className={cn(
-                                    'px-3 py-1.5 rounded-md text-sm bg-muted hover:bg-muted/80',
+                                    'h-9 px-3.5 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent focus-ring',
                                     isSubmitting && 'opacity-50 cursor-not-allowed',
                                 )}
                             >
@@ -1503,8 +1503,8 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                     disabled={saveDisabled}
                                     aria-busy={isSubmitting}
                                     className={cn(
-                                        'px-3 py-1.5 rounded-md text-sm border border-border bg-background hover:bg-muted/60',
-                                        saveDisabled && 'opacity-50 cursor-not-allowed hover:bg-background',
+                                        'h-9 px-3.5 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent focus-ring',
+                                        saveDisabled && 'opacity-50 cursor-not-allowed hover:bg-card',
                                     )}
                                 >
                                     {t('quickAdd.saveAndEdit')}
@@ -1516,8 +1516,8 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 disabled={saveDisabled}
                                 aria-busy={isSubmitting}
                                 className={cn(
-                                    'px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90',
-                                    saveDisabled && 'opacity-50 cursor-not-allowed hover:bg-primary',
+                                    'btn-gradient h-9 px-4 rounded-control text-[13px] font-semibold focus-ring',
+                                    saveDisabled && 'opacity-50 cursor-not-allowed ',
                                 )}
                             >
                                 {t('common.save')}
@@ -1539,7 +1539,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 }}
                                 className={cn(
                                     'h-16 w-16 rounded-full flex items-center justify-center text-sm font-medium transition-colors',
-                                    isRecording ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground',
+                                    isRecording ? 'bg-destructive text-destructive-foreground' : 'btn-gradient',
                                     recordingBusy ? 'opacity-70 cursor-not-allowed' : 'hover:opacity-90'
                                 )}
                                 aria-label={audioButtonLabel}
@@ -1559,7 +1559,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 </div>
                             ) : null}
                             {recordingError ? (
-                                <div className="text-xs text-destructive text-center">{recordingError}</div>
+                                <div className="text-xs text-danger-text text-center">{recordingError}</div>
                             ) : null}
                         </div>
                         <div className="flex justify-end gap-2 pt-1">
@@ -1569,7 +1569,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                                 disabled={recordingBusy || isSubmitting}
                                 aria-busy={recordingBusy || isSubmitting}
                                 className={cn(
-                                    'px-3 py-1.5 rounded-md text-sm bg-muted hover:bg-muted/80',
+                                    'h-9 px-3.5 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent focus-ring',
                                     (recordingBusy || isSubmitting) && 'opacity-50 cursor-not-allowed',
                                 )}
                             >
@@ -1591,16 +1591,16 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                 overlayClassName="z-[60] pt-[22vh]"
                 panelClassName="max-h-[70vh]"
             >
-                <DialogBody className="p-4">
-                    <h4 id="quick-add-bulk-title" className="text-sm font-semibold">
+                <DialogBody className="p-5">
+                    <h4 id="quick-add-bulk-title" className="text-[17px] font-semibold">
                         {bulkConfirmTitle}
                     </h4>
                     <p className="mt-1 text-xs text-muted-foreground">
                         {tFallback(t, 'quickAdd.bulkConfirmBody', 'Blank lines will be skipped. Each line uses Quick Add syntax.')}
                     </p>
-                    <div className="mt-3 max-h-48 overflow-auto rounded-md border border-border bg-card text-sm">
+                    <div className="mt-3 max-h-48 overflow-auto rounded-card bg-well text-sm">
                         {bulkPreviewLines.map((line, index) => (
-                            <div key={`${index}:${line}`} className="border-b border-border px-3 py-2 last:border-b-0">
+                            <div key={`${index}:${line}`} className="border-b border-border/60 px-3 py-2 last:border-b-0">
                                 {line}
                             </div>
                         ))}
@@ -1612,7 +1612,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                         ) : null}
                     </div>
                     {bulkQuickAddError ? (
-                        <p className="mt-2 text-xs text-destructive">{bulkQuickAddError}</p>
+                        <p className="mt-2 text-xs text-danger-text">{bulkQuickAddError}</p>
                     ) : null}
                     <div className="mt-4 flex justify-end gap-2">
                         <button
@@ -1623,7 +1623,7 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                             }}
                             disabled={isSubmitting}
                             className={cn(
-                                'px-3 py-1.5 rounded-md text-sm bg-muted hover:bg-muted/80',
+                                'h-9 px-3.5 rounded-control text-[13px] font-medium bg-card text-foreground border border-border shadow-soft-sm hover:bg-accent focus-ring',
                                 isSubmitting && 'opacity-50 cursor-not-allowed',
                             )}
                         >
@@ -1637,8 +1637,8 @@ export function QuickAddModal({ standaloneWindow = false }: QuickAddModalProps) 
                             disabled={isSubmitting}
                             aria-busy={isSubmitting}
                             className={cn(
-                                'px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90',
-                                isSubmitting && 'opacity-50 cursor-not-allowed hover:bg-primary',
+                                'btn-gradient h-9 px-4 rounded-control text-[13px] font-semibold focus-ring',
+                                isSubmitting && 'opacity-50 cursor-not-allowed ',
                             )}
                         >
                             {tFallback(t, 'quickAdd.bulkConfirmCreate', 'Create tasks')}

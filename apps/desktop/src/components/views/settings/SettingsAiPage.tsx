@@ -323,7 +323,7 @@ export function SettingsAiPage({
     return (
         <>
             <div className="space-y-6">
-                <div className="bg-card border border-border rounded-lg">
+                <div className="soft-surface rounded-card">
                 <div className="p-4 flex items-center justify-between gap-4">
                     <button data-settings-key="aiEnable" data-settings-section="aiEnable"
                         type="button"
@@ -347,7 +347,7 @@ export function SettingsAiPage({
                 {aiOpen && (
                     <>
                         <div className="border-t border-border p-4">
-                            <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+                            <div className="p-3 space-y-2 bg-well rounded-card">
                                 <div className="text-sm font-medium">{t.aiUsageTitle}</div>
                                 <ul className="list-disc pl-4 space-y-1 text-xs text-muted-foreground">
                                     <li>{t.aiUsageClarify}</li>
@@ -364,7 +364,7 @@ export function SettingsAiPage({
                                     aria-label={t.aiProvider}
                                     value={providerSelectValue}
                                     onChange={(e) => handleProviderSelect(e.target.value)}
-                                    className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                 >
                                     <option value="deepseek">DeepSeek</option>
                                     <option value="openai">{t.aiProviderOpenAI}</option>
@@ -380,7 +380,7 @@ export function SettingsAiPage({
                                     value={aiModel}
                                     onChange={(e) => onUpdateAISettings({ model: e.target.value })}
                                     list="ai-model-options"
-                                    className="min-w-[200px] text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="min-w-[200px] text-sm text-foreground px-2 py-1 bg-well shadow-soft-inset rounded-control focus-ring"
                                 >
                                 </input>
                                 <datalist id="ai-model-options">
@@ -397,7 +397,7 @@ export function SettingsAiPage({
                                     value={aiCopilotModel}
                                     onChange={(e) => onUpdateAISettings({ copilotModel: e.target.value })}
                                     list="ai-copilot-model-options"
-                                    className="min-w-[200px] text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="min-w-[200px] text-sm text-foreground px-2 py-1 bg-well shadow-soft-inset rounded-control focus-ring"
                                 >
                                 </input>
                                 <datalist id="ai-copilot-model-options">
@@ -413,7 +413,7 @@ export function SettingsAiPage({
                                         aria-label={t.aiReasoning}
                                         value={aiReasoningEffort}
                                         onChange={(e) => onUpdateAISettings({ reasoningEffort: e.target.value as AIReasoningEffort })}
-                                        className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                     >
                                         <option value="low">{t.aiEffortLow}</option>
                                         <option value="medium">{t.aiEffortMedium}</option>
@@ -426,7 +426,7 @@ export function SettingsAiPage({
                                 <SettingField
                                     settingsKey="aiBaseUrl"
                                     title={t.aiBaseUrl}
-                                    className="rounded-lg border border-border bg-muted/30 p-3"
+                                    className="p-3 bg-well rounded-card"
                                 >
                                     <input
                                         type="text"
@@ -434,7 +434,7 @@ export function SettingsAiPage({
                                         value={aiBaseUrl}
                                         onChange={(e) => onUpdateAISettings({ baseUrl: e.target.value })}
                                         placeholder="http://localhost:11434/v1"
-                                        className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="w-full text-sm text-foreground px-2 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                         autoCapitalize="off"
                                         autoCorrect="off"
                                         spellCheck={false}
@@ -452,7 +452,7 @@ export function SettingsAiPage({
                             )}
 
                             {aiProvider === 'openai' && (
-                                <div className="rounded-lg border border-border bg-muted/30">
+                                <div className="bg-well rounded-card">
                                     <button data-settings-key="aiExtraBodyParams"
                                         type="button"
                                         onClick={() => setOpenAIExtraOpen((open) => !open)}
@@ -475,11 +475,11 @@ export function SettingsAiPage({
                                                 value={openAIExtraDraft}
                                                 onChange={(event) => setOpenAIExtraDraft(event.target.value)}
                                                 placeholder={'{\n  "thinking": { "type": "disabled" }\n}'}
-                                                className="min-h-[120px] w-full resize-y rounded border border-border bg-muted/50 px-2 py-2 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                className="min-h-[120px] w-full resize-y px-2 py-2 font-mono text-sm text-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                                                 spellCheck={false}
                                             />
                                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                                <div className={cn('text-xs', openAIExtraError ? 'text-destructive' : 'text-muted-foreground')}>
+                                                <div className={cn('text-xs', openAIExtraError ? 'text-danger-text' : 'text-muted-foreground')}>
                                                     {openAIExtraError ?? t.aiExtraBodyParamsHint}
                                                 </div>
                                                 <button
@@ -509,7 +509,7 @@ export function SettingsAiPage({
                                             <select
                                                 value={String(aiThinkingBudget)}
                                                 onChange={(e) => onUpdateAISettings({ thinkingBudget: Number(e.target.value) })}
-                                                className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                             >
                                                 {anthropicThinkingOptions.map((option) => (
                                                     <option key={option.value} value={String(option.value)}>
@@ -534,7 +534,7 @@ export function SettingsAiPage({
                                         aria-label={t.aiThinkingBudget}
                                         value={String(aiThinkingBudget)}
                                         onChange={(e) => onUpdateAISettings({ thinkingBudget: Number(e.target.value) })}
-                                        className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                     >
                                         <option value="0">{t.aiThinkingOff}</option>
                                         <option value="128">{t.aiThinkingLow}</option>
@@ -556,7 +556,7 @@ export function SettingsAiPage({
                                 value={aiApiKey}
                                 onChange={(e) => onAiApiKeyChange(e.target.value)}
                                 placeholder={t.aiApiKey}
-                                className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="w-full text-sm text-foreground px-2 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                             />
                             <div className="text-xs text-muted-foreground">{t.aiApiKeyHint}</div>
                         </SettingField>
@@ -590,7 +590,7 @@ export function SettingsAiPage({
                                             onChange={(event) => onUpdateAISettings({
                                                 requestTimeoutSeconds: Number(event.target.value) as NonNullable<AiSettings['requestTimeoutSeconds']>,
                                             })}
-                                            className="rounded border border-border bg-muted/50 px-2 py-1 text-sm text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                            className="px-2 py-1 text-sm text-foreground bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                         >
                                             {AI_REQUEST_TIMEOUT_OPTIONS.map((seconds) => (
                                                 <option key={seconds} value={String(seconds)}>
@@ -606,7 +606,7 @@ export function SettingsAiPage({
                 )}
             </div>
 
-            <div className="bg-card border border-border rounded-lg">
+            <div className="soft-surface rounded-card">
                 <div className="p-4 flex items-center justify-between gap-4">
                     <button data-settings-key="speechTitle" data-settings-section="speechTitle"
                         type="button"
@@ -633,7 +633,7 @@ export function SettingsAiPage({
                             <select
                                 value={speechProvider}
                                 onChange={(e) => onSpeechProviderChange(e.target.value as SpeechProvider)}
-                                className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                             >
                                 <option value="openai">{t.aiProviderOpenAI}</option>
                                 <option value="gemini">{t.aiProviderGemini}</option>
@@ -651,7 +651,7 @@ export function SettingsAiPage({
                                         value={speechModel}
                                         onChange={(e) => onUpdateSpeechSettings({ model: e.target.value })}
                                         list="speech-model-options"
-                                        className="min-w-[200px] text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="min-w-[200px] text-sm text-foreground px-2 py-1 bg-well shadow-soft-inset rounded-control focus-ring"
                                     />
                                     <datalist id="speech-model-options">
                                         {speechModelOptions.map((option) => (
@@ -663,7 +663,7 @@ export function SettingsAiPage({
                                 <select
                                     value={speechModel}
                                     onChange={(e) => onUpdateSpeechSettings({ model: e.target.value })}
-                                    className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                 >
                                     {speechModelOptions.map((option) => (
                                         <option key={option} value={option}>
@@ -678,7 +678,7 @@ export function SettingsAiPage({
                             <SettingField
                                 settingsKey="speechBaseUrl"
                                 title={t.speechBaseUrl}
-                                className="rounded-lg border border-border bg-muted/30 p-3"
+                                className="p-3 bg-well rounded-card"
                             >
                                 <input
                                     type="text"
@@ -688,7 +688,7 @@ export function SettingsAiPage({
 
 
                                     placeholder="http://localhost:8000/v1"
-                                    className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full text-sm text-foreground px-2 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                     autoCapitalize="off"
                                     autoCorrect="off"
                                     spellCheck={false}
@@ -702,7 +702,7 @@ export function SettingsAiPage({
                                 settingsKey="speechOfflineModel"
                                 title={t.speechOfflineModel}
                                 description={t.speechOfflineModelDesc}
-                                className="rounded-lg border border-border bg-muted/30 p-3"
+                                className="p-3 bg-well rounded-card"
                             >
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="text-xs text-muted-foreground">
@@ -718,7 +718,7 @@ export function SettingsAiPage({
                                         <button
                                             type="button"
                                             onClick={onDeleteWhisperModel}
-                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-muted"
+                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-accent"
                                         >
                                             {t.speechOfflineDelete}
                                         </button>
@@ -726,7 +726,7 @@ export function SettingsAiPage({
                                         <button
                                             type="button"
                                             onClick={onDownloadWhisperModel}
-                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-muted disabled:opacity-60 disabled:cursor-not-allowed"
+                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-accent disabled:opacity-60 disabled:cursor-not-allowed"
                                             disabled={speechDownloadState === 'downloading'}
                                         >
                                             {speechDownloadState === 'downloading'
@@ -736,7 +736,7 @@ export function SettingsAiPage({
                                     )}
                                 </div>
                                 {speechDownloadError ? (
-                                    <div className="text-xs text-destructive">{t.speechOfflineDownloadError}: {speechDownloadError}</div>
+                                    <div className="text-xs text-danger-text">{t.speechOfflineDownloadError}: {speechDownloadError}</div>
                                 ) : null}
                                 {speechDownloadProgressView}
                             </SettingField>
@@ -747,7 +747,7 @@ export function SettingsAiPage({
                                 settingsKey={null}
                                 title={t.speechOfflineModel}
                                 description={t.speechParakeetModelDesc}
-                                className="rounded-lg border border-border bg-muted/30 p-3"
+                                className="p-3 bg-well rounded-card"
                             >
                                 <label className="block space-y-1">
                                     <span className="text-xs font-medium text-muted-foreground">{t.speechParakeetModelPath}</span>
@@ -756,7 +756,7 @@ export function SettingsAiPage({
                                         value={speechOfflineModelPath}
                                         readOnly
                                         placeholder={t.speechParakeetModelPathPlaceholder}
-                                        className="w-full cursor-default text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="w-full cursor-default text-sm text-foreground px-2 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                     />
                                 </label>
                                 <div className="flex items-center justify-between gap-3">
@@ -773,7 +773,7 @@ export function SettingsAiPage({
                                         <button
                                             type="button"
                                             onClick={onDeleteWhisperModel}
-                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-muted"
+                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-accent"
                                         >
                                             {t.speechOfflineDelete}
                                         </button>
@@ -781,7 +781,7 @@ export function SettingsAiPage({
                                         <button
                                             type="button"
                                             onClick={onDownloadWhisperModel}
-                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-muted disabled:opacity-60 disabled:cursor-not-allowed"
+                                            className="px-2 py-1 text-xs rounded border border-border hover:bg-accent disabled:opacity-60 disabled:cursor-not-allowed"
                                             disabled={speechDownloadState === 'downloading'}
                                         >
                                             {speechDownloadState === 'downloading'
@@ -791,7 +791,7 @@ export function SettingsAiPage({
                                     )}
                                 </div>
                                 {speechDownloadError ? (
-                                    <div className="text-xs text-destructive">{t.speechOfflineDownloadError}: {speechDownloadError}</div>
+                                    <div className="text-xs text-danger-text">{t.speechOfflineDownloadError}: {speechDownloadError}</div>
                                 ) : null}
                                 {speechDownloadProgressView}
                             </SettingField>
@@ -805,7 +805,7 @@ export function SettingsAiPage({
                                     value={speechApiKey}
                                     onChange={(e) => onSpeechApiKeyChange(e.target.value)}
                                     placeholder={t.aiApiKey}
-                                    className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full text-sm text-foreground px-2 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                 />
                                 <div className="text-xs text-muted-foreground">{t.aiApiKeyHint}</div>
                             </SettingField>
@@ -817,7 +817,7 @@ export function SettingsAiPage({
                                 value={speechLanguage}
                                 onChange={(e) => onUpdateSpeechSettings({ language: e.target.value })}
                                 placeholder={t.speechLanguageAuto}
-                                className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="text-sm text-foreground px-2 py-1 bg-well shadow-soft-inset rounded-control focus-ring"
                             />
                         </SettingRow>
 
@@ -825,7 +825,7 @@ export function SettingsAiPage({
                             <select
                                 value={speechMode}
                                 onChange={(e) => onUpdateSpeechSettings({ mode: e.target.value as 'smart_parse' | 'transcribe_only' })}
-                                className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                             >
                                 <option value="smart_parse">{t.speechModeSmart}</option>
                                 <option value="transcribe_only">{t.speechModeTranscript}</option>
@@ -840,7 +840,7 @@ export function SettingsAiPage({
                                         fieldStrategy: e.target.value as 'smart' | 'title_only' | 'description_only',
                                     })
                                 }
-                                className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                             >
                                 <option value="smart">{t.speechFieldSmart}</option>
                                 <option value="title_only">{t.speechFieldTitle}</option>

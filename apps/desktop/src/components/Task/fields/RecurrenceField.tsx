@@ -157,7 +157,7 @@ export function RecurrenceField({
                         onRecurrenceRRuleChange('');
                     }
                 }}
-                className="appearance-none text-xs bg-muted/50 border border-border rounded pl-2 pr-7 py-1 w-full text-foreground"
+                className="appearance-none text-xs bg-well rounded-control focus-ring pl-2 pr-7 py-1 w-full text-foreground"
             >
                 <option value="">{t('recurrence.none')}</option>
                 <option value="daily">{t('recurrence.daily')}</option>
@@ -183,7 +183,7 @@ export function RecurrenceField({
                                 interval: safeInterval,
                             }));
                         }}
-                        className="w-20 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                        className="w-20 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
                     />
                     <span className="text-[10px] text-muted-foreground">{t('recurrence.dayUnit')}</span>
                 </div>
@@ -234,7 +234,7 @@ export function RecurrenceField({
                                 interval: safeInterval,
                             }));
                         }}
-                        className="w-20 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                        className="w-20 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
                     />
                     <span className="text-[10px] text-muted-foreground">{t('recurrence.weekUnit')}</span>
                     <span className="text-[10px] text-muted-foreground">{t('recurrence.onLabel')}</span>
@@ -275,7 +275,7 @@ export function RecurrenceField({
                                 until: undefined,
                             }));
                         }}
-                        className="appearance-none text-xs bg-muted/50 border border-border rounded pl-2 pr-7 py-1 text-foreground"
+                        className="appearance-none text-xs bg-well rounded-control focus-ring pl-2 pr-7 py-1 text-foreground"
                     >
                         <option value="never">{t('recurrence.endsNever')}</option>
                         <option value="until">{t('recurrence.endsOnDate')}</option>
@@ -291,7 +291,7 @@ export function RecurrenceField({
                             selectedDate={safeParseDate(parsedRecurrenceRRule.until || recurrenceDefaultEndDate)}
                             dateFormatSetting={dateFormatSetting}
                             nativeDateInputLocale={nativeDateInputLocale}
-                            dateInputClassName="text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                            dateInputClassName="text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
 
 
                             className="w-40 max-w-none"
@@ -320,7 +320,7 @@ export function RecurrenceField({
                                         until: undefined,
                                     }));
                                 }}
-                                className="w-20 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                                className="w-20 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
                             />
                             <span className="text-[10px] text-muted-foreground">{t('recurrence.occurrenceUnit')}</span>
                         </>
@@ -342,7 +342,7 @@ export function RecurrenceField({
                                     interval: safeInterval,
                                 }));
                             }}
-                            className="w-20 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                            className="w-20 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
                         />
                         <span className="text-[10px] text-muted-foreground">{t('recurrence.monthUnit')}</span>
                     </div>
@@ -394,7 +394,7 @@ export function RecurrenceField({
                                 interval: safeInterval,
                             }));
                         }}
-                        className="w-20 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground"
+                        className="w-20 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground"
                     />
                     <span className="text-[10px] text-muted-foreground">{t('recurrence.yearUnit')}</span>
                 </div>

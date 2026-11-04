@@ -237,7 +237,7 @@ export function ProjectNotesSection({
                         <button
                             type="button"
                             onClick={onTogglePreview}
-                            className="h-7 text-xs px-2.5 rounded-md border border-border bg-background hover:bg-muted/40 transition-colors text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                            className="h-7 text-xs px-2.5 rounded-control bg-well hover:bg-muted/40 transition-colors text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
                             disabled={readOnly}
                             title={readOnly ? readOnlyHint : undefined}
                         >
@@ -258,7 +258,7 @@ export function ProjectNotesSection({
                         <button
                             type="button"
                             onClick={onAddFile}
-                            className="h-7 text-xs px-2.5 rounded-md border border-border bg-background hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                            className="h-7 text-xs px-2.5 rounded-control bg-well hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
                             disabled={attachmentsBusy || readOnly}
                             aria-busy={attachmentsBusy}
                             title={readOnly ? readOnlyHint : undefined}
@@ -269,7 +269,7 @@ export function ProjectNotesSection({
                         <button
                             type="button"
                             onClick={onAddLink}
-                            className="h-7 text-xs px-2.5 rounded-md border border-border bg-background hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                            className="h-7 text-xs px-2.5 rounded-control bg-well hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
                             disabled={attachmentsBusy || readOnly}
                             aria-busy={attachmentsBusy}
                             title={readOnly ? readOnlyHint : undefined}
@@ -281,7 +281,7 @@ export function ProjectNotesSection({
                             <button
                                 type="button"
                                 onClick={onLinkFolder}
-                                className="h-7 text-xs px-2.5 rounded-md border border-border bg-background hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                                className="h-7 text-xs px-2.5 rounded-control bg-well hover:bg-muted/40 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
                                 disabled={attachmentsBusy || readOnly}
                                 aria-busy={attachmentsBusy}
                                 title={readOnly ? readOnlyHint : undefined}
@@ -294,7 +294,7 @@ export function ProjectNotesSection({
                 </div>
 
                 {(showNotesPreview || readOnly) ? (
-                    <div className={`text-xs border border-border rounded-md px-2.5 py-2.5 ${isRtl ? 'text-right' : ''}`} dir={resolvedDirection}>
+                    <div className={`text-xs bg-well rounded-control px-2.5 py-2.5 ${isRtl ? 'text-right' : ''}`} dir={resolvedDirection}>
                         <Markdown markdown={draftNotes} className={isRtl ? 'text-right' : undefined} />
                     </div>
                 ) : (
@@ -308,7 +308,7 @@ export function ProjectNotesSection({
                         />
                         <textarea
                             ref={textareaRef}
-                            className={`w-full min-h-[120px] p-3 text-sm bg-background border border-border rounded-md resize-y focus:outline-none focus:bg-accent/5 ${isRtl ? 'text-right' : ''}`}
+                            className={`w-full min-h-[120px] p-3 text-sm bg-well rounded-control resize-y focus-ring ${isRtl ? 'text-right' : ''}`}
                             placeholder={t('projects.notesPlaceholder')}
                             value={draftNotes}
                             dir={resolvedDirection}
@@ -358,7 +358,7 @@ export function ProjectNotesSection({
                                 const isPointer = attachment.kind === 'link' || isBareFileReference(attachment);
                                 const fullTitle = isPointer ? attachment.uri : attachment.title;
                                 return (
-                                    <div key={attachment.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border/60 px-2 py-1.5 transition-colors hover:bg-muted/40">
+                                    <div key={attachment.id} className="flex items-center justify-between gap-2 text-xs rounded-control bg-well px-2 py-1.5 transition-colors hover:bg-muted/40">
                                         <div className="min-w-0 flex-1">
                                             <div className="flex min-w-0 items-center gap-1.5">
                                                 {isFolderLinkAttachment(attachment)

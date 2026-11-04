@@ -244,6 +244,7 @@ export * from './ics';
 export * from './external-calendar-colors';
 export * from './task-relative-start';
 export * from './task-status';
+export * from './today-progress';
 export * from './project-status';
 export * from './text-direction';
 export * from './ai/ai-service';

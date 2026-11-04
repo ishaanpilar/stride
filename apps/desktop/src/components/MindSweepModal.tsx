@@ -96,14 +96,14 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
         >
             <DialogBody className="p-6 flex flex-col gap-4">
                 <div className="flex items-center justify-between">
-                    <h2 id={titleId} className="text-lg font-semibold flex items-center gap-2">
+                    <h2 id={titleId} className="text-[17px] font-semibold flex items-center gap-2">
                         <Brain className="w-5 h-5" />
                         {t('mindSweep.title')}
                     </h2>
                     <button
                         onClick={onClose}
                         aria-label={t('mindSweep.close')}
-                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground transition-colors focus-ring"
                     >
                         <X className="w-5 h-5" />
                     </button>
@@ -119,10 +119,10 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
                                     <button
                                         key={option.value}
                                         onClick={() => setScope(option.value)}
-                                        className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                                        className={`h-9 px-3.5 rounded-control text-[13px] font-medium transition-colors focus-ring ${
                                             scope === option.value
-                                                ? 'bg-primary text-primary-foreground border-primary'
-                                                : 'border-border hover:bg-accent'
+                                                ? 'btn-gradient'
+                                                : 'bg-card border border-border shadow-soft-sm hover:bg-accent'
                                         }`}
                                     >
                                         {option.label}
@@ -133,7 +133,7 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
                         <button
                             ref={startButtonRef}
                             onClick={() => setStepIndex(0)}
-                            className="w-full bg-primary text-primary-foreground py-2.5 px-4 rounded-lg font-medium hover:bg-primary/90 transition-colors"
+                            className="w-full btn-gradient py-2.5 px-4 rounded-control font-medium focus-ring transition-colors"
                         >
                             {t('mindSweep.start')}
                         </button>
@@ -173,13 +173,13 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
                             <button
                                 onClick={() => void handleAdd()}
                                 disabled={!draft.trim()}
-                                className="px-4 py-2 rounded-lg text-sm bg-primary text-primary-foreground disabled:opacity-50 hover:bg-primary/90 transition-colors"
+                                className="px-4 py-2 rounded-control text-sm btn-gradient disabled:opacity-50 focus-ring transition-colors"
                             >
                                 {t('mindSweep.add')}
                             </button>
                         </div>
                         {addFailed && (
-                            <p className="text-sm text-destructive">{t('task.addFailed')}</p>
+                            <p className="text-sm text-danger-text">{t('task.addFailed')}</p>
                         )}
                         {(capturedByGroup[group.id]?.length ?? 0) > 0 && (
                             <div>
@@ -201,7 +201,7 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
                             </button>
                             <button
                                 onClick={() => setStepIndex((index) => index + 1)}
-                                className="px-4 py-2 rounded-lg text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                                className="px-4 py-2 rounded-control text-sm btn-gradient focus-ring transition-colors"
                             >
                                 {t('mindSweep.next')}
                             </button>
@@ -223,7 +223,7 @@ export function MindSweepModal({ isOpen, onClose, t, addTask }: MindSweepModalPr
                         <button
                             ref={finishButtonRef}
                             onClick={onClose}
-                            className="w-full bg-primary text-primary-foreground py-2.5 px-4 rounded-lg font-medium hover:bg-primary/90 transition-colors"
+                            className="w-full btn-gradient py-2.5 px-4 rounded-control font-medium focus-ring transition-colors"
                         >
                             {t('mindSweep.finish')}
                         </button>
@@ -248,7 +248,7 @@ type MindSweepTriggerProps = {
 
 export function MindSweepTrigger({ t, onOpen, variant = 'secondary' }: MindSweepTriggerProps) {
     const buttonClass = variant === 'primary'
-        ? 'w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3 px-4 rounded-lg font-medium hover:bg-primary/90 transition-colors'
+        ? 'w-full flex items-center justify-center gap-2 btn-gradient py-3 px-4 rounded-control font-medium focus-ring transition-colors'
         : 'flex items-center justify-center gap-2 whitespace-nowrap border border-border text-muted-foreground px-3 rounded-lg text-sm font-medium hover:bg-accent hover:text-foreground transition-colors';
     return (
         <button type="button" onClick={onOpen} className={buttonClass}>

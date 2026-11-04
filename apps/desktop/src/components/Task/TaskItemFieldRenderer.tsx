@@ -752,8 +752,8 @@ export function TaskItemFieldRenderer({
             restoreScrollSnapshotSoon(scrollSnapshot);
         });
     };
-    const dateInputClassName = 'min-w-0 flex-1 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground';
-    const timeInputClassName = 'w-24 shrink-0 text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground';
+    const dateInputClassName = 'min-w-0 flex-1 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground';
+    const timeInputClassName = 'w-24 shrink-0 text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground';
     const dateIssueLabel = getTaskDateCoherenceIssues({
         startTime: editStartTime || undefined,
         dueDate: editDueDate || undefined,
@@ -947,7 +947,7 @@ export function TaskItemFieldRenderer({
                                     disabled={!reminders.startAdvance.enabled}
                                     value={draft.startReminderLeadMinutes ?? 0}
                                     onChange={(event) => setField('startReminderLeadMinutes', Number(event.target.value))}
-                                    className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground disabled:opacity-50"
+                                    className="mt-1 w-full rounded-control bg-well focus-ring px-2 py-1 text-sm text-foreground disabled:opacity-50"
                                 >
                                     {reminders.startAdvance.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                                 </select>
@@ -982,13 +982,13 @@ export function TaskItemFieldRenderer({
                                             max={10000}
                                             value={relativeAmount}
                                             onChange={(event) => applyRelativeStartOffset(Number(event.target.value), relativeUnitForDueDate)}
-                                            className="h-8 w-16 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                                            className="h-8 w-16 rounded-control bg-well focus-ring px-2 text-sm text-foreground"
                                             aria-label={t('taskEdit.relativeStartAmount')}
                                         />
                                         <select
                                             value={relativeUnitForDueDate}
                                             onChange={(event) => applyRelativeStartOffset(relativeAmount, event.target.value as NonNullable<Task['relativeStartOffset']>['unit'])}
-                                            className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                                            className="h-8 rounded-control bg-well focus-ring px-2 text-sm text-foreground"
                                             aria-label={t('taskEdit.relativeStartUnit')}
                                         >
                                             {relativeUnitOptions.map((option) => (
@@ -1085,7 +1085,7 @@ export function TaskItemFieldRenderer({
                                                     aria-label={reminders.policyLabel}
                                                     value={draft.reminderPolicy}
                                                     onChange={(event) => setField('reminderPolicy', event.target.value as TaskDraft['reminderPolicy'])}
-                                                    className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground"
+                                                    className="mt-1 w-full rounded-control bg-well focus-ring px-2 py-1 text-sm text-foreground"
                                                 >
                                                     {reminders.policyOptions.map((option) => (
                                                         <option key={option.value} value={option.value}>{option.label}</option>
@@ -1101,7 +1101,7 @@ export function TaskItemFieldRenderer({
                                                     disabled={!reminders.showAdvance}
                                                     value={draft.dueReminderLeadMinutes ?? 0}
                                                     onChange={(event) => setField('dueReminderLeadMinutes', Number(event.target.value))}
-                                                    className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground disabled:opacity-50"
+                                                    className="mt-1 w-full rounded-control bg-well focus-ring px-2 py-1 text-sm text-foreground disabled:opacity-50"
                                                 >
                                                     {reminders.advanceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                                                 </select>
@@ -1255,7 +1255,7 @@ export function TaskItemFieldRenderer({
                         value={editLocation}
                         onChange={(event) => setEditLocation(event.target.value)}
                         placeholder={t('taskEdit.locationPlaceholder')}
-                        className="text-xs bg-muted/50 border border-border rounded px-2 py-1 text-foreground placeholder:text-muted-foreground"
+                        className="text-xs bg-well rounded-control focus-ring px-2 py-1 text-foreground placeholder:text-muted-foreground"
                     />
                 </div>
             );

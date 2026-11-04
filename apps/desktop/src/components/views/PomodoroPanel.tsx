@@ -166,15 +166,15 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     };
 
     const phaseBadgeClass = cn(
-        'text-xs px-2 py-0.5 rounded-full border font-medium',
+        'text-xs px-2.5 py-0.5 rounded-full font-medium',
         timerState.phase === 'focus'
-            ? 'bg-info/10 text-info border-info/30'
-            : 'bg-success/10 text-success border-success/30'
+            ? 'bg-info/10 text-info'
+            : 'bg-success/10 text-success'
     );
 
     if (collapsed) {
         return (
-            <section className="bg-card border border-border rounded-xl px-3 py-2">
+            <section className="rounded-card bg-card px-3 py-2 shadow-soft-sm">
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                         <p className="font-mono text-xl leading-none tracking-wide tabular-nums">
@@ -196,7 +196,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                         onClick={() => setCollapsed(false)}
                         aria-label={expandLabel}
                         title={expandLabel}
-                        className="inline-flex items-center justify-center w-7 h-7 rounded border border-border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors shrink-0"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-control border border-border bg-card text-muted-foreground shadow-soft-sm hover:bg-accent transition-colors shrink-0 focus-ring"
                     >
                         <ChevronDown className="w-4 h-4" />
                     </button>
@@ -206,10 +206,10 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     }
 
     return (
-        <section className="bg-card border border-border rounded-xl p-3 space-y-3">
+        <section className="rounded-card bg-card p-4 space-y-4 shadow-soft-sm">
             <header className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                    <h3 className="font-semibold text-base truncate">{cardTitle}</h3>
+                    <h3 className="font-semibold text-[15px] truncate">{cardTitle}</h3>
                     <span className={phaseBadgeClass}>{phaseLabel}</span>
                 </div>
                 <button
@@ -217,7 +217,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                     onClick={() => setCollapsed(true)}
                     aria-label={collapseLabel}
                     title={collapseLabel}
-                    className="inline-flex items-center justify-center w-7 h-7 rounded border border-border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors shrink-0"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-control border border-border bg-card text-muted-foreground shadow-soft-sm hover:bg-accent transition-colors shrink-0 focus-ring"
                 >
                     <ChevronUp className="w-4 h-4" />
                 </button>
@@ -232,10 +232,10 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                             type="button"
                             onClick={() => handleApplyPreset(preset.focusMinutes, preset.breakMinutes)}
                             className={cn(
-                                'text-xs px-2.5 py-1 rounded-full border transition-colors',
+                                'h-7 rounded-full px-3 text-[13px] font-medium transition-colors focus-ring',
                                 active
-                                    ? 'bg-primary text-primary-foreground border-primary'
-                                    : 'bg-muted/50 text-muted-foreground border-border hover:bg-muted'
+                                    ? 'bg-accent-soft text-accent-text'
+                                    : 'bg-well text-muted-foreground hover:text-foreground'
                             )}
                         >
                             {preset.label}
@@ -245,7 +245,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
             </div>
 
             <div className="text-center">
-                <p className="font-mono text-4xl leading-none tracking-wider tabular-nums">{formatPomodoroClock(timerState.remainingSeconds)}</p>
+                <p className="font-mono text-4xl leading-none tabular-nums">{formatPomodoroClock(timerState.remainingSeconds)}</p>
                 <p className="text-xs text-muted-foreground mt-1.5">
                     {sessionCountLabel}: {getPomodoroFocusSessionsCompletedToday(snapshot.sessionHistory)}
                 </p>
@@ -255,7 +255,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                 <button
                     type="button"
                     onClick={handleToggleRun}
-                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded border transition-colors bg-primary text-primary-foreground border-primary hover:opacity-90"
+                    className="btn-gradient inline-flex h-9 items-center gap-1.5 px-4 text-[13px] focus-ring"
                 >
                     {timerState.isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                     {timerState.isRunning
@@ -265,7 +265,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                 <button
                     type="button"
                     onClick={handleReset}
-                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded border border-border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-control border border-border bg-card px-3 text-[13px] font-medium text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-foreground focus-ring"
                 >
                     <RotateCcw className="w-3.5 h-3.5" />
                     {resolveText('common.reset', 'Reset')}
@@ -273,7 +273,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                 <button
                     type="button"
                     onClick={handleSwitchPhase}
-                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded border border-border bg-muted/50 text-muted-foreground hover:bg-muted transition-colors"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-control border border-border bg-card px-3 text-[13px] font-medium text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-foreground focus-ring"
                 >
                     <TimerReset className="w-3.5 h-3.5" />
                     {switchPhaseLabel}
@@ -302,7 +302,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                             }}
                             title={markDoneLabel}
                             aria-label={markDoneLabel}
-                            className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded border transition-colors shrink-0 bg-success/10 text-success border-success/50 hover:bg-success/20"
+                            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-control bg-success/10 px-3 text-[13px] font-medium text-success transition-colors hover:bg-success/20 focus-ring"
                         >
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             {markDoneLabel}

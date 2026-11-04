@@ -21,7 +21,7 @@ function TopicHelp({ topic, t, autoReveal }: Props) {
         dismissDesktopOnboardingHint(topic);
         setExpanded(false);
     };
-    const controlClass = 'inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary';
+    const controlClass = 'inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary';
     return (
         <aside className="py-1" aria-label={label}>
             <div className="flex items-center justify-between gap-2">
@@ -37,7 +37,7 @@ function TopicHelp({ topic, t, autoReveal }: Props) {
             {expanded && <div id={id} className="space-y-1 px-2 pb-2">
                 <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{t(copy.body)}</p>
                 <a href={getOnboardingGuideUrl(topic, 'desktop', language)} target="_blank" rel="noreferrer"
-                    className="inline-flex min-h-9 items-center gap-1 rounded text-sm text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                    className="inline-flex min-h-9 items-center gap-1 rounded text-sm text-accent-text underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
                     {t('onboarding.readGuide')} <ExternalLink size={14} aria-hidden="true" />
                 </a>
             </div>}

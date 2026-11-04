@@ -62,14 +62,14 @@ export function AssistantView({ onOpenAiSettings }: { onOpenAiSettings?: () => v
         <ErrorBoundary>
             <div className="flex h-full min-h-[60vh] flex-col gap-4">
                 <header className="flex items-center justify-between">
-                    <h2 className="flex items-center gap-2 text-3xl font-bold tracking-tight"><Bot className="h-7 w-7" aria-hidden />Assistant</h2>
-                    <Button variant="outline" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={newChat} disabled={turns.length === 0 && !busy}>
+                    <h2 className="flex items-center gap-2 text-[30px] leading-9 font-bold tracking-[-0.02em]"><Bot className="h-7 w-7" aria-hidden />Assistant</h2>
+                    <Button variant="secondary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={newChat} disabled={turns.length === 0 && !busy}>
                         New chat
                     </Button>
                 </header>
 
                 {readiness && !readiness.ready && (
-                    <div className="rounded-lg border border-border bg-muted/50 p-4 text-sm" data-testid="assistant-disabled">
+                    <div className="soft-surface rounded-card p-4 text-sm" data-testid="assistant-disabled">
                         <p>{DISABLED_COPY[readiness.reason]}</p>
                         {onOpenAiSettings && <Button className="mt-3" size="sm" onClick={onOpenAiSettings}>Open AI settings</Button>}
                     </div>
@@ -81,7 +81,7 @@ export function AssistantView({ onOpenAiSettings }: { onOpenAiSettings?: () => v
                             <p>Ask in plain language. Try:</p>
                             <div className="flex flex-wrap gap-2">
                                 {EXAMPLES.map((ex) => (
-                                    <button key={ex} type="button" className="rounded-full border border-border px-3 py-1 text-xs hover:bg-accent" onClick={() => { setDraft(ex); inputRef.current?.focus(); }}>
+                                    <button key={ex} type="button" className="focus-ring inline-flex h-[26px] items-center rounded-pill bg-card shadow-soft-sm px-3 text-xs font-medium hover:bg-accent" onClick={() => { setDraft(ex); inputRef.current?.focus(); }}>
                                         {ex}
                                     </button>
                                 ))}
@@ -96,14 +96,14 @@ export function AssistantView({ onOpenAiSettings }: { onOpenAiSettings?: () => v
                         const undoable = entries.filter((e) => !e.undone);
                         return (
                             <div key={m.id} className={`flex flex-col gap-2 ${isAssistant ? 'items-start' : 'items-end'}`}>
-                                <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${m.role === 'user' ? 'bg-primary text-primary-foreground' : m.isError ? 'border border-destructive/40 bg-destructive/10' : 'bg-muted'}`}>
+                                <div className={`max-w-[85%] whitespace-pre-wrap rounded-card px-4 py-2.5 text-sm ${m.role === 'user' ? 'bg-accent-soft text-foreground' : m.isError ? 'bg-destructive/10 text-danger-text ring-1 ring-danger/30' : 'bg-card shadow-soft-sm'}`}>
                                     {m.text}
                                 </div>
                                 {lastOfTurn && entries.length > 0 && (
                                     <div className="flex max-w-[85%] flex-wrap items-center gap-2">
                                         {entries.map((e) => <ChangeChip key={e.id} entry={e} onUndo={(id) => void runUndo(() => undoEntry(id))} />)}
                                         {undoable.length > 1 && (
-                                            <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={() => void runUndo(() => undoTurn(m.turnId!))}>
+                                            <button type="button" className="focus-ring rounded-sm text-xs font-medium text-accent-text hover:underline" onClick={() => void runUndo(() => undoTurn(m.turnId!))}>
                                                 Undo all
                                             </button>
                                         )}
@@ -114,12 +114,12 @@ export function AssistantView({ onOpenAiSettings }: { onOpenAiSettings?: () => v
                         );
                     })}
                     {busy && <div className="text-sm text-muted-foreground" role="status">Thinking…</div>}
-                    {notice && <div className="text-xs text-destructive" role="alert">{notice}</div>}
+                    {notice && <div className="text-xs text-danger-text" role="alert">{notice}</div>}
                     <div ref={endRef} />
                 </div>
 
                 {/* Plain textarea on purpose: works with system-wide dictation (e.g. Wispr Flow). */}
-                <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+                <form className="flex items-end gap-2 rounded-card bg-well shadow-soft-inset p-2" onSubmit={(e) => { e.preventDefault(); submit(); }}>
                     <textarea
                         ref={inputRef}
                         value={draft}
@@ -134,10 +134,10 @@ export function AssistantView({ onOpenAiSettings }: { onOpenAiSettings?: () => v
                         disabled={!ready}
                         placeholder={ready ? 'Ask or tell the assistant what to do…' : 'Assistant unavailable'}
                         aria-label="Message the assistant"
-                        className="min-h-[3rem] flex-1 resize-y rounded-lg border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                        className="min-h-[3rem] flex-1 resize-y rounded-control bg-transparent px-3 py-2 text-sm placeholder:text-tertiary focus-ring disabled:opacity-50"
                     />
                     {busy ? (
-                        <Button type="button" variant="outline" onClick={stop} leadingIcon={<Square className="h-4 w-4" />}>Stop</Button>
+                        <Button type="button" variant="secondary" onClick={stop} leadingIcon={<Square className="h-4 w-4" />}>Stop</Button>
                     ) : (
                         <Button type="submit" disabled={!ready || !draft.trim()} leadingIcon={<Send className="h-4 w-4" />}>Send</Button>
                     )}

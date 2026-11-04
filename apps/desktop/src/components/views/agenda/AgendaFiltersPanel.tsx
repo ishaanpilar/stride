@@ -212,7 +212,7 @@ export function AgendaFiltersPanel({
     const renderNoMatches = () => <p className="text-sm text-muted-foreground">{noMatchesLabel}</p>;
 
     return (
-        <div id="agenda-filters-panel" className="space-y-3 rounded-lg border border-border/70 bg-card/45 p-3" onKeyDown={handlePanelKeyDown}>
+        <div id="agenda-filters-panel" className="space-y-3 rounded-card bg-card shadow-soft-sm p-3" onKeyDown={handlePanelKeyDown}>
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                     <Filter className="h-4 w-4" aria-hidden="true" />
@@ -223,7 +223,7 @@ export function AgendaFiltersPanel({
                         <button
                             type="button"
                             onClick={onSaveFilter}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
                         >
                             <Save className="h-3.5 w-3.5" aria-hidden="true" />
                             {saveFilterLabel}
@@ -233,7 +233,7 @@ export function AgendaFiltersPanel({
                         <button
                             type="button"
                             onClick={onClearFilters}
-                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
                         >
                             {t('filters.clear')}
                         </button>
@@ -242,7 +242,7 @@ export function AgendaFiltersPanel({
                         type="button"
                         onClick={showFiltersPanel ? closePanel : onToggleFiltersOpen}
                         aria-expanded={showFiltersPanel}
-                        className="text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
                     >
                         {showFiltersPanel ? t('filters.hide') : t('filters.show')}
                     </button>
@@ -312,7 +312,7 @@ export function AgendaFiltersPanel({
                                                 isExcluded
                                                     ? 'border border-destructive bg-destructive/10 text-destructive line-through'
                                                     : isIncluded
-                                                        ? 'bg-primary text-primary-foreground'
+                                                        ? 'bg-accent-soft text-accent-text'
                                                         : 'bg-muted text-muted-foreground hover:bg-muted/80',
                                             )}
                                         >
@@ -344,7 +344,7 @@ export function AgendaFiltersPanel({
                                             FILTER_OPTION_BASE,
                                             excludedProjects.includes(SAVED_FILTER_NO_PROJECT_ID) ? 'text-destructive line-through' : '',
                                             selectedProjects.includes(SAVED_FILTER_NO_PROJECT_ID)
-                                                ? 'bg-primary text-primary-foreground'
+                                                ? 'bg-accent-soft text-accent-text'
                                                 : 'bg-muted text-muted-foreground hover:bg-muted/80',
                                         )}
                                     >
@@ -366,7 +366,7 @@ export function AgendaFiltersPanel({
                                                 'inline-flex max-w-full items-center gap-2',
                                                 isExcluded ? 'text-destructive line-through' : '',
                                                 isActive
-                                                    ? 'bg-primary text-primary-foreground'
+                                                    ? 'bg-accent-soft text-accent-text'
                                                     : 'bg-muted text-muted-foreground hover:bg-muted/80',
                                             )}
                                         >

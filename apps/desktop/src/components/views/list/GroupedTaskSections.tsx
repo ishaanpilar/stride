@@ -138,8 +138,7 @@ export function GroupedTaskSectionHeader({
     if (onAddTaskToGroup && addLabel) {
         return (
             <div className={cn(
-                'flex items-center gap-2 border-b border-border/30 px-3 py-2 text-xs font-semibold uppercase tracking-wide',
-                group.muted ? 'text-muted-foreground' : 'text-foreground/90',
+                'flex items-center gap-2 px-1 pb-1.5 pt-1 text-[13px] font-semibold',
                 className,
             )}>
                 {collapsible ? (
@@ -148,16 +147,16 @@ export function GroupedTaskSectionHeader({
                         onClick={() => onToggleGroup?.(group.id)}
                         aria-expanded={!collapsed}
                         aria-controls={controlsId}
-                        className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="focus-ring min-w-0 flex-1 rounded-control text-left hover:text-foreground"
                     >{title}</button>
                 ) : <div className="min-w-0 flex-1">{title}</div>}
-                <span className="shrink-0 text-muted-foreground">{groupRowCount(group)}</span>
+                <span className="shrink-0 font-normal tabular-nums text-muted-foreground">{groupRowCount(group)}</span>
                 <button
                     type="button"
                     onClick={() => onAddTaskToGroup(group)}
                     aria-label={addLabel}
                     title={addLabel}
-                    className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="focus-ring shrink-0 rounded-control p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 >
                     <Plus className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -172,31 +171,25 @@ export function GroupedTaskSectionHeader({
             aria-expanded={!collapsed}
             aria-controls={controlsId}
             className={cn(
-                'flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide transition-colors hover:bg-muted/30',
-                'focus:outline-none focus:ring-2 focus:ring-primary/30',
-                !collapsed && 'border-b border-border/30',
-                group.muted ? 'text-muted-foreground' : 'text-foreground/90',
+                'focus-ring flex w-full items-center justify-between gap-3 rounded-control px-1 pb-1.5 pt-1 text-left text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none',
                 className,
             )}
         >
             {title}
-            <span className="shrink-0 text-muted-foreground">{groupRowCount(group)}</span>
+            <span className="shrink-0 font-normal tabular-nums text-muted-foreground">{groupRowCount(group)}</span>
         </button>
     ) : (
         <div className={cn(
-            'flex items-center justify-between gap-3 border-b border-border/30 px-3 py-2 text-xs font-semibold uppercase tracking-wide',
-            group.muted ? 'text-muted-foreground' : 'text-foreground/90',
+            'flex items-center justify-between gap-3 px-1 pb-1.5 pt-1 text-[13px] font-semibold text-muted-foreground',
             className,
         )}>
             {title}
-            <span className="shrink-0 text-muted-foreground">{groupRowCount(group)}</span>
+            <span className="shrink-0 font-normal tabular-nums text-muted-foreground">{groupRowCount(group)}</span>
         </div>
     );
 }
 
 
-const SECTION_CARD = 'border-x border-border/40 bg-card/30';
-const SECTION_HEADER_CARD = 'border border-border/40 bg-card/30';
 
 function GroupProjects({ group, renderProject, className }: {
     group: TaskGroup;
@@ -205,7 +198,7 @@ function GroupProjects({ group, renderProject, className }: {
 }) {
     if (!renderProject || !group.projects?.length) return null;
     return (
-        <div className={cn('space-y-2 p-2', className)}>
+        <div className={cn('space-y-2.5 pb-2.5', className)}>
             {group.projects.map((project) => <div key={project.id}>{renderProject(project)}</div>)}
         </div>
     );
@@ -224,7 +217,7 @@ export function GroupedTaskList({
     onAddTaskToGroup,
     addTaskLabel,
     renderProject,
-    flatRowClassName = 'pb-1.5',
+    flatRowClassName = 'pb-2.5',
 }: GroupedTaskListProps) {
     const isGrouping = Boolean(virtualRows);
 
@@ -250,7 +243,7 @@ export function GroupedTaskList({
                                 key={virtualRow.key}
                                 ref={virtualizer.measureElement}
                                 data-index={virtualRow.index}
-                                style={{ ...rowStyle, paddingTop: virtualRow.index > 0 ? 8 : 0 }}
+                                style={{ ...rowStyle, paddingTop: virtualRow.index > 0 ? 12 : 0 }}
                             >
                                 <GroupedTaskSectionHeader
                                     group={row.group}
@@ -259,16 +252,11 @@ export function GroupedTaskList({
                                     onToggleGroup={onToggleGroup}
                                     onAddTaskToGroup={onAddTaskToGroup}
                                     addTaskLabel={addTaskLabel}
-                                    className={cn(
-                                        SECTION_HEADER_CARD,
-                                        row.collapsed ? 'rounded-md' : 'rounded-t-md',
-                                    )}
                                 />
                                 {!row.collapsed && (
                                     <GroupProjects
                                         group={row.group}
                                         renderProject={renderProject}
-                                        className={cn(SECTION_CARD, row.group.tasks.length === 0 && 'rounded-b-md border-b border-border/40')}
                                     />
                                 )}
                             </div>
@@ -285,16 +273,9 @@ export function GroupedTaskList({
                         >
                             <div
                                 id={row?.kind === 'task' && row.isFirst ? row.controlsId : undefined}
-                                className={cn(row?.kind === 'task'
-                                    ? [
-                                        SECTION_CARD,
-                                        !row.isLast && 'border-b border-border/30',
-                                        row.isLast && 'rounded-b-md border-b border-border/40',
-                                    ]
-                                    : flatRowClassName)}
+                                className={flatRowClassName}
                             >
                                 {renderTask(task, row?.group)}
-                                {!row && <div className="mx-3 mt-1 h-px bg-border/30" />}
                             </div>
                         </div>
                     );
@@ -319,7 +300,7 @@ export function GroupedTaskList({
     }
 
     return (
-        <div className="divide-y divide-border/30">
+        <div className="flex flex-col gap-2.5">
             {tasks.map((task) => renderTask(task))}
         </div>
     );
@@ -338,12 +319,12 @@ export function GroupedTaskSections({
 }: GroupedTaskSectionsProps) {
     const collapsible = Boolean(onToggleGroup);
     return (
-        <div className="space-y-2">
+        <div className="space-y-4">
             {groups.map((group, groupIndex) => {
                 const collapsed = collapsible && (collapsedGroupIds?.has(group.id) ?? false);
                 const controlsId = collapsible ? getSectionDomId?.(group, groupIndex) : undefined;
                 return (
-                    <div key={group.id} className={cn('rounded-md', SECTION_HEADER_CARD)}>
+                    <div key={group.id} data-task-group={group.id}>
                         <GroupedTaskSectionHeader
                             group={group}
                             collapsed={collapsed}
@@ -353,7 +334,7 @@ export function GroupedTaskSections({
                             addTaskLabel={addTaskLabel}
                         />
                         {!collapsed && (
-                            <div id={controlsId} className="divide-y divide-border/30">
+                            <div id={controlsId} className="flex flex-col gap-2.5">
                                 <GroupProjects group={group} renderProject={renderProject} />
                                 {group.tasks.map((task) => renderTask(task, group))}
                             </div>

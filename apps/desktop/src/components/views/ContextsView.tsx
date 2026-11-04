@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { ViewHeader } from '../ui/ViewHeader';
 import { ViewSidebarContext } from '../../contexts/view-sidebar-context';
 import { useState, useContext, useEffect, useMemo, useCallback, useRef, type DragEvent, type KeyboardEvent } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -556,7 +557,7 @@ export function ContextsView() {
                 title={depth > 0 ? token : undefined}
                 className={cn(
                     "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
-                    selectedContexts.includes(token) || isHovered ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted/40 text-foreground",
+                    selectedContexts.includes(token) || isHovered ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground",
                     isHovered && "ring-2 ring-primary"
                 )}
             >
@@ -592,7 +593,7 @@ export function ContextsView() {
                     onClick={onToggle}
                     aria-expanded={!collapsed}
                     aria-label={`${label} (${tokens.length})`}
-                    className="flex w-full items-center gap-2 px-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
+                    className="flex w-full items-center gap-2 px-1 py-1 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
                 >
                     <ToggleIcon className="h-3.5 w-3.5" aria-hidden="true" />
                     <Icon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -622,9 +623,9 @@ export function ContextsView() {
     };
 
     const contextNavigation = (
-        <div data-context-navigation-root className={sidebarSlot ? "flex flex-col gap-3" : "hidden min-w-[13.5rem] w-[clamp(13.5rem,16vw,15.5rem)] flex-shrink-0 flex-col gap-4 border-r border-border pr-5 lg:flex xl:pr-6"}>
+        <div data-context-navigation-root className={sidebarSlot ? "flex flex-col gap-3" : "hidden min-w-[13.5rem] w-[clamp(13.5rem,16vw,15.5rem)] flex-shrink-0 flex-col gap-4 pr-5 lg:flex xl:pr-6"}>
                         <div className="flex items-center justify-between">
-                            <h2 className={sidebarSlot ? "text-xs font-semibold uppercase tracking-wide text-muted-foreground" : "text-xl font-bold tracking-tight"}>{t('contexts.title')}</h2>
+                            <h2 className={sidebarSlot ? "text-[13px] font-semibold text-muted-foreground" : "text-xl font-bold tracking-tight"}>{t('contexts.title')}</h2>
                             <Filter className="w-5 h-5 text-muted-foreground" />
                         </div>
 
@@ -635,7 +636,7 @@ export function ContextsView() {
                                 aria-label={`${allTokensLabel} (${scopedTasks.filter((t) => hasContext(t)).length})`}
                                 className={cn(
                                     "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
-                                    selectedContexts.length === 0 ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted/40 text-foreground"
+                                    selectedContexts.length === 0 ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground"
                                 )}
                             >
                                 <Tag className="w-4 h-4" />
@@ -651,7 +652,7 @@ export function ContextsView() {
                                 aria-label={`${t('contexts.none')} (${scopedTasks.filter((t) => !hasContext(t)).length})`}
                                 className={cn(
                                     "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
-                                    noContextSelected ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted/40 text-foreground"
+                                    noContextSelected ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground"
                                 )}
                             >
                                 <Tag className="w-4 h-4" />
@@ -702,17 +703,11 @@ export function ContextsView() {
                     {                   }
                     <div className="min-w-0 flex-1 flex flex-col h-full overflow-hidden">
                         <header className="mb-6 flex flex-wrap items-center gap-3">
-                            <div className="p-2 bg-primary/10 rounded-lg">
-                                <Tag className="w-6 h-6 text-primary" />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                                <h2 className="truncate text-2xl font-bold">
-                                    {noContextSelected ? t('contexts.none') : (selectedContexts.length ? selectedContexts.join(matchMode === 'any' ? ' / ' : ' + ') : allTokensLabel)}
-                                </h2>
-                                <p className="text-muted-foreground text-sm">
-                                    {filteredTasks.length} {t('common.tasks')}
-                                </p>
-                            </div>
+                            <ViewHeader
+                                className="min-w-0 flex-1"
+                                title={noContextSelected ? t('contexts.none') : (selectedContexts.length ? selectedContexts.join(matchMode === 'any' ? ' / ' : ' + ') : allTokensLabel)}
+                                count={`${filteredTasks.length} ${t('common.tasks')}`}
+                            />
                             <div className="order-3 w-full lg:hidden">
                                 <label htmlFor="contexts-token-select" className="sr-only">{allTokensLabel}</label>
                                 <select
@@ -727,7 +722,7 @@ export function ContextsView() {
                                         else if (value) toggleSelectedContext(value);
                                         else setSelectedContext(null);
                                     }}
-                                    className="h-10 w-full rounded-lg border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="h-10 w-full rounded-card bg-card shadow-soft-sm px-3 text-sm text-foreground focus-ring"
                                 >
                                     <option value="">{allTokensLabel}</option>
                                     {(selectedContexts.length > 0 || noContextSelected) && (
@@ -749,7 +744,7 @@ export function ContextsView() {
                                                 type="button"
                                                 onClick={() => toggleSelectedContext(token)}
                                                 aria-label={`${t('filters.remove')} ${token}`}
-                                                className="rounded-full border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                className="rounded-full border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-primary focus-ring"
                                             >{token} ×</button>
                                         ))}
                                     </div>
@@ -757,14 +752,14 @@ export function ContextsView() {
                             </div>
                             {selectedContexts.length > 1 && !noContextSelected && (
                                 <div className="order-3 w-full lg:order-none lg:w-auto" role="group" aria-label={`${allTokensLabel} ${tFallback(t, 'filters.matchAny', 'Any')}/${tFallback(t, 'common.all', 'All')}`}>
-                                    <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+                                    <div className="inline-flex rounded-card bg-card shadow-soft-sm p-0.5">
                                         {(['all', 'any'] as const).map((mode) => (
                                             <button
                                                 key={mode}
                                                 type="button"
                                                 aria-pressed={matchMode === mode}
                                                 onClick={() => setMatchMode(mode)}
-                                                className={cn('rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40',
+                                                className={cn('rounded-md px-3 py-1.5 text-sm focus-ring',
                                                     matchMode === mode ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted/40')}
                                             >{mode === 'all' ? tFallback(t, 'common.all', 'All') : tFallback(t, 'filters.matchAny', 'Any')}</button>
                                         ))}
@@ -816,7 +811,7 @@ export function ContextsView() {
                         </header>
                         {savedContextFilters.length > 0 && <div className="mb-3 flex flex-wrap gap-2">
                             {savedContextFilters.map((filter) => <button key={filter.id} type="button" aria-pressed={filterSelections.activeSavedFilterId === filter.id}
-                                className={cn('rounded-full border px-3 py-1.5 text-sm', filterSelections.activeSavedFilterId === filter.id ? 'bg-primary text-primary-foreground' : 'bg-muted')}
+                                className={cn('rounded-full border px-3 py-1.5 text-[13px]', filterSelections.activeSavedFilterId === filter.id ? 'btn-gradient' : 'bg-muted')}
                                 onClick={() => {
                                     if (filterSelections.activeSavedFilterId === filter.id) {
                                         filterSelections.clear(); clearStatusFilters(); setSelectedContext(null);
@@ -862,7 +857,7 @@ export function ContextsView() {
                                         className={cn(
                                             'rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                                             isActive
-                                                ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                                                ? 'border-transparent bg-accent-soft text-accent-text shadow-sm'
                                                 : 'border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground'
                                         )}
                                         aria-pressed={isActive}

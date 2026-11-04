@@ -258,7 +258,7 @@ export function AreaColorPicker({
             <button
                 type="button"
                 onClick={() => (open ? close() : setOpen(true))}
-                className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card"
+                className="flex h-8 w-8 items-center justify-center rounded-control bg-card shadow-soft-sm"
                 title={title}
                 aria-label={title}
                 aria-expanded={open}
@@ -272,7 +272,7 @@ export function AreaColorPicker({
                 <div
 
 
-                    className={`absolute z-50 mt-2 grid w-max grid-cols-7 gap-2 rounded-lg border border-border bg-popover p-2 shadow-lg ${
+                    className={`absolute z-50 mt-2 grid w-max grid-cols-7 gap-2 rounded-card bg-popover shadow-soft-sm p-2 shadow-lg ${
                         align === 'right' ? 'right-0' : 'left-0'
                     }`}
                     data-testid="area-color-picker-menu"

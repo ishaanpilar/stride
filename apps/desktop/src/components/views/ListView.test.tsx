@@ -820,7 +820,7 @@ describe('ListView', () => {
     }));
 
     const view = renderListView('reference', 'Reference');
-    fireEvent.change(view.getByRole('textbox', { name: /Search/ }), {
+    fireEvent.change(view.getByRole('searchbox', { name: /Search/ }), {
       target: { value: 'printer ADMIN' },
     });
 
@@ -837,7 +837,7 @@ describe('ListView', () => {
     });
 
     const view = renderListView('next', 'Next');
-    fireEvent.change(view.getByRole('textbox', { name: /Search/ }), {
+    fireEvent.change(view.getByRole('searchbox', { name: /Search/ }), {
       target: { value: 'admin' },
     });
 

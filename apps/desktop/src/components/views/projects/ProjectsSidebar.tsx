@@ -467,7 +467,7 @@ export function ProjectsSidebar({
                         areaId={target.id}
                         className="rounded-lg border border-dashed border-border/60 px-2 py-1.5"
                     >
-                        <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        <span className="flex items-center gap-2 text-[13px] font-semibold text-muted-foreground ">
                             {target.color && (
                                 <span
                                     className="w-2 h-2 rounded-full border border-border/50"
@@ -491,13 +491,13 @@ export function ProjectsSidebar({
         <div
             ref={projectNavigationRootRef}
             data-project-navigation-root
-            className={cn("w-full min-h-0 flex flex-col gap-4", !embedded && "h-full border-r border-border pr-5 xl:pr-6")}
+            className={cn("w-full min-h-0 flex flex-col gap-4", !embedded && "h-full pr-5 xl:pr-6")}
         >
             <div data-projects-sidebar-header className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                    <h2 className={embedded ? "text-xs font-semibold text-muted-foreground uppercase tracking-wide" : "text-xl font-bold tracking-tight"}>{t(embedded ? 'projects.activeSection' : 'projects.title')}</h2>
+                    <h2 className={embedded ? "text-[13px] font-semibold text-muted-foreground " : "text-[30px] font-bold leading-9 tracking-[-0.02em]"}>{t(embedded ? 'projects.activeSection' : 'projects.title')}</h2>
                     {areaFilterLabel && (
-                        <span className="text-[10px] uppercase tracking-wide bg-muted/40 text-muted-foreground border border-border/60 rounded-full px-2 py-0.5 truncate max-w-[180px]">
+                        <span className="text-xs bg-well text-muted-foreground rounded-full px-2.5 py-0.5 truncate max-w-[180px]">
                             {t('projects.areaLabel')}: {areaFilterLabel}
                         </span>
                     )}
@@ -507,7 +507,7 @@ export function ProjectsSidebar({
                         <button
                             type="button"
                             onClick={onStartCreate}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                            className="inline-flex h-8 items-center gap-1.5 rounded-control px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-ring"
                         >
                             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                             {newProjectLabel}
@@ -517,7 +517,7 @@ export function ProjectsSidebar({
                         <button
                             type="button"
                             onClick={onToggleCollapsed}
-                            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
+                            className="flex h-8 w-8 items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-ring"
                             title={collapseLabel}
                             aria-label={collapseLabel}
                             aria-controls="projects-sidebar-panel"
@@ -530,7 +530,7 @@ export function ProjectsSidebar({
             </div>
 
             <div className="flex items-center gap-2">
-                <label htmlFor="projects-tag-filter" className="flex-none text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <label htmlFor="projects-tag-filter" className="flex-none text-[13px] font-semibold text-muted-foreground">
                     {t('projects.tagFilter')}
                 </label>
                 <div className="relative min-w-0 flex-1" data-project-tag-filter-shell>
@@ -564,7 +564,7 @@ export function ProjectsSidebar({
             {isCreating && (
                 <form
                     onSubmit={onCreateProject}
-                    className="space-y-2 rounded-lg border border-border/70 bg-card/40 p-2.5"
+                    className="space-y-2 rounded-card bg-card shadow-soft-sm p-2.5"
                 >
                     <label className="sr-only" htmlFor="new-project-title">
                         {createProjectLabel}
@@ -587,14 +587,14 @@ export function ProjectsSidebar({
                                 }
                             }}
                             placeholder={t('projects.projectName')}
-                            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="h-8 min-w-0 flex-1 rounded-control bg-well px-2 text-sm text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-60"
                             disabled={isCreatingProject}
                             aria-busy={isCreatingProject}
                             aria-label={t('projects.projectName')}
                         />
                         <button
                             type="submit"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex h-8 w-8 items-center justify-center btn-gradient transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                             disabled={!newProjectTitle.trim() || isCreatingProject}
                             title={t('projects.create')}
                             aria-label={createProjectLabel}
@@ -607,7 +607,7 @@ export function ProjectsSidebar({
                             aria-label={t('projects.areaLabel')}
                             value={newProjectAreaId}
                             onChange={(e) => onChangeNewProjectAreaId(e.target.value)}
-                            className="h-8 w-full rounded border border-border bg-background px-2 text-xs text-foreground"
+                            className="h-8 w-full rounded-control bg-well px-2 text-xs text-foreground focus-ring"
                             disabled={isCreatingProject}
                         >
                             <option value="">{t('projects.noArea')}</option>
@@ -633,7 +633,7 @@ export function ProjectsSidebar({
 
             <div className={embedded ? "space-y-3" : "space-y-3 overflow-y-auto flex-1"}>
                 {!embedded && groupedActiveProjects.length > 0 && (
-                    <div className="pt-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    <div className="pt-2 text-[13px] font-semibold text-muted-foreground ">
                         {t('projects.activeSection')}
                     </div>
                 )}
@@ -649,7 +649,7 @@ export function ProjectsSidebar({
                                     <button
                                         type="button"
                                         onClick={() => onToggleAreaCollapse('active', areaId)}
-                                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+                                        className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                     >
                                         <span className="flex items-center gap-2">
                                             {area?.color && (
@@ -677,10 +677,10 @@ export function ProjectsSidebar({
                                                     className={cn(
                                                         "group rounded-lg cursor-pointer transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                                                         selectedProjectId === project.id
-                                                            ? "bg-primary/10 text-primary"
+                                                            ? "bg-accent-soft text-accent-text"
                                                             : "hover:bg-muted/40 text-foreground",
                                                         isDragging && "opacity-70",
-                                                        isTaskOver && "ring-2 ring-primary/50 bg-primary/5",
+                                                        isTaskOver && "ring-2 ring-primary/50 bg-accent-soft",
                                                     )}
                                                     role="button"
                                                     tabIndex={0}
@@ -765,7 +765,7 @@ export function ProjectsSidebar({
                         <button
                             type="button"
                             onClick={onToggleDeferredProjects}
-                            className="w-full flex items-center justify-between py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+                            className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{t('projects.deferredSection')}</span>
                             {showDeferredProjects ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -782,7 +782,7 @@ export function ProjectsSidebar({
                                                 <button
                                                     type="button"
                                                     onClick={() => onToggleAreaCollapse('deferred', areaId)}
-                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                                 >
                                                     <span className="flex items-center gap-2">
                                                         {area?.color && (
@@ -805,10 +805,10 @@ export function ProjectsSidebar({
                                                                     className={cn(
                                                                         "group rounded-lg cursor-pointer transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                                                                         selectedProjectId === project.id
-                                                                            ? "bg-primary/10 text-primary"
+                                                                            ? "bg-accent-soft text-accent-text"
                                                                             : "hover:bg-muted/40 text-foreground",
                                                                         isDragging && "opacity-70",
-                                                                        isTaskOver && "ring-2 ring-primary/50 bg-primary/5",
+                                                                        isTaskOver && "ring-2 ring-primary/50 bg-accent-soft",
                                                                     )}
                                                                     role="button"
                                                                     tabIndex={0}
@@ -844,7 +844,7 @@ export function ProjectsSidebar({
                                                                                 {project.title}
                                                                     {isTaskOver && <span className="ml-2 text-xs text-primary">{t('task.moveTo')}</span>}
                                                                             </span>
-                                                                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground uppercase">
+                                                                            <span className="text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
                                                                                 {tFallback(t, `status.${project.status}`, project.status)}
                                                                             </span>
                                                                         </div>
@@ -868,7 +868,7 @@ export function ProjectsSidebar({
                         <button
                             type="button"
                             onClick={onToggleArchivedProjects}
-                            className="w-full flex items-center justify-between py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+                            className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{tFallback(t, 'projects.closed', 'Closed')}</span>
                             {showArchivedProjects ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -885,7 +885,7 @@ export function ProjectsSidebar({
                                                 <button
                                                     type="button"
                                                     onClick={() => onToggleAreaCollapse('archived', areaId)}
-                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                                 >
                                                     <span className="flex items-center gap-2">
                                                         {area?.color && (
@@ -908,7 +908,7 @@ export function ProjectsSidebar({
                                                                             className={cn(
                                                                                 "group rounded-lg cursor-pointer transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                                                                                 selectedProjectId === project.id
-                                                                                    ? "bg-primary/10 text-primary"
+                                                                                    ? "bg-accent-soft text-accent-text"
                                                                                     : "hover:bg-muted/40 text-foreground",
                                                                                 isDragging && "opacity-70",
                                                                             )}
@@ -945,7 +945,7 @@ export function ProjectsSidebar({
                                                                                 <span className="flex-1 truncate font-medium" title={project.title}>
                                                                                     {project.title}
                                                                                 </span>
-                                                                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground uppercase">
+                                                                                <span className="text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
                                                                                     {project.cancelledAt
                                                                                         ? tFallback(t, 'projects.cancelled', 'Cancelled')
                                                                                         : tFallback(t, 'list.done', 'Completed')}
@@ -981,7 +981,7 @@ export function ProjectsSidebar({
                         <button
                             type="button"
                             onClick={onStartCreate}
-                            className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                            className="text-xs px-3 py-1 rounded btn-gradient transition-colors"
                         >
                             {t('projects.create')}
                         </button>
@@ -994,7 +994,7 @@ export function ProjectsSidebar({
                 <div
                     ref={contextMenuRef}
                     role="menu"
-                    className="fixed z-50 min-w-[160px] rounded-md border border-border bg-card shadow-lg p-1 text-sm"
+                    className="fixed z-50 min-w-[160px] rounded-control bg-card shadow-soft-sm shadow-lg p-1 text-sm"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
                 >
                     <button

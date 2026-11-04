@@ -151,7 +151,7 @@ export function DescriptionField({
                     onClick={handlePreviewClick}
                     onKeyDown={handlePreviewKeyDown}
                     className={cn(
-                        'w-full cursor-text text-left text-sm leading-6 bg-muted/30 border border-border rounded px-3 py-2 transition-[border-color,box-shadow] hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40',
+                        'focus-ring w-full cursor-text text-left text-sm leading-6 bg-well rounded-control px-3 py-2 transition-shadow motion-reduce:transition-none',
                         isRtl && 'text-right'
                     )}
                     dir={resolvedDirection}
@@ -188,7 +188,7 @@ export function DescriptionField({
                         minHeight={112}
                         maxHeight={480}
                         className={cn(
-                            'w-full text-sm leading-6 bg-muted/50 border border-border rounded px-3 py-2 resize-none transition-[border-color,box-shadow] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40',
+                            'focus-ring w-full text-sm leading-6 bg-well rounded-control px-3 py-2 resize-none',
                             isRtl && 'text-right'
                         )}
                         placeholder={t('taskEdit.descriptionPlaceholder')}

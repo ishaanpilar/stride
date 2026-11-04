@@ -321,7 +321,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
     const renderHighlighted = (text: string) => {
         return highlightText(text).map((segment, index) => (
             segment.highlighted
-                ? <span key={index} className="text-primary font-semibold">{segment.text}</span>
+                ? <span key={index} className="text-accent-text font-semibold">{segment.text}</span>
                 : segment.text
         ));
     };
@@ -528,16 +528,16 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
             onClose={() => setIsOpen(false)}
             labelledBy={dialogTitleId}
             placement="top"
-            overlayClassName="pt-[20vh] bg-background/80 backdrop-blur-sm animate-in fade-in-0"
+            overlayClassName="pt-[20vh] bg-black/30 backdrop-blur-sm animate-in fade-in-0"
 
             closeOnEscape={false}
             onKeyDown={handleDialogKeyDown}
 
 
-            panelClassName="max-w-lg max-h-[76vh] animate-in zoom-in-95 duration-100"
+            panelClassName="max-w-lg max-h-[76vh] animate-in zoom-in-95 duration-100 motion-reduce:animate-none"
         >
             <h2 id={dialogTitleId} className="sr-only">{t('search.title')}</h2>
-            <div className="shrink-0 flex items-center border-b px-4 py-3 gap-3">
+            <div className="shrink-0 flex items-center px-4 py-3 gap-3">
                 <Search className="w-5 h-5 text-muted-foreground" />
                 <input
                     ref={inputRef}
@@ -572,14 +572,14 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                 {canSave && (
                     <button
                         onClick={handleSaveSearch}
-                        className="flex items-center gap-1 whitespace-nowrap rounded-md bg-muted/50 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted"
+                        className="flex items-center gap-1 whitespace-nowrap rounded-control bg-well px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent focus-ring"
                         title={t('search.saveSearch')}
                     >
                         <Save className="w-3 h-3" />
                         {t('search.saveSearch')}
                     </button>
                 )}
-                <div className="text-xs text-muted-foreground border rounded px-1.5 py-0.5 hidden sm:inline-block">
+                <div className="text-xs text-muted-foreground bg-well rounded-md px-1.5 py-0.5 hidden sm:inline-block">
                     ESC
                 </div>
                 <button
@@ -588,21 +588,21 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                     aria-expanded={filtersOpen}
                     onClick={() => setFiltersOpen((prev) => !prev)}
                     className={cn(
-                        "p-1.5 rounded-md border text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors",
-                        filtersOpen && "bg-muted/60 text-foreground"
+                        "p-1.5 rounded-control bg-card shadow-soft-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors focus-ring",
+                        filtersOpen && "bg-accent-soft text-accent-text"
                     )}
                 >
                     <SlidersHorizontal className="w-4 h-4" />
                 </button>
             </div>
             {activeChips.length > 0 && (
-                <div className="shrink-0 px-4 py-2 border-b flex flex-wrap gap-2">
+                <div className="shrink-0 px-4 py-2 flex flex-wrap gap-2">
                     {activeChips.map((chip) => (
                         <button
                             key={chip.key}
                             type="button"
                             onClick={chip.onRemove}
-                            className="flex items-center gap-1 whitespace-nowrap rounded-full border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60"
+                            className="flex items-center gap-1 whitespace-nowrap rounded-pill bg-well px-2.5 h-[26px] text-xs text-muted-foreground hover:bg-accent focus-ring"
                         >
                             <span>{chip.label}</span>
                             <X className="w-3 h-3" />
@@ -611,9 +611,9 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                 </div>
             )}
             {filtersOpen && (
-                <div className="min-h-0 overflow-y-auto px-4 py-3 border-b space-y-3 text-xs">
+                <div className="min-h-0 overflow-y-auto px-4 py-3 space-y-3 text-xs">
                     <div className="space-y-2">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">{filterPresentation.sections.status}</div>
+                        <div className="text-xs font-semibold text-muted-foreground">{filterPresentation.sections.status}</div>
                         <div className="flex flex-wrap gap-2">
                             {(['inbox', 'next', 'waiting', 'someday', 'reference', 'done', 'archived'] as TaskStatus[]).map((status) => (
                                 <button
@@ -621,10 +621,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                                     type="button"
                                     onClick={() => toggleStatus(status)}
                                     className={cn(
-                                        "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                        "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                         selectedStatuses.includes(status)
-                                            ? "bg-primary/15 text-primary border-primary/40"
-                                            : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                            ? "bg-accent-soft text-accent-text"
+                                            : "bg-well text-muted-foreground hover:bg-accent"
                                     )}
                                 >
                                     {t(`status.${status}`) ?? status}
@@ -633,7 +633,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">{filterPresentation.sections.scope}</div>
+                        <div className="text-xs font-semibold text-muted-foreground">{filterPresentation.sections.scope}</div>
                         <div className="flex flex-wrap gap-2">
                             {(Object.keys(filterPresentation.scope) as GlobalSearchScope[]).map((option) => (
                                 <button
@@ -641,10 +641,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                                     type="button"
                                     onClick={() => setScope(option)}
                                     className={cn(
-                                        "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                        "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                         scope === option
-                                            ? "bg-primary/15 text-primary border-primary/40"
-                                            : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                            ? "bg-accent-soft text-accent-text"
+                                            : "bg-well text-muted-foreground hover:bg-accent"
                                     )}
                                 >
                                     {filterPresentation.scope[option]}
@@ -654,12 +654,12 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div className="space-y-2">
-                            <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">{filterPresentation.sections.area}</div>
+                            <div className="text-xs font-semibold text-muted-foreground">{filterPresentation.sections.area}</div>
                             <select
                                 aria-label={tFallback(t, 'taskEdit.areaLabel', 'Area')}
                                 value={selectedArea}
                                 onChange={(event) => setSelectedArea(event.target.value)}
-                                className="w-full rounded border border-border bg-muted/40 px-2 py-1 text-xs"
+                                className="w-full rounded-control bg-well shadow-soft-inset px-2 py-1 text-xs"
                             >
                                 <option value="all">{tFallback(t, 'projects.allAreas', 'All areas')}</option>
                                 <option value="none">{tFallback(t, 'taskEdit.noAreaOption', 'No area')}</option>
@@ -669,12 +669,12 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                             </select>
                         </div>
                         <div className="space-y-2">
-                            <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">{filterPresentation.sections.due}</div>
+                            <div className="text-xs font-semibold text-muted-foreground">{filterPresentation.sections.due}</div>
                             <select
                                 aria-label={filterPresentation.sections.due}
                                 value={duePreset}
                                 onChange={(event) => setDuePreset(event.target.value as DuePreset)}
-                                className="w-full rounded border border-border bg-muted/40 px-2 py-1 text-xs"
+                                className="w-full rounded-control bg-well shadow-soft-inset px-2 py-1 text-xs"
                             >
                                 {(Object.keys(filterPresentation.due) as DuePreset[]).map((value) => (
                                     <option key={value} value={value}>{filterPresentation.due[value]}</option>
@@ -683,7 +683,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">
+                        <div className="text-xs font-semibold text-muted-foreground">
                             {tFallback(t, 'taskEdit.locationLabel', 'Location')}
                         </div>
                         <input
@@ -692,11 +692,11 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                             value={locationQuery}
                             onChange={(event) => setLocationQuery(event.target.value)}
                             placeholder={tFallback(t, 'taskEdit.locationPlaceholder', 'e.g. Office')}
-                            className="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
+                            className="w-full rounded-control bg-well shadow-soft-inset px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
                         />
                     </div>
                     <div className="space-y-2">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground/80">{filterPresentation.sections.tokens}</div>
+                        <div className="text-xs font-semibold text-muted-foreground">{filterPresentation.sections.tokens}</div>
                         <div className="flex flex-wrap gap-2 max-h-20 overflow-y-auto">
                             {allTokens.map((token) => (
                                 <button
@@ -704,10 +704,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                                     type="button"
                                     onClick={() => toggleToken(token)}
                                     className={cn(
-                                        "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                        "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                         selectedTokens.includes(token)
-                                            ? "bg-primary/15 text-primary border-primary/40"
-                                            : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                            ? "bg-accent-soft text-accent-text"
+                                            : "bg-well text-muted-foreground hover:bg-accent"
                                     )}
                                 >
                                     {token}
@@ -721,10 +721,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                             aria-pressed={includeCompleted}
                             onClick={() => setIncludeCompleted((prev) => !prev)}
                             className={cn(
-                                "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                 includeCompleted
-                                    ? "bg-primary/15 text-primary border-primary/40"
-                                    : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                    ? "bg-accent-soft text-accent-text"
+                                    : "bg-well text-muted-foreground hover:bg-accent"
                             )}
                         >
                             {includeCompletedText}
@@ -734,10 +734,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                             aria-pressed={includeReference}
                             onClick={() => setIncludeReference((prev) => !prev)}
                             className={cn(
-                                "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                 includeReference
-                                    ? "bg-primary/15 text-primary border-primary/40"
-                                    : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                    ? "bg-accent-soft text-accent-text"
+                                    : "bg-well text-muted-foreground hover:bg-accent"
                             )}
                         >
                             {includeReferenceText}
@@ -747,10 +747,10 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                             aria-pressed={hideFutureTasks}
                             onClick={() => setHideFutureTasks((prev) => !prev)}
                             className={cn(
-                                "whitespace-nowrap rounded-full border px-2 py-1 text-xs transition-colors",
+                                "whitespace-nowrap rounded-pill px-3 h-[26px] inline-flex items-center text-xs font-medium transition-colors focus-ring",
                                 hideFutureTasks
-                                    ? "bg-primary/15 text-primary border-primary/40"
-                                    : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/60"
+                                    ? "bg-accent-soft text-accent-text"
+                                    : "bg-well text-muted-foreground hover:bg-accent"
                             )}
                         >
                             {hideFutureTasksText}
@@ -791,7 +791,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         </div>
                         <div className="space-y-2 animate-pulse">
                             {Array.from({ length: 4 }).map((_, index) => (
-                                <div key={index} className="px-3 py-2.5 rounded-lg border border-border/60 bg-muted/30">
+                                <div key={index} className="px-3 py-2.5 rounded-control bg-well">
                                     <div className="h-3.5 w-2/3 rounded bg-muted-foreground/20" />
                                     <div className="mt-2 h-2.5 w-1/3 rounded bg-muted-foreground/15" />
                                 </div>
@@ -822,8 +822,8 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         key={`${result.type}-${result.item.id}`}
                         onClick={() => handleSelect(result)}
                         className={cn(
-                            "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm transition-colors",
-                            index === selectedIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted/50"
+                            "w-full flex items-center gap-3 px-3 py-2.5 rounded-control text-left text-sm transition-colors focus-ring-inset",
+                            index === selectedIndex ? "bg-accent-soft text-foreground" : "hover:bg-accent"
                         )}
                         onMouseEnter={() => setSelectedIndex(index)}
                         data-search-index={index}
@@ -831,7 +831,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         {result.type === 'project' ? (
                             <FileText className="w-4 h-4 text-info" />
                         ) : (
-                            <CheckCircle className={cn("w-4 h-4", (result.item as SearchTaskResult).status === 'done' ? "text-success" : "text-muted-foreground")} />
+                            <CheckCircle className={cn("w-4 h-4", (result.item as SearchTaskResult).status === 'done' ? "text-success-text" : "text-muted-foreground")} />
                         )}
 
                         <div className="flex-1 flex flex-col overflow-hidden">
@@ -853,7 +853,7 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                 ))}
 
                 {trimmedQuery !== '' && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground border-t border-border mt-2">
+                    <div className="px-3 py-2 text-xs text-muted-foreground mt-2">
                         {t('search.helpOperators')}
                     </div>
                 )}

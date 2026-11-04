@@ -62,3 +62,7 @@ export const combineDateAndTime = (dateValue: string, timeValue: string): Date |
     }
     return date;
 };
+
+/** Soft event fill: the project/calendar colour at ~15% opacity (readable text stays foreground). */
+export const softEventFill = (color?: string | null): string | undefined =>
+    color ? `color-mix(in srgb, ${color} 15%, transparent)` : undefined;

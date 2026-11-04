@@ -8,7 +8,7 @@ import {
     type Task,
 } from '@stride/core';
 import { cn } from '../../../lib/utils';
-import { DESKTOP_HOUR_HEIGHT } from './calendar-primitives';
+import { DESKTOP_HOUR_HEIGHT, softEventFill } from './calendar-primitives';
 
 const MARKER_ROW_HEIGHT = 32;
 const MAX_VISIBLE_ROWS = 5;
@@ -49,7 +49,7 @@ export function CalendarDeadlineLane({
             })}
             {groups.map((group) => (
                 <div key={group.markers[0].id} data-calendar-deadline-group
-                    className="pointer-events-auto absolute left-3 right-1 overflow-y-auto rounded border border-border/60 bg-card"
+                    className="pointer-events-auto absolute left-3 right-1 overflow-y-auto rounded-control bg-card shadow-soft-sm"
                     style={{ top: group.startMinutes / 60 * DESKTOP_HOUR_HEIGHT, maxHeight: MAX_VISIBLE_ROWS * MARKER_ROW_HEIGHT }}
                     onClick={(event) => event.stopPropagation()}>
                     {group.markers.map((marker) => {
@@ -64,10 +64,10 @@ export function CalendarDeadlineLane({
                                 {...(!projected ? { 'data-task-edit-trigger': true } : {})}
                                 draggable={false} disabled={projected}
                                 className={cn(
-                                    'block h-8 w-full border-l-2 border-muted-foreground/60 px-1.5 text-left text-[10px] text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary/40',
+                                    'block h-8 w-full border-l-0 px-1.5 text-left text-[10px] text-foreground hover:bg-muted focus-ring-inset',
                                     projected && 'border-dashed text-muted-foreground', taskMenuRingClass(marker.task.id),
                                 )}
-                                style={{ borderLeftColor: getTaskAccentColor(marker.task) }}
+                                style={{ borderLeftColor: getTaskAccentColor(marker.task), backgroundColor: softEventFill(getTaskAccentColor(marker.task)) }}
                                 title={`${marker.title} · ${timeLabel}${projected ? ` · ${projectedLabel}` : ''}`}
                                 onClick={(event) => {
                                     event.stopPropagation();

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { ViewHeader } from '../ui/ViewHeader';
 import { ErrorBoundary } from '../ErrorBoundary';
 import {
     buildTrashTimeline,
@@ -309,17 +310,16 @@ export function TrashView() {
     return (
         <ErrorBoundary>
             <div className={`space-y-6 ${LIST_END_GAP}`} data-list-end>
-            <header className="flex items-center justify-between">
-                <h2 className="text-3xl font-bold tracking-tight">{t('trash.title')}</h2>
+            <ViewHeader
+                title={t('trash.title')}
+                count={`${trashedTasks.length} ${t('common.tasks')} · ${trashedProjects.length} ${t('projects.title')}`}
+                actions={
                 <div className="flex items-center gap-3">
-                    <div className="text-sm text-muted-foreground">
-                        {trashedTasks.length} {t('common.tasks')} · {trashedProjects.length} {t('projects.title')}
-                    </div>
                     {trashedItemCount > 0 && (
                         <button
                             type="button"
                             onClick={toggleSelectionMode}
-                            className="text-xs px-3 py-1 rounded-md border transition-colors bg-card text-foreground border-border hover:bg-muted"
+                            className="h-8 rounded-control border border-border bg-card px-3 text-[13px] font-medium text-foreground shadow-soft-sm transition-colors hover:bg-accent focus-ring"
                         >
                             {selectionMode ? t('common.done') : t('bulk.select')}
                         </button>
@@ -327,12 +327,13 @@ export function TrashView() {
                     <button
                         onClick={handleClearTrash}
                         disabled={trashedItemCount === 0}
-                        className="text-xs px-3 py-1 rounded-md border transition-colors bg-muted/50 text-muted-foreground border-border hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="h-8 rounded-control border border-border bg-card px-3 text-[13px] font-medium text-muted-foreground shadow-soft-sm transition-colors hover:bg-accent hover:text-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         {t('trash.clearAll')}
                     </button>
                 </div>
-            </header>
+                }
+            />
 
             {trashedItemCount > 0 && (
                 <p className="text-sm text-muted-foreground">
@@ -355,7 +356,7 @@ export function TrashView() {
                             type="button"
                             onClick={() => { void handleBulkRestore(); }}
                             disabled={selectionCount === 0}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 rounded-control bg-card shadow-soft-sm px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <Undo2 className="h-3.5 w-3.5" />
                             {t('trash.restore')}

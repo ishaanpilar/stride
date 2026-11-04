@@ -336,7 +336,7 @@ export function DestinationSelector({
                         data-selector-dropdown="true"
                         style={fixedDropdownStyle}
                         className={cn(
-                            'z-[70] rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-lg',
+                            'z-[70] rounded-control border border-border bg-popover p-1 text-xs text-popover-foreground shadow-soft-sm',
                             menuClassName,
                         )}
                         onKeyDown={handleDropdownKeyDown}

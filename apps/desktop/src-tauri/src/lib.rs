@@ -71,6 +71,7 @@ mod storage_layout;
 mod sync;
 mod sync_crypto;
 mod sync_encryption;
+mod system_accent;
 mod ui;
 mod window_state;
 mod workspaces;
@@ -165,6 +166,7 @@ use sync_encryption::{
     restore_sync_encryption_verified_remote,
     mark_sync_encryption_transition_incomplete, set_sync_encryption_key_material,
 };
+use system_accent::get_system_accent_color;
 use ui::{
     acknowledge_close_request, apply_global_quick_add_shortcut, build_tray_menu, consume_quick_add_pending,
     create_quick_add_window, get_system_theme_preference, hide_quick_add_window,
@@ -1840,10 +1842,18 @@ pub fn run() {
 
 
                 main_window_builder = main_window_builder.visible(false);
+                // Stride soft UI: the sidebar runs under the traffic lights (macOS only).
+                #[cfg(target_os = "macos")]
+                {
+                    main_window_builder = main_window_builder
+                        .title_bar_style(tauri::TitleBarStyle::Overlay)
+                        .hidden_title(true);
+                }
                 if let Some(title) = workspaces::window_title() {
                     main_window_builder = main_window_builder.title(title);
                 }
                 let main_window = main_window_builder.build()?;
+                system_accent::install_system_accent_listener(app.handle());
                 install_renderer_recovery(&main_window);
                 crate::window_state::restore(&main_window);
                 reveal_main_window_after_timeout(&app.handle());
@@ -2240,6 +2250,7 @@ pub fn run() {
             get_log_file_path,
             consume_quick_add_pending,
             get_system_theme_preference,
+            get_system_accent_color,
             set_global_quick_add_shortcut,
             hide_quick_add_window,
             get_install_source,

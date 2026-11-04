@@ -13,12 +13,12 @@ import { cn } from '../../../lib/utils';
 import { ToolbarSelect } from './ToolbarSelect';
 
 
-export const TOOLBAR_CONTROL_BASE = 'h-9 text-xs border transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40';
-export const TOOLBAR_CONTROL_MUTED = 'bg-card text-muted-foreground border-border hover:bg-muted/70 hover:text-foreground';
-export const TOOLBAR_CONTROL_ACTIVE = 'bg-primary/10 text-primary border-primary';
+export const TOOLBAR_CONTROL_BASE = 'focus-ring h-8 text-[13px] font-medium border shadow-soft-sm transition-[background-color,box-shadow] duration-200 motion-reduce:transition-none';
+export const TOOLBAR_CONTROL_MUTED = 'bg-card text-muted-foreground border-border hover:bg-accent hover:text-accent-foreground';
+export const TOOLBAR_CONTROL_ACTIVE = 'bg-primary/10 text-accent-text border-primary/40';
 
 
-export const VIEW_FILTER_INPUT = 'w-full rounded border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30';
+export const VIEW_FILTER_INPUT = 'focus-ring w-full rounded-control bg-well px-3 py-2 text-sm shadow-soft-inset placeholder:text-tertiary';
 
 
 export const LIST_END_GAP = 'pb-4';
@@ -49,7 +49,7 @@ export function ToolbarButton({ active = false, children, disabled = false, icon
             {...aria}
             className={cn(
                 TOOLBAR_CONTROL_BASE,
-                'inline-flex items-center gap-1.5 rounded-lg px-3',
+                'inline-flex items-center gap-1.5 rounded-control px-3',
                 active ? TOOLBAR_CONTROL_ACTIVE : TOOLBAR_CONTROL_MUTED,
                 'disabled:cursor-not-allowed disabled:opacity-50',
             )}

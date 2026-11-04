@@ -228,7 +228,7 @@ export function ProjectDetailsHeader({
                         onClick={onToggleDetails}
                         aria-expanded={detailsExpanded}
                         aria-controls="project-details-fields"
-                        className={`inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${detailsExpanded ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'}`}
+                        className={`inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${detailsExpanded ? 'bg-accent-soft text-accent-text' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'}`}
                     >
                         <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
                         {detailsLabel}
@@ -251,7 +251,7 @@ export function ProjectDetailsHeader({
                                 ref={menuPanelRef}
                                 role="menu"
                                 style={menuStyle}
-                                className="z-50 min-w-[180px] rounded-md border border-border bg-card p-1 shadow-lg"
+                                className="z-50 min-w-[180px] rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                             >
                                 <button
                                     type="button"

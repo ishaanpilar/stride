@@ -2624,6 +2624,14 @@ export const faOverrides: Record<string, string> = {
 
         'mindSweep.launchButton': 'پاکسازی ذهن',
 
+        'calendar.tomorrow': 'فردا',
+
+        'calendar.yesterday': 'دیروز',
+
+        'list.todayProgress': 'امروز: {done} از {total} انجام شد',
+
+        'list.todayRemaining': '{left} مانده · حدود {duration}',
+
         'mindSweep.guidedLabel': 'پاک‌سازی ذهن با راهنما',
 
         'quickCapture.button': 'ثبت',

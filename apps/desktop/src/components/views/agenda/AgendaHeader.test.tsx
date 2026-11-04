@@ -190,15 +190,15 @@ describe('AgendaHeader', () => {
         const { container, getByRole, getByText } = renderHeader();
 
         const groupTrigger = getByRole('combobox', { name: 'Group' });
-        expect(groupTrigger.className).toContain('h-9');
-        expect(groupTrigger.className).toContain('rounded-lg');
+        expect(groupTrigger.className).toContain('h-8');
+        expect(groupTrigger.className).toContain('rounded-control');
         expect(getByText('Group')).toBeInTheDocument();
 
         const buttons = [...container.querySelectorAll('button')];
         expect(buttons.length).toBeGreaterThan(0);
         buttons.forEach((button) => {
-            expect(button.className).toContain('h-9');
-            expect(button.className).toContain('rounded-lg');
+            expect(button.className).toContain('h-8');
+            expect(button.className).toContain('rounded-control');
             expect(button.className).not.toContain('rounded-full');
         });
     });

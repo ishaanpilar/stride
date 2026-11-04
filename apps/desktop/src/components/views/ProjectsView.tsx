@@ -839,7 +839,7 @@ export function ProjectsView() {
                         <div
                             className={`relative min-h-0 flex-none ${
                                 isCompactProjectsLayout
-                                    ? `absolute inset-y-0 left-0 z-20 border-r border-border bg-background pr-4 shadow-lg ${
+                                    ? `absolute inset-y-0 left-0 z-20 bg-background pr-4 shadow-soft ${
                                         projectsSidebarVisible ? '' : 'hidden'
                                     }`
                                     : ''
@@ -908,7 +908,7 @@ export function ProjectsView() {
                 </div>
                 <DragOverlay dropAnimation={null}>
                     {draggedTask ? (
-                        <div className="pointer-events-none max-w-[280px] truncate rounded-lg border border-border bg-card px-3 py-2 text-sm shadow-lg">
+                        <div className="pointer-events-none max-w-[280px] truncate rounded-card bg-card shadow-soft-sm px-3 py-2 text-sm shadow-lg">
                             {draggedTask.title}
                         </div>
                     ) : null}

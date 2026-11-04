@@ -1,5 +1,7 @@
 import { CheckSquare, List } from 'lucide-react';
 import { tFallback, type TaskSortBy } from '@stride/core';
+import { Button } from '../../ui/Button';
+import { ViewHeader } from '../../ui/ViewHeader';
 import { CONTEXTS_AXES, type ContextsGroupBy } from '../list/next-grouping';
 import { GroupBySelect } from '../list/GroupBySelect';
 import {
@@ -27,28 +29,20 @@ export function ReviewHeader({
     labels,
 }: ReviewHeaderProps) {
     return (
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-                <h2 className="text-3xl font-bold tracking-tight">{title}</h2>
-                <p className="text-sm text-muted-foreground">{taskCountLabel}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                <button
-                    type="button"
-                    onClick={onShowDailyGuide}
-                    className="h-10 whitespace-nowrap rounded-lg bg-muted/50 px-4 text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
-                >
-                    {labels.dailyReview}
-                </button>
-                <button
-                    type="button"
-                    onClick={onShowGuide}
-                    className="h-10 whitespace-nowrap rounded-lg bg-primary px-4 text-primary-foreground transition-colors hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                >
-                    {labels.weeklyReview}
-                </button>
-            </div>
-        </header>
+        <ViewHeader
+            title={title}
+            count={taskCountLabel}
+            actions={
+                <>
+                    <Button type="button" variant="secondary" onClick={onShowDailyGuide}>
+                        {labels.dailyReview}
+                    </Button>
+                    <Button type="button" variant="primary" onClick={onShowGuide}>
+                        {labels.weeklyReview}
+                    </Button>
+                </>
+            }
+        />
     );
 }
 

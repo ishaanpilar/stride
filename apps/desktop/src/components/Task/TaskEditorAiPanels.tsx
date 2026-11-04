@@ -46,7 +46,7 @@ export function TaskEditorAiMenu({ ai, t }: TaskEditorAiMenuProps) {
                     {isAIWorking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 </button>
                 {aiMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-44 rounded-md border border-border bg-card shadow-lg overflow-hidden z-10">
+                    <div className="absolute right-0 mt-2 w-44 rounded-control border border-border bg-card shadow-soft overflow-hidden z-10">
                         <button
                             type="button"
                             onClick={() => {
@@ -116,7 +116,7 @@ export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAi
     return (
         <>
             {pendingCopilotParts.length > 0 && (
-                <div className="text-xs px-2 py-1 rounded bg-muted/30 border border-border text-muted-foreground flex flex-wrap items-center gap-1.5">
+                <div className="text-xs px-2 py-1 rounded-control bg-well text-muted-foreground flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />{t('copilot.suggested')}</span>
                     {pendingCopilotParts.map((part) => (
                         <button
@@ -141,7 +141,7 @@ export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAi
                 </div>
             )}
             {hasAppliedCopilot && (
-                <div className="text-xs px-2 py-1 rounded bg-muted/30 border border-border text-muted-foreground">
+                <div className="text-xs px-2 py-1 rounded-control bg-well text-muted-foreground">
                     <Check className="mr-1 inline h-3 w-3 align-[-0.125em]" aria-hidden="true" />{t('copilot.applied')}{' '}
                     {copilotContext ? `${copilotContext} ` : ''}
                     {timeEstimatesEnabled && copilotEstimate ? `${copilotEstimate}` : ''}
@@ -149,12 +149,12 @@ export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAi
                 </div>
             )}
             {aiError && (
-                <div className="text-xs text-muted-foreground border border-border rounded-md p-2 bg-muted/20 break-words whitespace-pre-wrap">
+                <div className="text-xs text-muted-foreground rounded-control bg-well p-2 bg-well break-words whitespace-pre-wrap">
                     {aiError}
                 </div>
             )}
             {aiBreakdownSteps && (
-                <div className="border border-border rounded-md p-2 space-y-2 text-xs">
+                <div className="rounded-control bg-well p-2 space-y-2 text-xs">
                     <div className="text-muted-foreground">{t('ai.breakdownTitle')}</div>
                     <div className="space-y-1">
                         {aiBreakdownSteps.map((step, index) => (
@@ -182,7 +182,7 @@ export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAi
                 </div>
             )}
             {aiClarifyResponse && (
-                <div className="border border-border rounded-md p-2 space-y-2 text-xs">
+                <div className="rounded-control bg-well p-2 space-y-2 text-xs">
                     <div className="text-muted-foreground">{aiClarifyResponse.question}</div>
                     <div className="flex flex-wrap gap-2">
                         {aiClarifyResponse.options.map((option) => (

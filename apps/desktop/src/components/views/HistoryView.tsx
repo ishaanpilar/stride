@@ -51,7 +51,7 @@ export function HistoryView({ selectedTab, onSelectTab }: HistoryViewProps) {
                     <div
                         role="tablist"
                         aria-label={t('nav.history')}
-                        className="inline-flex rounded-lg border border-border bg-muted/30 p-1"
+                        className="inline-flex gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset"
                     >
                         {tabs.map((tab) => {
                             const selected = selectedTab === tab.id;
@@ -69,9 +69,9 @@ export function HistoryView({ selectedTab, onSelectTab }: HistoryViewProps) {
                                     onClick={() => onSelectTab(tab.id)}
                                     onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                                     className={cn(
-                                        'inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 motion-reduce:transition-none',
+                                        'inline-flex h-8 items-center gap-2 rounded-[8px] px-3 text-[13px] font-medium transition-colors focus-ring motion-reduce:transition-none',
                                         selected
-                                            ? 'bg-background text-foreground shadow-sm'
+                                            ? 'bg-card text-foreground shadow-soft-sm'
                                             : 'text-muted-foreground hover:text-foreground',
                                     )}
                                 >

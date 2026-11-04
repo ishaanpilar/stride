@@ -11,6 +11,7 @@ const SANDBOX_NATIVE_COMMAND_ALLOWLIST = new Set([
     'app_lock_engage',
     'append_log_line',
     'get_app_lock_state',
+    'get_system_accent_color',
     'get_system_theme_preference',
     'notify_ui_ready',
     'quit_app',

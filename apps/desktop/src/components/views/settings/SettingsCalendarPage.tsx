@@ -122,7 +122,7 @@ export function SettingsCalendarPage({
     return (
         <div className="space-y-6">
             {showSystemCalendarSection && (
-                <div className="bg-card border border-border rounded-lg p-6 space-y-4">
+                <div className="p-6 space-y-4 soft-surface rounded-card">
                     <div data-settings-key="calendarSystemTitle" className="space-y-1">
                         <div className="text-sm font-semibold">{t.calendarSystemTitle}</div>
                         <p className="text-sm text-muted-foreground">{t.calendarSystemDesc}</p>
@@ -136,7 +136,7 @@ export function SettingsCalendarPage({
                             <button
                                 type="button"
                                 onClick={onRequestSystemCalendarPermission}
-                                className="text-sm px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                                className="text-sm px-3 py-2 rounded-control btn-gradient focus-ring transition-colors"
                             >
                                 {t.calendarSystemRequestAccess}
                             </button>
@@ -167,7 +167,7 @@ export function SettingsCalendarPage({
                                         value={calendarPushTargetCalendarId ?? ''}
                                         onChange={(event) => onCalendarPushTargetChange(event.target.value || null)}
                                         disabled={calendarPushLoading}
-                                        className="w-full text-sm px-3 py-2 rounded border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                        className="w-full text-sm px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                     >
                                         <option value="">{t.calendarPushManagedTarget}</option>
                                         {calendarPushTargets.map((target) => (
@@ -182,7 +182,7 @@ export function SettingsCalendarPage({
                                     type="button"
                                     onClick={onRefreshCalendarPushTargets}
                                     disabled={calendarPushLoading}
-                                    className="text-sm px-3 py-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-60"
+                                    className="text-sm px-3 py-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-60"
                                 >
                                     {calendarPushLoading ? t.calendarPushLoading : t.calendarPushRefresh}
                                 </button>
@@ -192,7 +192,7 @@ export function SettingsCalendarPage({
                 </div>
             )}
 
-            <div className="bg-card border border-border rounded-lg p-6 space-y-4">
+            <div className="p-6 space-y-4 soft-surface rounded-card">
                 <div data-settings-key="calendar" className="space-y-1">
                     <div className="text-sm font-medium">{t.calendar}</div>
                     <p className="text-xs text-muted-foreground">{t.calendarDesc}</p>
@@ -201,7 +201,7 @@ export function SettingsCalendarPage({
                     href={getDocsGuideUrl('use/calendar-integration', language)}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    className="inline-flex items-center gap-1 text-sm font-medium text-accent-text hover:underline"
                 >
                     {t.calendarIntegrationGuideTitle}
                     <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
@@ -215,7 +215,7 @@ export function SettingsCalendarPage({
                             aria-label={t.calendarName}
                             onChange={(e) => onCalendarNameChange(e.target.value)}
                             placeholder={t.calendarName}
-                            className="w-full text-sm px-3 py-2 rounded border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            className="w-full text-sm px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </div>
                     <div data-settings-key="calendarUrl" className="space-y-1">
@@ -225,7 +225,7 @@ export function SettingsCalendarPage({
                             aria-label={t.calendarUrl}
                             onChange={(e) => onCalendarUrlChange(e.target.value)}
                             placeholder="https://... or file:///..."
-                            className="w-full text-sm px-3 py-2 rounded border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            className="w-full text-sm px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                     </div>
                 </div>
@@ -238,7 +238,7 @@ export function SettingsCalendarPage({
                             className={cn(
                                 "text-sm px-3 py-2 rounded-md transition-colors",
                                 newCalendarUrl.trim()
-                                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                                    ? "btn-gradient focus-ring"
                                     : "bg-muted text-muted-foreground cursor-not-allowed"
                             )}
                         >
@@ -248,20 +248,20 @@ export function SettingsCalendarPage({
                             <button
                                 type="button"
                                 onClick={onChooseLocalCalendarFile}
-                                className="text-sm px-3 py-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                                className="text-sm px-3 py-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                             >
                                 {t.calendarChooseLocalFile}
                             </button>
                         )}
                     </div>
                     {calendarError && (
-                        <div className="text-xs text-destructive">{calendarError}</div>
+                        <div className="text-xs text-danger-text">{calendarError}</div>
                     )}
                 </div>
             </div>
 
             {externalCalendars.length > 0 && (
-                <div className="bg-card border border-border rounded-lg overflow-hidden">
+                <div className="overflow-hidden soft-surface rounded-card">
                     <div data-settings-key="externalCalendars" className="px-4 py-3 text-sm font-medium border-b border-border">{t.externalCalendars}</div>
                     <div className="divide-y divide-border">
                         {externalCalendars.map((calendar) => (
@@ -330,7 +330,7 @@ export function SettingsCalendarPage({
                                     />
                                     <button
                                         onClick={() => onRemoveCalendar(calendar.id)}
-                                        className="text-sm text-destructive hover:text-destructive/80"
+                                        className="text-sm text-danger-text hover:text-destructive/80"
                                     >
                                         {t.calendarRemove}
                                     </button>

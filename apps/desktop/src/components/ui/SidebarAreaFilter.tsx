@@ -148,7 +148,7 @@ export function SidebarAreaFilter({
                 <div
                     ref={dropdownRef}
                     className={cn(
-                        'absolute z-20 rounded-lg border border-border bg-popover p-1 shadow-lg',
+                        'absolute z-20 rounded-control border border-border bg-popover p-1 shadow-soft-sm',
                         collapsed ? 'bottom-0 left-full ml-2 w-52' : 'w-full',
                         !collapsed && dropdownClassName,
                     )}

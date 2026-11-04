@@ -14,11 +14,11 @@ export function TaskProjectConversionDialog({ task, onConfirm, onClose }: {
     const taskReminderDefault = useTaskStore(state => state.settings.taskReminderDefault);
     const blocked = checklistProjectBlockReason(task, { taskReminderDefault });
     return <Dialog label={t('task.createProjectFromTask')} onClose={busy ? () => {} : onClose}>
-        <DialogBody className="p-6 space-y-4">
-            <h2 className="font-semibold">{t('task.createProjectFromTask')}</h2>
+        <DialogBody className="px-6 pt-5 pb-2 space-y-4">
+            <h2 className="text-[17px] font-semibold">{t('task.createProjectFromTask')}</h2>
             <label className="block">{t('projects.projectName')}
                 <input autoFocus value={title} onChange={event => setTitle(event.target.value)} disabled={busy}
-                    className="mt-2 w-full rounded border border-border bg-background p-2" />
+                    className="mt-2 w-full rounded-control bg-well shadow-soft-inset px-3 py-2 focus-ring" />
             </label>
             <label className="flex items-center gap-3 min-h-11">
                 <input type="checkbox" checked={expand} disabled={busy || (!!blocked && !expand)}
@@ -27,7 +27,7 @@ export function TaskProjectConversionDialog({ task, onConfirm, onClose }: {
             <p className="text-sm text-muted-foreground">{t(expand ? 'task.expandChecklistDescription' : 'task.keepChecklistDescription')}</p>
             {blocked && <p className="text-sm text-muted-foreground">{t(blocked)}</p>}
         </DialogBody>
-        <DialogFooter className="p-6 flex justify-end gap-2">
+        <DialogFooter className="px-6 pb-5 pt-2 flex justify-end gap-2">
             <Button variant="secondary" disabled={busy} onClick={onClose}>{t('common.cancel')}</Button>
             <Button disabled={busy || !title.trim() || (expand && !!blocked)} onClick={async () => {
                 setBusy(true);

@@ -55,11 +55,11 @@ export function CalendarPlanningPanel({
         return (
 
 
-            <aside className="rounded-lg border border-border bg-card p-2 shadow-sm">
+            <aside className="rounded-card bg-card shadow-soft-sm p-2 shadow-sm">
                 <button
                     type="button"
                     onClick={() => onCollapsedChange(false)}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 xl:h-full xl:min-h-10"
+                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-ring xl:h-full xl:min-h-10"
                     aria-label={expandLabel}
                     title={expandLabel}
                 >
@@ -74,7 +74,7 @@ export function CalendarPlanningPanel({
     }
 
     return (
-        <aside className="space-y-3 rounded-lg border border-border bg-card p-3 shadow-sm">
+        <aside className="space-y-3 rounded-card bg-card shadow-soft-sm p-3 shadow-sm">
             <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 space-y-1">
                     <div className="text-sm font-semibold text-foreground">
@@ -90,7 +90,7 @@ export function CalendarPlanningPanel({
                 <button
                     type="button"
                     onClick={() => onCollapsedChange(true)}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-ring"
                     aria-label={collapseLabel}
                     title={collapseLabel}
                 >
@@ -139,9 +139,9 @@ export function CalendarPlanningPanel({
                                     aria-describedby={!selectedDate ? `calendar-planning-schedule-hint-${task.id}` : undefined}
                                     onClick={() => schedulePlanningTask(task.id)}
                                     className={cn(
-                                        "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                        "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium focus-ring",
                                         selectedDate
-                                            ? "bg-primary/10 text-primary hover:bg-primary/15"
+                                            ? "bg-accent-soft text-accent-text hover:opacity-80"
                                             : "pointer-events-none cursor-not-allowed bg-muted text-muted-foreground"
                                     )}
                                 >

@@ -25,6 +25,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { TaskItem } from '../TaskItem';
+import { ViewHeader } from '../ui/ViewHeader';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { shallow, useTaskStore, sortTasksBy, sortTasksByBoardOrder, buildProjectOrderMap, compareTasksByProjectThenOrder, getSequentialFirstTaskIds, getTaskSequencing, hasTaskSequences, isSequentialChainStatus, isTaskSequenceBlocked, translateWithFallback, createTaskFilterPredicate, hasActiveFilterCriteria, getUsedTaskTokens, tFallback } from '@stride/core';
 import { buildActiveFilterChips, removeFilterChipFromCriteria } from './list/active-filter-chips';
@@ -78,13 +79,13 @@ const DUE_DATE_PRESETS = ['today', 'this_week', 'this_month', 'overdue', 'no_dat
 type DueDatePreset = (typeof DUE_DATE_PRESETS)[number];
 
 const STATUS_BORDER: Record<TaskStatus, string> = {
-    inbox: 'border-t-[hsl(var(--status-inbox))]',
-    next: 'border-t-[hsl(var(--status-next))]',
-    waiting: 'border-t-[hsl(var(--status-waiting))]',
-    someday: 'border-t-[hsl(var(--status-someday))]',
-    reference: 'border-t-[hsl(var(--status-reference))]',
-    done: 'border-t-[hsl(var(--status-done))]',
-    archived: 'border-t-[hsl(var(--status-archived))]',
+    inbox: 'bg-[hsl(var(--status-inbox))]',
+    next: 'bg-[hsl(var(--status-next))]',
+    waiting: 'bg-[hsl(var(--status-waiting))]',
+    someday: 'bg-[hsl(var(--status-someday))]',
+    reference: 'bg-[hsl(var(--status-reference))]',
+    done: 'bg-[hsl(var(--status-done))]',
+    archived: 'bg-[hsl(var(--status-archived))]',
 };
 
 function DroppableColumn({
@@ -115,14 +116,17 @@ function DroppableColumn({
     return (
         <div
             ref={setNodeRef}
-            className={`flex flex-col h-full ${columnMinWidth} flex-1 bg-muted/20 rounded-xl border border-border/30 border-t-[3px] ${columnPadding} ${STATUS_BORDER[id]}`}
+            className={`flex flex-col h-full ${columnMinWidth} flex-1 bg-well rounded-card shadow-soft-inset ${columnPadding}`}
         >
-            <h3 className={`font-semibold ${headerMargin} flex items-center justify-between text-sm`}>
-                {label}
-                <span className="text-[11px] font-medium bg-muted/60 px-2 py-0.5 rounded-full text-muted-foreground">{tasks.length}</span>
+            <h3 className={`font-semibold ${headerMargin} flex items-center justify-between text-[13px] text-muted-foreground`}>
+                <span className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${STATUS_BORDER[id]}`} aria-hidden="true" />
+                    {label}
+                </span>
+                <span className="text-xs font-medium bg-card shadow-soft-sm px-2 py-0.5 rounded-full text-muted-foreground tabular-nums">{tasks.length}</span>
             </h3>
             <div
-                className="flex-1 overflow-y-auto min-h-[100px] focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-md px-1"
+                className="flex-1 overflow-y-auto min-h-[100px] focus-ring rounded-control px-1"
                 tabIndex={0}
                 role="list"
                 aria-label={`${label} tasks list`}
@@ -135,7 +139,7 @@ function DroppableColumn({
                         <button
                             type="button"
                             onClick={() => onQuickAdd(id)}
-                            className="mt-1 text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                            className="btn-gradient mt-1 h-8 px-3 text-[13px] focus-ring"
                         >
                             {emptyState.action}
                         </button>
@@ -196,7 +200,7 @@ function DraggableTask({ task, dragLabel }: { task: Task; dragLabel: string }) {
                         {...listeners}
                         {...attributes}
                         onClick={(event) => event.stopPropagation()}
-                        className="text-muted-foreground/70 hover:text-foreground p-1 rounded hover:bg-muted/50 cursor-grab active:cursor-grabbing"
+                        className="text-muted-foreground/70 hover:text-foreground p-1 rounded-control hover:bg-muted/50 cursor-grab active:cursor-grabbing focus-ring"
                         aria-label={dragLabel}
                         title={dragLabel}
                     >
@@ -568,13 +572,10 @@ export function BoardView() {
         <ErrorBoundary>
             <div className="flex h-full min-h-0 flex-col">
                 <div className="shrink-0 px-4 pb-4">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <h2 className="text-2xl font-bold tracking-tight">{t('board.title')}</h2>
-                            <span className="text-xs text-muted-foreground">
-                                {filteredTasks.length} {t('common.tasks')}
-                            </span>
-                        </div>
+                    <ViewHeader
+                        title={t('board.title')}
+                        count={`${filteredTasks.length} ${t('common.tasks')}`}
+                        actions={
                         <div className="flex items-center gap-2">
                             <ToolbarButton
                                 active={showFiltersPanel || hasBoardFilters}
@@ -586,7 +587,8 @@ export function BoardView() {
                                 {t('filters.label')}
                             </ToolbarButton>
                         </div>
-                    </div>
+                        }
+                    />
                     <div className="mt-3">
                         <input
                             type="text"

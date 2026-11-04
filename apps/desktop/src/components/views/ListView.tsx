@@ -40,7 +40,7 @@ import { buildProjectOrderMap,
     TimeEstimate,
     TIME_ESTIMATE_OPTIONS,
     resolveI18nText,
-    useTaskStore, tFallback,
+    useTaskStore, tFallback, getTodayProgress, formatRemainingDuration,
     baseTextCollator,
     formatI18nTemplate,
 } from '@stride/core';
@@ -49,6 +49,7 @@ import type { BulkOrganizeTaskUpdateInput } from '@stride/core';
 import type { TaskSortBy } from '@stride/core';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { ListEmptyState } from './list/ListEmptyState';
+import { SearchField } from '../ui/SearchField';
 import { ListHeader } from './list/ListHeader';
 import { BulkSelectionToolbar } from './list/BulkSelectionToolbar';
 import { ListBulkActions } from './list/ListBulkActions';
@@ -86,7 +87,7 @@ import {
 import { AREA_FILTER_ALL, AREA_FILTER_NONE, areaFilterSelectionToValue, isTaskVisibleInArea, isTaskVisibleInInbox, taskMatchesAreaFilterSelection } from '@stride/core';
 import { useAreaVisibility } from '../../hooks/useVisibleTaskContext';
 import { sortDoneTasksForListView } from './list/done-sort';
-import { DONE_TASK_LIST_SORT_OPTIONS, LIST_END_GAP, VIEW_FILTER_INPUT } from './list/list-toolbar';
+import { DONE_TASK_LIST_SORT_OPTIONS, LIST_END_GAP } from './list/list-toolbar';
 import {
     DONE_AXES,
     FOCUS_AXES,
@@ -1061,6 +1062,24 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
     const showFilters = ['next', 'all', 'done', 'waiting', 'someday', 'inbox', 'reference'].includes(statusFilter);
     const isInbox = statusFilter === 'inbox';
     const isNextView = statusFilter === 'next';
+    const allTasksForProgress = useTaskStore((state) => (statusFilter === 'next' ? state._allTasks : null));
+    const todayProgress = useMemo(
+        () => (allTasksForProgress ? getTodayProgress(allTasksForProgress) : null),
+        [allTasksForProgress],
+    );
+    const headerProgress = useMemo(() => {
+        if (!todayProgress || todayProgress.total === 0) return undefined;
+        const duration = formatRemainingDuration(todayProgress.remainingMinutes);
+        const leftText = tFallback(t, 'list.todayProgress', 'Today: {done} of {total} done')
+            .replace('{done}', String(todayProgress.done))
+            .replace('{total}', String(todayProgress.total));
+        const rightText = duration
+            ? tFallback(t, 'list.todayRemaining', '{left} left · about {duration}')
+                .replace('{left}', String(todayProgress.left))
+                .replace('{duration}', duration)
+            : undefined;
+        return { leftText, rightText, value: todayProgress.fraction, max: 1, label: leftText };
+    }, [todayProgress, t]);
     const isWaitingView = statusFilter === 'waiting';
     const showQuickAdd = isInbox;
 
@@ -1264,6 +1283,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         showDetailsToggle={!isReferenceView}
                         showListDetails={showListDetails}
                         onToggleDetails={handleToggleDetails}
+                        progress={headerProgress}
                         onNewSomedaySection={statusFilter === 'someday' ? () => {
                             setNewSomedaySectionError(null);
                             setNewSomedaySectionOpen(true);
@@ -1272,7 +1292,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                     />
 
                     {isBatchDeleting && (
-                        <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                        <div className="rounded-control bg-well px-3 py-2 text-xs text-muted-foreground">
                             {tFallback(t, 'bulk.deleting', 'Deleting selected tasks...')}
                         </div>
                     )}
@@ -1315,7 +1335,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                     )}
 
                     {isNextView && nextCount > NEXT_WARNING_THRESHOLD && (
-                        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+                        <div className="flex items-start gap-3 rounded-card bg-warning-fill/10 p-4">
                             <AlertTriangle className="mt-0.5 h-5 w-5 text-warning" />
                             <div>
                                 <p className="font-medium text-warning">
@@ -1329,12 +1349,12 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                     )}
 
                     {showDeferredProjectSection && (
-                        <div className="rounded-lg border border-border bg-card/50 p-4">
+                        <div className="rounded-card bg-card p-4 shadow-soft-sm">
                             <button
                                 type="button"
                                 aria-expanded={!collapsedProjectLists[statusFilter]}
                                 onClick={() => setCollapsedProjectLists((current) => ({ ...current, [statusFilter]: !current[statusFilter] }))}
-                                className="flex min-h-8 w-full items-center gap-2 rounded text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                                className="focus-ring flex min-h-8 w-full items-center gap-2 rounded-control text-left text-[13px] font-semibold text-muted-foreground hover:text-foreground"
                             >
                                 {collapsedProjectLists[statusFilter] ? <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" /> : <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />}
                                 {tFallback(t, 'projects.title', 'Projects')} ({deferredProjects.length})
@@ -1373,19 +1393,17 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                     />
 
                     {showViewFilterInput && !isProcessing && (
-                        <input
-                            type="text"
+                        <SearchField
                             data-view-filter-input
                             placeholder={t('common.search')}
                             aria-label={t('common.search')}
                             value={searchQuery}
                             onChange={(event) => setSearchQuery(event.target.value)}
-                            className={VIEW_FILTER_INPUT}
                         />
                     )}
 
                     {isWaitingView && !isProcessing && (
-                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2 rounded-control bg-well px-3 py-2">
                             <span className="text-xs font-medium text-muted-foreground">{t('process.delegateWhoLabel')}</span>
                             <div className="relative max-w-full">
                                 <select
@@ -1407,7 +1425,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                 <button
                                     type="button"
                                     onClick={() => setSelectedWaitingPerson('')}
-                                    className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                                    className="focus-ring rounded-control bg-card px-2 py-1 text-xs text-muted-foreground shadow-soft-sm hover:text-foreground"
                                 >
                                     {t('common.clear')}
                                 </button>
@@ -1482,7 +1500,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                 onResetCopilot={resetCopilot}
                             />
                             {aiEnabled && pendingCopilotParts.length > 0 && (
-                                <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                                <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-control bg-well px-2.5 py-1.5 text-xs text-muted-foreground">
                                     <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />{t('copilot.suggested')}</span>
                                     {pendingCopilotParts.map((part) => (
                                         <button
@@ -1507,7 +1525,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                 </div>
                             )}
                             {aiEnabled && (copilotContext || copilotTags.length > 0) && (
-                                <div className="mt-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                                <div className="mt-2 rounded-control bg-well px-2.5 py-1.5 text-xs text-muted-foreground">
                                     <Check className="mr-1 inline h-3 w-3 align-[-0.125em]" aria-hidden="true" />{t('copilot.applied')}{' '}
                                     {copilotContext ? `${copilotContext} ` : ''}
                                     {copilotTags.length ? copilotTags.join(' ') : ''}
@@ -1528,7 +1546,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                         <button
                                             type="button"
                                             onClick={() => setQuickAddSyntaxOpen((open) => !open)}
-                                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                                            className="focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                                             aria-label={t('quickAdd.syntaxHelp')}
                                             aria-expanded={quickAddSyntaxOpen}
                                             title={formatQuickAddHelp(t('quickAdd.help'), { priorities: prioritiesEnabled, timeEstimates: timeEstimatesEnabled })}
@@ -1537,7 +1555,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                         </button>
                                     </div>
                                     {quickAddSyntaxOpen && (
-                                        <p className="rounded border border-border bg-muted/30 px-2 py-1 leading-relaxed text-muted-foreground">
+                                        <p className="rounded-control bg-well px-2.5 py-1.5 leading-relaxed text-muted-foreground">
                                             <QuickAddSyntaxHint text={t('quickAdd.help')} />
                                         </p>
                                     )}
@@ -1589,10 +1607,10 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         addTaskLabel={getSomedayAddTaskLabel}
                         renderProject={deferredProjectsInGroups ? renderSectionProject : undefined}
                         flatRowClassName={densityMode === 'condensed'
-                            ? 'pb-0.5'
+                            ? 'pb-1'
                             : densityMode === 'compact'
-                                ? 'pb-1'
-                                : 'pb-1.5'}
+                                ? 'pb-2'
+                                : 'pb-2.5'}
                         renderTask={renderListTask}
                     />
                 )}

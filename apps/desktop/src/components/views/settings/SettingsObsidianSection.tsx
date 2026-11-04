@@ -128,7 +128,7 @@ export function SettingsObsidianSection({
     const selectableVaults = detectedVaults.filter((vault) => vault.path !== obsidianVaultPath);
 
     return (
-        <div className="bg-card border border-border rounded-lg">
+        <div className="soft-surface rounded-card">
             <div className="p-4 flex items-start justify-between gap-4">
                 <div className="min-w-0 flex-1 space-y-2">
                     <button data-settings-key="obsidianVault" data-settings-section="obsidianVault"
@@ -147,7 +147,7 @@ export function SettingsObsidianSection({
                         href={getDocsGuideUrl('power-users/obsidian', language)}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                        className="inline-flex items-center gap-1 text-sm font-medium text-accent-text hover:underline"
                     >
                         {t.obsidianIntegrationGuideTitle}
                         <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
@@ -169,7 +169,7 @@ export function SettingsObsidianSection({
                                 aria-label={t.obsidianVaultPath}
                                 onChange={(event) => onObsidianVaultPathChange(event.target.value)}
                                 placeholder="/path/to/your/Obsidian/vault"
-                                className="flex-1 bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                                className="flex-1 p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                             />
                             <button
                                 type="button"
@@ -189,7 +189,7 @@ export function SettingsObsidianSection({
                                         type="button"
                                         title={vault.path}
                                         onClick={() => onObsidianVaultPathChange(vault.path)}
-                                        className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                                        className="text-xs px-2.5 py-1 rounded-full text-muted-foreground hover:text-foreground transition-colors bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                     >
                                         {vault.name}
                                     </button>
@@ -210,7 +210,7 @@ export function SettingsObsidianSection({
                             aria-label={t.obsidianScanFolders}
                             onChange={(event) => onObsidianScanFoldersTextChange(event.target.value)}
                             rows={3}
-                            className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                            className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                             placeholder={'/\nProjects\nDaily'}
                         />
                         <p className="text-xs text-muted-foreground">{t.obsidianScanFoldersHint}</p>
@@ -219,7 +219,7 @@ export function SettingsObsidianSection({
                     <SettingField settingsKey="obsidianRequiredInlineTag" title={t.obsidianRequiredInlineTag}>
                         <input
                             type="text"
-                            className="bg-muted p-2 rounded text-sm border border-border"
+                            className="p-2 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                             value={obsidianRequiredInlineTag}
                             aria-label={t.obsidianRequiredInlineTag}
                             onChange={(event) => onObsidianRequiredInlineTagChange(event.target.value)}
@@ -234,12 +234,12 @@ export function SettingsObsidianSection({
                             aria-label={t.obsidianInboxFile}
                             onChange={(event) => onObsidianInboxFileChange(event.target.value)}
                             placeholder="Stride/Inbox.md"
-                            className="bg-muted p-2 rounded text-sm font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                            className="p-2 text-sm font-mono bg-well shadow-soft-inset rounded-control focus-ring"
                         />
                         <p className="text-xs text-muted-foreground">{t.obsidianInboxFileHint}</p>
                     </SettingField>
 
-                    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+                    <div className="space-y-3 p-4 bg-well rounded-card">
                         <div className="space-y-1">
                             <div className="text-sm font-medium">{t.obsidianDataview}</div>
                             <p className="text-xs text-muted-foreground">{t.obsidianDataviewDesc}</p>
@@ -254,7 +254,7 @@ export function SettingsObsidianSection({
                         </SettingRow>
                     </div>
 
-                    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+                    <div className="space-y-3 p-4 bg-well rounded-card">
                         <div className="space-y-1">
                             <div className="text-sm font-medium">{t.obsidianTaskNotes}</div>
                             <p className="text-xs text-muted-foreground">{t.obsidianTaskNotesDesc}</p>
@@ -272,7 +272,7 @@ export function SettingsObsidianSection({
                             <select
                                 value={obsidianNewTaskFormat}
                                 onChange={(event) => onObsidianNewTaskFormatChange(event.target.value as 'auto' | 'inline' | 'tasknotes')}
-                                className="bg-muted p-2 rounded text-sm border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+                                className="p-2 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                             >
                                 <option value="auto">{t.obsidianNewTaskFormatAuto}</option>
                                 <option value="inline">{t.obsidianNewTaskFormatInline}</option>
@@ -303,7 +303,7 @@ export function SettingsObsidianSection({
                                 type="button"
                                 onClick={onRemoveObsidian}
                                 disabled={isSavingObsidian || !obsidianVaultPath.trim()}
-                                className="px-4 py-2 bg-muted text-muted-foreground rounded-md text-sm font-medium hover:bg-muted/80 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="px-4 py-2 bg-muted text-muted-foreground rounded-md text-sm font-medium hover:bg-accent whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {t.obsidianRemove}
                             </button>
@@ -319,7 +319,7 @@ export function SettingsObsidianSection({
                                 type="button"
                                 onClick={onSaveObsidian}
                                 disabled={isSavingObsidian}
-                                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 whitespace-nowrap disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed"
+                                className="px-4 py-2 btn-gradient rounded-control text-sm font-medium focus-ring whitespace-nowrap disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed"
                             >
                                 {t.obsidianSave}
                             </button>

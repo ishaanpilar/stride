@@ -102,11 +102,11 @@ export function ExpandedMarkdownEditor({
             overlayClassName="z-[70] p-4"
 
 
-            panelClassName="h-[min(92vh,960px)] w-[min(1200px,96vw)] max-w-none max-h-[none] rounded-2xl border-border bg-card"
+            panelClassName="h-[min(92vh,960px)] w-[min(1200px,96vw)] max-w-none max-h-[none] rounded-sheet"
         >
-            <DialogHeader className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <DialogHeader className="flex items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
-                    <h2 id={titleId} className="truncate text-sm font-semibold">
+                    <h2 id={titleId} className="truncate text-[17px] font-semibold">
                         {resolvedHeaderTitle}
                     </h2>
                 </div>
@@ -116,7 +116,7 @@ export function ExpandedMarkdownEditor({
                         onClick={() => setMode((prev) => (prev === 'edit' ? 'preview' : 'edit'))}
                         aria-label={mode === 'edit' ? t('markdown.preview') : t('markdown.edit')}
                         title={mode === 'edit' ? t('markdown.preview') : t('markdown.edit')}
-                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                        className="rounded-control p-1.5 text-muted-foreground focus-ring transition-colors hover:bg-accent hover:text-foreground"
                     >
                         {mode === 'edit'
                             ? <Eye className="h-4 w-4" aria-hidden="true" />
@@ -126,7 +126,7 @@ export function ExpandedMarkdownEditor({
                         ref={closeButtonRef}
                         type="button"
                         onClick={handleClose}
-                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                        className="rounded-control p-1.5 text-muted-foreground focus-ring transition-colors hover:bg-accent hover:text-foreground"
                         aria-label={t('markdown.collapse')}
                     >
                         <X className="h-4 w-4" />
@@ -172,7 +172,7 @@ export function ExpandedMarkdownEditor({
                                 spellCheck={true}
                                 dir={direction}
                                 className={cn(
-                                    'min-h-0 flex-1 resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-primary/30',
+                                    'min-h-0 flex-1 resize-none rounded-card bg-well shadow-soft-inset px-4 py-3 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-primary/30',
                                     isRtl && 'text-right',
                                 )}
                             />
@@ -192,7 +192,7 @@ export function ExpandedMarkdownEditor({
                     <div
                         dir={direction}
                         className={cn(
-                            'h-full overflow-y-auto rounded-xl border border-border bg-background px-4 py-3',
+                            'h-full overflow-y-auto rounded-card bg-well shadow-soft-inset px-4 py-3',
                             isRtl && 'text-right',
                         )}
                     >

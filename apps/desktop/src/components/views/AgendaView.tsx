@@ -199,7 +199,7 @@ function SavedFocusFilterChip({
                 className={cn(
                     'inline-flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-l-full border px-3 py-1.5 text-xs font-medium transition-colors',
                     isActive
-                        ? 'border-primary bg-primary text-primary-foreground'
+                        ? 'border-transparent bg-accent-soft text-accent-text'
                         : 'border-border bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
             >
@@ -217,7 +217,7 @@ function SavedFocusFilterChip({
                 className={cn(
                     'inline-flex h-[30px] w-8 shrink-0 items-center justify-center rounded-r-full border border-l-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
                     isActive
-                        ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                        ? 'border-transparent bg-accent-soft text-accent-text hover:bg-primary/90'
                         : 'border-border bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
             >
@@ -229,7 +229,7 @@ function SavedFocusFilterChip({
                     role="menu"
                     aria-label={moreOptionsLabel}
                     style={menuStyle}
-                    className="z-50 min-w-44 rounded-md border border-border bg-card p-1 shadow-lg"
+                    className="z-50 min-w-44 rounded-control bg-popover p-1 shadow-soft"
                     onKeyDown={(event) => {
                         if (event.key !== 'Tab') return;
                         setMenuOpen(false);
@@ -244,7 +244,7 @@ function SavedFocusFilterChip({
                             setMenuOpen(false);
                             void onDelete(filter);
                         }}
-                        className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-destructive transition-colors hover:bg-muted focus:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="flex w-full items-center gap-2 rounded-control px-3 py-2 text-left text-sm text-destructive transition-colors hover:bg-muted focus:bg-muted focus-ring"
                     >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />
                         <span>{resolveText('common.delete', 'Delete')}</span>
@@ -318,7 +318,7 @@ function AgendaTaskList({
 
     if (!shouldVirtualize) {
         return (
-            <div className="divide-y divide-border/30">
+            <div className="flex flex-col gap-2.5">
                 {tasks.map((task) => (
                     <StoreTaskItem
                         key={task.id}
@@ -1018,7 +1018,7 @@ export function AgendaView() {
             onDragEnd={handleFocusDragEnd}
         >
             <SortableContext items={focusedTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-                <div className="divide-y divide-border/30">
+                <div className="flex flex-col gap-2.5">
                     {focusedTasks.map(task => (
                         <SortableFocusRow
                             key={task.id}
@@ -1034,14 +1034,14 @@ export function AgendaView() {
             </SortableContext>
             <DragOverlay dropAnimation={null}>
                 {activeFocusDragTask ? (
-                    <div className="pointer-events-none max-w-[280px] truncate rounded-lg border border-border bg-card px-3 py-2 text-sm shadow-lg">
+                    <div className="pointer-events-none max-w-[280px] truncate rounded-card bg-card shadow-soft-sm px-3 py-2 text-sm shadow-lg">
                         {activeFocusDragTask.title}
                     </div>
                 ) : null}
             </DragOverlay>
         </DndContext>
     ) : (
-        <div className="divide-y divide-border/30">
+        <div className="flex flex-col gap-2.5">
             {focusedTasks.map(task => (
                 <StoreTaskItem
                     key={task.id}
@@ -1058,7 +1058,7 @@ export function AgendaView() {
     const todaysFocusSection = focusedCount > 0 ? (
         <div
             data-testid="todays-focus-section"
-            className="rounded-xl border border-border/70 border-l-4 border-l-amber-400 bg-card/70 p-6 shadow-sm dark:border-border/60 dark:border-l-amber-400/80 dark:bg-card/60"
+            className="rounded-card bg-card p-5 shadow-soft-sm"
         >
             <h3 className={cn(expandedSections.focus && 'mb-4')}>
                 <button
@@ -1066,14 +1066,14 @@ export function AgendaView() {
                     onClick={() => toggleSection('focus')}
                     aria-expanded={expandedSections.focus}
                     aria-controls="agenda-section-focus"
-                    className="flex w-full items-center gap-2 rounded-md text-left text-lg font-bold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                    className="flex w-full items-center gap-2 rounded-control text-left text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground focus-ring"
                 >
                     {expandedSections.focus
                         ? <ChevronDown className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
                         : <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
-                    <FocusStarIcon className="h-5 w-5" filled />
+                    <FocusStarIcon className="h-4 w-4" filled />
                     <span>{t('agenda.todaysFocus')}</span>
-                    <span className="text-sm font-normal text-muted-foreground">
+                    <span className="text-[13px] font-normal text-muted-foreground">
                         ({focusedCount}/{focusTaskLimit})
                     </span>
                 </button>
@@ -1114,7 +1114,7 @@ export function AgendaView() {
                         className={cn(
                             'shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                             isDefaultFocusPerspective
-                                ? 'border-primary bg-primary text-primary-foreground'
+                                ? 'border-transparent bg-accent-soft text-accent-text'
                                 : 'border-border bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
                         )}
                     >
@@ -1286,7 +1286,7 @@ export function AgendaView() {
                                     const collapsed = collapsedNextActionGroupIds.has(group.id);
                                     const controlsId = getNextActionSectionDomId(group, index);
                                     return (
-                                        <div key={group.id} className="overflow-hidden rounded-lg border border-border/50 bg-card/40">
+                                        <div key={group.id} className="overflow-hidden rounded-card bg-card shadow-soft-sm">
                                             <GroupedTaskSectionHeader
                                                 group={group}
                                                 collapsed={collapsed}

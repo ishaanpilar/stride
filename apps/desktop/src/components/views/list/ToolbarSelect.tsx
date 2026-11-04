@@ -13,8 +13,8 @@ import { useDropdownPosition } from '../../ui/use-dropdown-position';
 
 
 const TOOLBAR_SELECT_TRIGGER =
-    'relative flex h-9 items-center rounded-lg border pl-2 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40';
-const TOOLBAR_SELECT_LABEL = 'text-[10px] font-medium uppercase tracking-wide text-muted-foreground';
+    'focus-ring relative flex h-8 items-center rounded-control border pl-2.5 text-[13px] shadow-soft-sm transition-[background-color,box-shadow] duration-200 motion-reduce:transition-none';
+const TOOLBAR_SELECT_LABEL = 'text-xs font-medium text-muted-foreground';
 const TOOLBAR_SELECT_VALUE = 'min-w-0 flex-1 truncate pl-2 pr-8 text-left';
 
 export type ToolbarSelectOption = {
@@ -163,11 +163,11 @@ export function ToolbarSelect({ active = false, label, icon, value, options, onC
                 }}
                 className={cn(
                     pill
-                        ? 'inline-flex min-h-6 items-center justify-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-center text-[11px] font-medium cursor-pointer hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-primary/40'
+                        ? 'inline-flex min-h-6 items-center justify-center whitespace-nowrap rounded-pill px-2.5 py-0.5 text-center text-xs font-medium cursor-pointer hover:brightness-110 focus-ring'
                         : TOOLBAR_SELECT_TRIGGER,
                     !pill && (active
-                        ? 'border-primary bg-primary/10 text-primary hover:bg-primary/15'
-                        : 'border-border bg-card text-foreground hover:bg-muted/70'),
+                        ? 'border-primary/40 bg-primary/10 text-accent-text hover:bg-primary/15'
+                        : 'border-border bg-card text-foreground hover:bg-accent'),
                     triggerClassName ?? className,
                 )}
             >
@@ -177,7 +177,7 @@ export function ToolbarSelect({ active = false, label, icon, value, options, onC
                     <span className={TOOLBAR_SELECT_VALUE}>{selected?.label ?? ''}</span>
                     <ChevronDown
                         className={cn(
-                            'pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-transform',
+                            'pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-transform',
                             open && 'rotate-180',
                         )}
                         aria-hidden="true"
@@ -190,7 +190,7 @@ export function ToolbarSelect({ active = false, label, icon, value, options, onC
                         ref={dropdownRef}
                         data-selector-dropdown="true"
                         style={{ ...fixedDropdownStyle, width: 'max-content', minWidth: fixedDropdownStyle.width }}
-                        className={cn('z-[70] rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1', pill ? 'text-sm' : 'text-xs')}
+                        className={cn('z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft p-1', pill ? 'text-sm' : 'text-xs')}
                         onKeyDown={handleDropdownKeyDown}
                     >
                         <div role="listbox" id={listboxId} aria-label={label}>
@@ -211,7 +211,7 @@ export function ToolbarSelect({ active = false, label, icon, value, options, onC
                                     className={cn(
 
 
-                                        'block w-full text-left px-2 py-1 rounded focus:outline-none',
+                                        'block w-full text-left px-2 py-1.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                                         option.disabled
                                             ? 'cursor-default text-muted-foreground opacity-50'
                                             : 'hover:bg-muted/50 focus:bg-muted/50',

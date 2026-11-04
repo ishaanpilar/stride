@@ -357,8 +357,7 @@ describe('Layout Obsidian nav visibility', () => {
         const addTaskButton = getByRole('button', { name: 'Add Task (Inbox)' });
 
         expect(addTaskButton).toHaveAttribute('title', 'Add Task (Inbox)');
-        expect(addTaskButton).toHaveClass('bg-primary/5');
-        expect(addTaskButton).toHaveClass('text-primary');
+        expect(addTaskButton).toHaveClass('btn-gradient');
 
         fireEvent.click(addTaskButton);
 

@@ -288,7 +288,7 @@ describe('TimelineView (#1111)', () => {
         expect(rowLabels()).toEqual(['Finished project', 'Completed work']);
         expect(projectBarFor('closed')).not.toBeNull();
         expect(projectBarFor('deleted')).toBeNull();
-        expect(barFor('completed')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
+        expect(barFor('completed')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.15)');
         expect(projectBarFor('closed')?.style.backgroundColor).toBe('rgb(255, 0, 0)');
         expect(useTaskStore.getState()._allProjects.find((project) => project.id === 'closed')?.status).toBe('archived');
     });
@@ -336,9 +336,9 @@ describe('TimelineView (#1111)', () => {
         });
         renderTimeline();
 
-        expect(barFor('in-area')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
-        expect(barFor('plain')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
-        expect(barFor('loose')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
+        expect(barFor('in-area')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.15)');
+        expect(barFor('plain')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.15)');
+        expect(barFor('loose')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.15)');
         expect(barFor('plain')?.style.border).toBe('1px solid rgba(0, 255, 0, 0.7)');
     });
 
@@ -581,7 +581,7 @@ describe('TimelineView (#1111)', () => {
             const taskBar = barFor('owned');
             expect(projectBar?.style.backgroundColor).toBe('rgb(0, 255, 0)');
             expect(taskBar?.style.backgroundColor).not.toBe(projectBar?.style.backgroundColor);
-            expect(taskBar?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
+            expect(taskBar?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.15)');
 
             expect(taskBar?.textContent).toBe('');
             expect(screen.getAllByText('Owned task')).toHaveLength(1);
@@ -598,18 +598,18 @@ describe('TimelineView (#1111)', () => {
             renderTimeline();
 
             expect(barFor('mini')?.dataset.variant).toBe('mini');
-            expect(barFor('mini')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
+            expect(barFor('mini')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.15)');
 
-            expect(barFor('accent')?.style.backgroundColor).toBe('hsl(var(--primary) / 0.25)');
+            expect(barFor('accent')?.style.backgroundColor).toBe('hsl(var(--primary) / 0.15)');
             expect(bars().every((bar) => bar.textContent === '')).toBe(true);
         });
 
         it('falls back to the accent token for a color it cannot read', () => {
-            expect(taskBarTint('#00ff00')).toEqual({ fill: 'rgba(0, 255, 0, 0.25)', border: 'rgba(0, 255, 0, 0.7)' });
+            expect(taskBarTint('#00ff00')).toEqual({ fill: 'rgba(0, 255, 0, 0.15)', border: 'rgba(0, 255, 0, 0.7)' });
 
-            expect(taskBarTint('#0f0').fill).toBe('rgba(0, 255, 0, 0.25)');
-            expect(taskBarTint('#00ff00ff').fill).toBe('rgba(0, 255, 0, 0.25)');
-            expect(taskBarTint(undefined).fill).toBe('hsl(var(--primary) / 0.25)');
+            expect(taskBarTint('#0f0').fill).toBe('rgba(0, 255, 0, 0.15)');
+            expect(taskBarTint('#00ff00ff').fill).toBe('rgba(0, 255, 0, 0.15)');
+            expect(taskBarTint(undefined).fill).toBe('hsl(var(--primary) / 0.15)');
             expect(taskBarTint('not a color').border).toBe('hsl(var(--primary) / 0.7)');
         });
     });

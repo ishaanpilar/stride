@@ -87,7 +87,7 @@ export function InboxProcessingScheduleFields({
                             dateFormatSetting={dateFormatSetting}
                             nativeDateInputLocale={nativeDateInputLocale}
                             dateInputClassName={cn(
-                                'rounded border border-border bg-muted/50 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40',
+                                'rounded border border-border bg-muted/50 text-foreground focus-ring',
                                 compact ? 'px-3 py-2 text-sm' : 'px-2 py-1 text-xs'
                             )}
                             className="max-w-none"
@@ -101,7 +101,7 @@ export function InboxProcessingScheduleFields({
                                     onChange={(event) => field.onTimeDraftChange(event.target.value)}
                                     onBlur={field.onTimeCommit}
                                     className={cn(
-                                        'w-24 shrink-0 rounded border border-border bg-muted/50 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40',
+                                        'w-24 shrink-0 rounded border border-border bg-muted/50 text-foreground focus-ring',
                                         compact ? 'px-3 py-2 text-sm' : 'px-2 py-1 text-xs'
                                     )}
                                 />

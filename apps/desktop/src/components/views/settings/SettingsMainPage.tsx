@@ -174,7 +174,7 @@ export type SettingsKeyboardWindowProps = {
 };
 
 const selectCls =
-    "text-[13px] bg-muted/50 text-foreground border border-border rounded-md px-2.5 py-1.5 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40";
+    "text-[13px] bg-well text-foreground border border-border rounded-md px-2.5 py-1.5 hover:bg-accent focus:outline-none focus:ring-2 focus:ring-primary/40";
 
 export function SettingsMainPage({
     t,
@@ -349,8 +349,8 @@ export function SettingsMainPage({
                                             'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm transition-colors',
                                             'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
                                             visible
-                                                ? 'border-primary/40 bg-primary/10 text-primary'
-                                                : 'border-border bg-muted/40 text-muted-foreground hover:text-foreground',
+                                                ? 'border-primary/40 bg-accent-soft text-accent-text'
+                                                : 'border-border bg-well text-muted-foreground hover:text-foreground',
                                         )}
                                     >
                                         {visible && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -512,7 +512,7 @@ export function SettingsMainPage({
                     <div className="px-4 py-3">
                         <div className="text-[13px] font-medium">{t.globalQuickAddFlatpakCommand}</div>
                         <div className="text-xs text-muted-foreground mt-0.5">{t.globalQuickAddFlatpakCommandDesc}</div>
-                        <code className="mt-2 block break-all rounded-md border border-border bg-muted/50 px-2.5 py-2 text-xs text-foreground select-all">
+                        <code className="mt-2 block break-all px-2.5 py-2 text-xs text-foreground select-all bg-well shadow-soft-inset rounded-control focus-ring">
                             {FLATPAK_QUICK_ADD_COMMAND}
                         </code>
                     </div>

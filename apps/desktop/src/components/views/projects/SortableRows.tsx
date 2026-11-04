@@ -45,7 +45,7 @@ export function SortableAreaRow({
                 type="button"
                 {...attributes}
                 {...listeners}
-                className="h-8 w-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center"
+                className="h-8 w-8 rounded-control border border-border bg-card shadow-soft-sm text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center focus-ring"
                 title={t('projects.sortAreas')}
             >
                 <GripVertical className="w-4 h-4" />
@@ -73,7 +73,7 @@ export function SortableAreaRow({
                         e.currentTarget.blur();
                     }
                 }}
-                className="flex-1 bg-muted/50 border border-border rounded px-2 py-1 text-sm"
+                className="flex-1 bg-well rounded-control px-2 py-1 text-sm focus-ring"
             />
             <button
                 type="button"
@@ -139,7 +139,7 @@ function getSequenceCuePresentation(
 ): { taskContainerClassName: string; title?: string } {
     if (sequenceCue === 'available') {
         return {
-            taskContainerClassName: 'flex-1 min-w-0 -mx-2 -my-1 rounded-lg border border-primary/20 bg-primary/[0.04] px-2 py-1',
+            taskContainerClassName: 'flex-1 min-w-0 -mx-2 -my-1 rounded-card bg-accent-soft px-2 py-1',
             title: availableSequenceLabel,
         };
     }

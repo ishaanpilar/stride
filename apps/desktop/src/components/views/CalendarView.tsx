@@ -18,6 +18,7 @@ import {
 } from '@stride/core';
 
 import { ErrorBoundary } from '../ErrorBoundary';
+import { ViewHeader } from '../ui/ViewHeader';
 import { cn } from '../../lib/utils';
 import { getAccentTint } from '../../lib/task-accent-color';
 import { reportError } from '../../lib/report-error';
@@ -45,6 +46,7 @@ import {
     DESKTOP_GRID_SNAP_MINUTES,
     DESKTOP_HOUR_HEIGHT,
     dayKey,
+    softEventFill,
     type CalendarCellItem,
     type CalendarViewMode,
 } from './calendar/calendar-primitives';
@@ -312,23 +314,21 @@ export function CalendarView() {
     return (
         <ErrorBoundary>
             <div className={cn("space-y-6", LIST_END_GAP)} data-list-end>
-            <header className="flex flex-wrap items-center justify-between gap-4">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">{t('nav.calendar')}</h2>
-                    <p className="text-sm text-muted-foreground">
-                        {resolveText('calendar.tasksAndEvents', 'Tasks and external events by date')}
-                    </p>
-                </div>
+            <ViewHeader
+                title={t('nav.calendar')}
+                count={resolveText('calendar.tasksAndEvents', 'Tasks and external events by date')}
+                className="[&>div]:flex-wrap [&>div>div:last-child]:ml-0 [&>div>div:last-child]:w-full sm:[&>div>div:last-child]:ml-auto sm:[&>div>div:last-child]:w-auto"
+                actions={
                 <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                     <button
                         type="button"
                         onClick={handleToday}
-                        className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="inline-flex h-8 items-center gap-2 rounded-control border border-border bg-card px-3 text-[13px] font-medium text-foreground shadow-soft-sm transition-shadow hover:bg-accent focus-ring"
                     >
                         <CalendarDays className="h-4 w-4 text-primary" aria-hidden="true" />
                         {resolveText('calendar.today', 'Today')}
                     </button>
-                    <div className="grid w-full grid-cols-2 rounded-md border border-border bg-card p-1 sm:inline-flex sm:w-auto">
+                    <div className="grid w-full grid-cols-2 gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset sm:inline-flex sm:w-auto">
                         {([
                             ['day', resolveText('calendar.day', 'Day')],
                             ['week', resolveText('calendar.week', 'Week')],
@@ -340,10 +340,10 @@ export function CalendarView() {
                                 type="button"
                                 onClick={() => handleViewModeChange(mode)}
                                 className={cn(
-                                    "h-7 rounded px-2.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                    "h-7 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors focus-ring",
                                     viewMode === mode
-                                        ? "bg-primary text-primary-foreground"
-                                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                                        ? "bg-card text-foreground shadow-soft-sm"
+                                        : "text-muted-foreground hover:text-foreground"
                                 )}
                             >
                                 {label}
@@ -353,12 +353,12 @@ export function CalendarView() {
                     {
                                                                                         }
                     {viewMode === 'week' && (
-                        <div className="flex items-center gap-1 rounded-md border border-border bg-card p-1">
+                        <div className="flex items-center gap-1 rounded-control bg-well p-0.5 shadow-soft-inset">
                             <button
                                 type="button"
                                 onClick={() => setTimelineDayCount(timelineDayCount - 1)}
                                 disabled={timelineDayCount <= CALENDAR_TIMELINE_DAY_COUNT_MIN}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:pointer-events-none disabled:opacity-40"
+                                className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:pointer-events-none disabled:opacity-40"
                                 aria-label={resolveText('calendar.mobile.showFewerDays', 'Show fewer days')}
                                 title={resolveText('calendar.mobile.showFewerDays', 'Show fewer days')}
                             >
@@ -376,7 +376,7 @@ export function CalendarView() {
                                 type="button"
                                 onClick={() => setTimelineDayCount(timelineDayCount + 1)}
                                 disabled={timelineDayCount >= CALENDAR_TIMELINE_DAY_COUNT_MAX}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:pointer-events-none disabled:opacity-40"
+                                className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-ring disabled:pointer-events-none disabled:opacity-40"
                                 aria-label={resolveText('calendar.mobile.showMoreDays', 'Show more days')}
                                 title={resolveText('calendar.mobile.showMoreDays', 'Show more days')}
                             >
@@ -384,11 +384,11 @@ export function CalendarView() {
                             </button>
                         </div>
                     )}
-                    <div className="flex w-full items-center gap-1 rounded-md border border-border bg-card p-1 sm:w-auto">
+                    <div className="flex w-full items-center gap-1 rounded-control bg-well p-0.5 shadow-soft-inset sm:w-auto">
                         <button
                             type="button"
                             onClick={handlePrevMonth}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-ring"
                             aria-label={periodNavigationLabels.previous}
                             title={periodNavigationLabels.previous}
                         >
@@ -398,19 +398,19 @@ export function CalendarView() {
                             <button
                                 type="button"
                                 onClick={toggleMonthPicker}
-                                className="h-8 w-full min-w-0 rounded px-3 text-sm font-semibold hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 sm:min-w-[11rem]"
+                                className="h-8 w-full min-w-0 rounded px-3 text-sm font-semibold hover:bg-muted focus-ring sm:min-w-[11rem]"
                                 aria-haspopup="dialog"
                                 aria-expanded={isMonthPickerOpen}
                             >
                                 {currentMonthLabel}
                             </button>
                             {isMonthPickerOpen && (
-                                <div className="absolute right-0 top-10 z-20 w-64 rounded-lg border border-border bg-popover p-3 shadow-lg">
+                                <div className="absolute right-0 top-10 z-20 w-64 rounded-card bg-popover shadow-soft-sm p-3 shadow-lg">
                                     <div className="grid grid-cols-2 gap-2">
                                         <label className="space-y-1 text-xs font-medium text-muted-foreground">
                                             {resolveText('calendar.month', 'Month')}
                                             <select
-                                                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground focus-ring"
                                                 value={getCalendarMonthIndex(currentMonth, calendarSystem)}
                                                 onChange={(event) => handleMonthChange(Number(event.target.value))}
                                                 aria-label={resolveText('calendar.month', 'Month')}
@@ -423,7 +423,7 @@ export function CalendarView() {
                                         <label className="space-y-1 text-xs font-medium text-muted-foreground">
                                             {resolveText('calendar.year', 'Year')}
                                             <select
-                                                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground focus-ring"
                                                 value={currentYear}
                                                 onChange={(event) => handleYearChange(Number(event.target.value))}
                                                 aria-label={resolveText('calendar.year', 'Year')}
@@ -440,7 +440,7 @@ export function CalendarView() {
                         <button
                             type="button"
                             onClick={handleNextMonth}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-ring"
                             aria-label={periodNavigationLabels.next}
                             title={periodNavigationLabels.next}
                         >
@@ -448,7 +448,8 @@ export function CalendarView() {
                         </button>
                     </div>
                 </div>
-            </header>
+                }
+            />
             <div className="mb-4 space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row">
                     <div className="relative min-w-0 flex-1">
@@ -468,10 +469,10 @@ export function CalendarView() {
                         onClick={toggleShowScheduled}
                         aria-pressed={showScheduled}
                         className={cn(
-                            'inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40',
+                            'inline-flex h-9 shrink-0 items-center gap-2 rounded-control border px-3 text-[13px] font-medium transition-colors focus-ring',
                             showScheduled
-                                ? 'border-primary bg-primary/10 text-primary'
-                                : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                                ? 'border-transparent bg-accent-soft text-accent-text'
+                                : 'border-transparent bg-well text-muted-foreground hover:text-foreground'
                         )}
                         title={resolveText('calendar.showScheduledHint', 'Show tasks on their start date; turn off to read only deadlines')}
                     >
@@ -483,10 +484,10 @@ export function CalendarView() {
                         onClick={toggleShowCompleted}
                         aria-pressed={showCompleted}
                         className={cn(
-                            'inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40',
+                            'inline-flex h-9 shrink-0 items-center gap-2 rounded-control border px-3 text-[13px] font-medium transition-colors focus-ring',
                             showCompleted
-                                ? 'border-primary bg-primary/10 text-primary'
-                                : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                                ? 'border-transparent bg-accent-soft text-accent-text'
+                                : 'border-transparent bg-well text-muted-foreground hover:text-foreground'
                         )}
                         title={resolveText('calendar.showCompletedHint', 'Show done and archived tasks on the day they were completed')}
                     >
@@ -510,8 +511,8 @@ export function CalendarView() {
             )}
 
             {externalCalendars.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-2">
-                    <span className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-2 rounded-card bg-card shadow-soft-sm px-3 py-2">
+                    <span className="text-[13px] font-semibold text-muted-foreground">
                         {resolveText('calendar.visibleCalendars', 'Calendars')}
                     </span>
                     {externalCalendars.map((calendar) => {
@@ -522,7 +523,7 @@ export function CalendarView() {
                                 type="button"
                                 onClick={() => toggleExternalCalendar(calendar.id)}
                                 className={cn(
-                                    "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                    "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition-colors focus-ring",
                                     hidden
                                         ? "border-border bg-muted/40 text-muted-foreground"
                                         : "border-border bg-background text-foreground"
@@ -551,7 +552,7 @@ export function CalendarView() {
             >
                 <div className="min-w-0 space-y-6">
                 {viewMode === 'month' && (
-                <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden shadow-sm">
+                <div className="grid grid-cols-7 gap-px bg-border/60 rounded-card overflow-hidden shadow-soft-sm">
                     {weekdayHeaders.map((day) => (
                         <div key={day} className="bg-card p-1 text-center text-xs font-medium text-muted-foreground sm:p-2 sm:text-sm">
                             {day}
@@ -598,7 +599,7 @@ export function CalendarView() {
                                             </span>
                                         </div>
                                         {isToday(day) && (
-                                            <span className="hidden rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-bold uppercase tracking-normal text-primary sm:inline">
+                                            <span className="hidden rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-semibold text-accent-text sm:inline">
                                                 {resolveText('calendar.today', 'Today')}
                                             </span>
                                         )}
@@ -627,8 +628,8 @@ export function CalendarView() {
                                             return (
                                                 <div
                                                     key={item.id}
-                                                    className="truncate rounded border-l-[3px] bg-muted/70 px-1.5 py-1 text-xs text-muted-foreground"
-                                                    style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId) }}
+                                                    className="truncate rounded-md border-l-0 bg-muted/70 px-1.5 py-1 text-xs text-muted-foreground"
+                                                    style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(item.event.sourceId)) }}
                                                     title={item.title}
                                                 >
                                                     {content}
@@ -658,18 +659,18 @@ export function CalendarView() {
                                                 draggable={!projected && !completed && !(hasTimeComponent(item.task.dueDate) && (item.kind === 'deadline' || !hasTimeComponent(item.task.startTime)))}
                                                 disabled={projected}
                                                 className={cn(
-                                                    "block w-full truncate rounded px-1.5 py-1 text-left text-xs focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                                    "block w-full truncate rounded px-1.5 py-1 text-left text-xs focus-ring",
                                                     projected
-                                                        ? "border border-dashed border-primary/50 bg-primary/5 text-primary/80"
+                                                        ? "border border-dashed border-primary/50 bg-primary/5 text-accent-text"
                                                         : completed
                                                         ? "bg-muted/60 text-muted-foreground"
                                                         : item.kind === 'scheduled'
-                                                        ? "bg-primary/10 text-primary"
-                                                        : "border-l-[3px] border-muted-foreground/60 bg-background/60 text-foreground",
+                                                        ? "bg-accent-soft text-accent-text"
+                                                        : "border-l-0 border-muted-foreground/60 bg-background/60 text-foreground",
                                                     taskMenuRingClass(task.id)
                                                 )}
                                                 style={!projected && !completed && item.kind !== 'scheduled'
-                                                    ? { borderLeftColor: getTaskAccentColor(task) }
+                                                    ? { borderLeftColor: getTaskAccentColor(task), backgroundColor: softEventFill(getTaskAccentColor(task)) }
                                                     : undefined}
                                                 title={projected ? `${task.title} (${projectedLabel})` : task.title}
                                                 onDragStart={(event) => handleCalendarTaskDragStart(event, task, item.kind)}
@@ -690,7 +691,7 @@ export function CalendarView() {
                                     {overflowCount > 0 && (
                                         <button
                                             type="button"
-                                            className="w-full rounded px-1.5 pt-0.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                            className="w-full rounded px-1.5 pt-0.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground focus-ring"
                                             onClick={(event) => {
                                                 event.stopPropagation();
                                                 openDayViewForDate(day);
@@ -708,7 +709,7 @@ export function CalendarView() {
                 )}
 
                 {(viewMode === 'day' || viewMode === 'week') && (
-                    <div className="overflow-x-auto rounded-lg border border-border bg-card shadow-sm"
+                    <div className="overflow-x-auto rounded-card bg-card shadow-soft-sm shadow-sm"
                         onScroll={(event) => {
 
 
@@ -733,16 +734,16 @@ export function CalendarView() {
                                     type="button"
                                     onClick={() => selectCalendarDate(day)}
                                     className={cn(
-                                        "border-r border-border p-2 text-left last:border-r-0 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                        "border-r border-border p-2 text-left last:border-r-0 hover:bg-muted focus-ring",
 
 
-                                        timelineDays.length > 1 && isToday(day) && "bg-primary/5"
+                                        timelineDays.length > 1 && isToday(day) && "bg-accent-soft"
                                     )}
                                 >
                                     <div className="text-xs font-medium text-muted-foreground">
                                         {getShortWeekdayLabels(locale)[day.getDay()]}
                                     </div>
-                                    <div className={cn("mt-0.5 inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-sm font-semibold", isToday(day) && "bg-primary text-primary-foreground")}>
+                                    <div className={cn("mt-0.5 inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-sm font-semibold", isToday(day) && "bg-accent-strong text-on-accent")}>
                                         {getCalendarDayOfMonth(day, calendarSystem)}
                                     </div>
                                 </button>
@@ -776,8 +777,8 @@ export function CalendarView() {
                                                 return (
                                                     <div
                                                         key={item.id}
-                                                        className="truncate rounded border-l-[3px] bg-muted/60 px-2 py-1 text-xs text-muted-foreground"
-                                                        style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId) }}
+                                                        className="truncate rounded-md border-l-0 bg-muted/60 px-2 py-1 text-xs text-muted-foreground"
+                                                        style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(item.event.sourceId)) }}
                                                         title={item.title}
                                                     >
                                                         {item.title}
@@ -806,9 +807,9 @@ export function CalendarView() {
                                                         handleCalendarTaskContextMenu(event, item.task, item.kind);
                                                     }}
                                                     className={cn(
-                                                        "block w-full truncate rounded border-l-[3px] px-2 py-1 text-left text-xs hover:bg-muted",
+                                                        "block w-full truncate rounded-md border-l-0 px-2 py-1 text-left text-xs hover:bg-muted",
                                                         projected
-                                                            ? "border-primary/50 border-dashed bg-primary/5 text-primary/80"
+                                                            ? "border-primary/50 border-dashed bg-primary/5 text-accent-text"
                                                             : completed
                                                             ? "border-transparent bg-muted/60 text-muted-foreground line-through"
                                                             : item.kind === 'scheduled'
@@ -817,7 +818,7 @@ export function CalendarView() {
                                                         taskMenuRingClass(item.task.id)
                                                     )}
                                                     style={!projected && !completed && item.kind !== 'scheduled'
-                                                        ? { borderLeftColor: getTaskAccentColor(item.task) }
+                                                        ? { borderLeftColor: getTaskAccentColor(item.task), backgroundColor: softEventFill(getTaskAccentColor(item.task)) }
                                                         : undefined}
                                                     title={projected ? `${item.title} (${projectedLabel})` : item.title}
                                                 >
@@ -830,7 +831,7 @@ export function CalendarView() {
                                                 type="button"
                                                 data-calendar-all-day-more
                                                 aria-expanded={allDayExpanded}
-                                                className="w-full rounded px-1.5 pt-0.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                className="w-full rounded px-1.5 pt-0.5 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground focus-ring"
                                                 onClick={() => setAllDayExpanded((expanded) => !expanded)}
                                             >
                                                 {allDayExpanded
@@ -870,7 +871,7 @@ export function CalendarView() {
                                         <div
                                             key={dayKey(day)}
                                             data-calendar-timed-drop-date={dayKey(day)}
-                                            className={cn("relative border-r border-border last:border-r-0", timelineDays.length > 1 && isToday(day) && "bg-primary/5")}
+                                            className={cn("relative border-r border-border last:border-r-0", timelineDays.length > 1 && isToday(day) && "bg-accent-soft")}
                                             style={{ height: (DESKTOP_DAY_END_HOUR - DESKTOP_DAY_START_HOUR) * DESKTOP_HOUR_HEIGHT }}
                                             onDragOver={handleCalendarTaskDragOver}
                                             onDrop={(event) => handleDropOnTimelineSlot(event, day)}
@@ -925,8 +926,8 @@ export function CalendarView() {
                                                         <div
                                                             key={item.id}
                                                             data-calendar-block
-                                                            className="absolute z-10 overflow-hidden rounded border-l-[4px] bg-muted/80 px-2 py-1 text-xs text-muted-foreground shadow-sm"
-                                                            style={{ ...commonStyle, borderLeftColor: getExternalCalendarColor(item.event.sourceId) }}
+                                                            className="absolute z-10 overflow-hidden rounded-md border-l-0 bg-muted/80 px-2 py-1 text-xs text-muted-foreground shadow-sm"
+                                                            style={{ ...commonStyle, borderLeftColor: getExternalCalendarColor(item.event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(item.event.sourceId)) }}
                                                             title={`${item.title} ${timeLabel}`}
                                                             onClick={(event) => event.stopPropagation()}
                                                         >
@@ -953,12 +954,12 @@ export function CalendarView() {
                                                         draggable={!projected}
                                                         disabled={projected}
                                                         className={cn(
-                                                            "absolute z-10 overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                                            "absolute z-10 overflow-hidden rounded-md px-2 py-1 text-left text-xs focus-ring",
                                                             projected
-                                                                ? "border border-dashed border-primary/50 bg-primary/10 text-primary"
+                                                                ? "border border-dashed border-primary/50 bg-accent-soft text-accent-text"
                                                                 : tint
-                                                                    ? "border-l-[4px] text-foreground hover:opacity-80"
-                                                                    : "border-l-[4px] border-primary bg-primary/15 text-foreground hover:bg-primary/25",
+                                                                    ? "border-l-0 text-foreground hover:opacity-80"
+                                                                    : "border-l-0 bg-accent-soft text-foreground hover:opacity-80",
                                                             taskMenuRingClass(item.task.id)
                                                         )}
                                                         style={tint ? { ...commonStyle, backgroundColor: tint, borderLeftColor: accent } : commonStyle}
@@ -991,7 +992,7 @@ export function CalendarView() {
                 )}
 
                 {viewMode === 'schedule' && (
-                    <div className="rounded-lg border border-border bg-card">
+                    <div className="rounded-card bg-card shadow-soft-sm">
                         <div className="border-b border-border px-4 py-3">
                             <div className="text-sm font-semibold">{resolveText('calendar.schedule', 'Schedule')}</div>
                             <div className="text-xs text-muted-foreground">{currentMonthLabel}</div>
@@ -1009,10 +1010,10 @@ export function CalendarView() {
                                         onDrop={(event) => handleDropOnDueDate(event, day)}
                                     >
                                         <div>
-                                            <div className={cn("text-sm font-semibold", isToday(day) && "text-primary")}>
+                                            <div className={cn("text-sm font-semibold", isToday(day) && "text-accent-text")}>
                                                 {day.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' })}
                                             </div>
-                                            {isToday(day) && <div className="mt-1 text-xs font-medium text-primary">{resolveText('calendar.today', 'Today')}</div>}
+                                            {isToday(day) && <div className="mt-1 text-xs font-medium text-accent-text">{resolveText('calendar.today', 'Today')}</div>}
                                         </div>
                                         <div className="space-y-1">
                                             {items.map((item) => {
@@ -1028,14 +1029,14 @@ export function CalendarView() {
                                                     return (
                                                         <div
                                                             key={item.id}
-                                                            className="flex items-center gap-3 rounded border-l-[3px] bg-muted/50 px-3 py-2 text-sm"
-                                                            style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId) }}
+                                                            className="flex items-center gap-3 rounded-md border-l-0 bg-muted/50 px-3 py-2 text-sm"
+                                                            style={{ borderLeftColor: getExternalCalendarColor(item.event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(item.event.sourceId)) }}
                                                         >
                                                             <span className="w-20 shrink-0 text-xs font-medium text-muted-foreground">{timeLabel}</span>
                                                             <span className="min-w-0 flex-1 truncate">{item.title}</span>
                                                             <button
                                                                 type="button"
-                                                                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:bg-primary/15 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:opacity-80 focus-ring"
                                                                 onClick={() => void createTaskFromExternalEvent(item.event)}
                                                                 aria-label={`${resolveText('calendar.createTaskFromEvent', 'Create task')}: ${item.title}`}
                                                                 title={resolveText('calendar.createTaskFromEvent', 'Create task')}
@@ -1068,22 +1069,22 @@ export function CalendarView() {
                                                             handleCalendarTaskContextMenu(event, item.task, item.kind);
                                                         }}
                                                         className={cn(
-                                                            "flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                                            "flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-muted focus-ring",
                                                             projected
                                                                 ? "border border-dashed border-primary/50 bg-primary/5 text-primary"
                                                                 : completed
                                                                 ? "bg-muted/50 text-muted-foreground"
-                                                                : item.kind === 'scheduled' ? "bg-primary/10 text-primary" : "border-l-[3px] border-muted-foreground/60 bg-background",
+                                                                : item.kind === 'scheduled' ? "bg-accent-soft text-accent-text" : "border-l-0 border-muted-foreground/60 bg-background",
                                                             taskMenuRingClass(item.task.id)
                                                         )}
                                                         style={!projected && !completed && item.kind !== 'scheduled'
-                                                            ? { borderLeftColor: getTaskAccentColor(item.task) }
+                                                            ? { borderLeftColor: getTaskAccentColor(item.task), backgroundColor: softEventFill(getTaskAccentColor(item.task)) }
                                                             : undefined}
                                                     >
                                                         <span className="w-20 shrink-0 text-xs font-medium text-muted-foreground">{timeLabel}</span>
                                                         <span className={cn('min-w-0 flex-1 truncate text-foreground', completed && 'text-muted-foreground line-through')}>{getCalendarMonthItemTitle(item, day, { formatDate: safeFormatDate, t })}</span>
                                                         {projected && (
-                                                            <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                                            <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent-text">
                                                                 {projectedLabel}
                                                             </span>
                                                         )}

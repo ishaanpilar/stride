@@ -124,7 +124,7 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
         <section
             ref={rootRef}
             aria-label={tr('pomodoro.title', 'Pomodoro Focus')}
-            className="relative flex items-center gap-2.5 rounded-xl bg-foreground/[0.05] px-2.5 py-2"
+            className="relative flex items-center gap-2.5 rounded-card bg-foreground/[0.06] shadow-soft-inset px-2.5 py-2"
         >
             <div className="relative h-7 w-7 shrink-0" aria-hidden>
                 <svg viewBox="0 0 28 28" className="h-7 w-7 -rotate-90">
@@ -139,7 +139,7 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
             </div>
             <div className="leading-tight">
                 <div className="font-mono text-[15px] font-semibold tabular-nums">{formatPomodoroClock(display.remainingSeconds)}</div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{phase}</div>
+                <div className="text-xs text-muted-foreground">{phase}</div>
             </div>
 
             <button
@@ -168,7 +168,7 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
                 onClick={toggle}
                 aria-label={isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start')}
                 title={isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start')}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-transform hover:opacity-90 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full btn-gradient transition-transform hover:opacity-90 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
                 {isRunning ? <Pause className="h-3.5 w-3.5" aria-hidden /> : <Play className="h-3.5 w-3.5 translate-x-px" aria-hidden />}
             </button>
@@ -177,7 +177,7 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
                 <ul
                     role="listbox"
                     aria-label={pickerLabel}
-                    className="absolute bottom-full left-0 right-0 z-20 mb-1.5 max-h-52 overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+                    className="absolute bottom-full left-0 right-0 z-20 mb-1.5 max-h-52 overflow-y-auto rounded-card bg-popover p-1 text-popover-foreground shadow-soft"
                 >
                     {[{ id: '', title: timerOnly }, ...options].map((option) => {
                         const selected = option.id === selectedId;
@@ -188,7 +188,7 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
                                     onClick={() => selectTask(option.id)}
                                     className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none"
                                 >
-                                    <Check className={cn('h-3 w-3 shrink-0 text-primary', !selected && 'opacity-0')} aria-hidden />
+                                    <Check className={cn('h-3 w-3 shrink-0 text-accent-text', !selected && 'opacity-0')} aria-hidden />
                                     <span className="truncate">{option.title}</span>
                                 </button>
                             </li>

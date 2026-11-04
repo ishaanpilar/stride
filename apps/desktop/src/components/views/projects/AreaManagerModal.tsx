@@ -120,7 +120,7 @@ export function AreaManagerModal({
             {
                                                }
             <DialogFooter className="mx-4 border-t border-border/50 pt-3 pb-4 space-y-2">
-                <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">
+                <label className="text-[13px] text-muted-foreground font-semibold ">
                     {newAreaLabel}
                 </label>
                 <div className="flex items-center gap-2">
@@ -144,7 +144,7 @@ export function AreaManagerModal({
                         type="button"
                         onClick={onCreateArea}
                         disabled={isCreatingArea || newAreaNameTaken}
-                        className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        className="px-3 py-1.5 text-[13px] btn-gradient disabled:opacity-50"
                     >
                         {isCreatingArea ? loadingLabel : t('projects.create')}
                     </button>

@@ -2652,6 +2652,18 @@ export const en: Record<string, string> = {
 
 
         'mindSweep.launchButton': 'Mind Sweep',
+
+
+        'calendar.tomorrow': 'Tomorrow',
+
+
+        'calendar.yesterday': 'Yesterday',
+
+
+        'list.todayProgress': 'Today: {done} of {total} done',
+
+
+        'list.todayRemaining': '{left} left · about {duration}',
         'mindSweep.guidedLabel': 'Guided sweep',
         'quickCapture.button': 'Capture',
         'mindSweep.title': 'Mind Sweep',

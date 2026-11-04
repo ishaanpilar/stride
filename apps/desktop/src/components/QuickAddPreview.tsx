@@ -21,7 +21,7 @@ export function QuickAddPreview({ entries, className }: QuickAddPreviewProps) {
             role="status"
             aria-live="polite"
             data-testid="quick-add-preview"
-            className={cn('flex flex-wrap items-center gap-1 text-[11px] leading-4', className)}
+            className={cn('flex flex-wrap items-center gap-1 text-xs leading-4', className)}
         >
             {visible.map((entry) => (
                 <span
@@ -30,10 +30,10 @@ export function QuickAddPreview({ entries, className }: QuickAddPreviewProps) {
 
                     aria-hidden={entry.kind === 'title' ? true : undefined}
                     className={cn(
-                        'inline-flex max-w-full items-baseline gap-1 rounded-full border px-2 py-0.5',
+                        'inline-flex h-[26px] max-w-full items-center gap-1 rounded-pill px-2.5',
                         entry.tone === 'warning'
-                            ? 'border-destructive/40 bg-destructive/10 text-destructive'
-                            : 'border-border bg-muted/40 text-muted-foreground',
+                            ? 'bg-destructive/10 text-danger-text'
+                            : 'bg-well text-muted-foreground',
                     )}
                 >
                     {entry.label ? <span className="shrink-0">{entry.label}</span> : null}
@@ -43,7 +43,7 @@ export function QuickAddPreview({ entries, className }: QuickAddPreviewProps) {
                 </span>
             ))}
             {overflow > 0 ? (
-                <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-muted-foreground">
+                <span className="inline-flex h-[26px] items-center rounded-pill bg-well px-2.5 text-muted-foreground">
                     +{overflow}
                 </span>
             ) : null}

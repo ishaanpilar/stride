@@ -6,6 +6,7 @@ import { getProjectedRecurrenceDisplayLabel, hasTimeComponent, isProjectedRecurr
 import { cn } from '../../../lib/utils';
 import { reportError } from '../../../lib/report-error';
 import { setCalendarTaskDragData } from '../../../lib/calendar-task-drag';
+import { softEventFill } from './calendar-primitives';
 import { TimeInput } from '../../ui/TimeInput';
 import type { DesktopCalendarController } from './useDesktopCalendarController';
 
@@ -88,7 +89,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
     return (
 
 
-        <div className="rounded-lg border border-border bg-card [container-type:inline-size]">
+        <div className="rounded-card bg-card shadow-soft-sm [container-type:inline-size]">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
                 <div>
                     <div className="text-sm font-semibold">{format(selectedDate, 'PPPP')}</div>
@@ -99,7 +100,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                 <div className="flex items-center gap-2">
                     <button
                         type="button"
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="inline-flex h-8 items-center gap-1.5 btn-gradient px-2.5 text-xs focus-ring"
                         onClick={() => openQuickAddForDate(selectedDate)}
                     >
                         <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -107,7 +108,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                     </button>
                     <button
                         type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-ring"
                         onClick={closeSelectedDay}
                         aria-label={t('common.close')}
                         title={t('common.close')}
@@ -121,21 +122,21 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                 <div className="space-y-5">
                     {selectedAllDayEvents.length > 0 && (
                         <section className="space-y-2">
-                            <h3 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{t('calendar.allDay')}</h3>
+                            <h3 className="text-[13px] font-semibold text-muted-foreground">{t('calendar.allDay')}</h3>
                             <div className="space-y-1">
                                 {selectedAllDayEvents.map((event) => {
                                     const sourceLabel = calendarNameById.get(event.sourceId);
                                     return (
                                         <div
                                             key={event.id}
-                                            className="flex items-center gap-3 rounded-md border-l-[3px] bg-muted/50 px-3 py-2 text-sm"
-                                            style={{ borderLeftColor: getExternalCalendarColor(event.sourceId) }}
+                                            className="flex items-center gap-3 rounded-md border-l-0 bg-muted/50 px-3 py-2 text-sm"
+                                            style={{ borderLeftColor: getExternalCalendarColor(event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(event.sourceId)) }}
                                         >
                                             <span className="min-w-0 flex-1 truncate">{event.title}</span>
                                             {sourceLabel && <span className="truncate text-xs text-muted-foreground">{sourceLabel}</span>}
                                             <button
                                                 type="button"
-                                                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:bg-primary/15 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:opacity-80 focus-ring"
                                                 onClick={() => void createTaskFromExternalEvent(event)}
                                                 aria-label={`${resolveText('calendar.createTaskFromEvent', 'Create task')}: ${event.title}`}
                                                 title={resolveText('calendar.createTaskFromEvent', 'Create task')}
@@ -151,7 +152,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                     )}
 
                     <section className="space-y-2">
-                        <h3 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{t('calendar.events')}</h3>
+                        <h3 className="text-[13px] font-semibold text-muted-foreground">{t('calendar.events')}</h3>
                         <div className="space-y-1">
                             {isExternalLoading && (
                                 <div className="rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
@@ -168,8 +169,8 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                                 return (
                                     <div
                                         key={event.id}
-                                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-l-[3px] bg-muted/50 px-3 py-2 text-sm"
-                                        style={{ borderLeftColor: getExternalCalendarColor(event.sourceId) }}
+                                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-l-0 bg-muted/50 px-3 py-2 text-sm"
+                                        style={{ borderLeftColor: getExternalCalendarColor(event.sourceId), backgroundColor: softEventFill(getExternalCalendarColor(event.sourceId)) }}
                                     >
                                         <span className="w-28 shrink-0 text-xs font-medium text-muted-foreground">{timeLabel}</span>
                                         {                                                                                         }
@@ -177,7 +178,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                                         {sourceLabel && <span className="truncate text-xs text-muted-foreground">{sourceLabel}</span>}
                                         <button
                                             type="button"
-                                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:bg-primary/15 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:opacity-80 focus-ring"
                                             onClick={() => void createTaskFromExternalEvent(event)}
                                             aria-label={`${resolveText('calendar.createTaskFromEvent', 'Create task')}: ${event.title}`}
                                             title={resolveText('calendar.createTaskFromEvent', 'Create task')}
@@ -197,7 +198,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                     </section>
 
                     <section className="space-y-2">
-                        <h3 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{resolveText('calendar.tasks', 'Tasks')}</h3>
+                        <h3 className="text-[13px] font-semibold text-muted-foreground">{resolveText('calendar.tasks', 'Tasks')}</h3>
                         <div className="space-y-1">
                             {selectedTaskRows.map(({ id, kind, task, start }) => {
                                 const projected = isProjectedRecurringTask(task);
@@ -233,10 +234,10 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                                             "group flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted/50",
                                             projected
                                                 ? "border border-dashed border-primary/50 bg-primary/5"
-                                                : kind === 'scheduled' ? "bg-primary/5" : "border-l-[3px] border-muted-foreground/60 bg-background/60"
+                                                : kind === 'scheduled' ? "bg-primary/5" : "border-l-0 border-muted-foreground/60 bg-background/60"
                                         )}
                                         style={!projected && kind !== 'scheduled'
-                                            ? { borderLeftColor: getTaskAccentColor(task) }
+                                            ? { borderLeftColor: getTaskAccentColor(task), backgroundColor: softEventFill(getTaskAccentColor(task)) }
                                             : undefined}
                                     >
                                         <button
@@ -257,7 +258,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                                             <span className="min-w-[8rem] flex-1 truncate">{task.title}</span>
                                         </button>
                                         {projected && (
-                                            <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                            <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold text-accent-text">
                                                 {projectedLabel}
                                             </span>
                                         )}
@@ -331,9 +332,9 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                     </section>
                 </div>
 
-                <aside className="space-y-3 rounded-lg border border-border bg-background/60 p-3">
+                <aside className="space-y-3 rounded-control bg-well p-3">
                     <div>
-                        <div className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        <div className="text-[13px] font-semibold text-muted-foreground">
                             {t('calendar.scheduleResults')}
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -345,7 +346,7 @@ export function CalendarSelectedDayPanel({ controller }: CalendarSelectedDayPane
                         value={scheduleQuery}
                         onChange={(e) => updateScheduleQuery(e.target.value)}
                         placeholder={t('calendar.schedulePlaceholder')}
-                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        className="w-full rounded-control bg-well px-3 py-2 text-sm focus-ring"
                     />
                     {scheduleError && (
                         <div className="text-xs text-destructive">{scheduleError}</div>

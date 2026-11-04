@@ -38,7 +38,7 @@ export function SettingRow({
         >
             <div className="min-w-0">
                 <div className="text-sm font-medium">{title}</div>
-                {description ? <div className="text-xs text-muted-foreground mt-1">{description}</div> : null}
+                {description ? <div className="text-[13px] text-muted-foreground mt-1">{description}</div> : null}
             </div>
             {children ? <div className="flex items-center gap-2 shrink-0">{children}</div> : null}
         </div>
@@ -68,7 +68,7 @@ export function SettingField({
 
 export function SettingsCard({ children }: { children: ReactNode }) {
     return (
-        <div className="bg-card border border-border rounded-lg divide-y divide-border/50">
+        <div className="soft-surface rounded-card divide-y divide-border">
             {children}
         </div>
     );
@@ -101,14 +101,14 @@ export function SettingsDisclosureCard({
     children,
 }: SettingsDisclosureCardProps) {
     return (
-        <div className="bg-card border border-border rounded-lg">
+        <div className="soft-surface rounded-card overflow-hidden">
             <button
                 type="button"
                 onClick={onToggle}
                 aria-expanded={open}
                 data-settings-section={sectionKey}
                 data-settings-key={settingsKey ?? undefined}
-                className="w-full p-4 flex items-center justify-between gap-4 text-left"
+                className="focus-ring-inset w-full p-4 flex items-center justify-between gap-4 text-left"
             >
                 <div className="min-w-0">
                     <div className="text-sm font-medium">{title}</div>
@@ -128,7 +128,7 @@ export function SettingsDisclosureCard({
 
 export function SettingsSectionHeader({ children }: { children: ReactNode }) {
     return (
-        <h3 className="text-[11px] font-semibold tracking-widest text-muted-foreground uppercase">
+        <h3 className="text-[13px] font-semibold text-muted-foreground">
             {children}
         </h3>
     );

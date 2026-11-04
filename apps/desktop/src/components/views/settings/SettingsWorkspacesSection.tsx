@@ -106,7 +106,7 @@ export function SettingsWorkspacesSection() {
         <section className="space-y-3" data-settings-workspaces>
             <div>
                 <h3 className="flex items-center gap-2 text-sm font-semibold">
-                    <FolderOpen className="h-4 w-4 text-primary" aria-hidden="true" />
+                    <FolderOpen className="h-4 w-4 text-accent-text" aria-hidden="true" />
                     {t('workspaces.title')}
                 </h3>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('workspaces.description')}</p>
@@ -137,7 +137,7 @@ export function SettingsWorkspacesSection() {
                                                 }}
                                                 aria-label={t('workspaces.namePlaceholder')}
                                                 placeholder={t('workspaces.namePlaceholder')}
-                                                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm"
+                                                className="h-8 min-w-0 flex-1 px-2 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                                             />
                                             <ColorPicker
                                                 value={editing.color}
@@ -148,14 +148,14 @@ export function SettingsWorkspacesSection() {
                                                 type="button"
                                                 onClick={() => void handleRename()}
                                                 disabled={disabled || !editing.name.trim()}
-                                                className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                                                className="rounded-control btn-gradient px-3 py-1.5 text-xs font-semibold focus-ring disabled:opacity-60"
                                             >
                                                 {t('common.save')}
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setEditing(null)}
-                                                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                                                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
                                             >
                                                 {t('common.cancel')}
                                             </button>
@@ -170,7 +170,7 @@ export function SettingsWorkspacesSection() {
                                                 />
                                                 <span className="truncate">{nameOf(workspace)}</span>
                                                 {isActive && (
-                                                    <span className="rounded-full bg-primary/10 px-2 text-[11px] font-semibold text-primary">
+                                                    <span className="rounded-full bg-accent-soft px-2 text-[11px] font-semibold text-accent-text">
                                                         {t('workspaces.open')}
                                                     </span>
                                                 )}
@@ -181,7 +181,7 @@ export function SettingsWorkspacesSection() {
                                                         type="button"
                                                         onClick={() => void requestSwitch(workspace)}
                                                         disabled={disabled}
-                                                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                                                        className="rounded-control btn-gradient px-3 py-1.5 text-xs font-semibold focus-ring disabled:opacity-60"
                                                         data-workspace-switch
                                                     >
                                                         {t('workspaces.switch')}
@@ -191,7 +191,7 @@ export function SettingsWorkspacesSection() {
                                                     type="button"
                                                     onClick={() => setEditing({ id: workspace.id, name: nameOf(workspace), color: workspace.color })}
                                                     disabled={disabled}
-                                                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                                                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-60"
                                                 >
                                                     {t('common.rename')}
                                                 </button>
@@ -200,7 +200,7 @@ export function SettingsWorkspacesSection() {
                                                         type="button"
                                                         onClick={() => void handleDelete(workspace)}
                                                         disabled={disabled}
-                                                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                                                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-danger-text hover:bg-destructive/10 disabled:opacity-60"
                                                         data-workspace-delete
                                                     >
                                                         {t('common.delete')}
@@ -227,7 +227,7 @@ export function SettingsWorkspacesSection() {
                             }}
                             aria-label={t('workspaces.namePlaceholder')}
                             placeholder={t('workspaces.namePlaceholder')}
-                            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm"
+                            className="h-8 min-w-0 flex-1 px-2 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                             data-workspace-name-input
                         />
                         <ColorPicker value={newColor} onChange={setNewColor} label={t('workspaces.title')} />
@@ -235,7 +235,7 @@ export function SettingsWorkspacesSection() {
                             type="button"
                             onClick={() => void handleAdd()}
                             disabled={disabled || !newName.trim()}
-                            className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                            className="rounded-control btn-gradient px-3 py-1.5 text-xs font-semibold focus-ring disabled:opacity-60"
                             data-workspace-add
                         >
                             {t('workspaces.add')}

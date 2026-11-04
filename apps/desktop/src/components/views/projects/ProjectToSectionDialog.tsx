@@ -74,7 +74,7 @@ export function ProjectToSectionDialog({ source, projects, onCancel, onSuccess, 
             {!prepared ? <>
                 <label className="block text-sm font-medium">
                     {tFallback(t, 'projects.convertDestination', 'Destination project')}
-                    <select value={destinationId} onChange={(event) => { setDestinationId(event.target.value); setError(null); }} disabled={busy} className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2">
+                    <select value={destinationId} onChange={(event) => { setDestinationId(event.target.value); setError(null); }} disabled={busy} className="mt-1 w-full rounded-card bg-card shadow-soft-sm px-3 py-2">
                         <option value="">{tFallback(t, 'projects.convertChooseDestination', 'Choose a project')}</option>
                         {destinations.map((project) =>
                             <option key={project.id} value={project.id}>{project.title}</option>)}
@@ -82,7 +82,7 @@ export function ProjectToSectionDialog({ source, projects, onCancel, onSuccess, 
                 </label>
                 <label className="block text-sm font-medium">
                     {tFallback(t, 'projects.convertSectionName', 'Section name')}
-                    <input value={name} onChange={(event) => { setName(event.target.value); setError(null); }} disabled={busy} className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2" />
+                    <input value={name} onChange={(event) => { setName(event.target.value); setError(null); }} disabled={busy} className="mt-1 w-full rounded-card bg-card shadow-soft-sm px-3 py-2" />
                 </label>
             </> : null}
             {shownPreview && <div className="space-y-2 text-sm">

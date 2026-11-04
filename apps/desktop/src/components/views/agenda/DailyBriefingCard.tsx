@@ -49,15 +49,15 @@ export function DailyBriefingCard() {
     const top = (briefing?.top ?? []).filter((item) => titleOf(item.taskId));
 
     return (
-        <section className="rounded-lg border border-border bg-card p-4 space-y-3" aria-label="AI morning briefing" data-testid="daily-briefing-card">
+        <section className="rounded-card bg-card shadow-soft-sm p-5 space-y-3" aria-label="AI morning briefing" data-testid="daily-briefing-card">
             <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                    <Sparkles className="h-4 w-4 text-primary shrink-0" />
+                    <Sparkles className="h-4 w-4 text-accent-text shrink-0" />
                     <h3 className="text-sm font-semibold truncate">{briefing?.headline || 'Morning briefing'}</h3>
                 </div>
                 <button
                     type="button"
-                    className="p-1 rounded hover:bg-muted text-muted-foreground disabled:opacity-50"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-control hover:bg-accent text-muted-foreground focus-ring disabled:opacity-50"
                     onClick={() => void run(true)}
                     disabled={loading}
                     aria-label="Regenerate briefing"

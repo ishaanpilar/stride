@@ -2654,6 +2654,18 @@ export const jaOverrides: Record<string, string> = {
         'mindSweep.launchButton': 'マインドスイープ',
 
 
+        'calendar.tomorrow': '明日',
+
+
+        'calendar.yesterday': '昨日',
+
+
+        'list.todayProgress': '今日: {total} 件中 {done} 件完了',
+
+
+        'list.todayRemaining': '残り {left} 件 · 約 {duration}',
+
+
         'mindSweep.guidedLabel': 'ガイド付きスイープ',
 
 

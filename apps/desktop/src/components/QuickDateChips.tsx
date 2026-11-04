@@ -55,10 +55,10 @@ export function QuickDateChips({
                         aria-pressed={active}
                         onClick={() => onSelect(getQuickDate(preset, now), preset)}
                         className={cn(
-                            'shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
+                            'shrink-0 inline-flex h-[26px] items-center rounded-pill px-3 text-xs font-medium transition-colors focus-ring',
                             active
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground',
+                                ? 'bg-accent-soft text-accent-text'
+                                : 'bg-well text-muted-foreground hover:bg-accent hover:text-foreground',
                         )}
                     >
                         {label}

@@ -1737,11 +1737,11 @@ export const TaskItem = memo(function TaskItem({
                 }}
                 onContextMenu={interactionDisabled ? undefined : handleOpenQuickActionMenu}
                 className={cn(
-                    "group rounded-lg hover:bg-muted/50 dark:hover:bg-muted/20 transition-colors animate-in fade-in slide-in-from-bottom-2",
-                    isCondensed ? "px-2.5 py-1.5" : isCompact ? "p-2.5" : "px-3 py-3",
-                    "focus-within:ring-2 focus-within:ring-inset focus-within:ring-primary/40 focus-within:bg-primary/5",
+                    "group rounded-card bg-card text-card-foreground shadow-soft-sm hover:shadow-soft transition-[box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none animate-in fade-in slide-in-from-bottom-2 motion-reduce:animate-none",
+                    isCondensed ? "px-3 py-2" : isCompact ? "p-3" : "p-4",
+                    "focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:bg-primary/5",
                     canCalendarDrag && "cursor-grab active:cursor-grabbing",
-                    isSelected && "ring-2 ring-inset ring-primary/40 bg-primary/5",
+                    isSelected && "ring-1 ring-inset ring-accent-fill bg-accent-soft",
                     isHighlighted && "ring-2 ring-inset ring-primary/70 bg-primary/5",
 
 

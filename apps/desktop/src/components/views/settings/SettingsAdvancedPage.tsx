@@ -30,7 +30,7 @@ export type SettingsAdvancedPageProps = SettingsKeyboardWindowProps & {
 };
 
 const inputCls =
-    'h-8 w-24 rounded-md border border-border bg-muted/50 px-2.5 text-right text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60';
+    'h-8 w-24 rounded-md border border-border bg-well px-2.5 text-right text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-60';
 
 export function SettingsAdvancedPage({
     t,
@@ -90,7 +90,7 @@ export function SettingsAdvancedPage({
                             aria-label={t.keybindings}
                             value={keybindingStyle}
                             onChange={(event) => onKeybindingStyleChange(event.target.value as 'vim' | 'emacs' | 'standard')}
-                            className="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="px-2.5 py-1.5 text-[13px] text-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                         >
                             <option value="standard">{t.keybindingStandard}</option>
                             <option value="vim">{t.keybindingVim}</option>
@@ -99,7 +99,7 @@ export function SettingsAdvancedPage({
                         <button
                             type="button"
                             onClick={onOpenHelp}
-                            className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                            className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                         >
                             {t.viewShortcuts}
                         </button>
@@ -120,7 +120,7 @@ export function SettingsAdvancedPage({
                             aria-label={t.closeBehavior}
                             value={closeBehavior}
                             onChange={(event) => onCloseBehaviorChange?.(event.target.value as 'ask' | 'tray' | 'quit')}
-                            className="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="px-2.5 py-1.5 text-[13px] text-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                         >
                             <option value="ask">{t.closeBehaviorAsk}</option>
                             <option value="tray">{t.closeBehaviorTray}</option>
@@ -175,7 +175,7 @@ export function SettingsAdvancedPage({
                 </SettingRow>
                 {localApiStatus.enabled && localApiStatus.token && (
                     <SettingRow padded settingsKey="localApiToken" title={t.localApiToken} description={t.localApiTokenDesc}>
-                        <code className="max-w-[320px] break-all rounded border border-border bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground">
+                        <code className="max-w-[320px] break-all rounded border border-border bg-well px-2 py-1 text-[11px] text-muted-foreground">
                             {localApiStatus.token}
                         </code>
                     </SettingRow>
@@ -186,7 +186,7 @@ export function SettingsAdvancedPage({
                     </div>
                 )}
                 {errorText && (
-                    <div className="px-4 py-3 text-xs text-destructive">
+                    <div className="px-4 py-3 text-xs text-danger-text">
                         {errorText}
                     </div>
                 )}
@@ -236,7 +236,7 @@ export function SettingsAdvancedPage({
                                             value={networkProxyUrl}
                                             onChange={(event) => onNetworkProxyUrlChange(event.target.value)}
                                             placeholder="http://proxy-host:port"
-                                            className="min-w-0 flex-1 rounded-md border border-border bg-muted/50 px-2.5 py-2 text-[13px] font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                            className="min-w-0 flex-1 px-2.5 py-2 text-[13px] font-mono text-foreground bg-well shadow-soft-inset rounded-control focus-ring"
                                         />
                                         <button
                                             type="button"

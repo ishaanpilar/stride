@@ -140,7 +140,7 @@ export function BoardFiltersPanel({
     };
 
     return (
-        <div id="board-filters-panel" className="mt-3 space-y-3 rounded-lg border border-border bg-card p-3" onKeyDown={handlePanelKeyDown}>
+        <div id="board-filters-panel" className="mt-3 space-y-3 rounded-card bg-card shadow-soft-sm p-3" onKeyDown={handlePanelKeyDown}>
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                     <Filter className="h-4 w-4" aria-hidden="true" />
@@ -151,7 +151,7 @@ export function BoardFiltersPanel({
                         <button
                             type="button"
                             onClick={onClearFilters}
-                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
                         >
                             {t('filters.clear')}
                         </button>
@@ -160,7 +160,7 @@ export function BoardFiltersPanel({
                         <button
                             type="button"
                             onClick={closePanel}
-                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
                         >
                             {t('filters.hide')}
                         </button>
@@ -214,7 +214,7 @@ export function BoardFiltersPanel({
                                                 isExcluded
                                                     ? 'border border-destructive bg-destructive/10 text-destructive line-through'
                                                     : isIncluded
-                                                        ? 'bg-primary text-primary-foreground'
+                                                        ? 'bg-accent-soft text-accent-text'
                                                         : 'bg-muted text-muted-foreground hover:bg-muted/80',
                                             )}
                                         >
@@ -273,7 +273,7 @@ export function BoardFiltersPanel({
                                     className={cn(
                                         FILTER_OPTION_BASE,
                                         selectedProjectIds.includes(SAVED_FILTER_NO_PROJECT_ID)
-                                            ? 'bg-primary text-primary-foreground'
+                                            ? 'bg-accent-soft text-accent-text'
                                             : 'bg-muted text-muted-foreground hover:bg-muted/80',
                                     )}
                                 >

@@ -115,7 +115,7 @@ export function Dialog({
         <div
             role="presentation"
             className={cn(
-                'fixed inset-0 z-50 flex justify-center bg-black/50',
+                'fixed inset-0 z-50 flex justify-center bg-black/40',
                 placement === 'center' ? 'items-center' : 'items-start',
                 overlayClassName,
             )}
@@ -141,7 +141,7 @@ export function Dialog({
                 aria-labelledby={labelledBy}
                 aria-describedby={describedBy}
                 className={cn(
-                    'flex w-full max-w-md max-h-[85vh] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl',
+                    'flex w-full max-w-md max-h-[85vh] flex-col overflow-hidden rounded-sheet border border-border bg-popover text-popover-foreground shadow-soft',
                     panelClassName,
                 )}
                 onKeyDown={handleKeyDown}

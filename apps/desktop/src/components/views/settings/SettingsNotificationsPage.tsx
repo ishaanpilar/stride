@@ -87,7 +87,7 @@ export function SettingsNotificationsPage({
     };
 
     return (
-        <div className="bg-card border border-border rounded-lg p-6 space-y-4">
+        <div className="p-6 space-y-4 soft-surface rounded-card">
             <p className="text-sm text-muted-foreground">{t.notificationsDesc}</p>
 
             <SettingRow settingsKey="notificationsEnable" title={t.notificationsEnable}>
@@ -103,7 +103,7 @@ export function SettingsNotificationsPage({
                     aria-label={t.taskReminderDefault}
                     value={taskReminderDefault}
                     onChange={(event) => handleUpdate({ taskReminderDefault: event.target.value as 'send' | 'skip' })}
-                    className="bg-muted px-2 py-1 rounded text-sm border border-border"
+                    className="px-2 py-1 text-sm bg-well shadow-soft-inset rounded-control focus-ring"
                 >
                     <option value="send">{t.taskReminderDefaultSend}</option>
                     <option value="skip">{t.taskReminderDefaultSkip}</option>
@@ -175,7 +175,7 @@ export function SettingsNotificationsPage({
                         value={weeklyReviewDay}
                         disabled={!weeklyReviewEnabled}
                         onChange={(e) => handleUpdate({ weeklyReviewDay: Number(e.target.value) })}
-                        className="bg-muted px-2 py-1 rounded text-sm border border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed bg-well shadow-soft-inset rounded-control focus-ring"
                     >
                         {weekdayOptions.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -191,7 +191,7 @@ export function SettingsNotificationsPage({
                         value={weeklyReviewTime}
                         disabled={!weeklyReviewEnabled}
                         onChange={(weeklyReviewTime) => handleUpdate({ weeklyReviewTime })}
-                        className="bg-muted px-2 py-1 rounded text-sm border border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed bg-well shadow-soft-inset rounded-control focus-ring"
                     />
                 </SettingRow>
             </div>
@@ -210,7 +210,7 @@ export function SettingsNotificationsPage({
                         value={dailyDigestMorningTime}
                         disabled={!dailyDigestMorningEnabled}
                         onChange={(dailyDigestMorningTime) => handleUpdate({ dailyDigestMorningTime })}
-                        className="bg-muted px-2 py-1 rounded text-sm border border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed bg-well shadow-soft-inset rounded-control focus-ring"
                     />
                     <Switch
                         checked={dailyDigestMorningEnabled}
@@ -239,7 +239,7 @@ export function SettingsNotificationsPage({
                         value={dailyDigestEveningTime}
                         disabled={!dailyDigestEveningEnabled}
                         onChange={(dailyDigestEveningTime) => handleUpdate({ dailyDigestEveningTime })}
-                        className="bg-muted px-2 py-1 rounded text-sm border border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed bg-well shadow-soft-inset rounded-control focus-ring"
                     />
                     <Switch
                         checked={dailyDigestEveningEnabled}

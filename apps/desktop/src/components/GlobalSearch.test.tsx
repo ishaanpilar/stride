@@ -239,7 +239,7 @@ describe('GlobalSearch', () => {
 
         const title = document.querySelector<HTMLElement>('[data-search-index="0"] .font-medium');
         expect(title?.textContent).toBe('Home needle task');
-        expect(Array.from(title!.querySelectorAll('.text-primary.font-semibold')).map((node) => node.textContent))
+        expect(Array.from(title!.querySelectorAll('.text-accent-text.font-semibold')).map((node) => node.textContent))
             .toEqual(['Home', 'needle']);
     });
 
@@ -569,10 +569,10 @@ describe('GlobalSearch', () => {
         });
         const rows = () => Array.from(screen.getByRole('dialog').querySelectorAll('[data-search-index]'));
         expect(rows()).toHaveLength(2);
-        expect(rows()[0]).toHaveClass('bg-accent');
+        expect(rows()[0]).toHaveClass('bg-accent-soft');
 
         fireEvent.keyDown(input, { key: 'ArrowDown' });
-        expect(rows()[1]).toHaveClass('bg-accent');
+        expect(rows()[1]).toHaveClass('bg-accent-soft');
     });
 
 

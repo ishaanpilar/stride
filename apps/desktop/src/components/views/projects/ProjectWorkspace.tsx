@@ -218,7 +218,7 @@ function ProjectTaskRows({ tasks, renderTask, scrollRef, pinnedTaskId }: Project
 
     if (!shouldVirtualize) {
         return (
-            <div className="divide-y divide-border/30">
+            <div className="flex flex-col gap-2.5">
                 {tasks.map((task) => renderTask(task))}
             </div>
         );
@@ -312,8 +312,8 @@ function ProjectSectionColumn({
         <SectionDropZone
             id={id}
             className={cn(
-                'flex w-96 flex-none flex-col self-start rounded-lg border',
-                dashed ? 'border-dashed border-border/70' : 'border-border/60',
+                'flex w-96 flex-none flex-col self-start rounded-card bg-well shadow-soft-inset',
+                dashed && 'border border-dashed border-border',
             )}
         >
             <div className="border-b border-border/50 px-3 py-2">{header}</div>
@@ -1366,7 +1366,7 @@ export function ProjectWorkspace({
         return (
             <div className="border-b border-border/50 px-3 py-2">
                 <textarea
-                    className="min-h-[90px] w-full resize-y rounded border border-border bg-background p-2 text-xs focus:bg-accent/5 focus:outline-none"
+                    className="min-h-[90px] w-full resize-y rounded-control bg-well p-2 text-xs focus-ring"
                     placeholder={t('projects.sectionNotesPlaceholder')}
                     defaultValue={section.description || ''}
                     onBlur={(event) => {
@@ -1688,7 +1688,7 @@ export function ProjectWorkspace({
             type="button"
             data-add-task-trigger
             onClick={() => openProjectQuickAdd()}
-            className="inline-flex h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            className="inline-flex h-11 shrink-0 items-center gap-2 whitespace-nowrap btn-gradient px-5 focus-ring"
         >
             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
             {t('projects.addTask')}
@@ -1704,10 +1704,10 @@ export function ProjectWorkspace({
                 else setSelectionMode(true);
             }}
             className={cn(
-                'h-8 whitespace-nowrap rounded-md border px-2.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40',
+                'h-8 whitespace-nowrap rounded-control border px-3 text-[13px] font-medium shadow-soft-sm transition-colors focus-ring',
                 selectionMode
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-border bg-background text-muted-foreground hover:bg-muted/40 hover:text-foreground',
+                    ? 'border-transparent bg-accent-soft text-accent-text'
+                    : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
             )}
         >
             {selectionMode ? t('bulk.exitSelect') : t('bulk.select')}
@@ -1745,7 +1745,7 @@ export function ProjectWorkspace({
                     <button
                         type="button"
                         onClick={onToggleProjectsSidebar}
-                        className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-control bg-well text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                         title={expandProjectsSidebarLabel}
                         aria-label={expandProjectsSidebarLabel}
                         aria-expanded={false}
@@ -1797,7 +1797,7 @@ export function ProjectWorkspace({
                             className="flex-1 min-h-0 overflow-y-auto pr-2"
                         >
                             {(isCreatingProject || isProjectDeleting || isAreaCreating) && (
-                                <div className="mb-4 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                                <div className="mb-4 rounded-control bg-well px-3 py-2 text-xs text-muted-foreground">
                                     {tFallback(t, 'common.loading', 'Loading...')}
                                 </div>
                             )}
@@ -2012,14 +2012,14 @@ export function ProjectWorkspace({
                             {projectReferenceTasks.length > 0 && (
                                 <section data-project-reference-tasks className="border-t border-border/50 py-5">
                                     <div className="mb-3 flex items-center justify-between">
-                                        <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                                        <div className="text-[13px] text-muted-foreground">
                                             {t('status.reference')} ({projectReferenceTasks.length})
                                         </div>
                                     </div>
                                     {hasProjectSections ? (
                                         <div className="space-y-3">
                                             {referenceTaskGroups.map((group) => (
-                                                <div key={group.id} className="rounded-lg border border-border/60">
+                                                <div key={group.id} className="rounded-card bg-card shadow-soft-sm">
                                                     <h3 className="flex items-center gap-2 border-b border-border/50 px-3 py-2 text-sm font-semibold">
                                                         <span>{group.title}</span>
                                                         <span className="text-xs text-muted-foreground">{group.tasks.length}</span>

@@ -514,7 +514,7 @@ export function SettingsGtdPage({
                     </button>
                 </div>
             ) : null}
-            <div className="bg-card border border-border rounded-lg divide-y divide-border">
+            <div className="divide-y divide-border soft-surface rounded-card">
                 <SettingRow padded settingsKey="autoArchive" title={t.autoArchive} description={t.autoArchiveDesc}>
                     <select
                         aria-label={t.autoArchive}
@@ -523,7 +523,7 @@ export function SettingsGtdPage({
                             const value = Number.parseInt(e.target.value, 10);
                             saveGtdFromLatest(() => ({ autoArchiveDays: Number.isFinite(value) ? value : 7 }), 'Failed to update auto-archive settings');
                         }}
-                        className="text-sm bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="text-sm text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                     >
                         {autoArchiveOptions.map((days) => (
                             <option key={days} value={days}>
@@ -547,11 +547,11 @@ export function SettingsGtdPage({
                                 event.currentTarget.blur();
                             }
                         }}
-                        className="w-24 shrink-0 text-sm bg-muted/50 text-foreground border border-border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="w-24 shrink-0 text-sm text-foreground px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                     />
                 </SettingRow>
                 <SettingRow padded settingsKey="focusTaskLimit" title={t.focusTaskLimit} description={t.focusTaskLimitDesc}>
-                    <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1 shrink-0">
+                    <div className="flex items-center gap-1 p-1 shrink-0 bg-well shadow-soft-inset rounded-control">
                         {FOCUS_TASK_LIMIT_OPTIONS.map((option) => {
                             const selected = focusTaskLimit === option;
                             return (
@@ -583,7 +583,7 @@ export function SettingsGtdPage({
                     />
                 </SettingRow>
                 <SettingRow padded settingsKey="defaultProjectFlowMode" title={t.defaultProjectFlowMode} description={t.defaultProjectFlowModeDesc}>
-                    <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1 shrink-0">
+                    <div className="flex items-center gap-1 p-1 shrink-0 bg-well shadow-soft-inset rounded-control">
                         {([
                             { id: 'parallel', label: t.projectFlowParallel },
                             { id: 'sequential', label: t.projectFlowSequential },
@@ -659,7 +659,7 @@ export function SettingsGtdPage({
                                             event.currentTarget.blur();
                                         }
                                     }}
-                                    className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full text-sm text-foreground px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                 />
                             </label>
                             <label className="space-y-1.5">
@@ -677,7 +677,7 @@ export function SettingsGtdPage({
                                             event.currentTarget.blur();
                                         }
                                     }}
-                                    className="w-full text-sm bg-muted/50 text-foreground border border-border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full text-sm text-foreground px-3 py-2 bg-well shadow-soft-inset rounded-control focus-ring"
                                 />
                             </label>
                         </div>
@@ -728,7 +728,7 @@ export function SettingsGtdPage({
                 onToggle={() => setCaptureOpen((prev) => !prev)}
             >
                 <div className="p-4 space-y-3">
-                    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-1">
+                    <div className="inline-flex p-1 bg-well shadow-soft-inset rounded-control">
                         <button
                             type="button"
                             onClick={() => {
@@ -737,7 +737,7 @@ export function SettingsGtdPage({
                             className={cn(
                                 'px-3 py-1 text-xs rounded-md transition-colors',
                                 defaultCaptureMethod === 'text'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'btn-gradient'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
@@ -751,7 +751,7 @@ export function SettingsGtdPage({
                             className={cn(
                                 'px-3 py-1 text-xs rounded-md transition-colors',
                                 defaultCaptureMethod === 'audio'
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'btn-gradient'
                                     : 'text-muted-foreground hover:text-foreground'
                             )}
                         >
@@ -773,7 +773,7 @@ export function SettingsGtdPage({
                                 updateGtdSettings({ defaultAreaMode: 'none', defaultAreaId: null });
                             }
                         }}
-                        className="max-w-56 shrink-0 text-sm bg-muted/50 text-foreground border border-border rounded px-3 py-2 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        className="max-w-56 shrink-0 text-sm text-foreground px-3 py-2 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                     >
                         <option value="">{t.defaultAreaNone}</option>
                         <option value={DEFAULT_AREA_ACTIVE_SELECT_VALUE}>{t.defaultAreaActive}</option>
@@ -840,7 +840,7 @@ export function SettingsGtdPage({
                     />
                 </SettingRow>
             </SettingsDisclosureCard>
-            <div className="bg-card border border-border rounded-lg">
+            <div className="soft-surface rounded-card">
                 <button
                     type="button"
                     onClick={() => setInboxOpen((prev) => !prev)}
@@ -857,14 +857,14 @@ export function SettingsGtdPage({
                 </button>
                 {inboxOpen && <div className="divide-y divide-border border-t border-border">
                     <SettingField settingsKey="inboxDefaultMode" title={t.inboxDefaultMode} className="p-4 gap-3">
-                        <div className="inline-flex rounded-lg border border-border bg-muted/40 p-1">
+                        <div className="inline-flex p-1 bg-well shadow-soft-inset rounded-control">
                             <button
                                 type="button"
                                 onClick={() => updateInboxProcessing({ defaultMode: 'guided' })}
                                 className={cn(
                                     'px-3 py-1 text-xs rounded-md transition-colors',
                                     inboxDefaultMode === 'guided'
-                                        ? 'bg-primary text-primary-foreground'
+                                        ? 'btn-gradient'
                                         : 'text-muted-foreground hover:text-foreground'
                                 )}
                             >
@@ -876,7 +876,7 @@ export function SettingsGtdPage({
                                 className={cn(
                                     'px-3 py-1 text-xs rounded-md transition-colors',
                                     inboxDefaultMode === 'quick'
-                                        ? 'bg-primary text-primary-foreground'
+                                        ? 'btn-gradient'
                                         : 'text-muted-foreground hover:text-foreground'
                                 )}
                             >
@@ -922,7 +922,7 @@ export function SettingsGtdPage({
                     </SettingRow>
                 </div>}
             </div>
-            <div className="bg-card border border-border rounded-lg">
+            <div className="soft-surface rounded-card">
                 <button
                     type="button"
                     onClick={() => setTaskEditorOpen((prev) => !prev)}
@@ -943,7 +943,7 @@ export function SettingsGtdPage({
                         settingsKey="taskEditorPresentation"
                         title={t.taskEditorPresentation}
                         description={t.taskEditorPresentationDesc}
-                        className="rounded-md border border-border bg-muted/20 p-3 gap-3"
+                        className="rounded-md border border-border bg-well p-3 gap-3"
                     >
                         <div className="grid gap-2 sm:grid-cols-2">
                             {([
@@ -968,8 +968,8 @@ export function SettingsGtdPage({
                                         className={cn(
                                             'rounded-md border px-3 py-2 text-left transition-colors',
                                             selected
-                                                ? 'border-primary bg-primary/10 text-primary'
-                                                : 'border-border bg-background text-foreground hover:bg-muted/50'
+                                                ? 'border-primary bg-accent-soft text-accent-text'
+                                                : 'border-border bg-background text-foreground hover:bg-accent'
                                         )}
                                     >
                                         <div className="text-sm font-medium">{option.label}</div>
@@ -1000,7 +1000,7 @@ export function SettingsGtdPage({
                                     };
                                 });
                             }}
-                            className="text-xs px-2 py-1 rounded bg-muted/50 hover:bg-muted transition-colors text-muted-foreground"
+                            className="text-xs px-2 py-1 rounded bg-well hover:bg-accent transition-colors text-muted-foreground"
                         >
                             {t.taskEditorLayoutReset}
                         </button>
@@ -1012,7 +1012,7 @@ export function SettingsGtdPage({
                         return (
                             <div key={group.id} className="space-y-2">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
+                                    <div className="text-xs text-muted-foreground font-semibold">
                                         {group.title}
                                     </div>
                                     {sectionOpenSectionId && (
@@ -1036,11 +1036,11 @@ export function SettingsGtdPage({
                                             key={fieldId}
                                             className={cn(
                                                 'flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-2 border transition-colors',
-                                                isVisible ? 'bg-primary/10 border-primary/40' : 'bg-muted/30 border-transparent'
+                                                isVisible ? 'bg-accent-soft border-primary/40' : 'bg-well border-transparent'
                                             )}
                                         >
                                             <div className="min-w-0 flex-1 text-sm">
-                                                <span className={cn("text-xs uppercase tracking-wide", isVisible ? "text-primary" : "text-muted-foreground")}>
+                                                <span className={cn("text-xs uppercase tracking-wide", isVisible ? "text-accent-text" : "text-muted-foreground")}>
                                                     {isVisible ? t.visible : t.hidden}
                                                 </span>
                                                 <div className={cn('mt-1', isVisible ? 'text-foreground' : 'text-muted-foreground')}>
@@ -1053,8 +1053,8 @@ export function SettingsGtdPage({
                                                 className={cn(
                                                     'text-xs px-2 py-1 rounded border transition-colors',
                                                     isVisible
-                                                        ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
-                                                        : 'border-border bg-muted/50 text-muted-foreground hover:bg-muted'
+                                                        ? 'border-primary/40 bg-accent-soft text-accent-text hover:bg-primary/20'
+                                                        : 'border-border bg-well text-muted-foreground hover:bg-accent'
                                                 )}
                                             >
                                                 {isVisible ? t.visible : t.hidden}
@@ -1065,7 +1065,7 @@ export function SettingsGtdPage({
                                                     <select
                                                         value={taskEditorSections[fieldId]}
                                                         onChange={(event) => updateFieldSection(fieldId, event.target.value as TaskEditorSectionId)}
-                                                        className="text-xs bg-muted/50 text-foreground border border-border rounded px-2 py-1 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                                        className="text-xs text-foreground px-2 py-1 bg-card border border-border shadow-soft-sm hover:bg-accent rounded-control focus-ring"
                                                     >
                                                         {TASK_EDITOR_SECTION_ORDER.map((sectionId) => (
                                                             <option key={sectionId} value={sectionId}>
@@ -1080,7 +1080,7 @@ export function SettingsGtdPage({
                                                     type="button"
                                                     onClick={() => moveFieldInGroup(fieldId, -1, group.fields)}
                                                     disabled={index === 0}
-                                                    className="text-xs px-2 py-1 rounded bg-muted/50 hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                    className="text-xs px-2 py-1 rounded bg-well hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                                 >
                                                     ↑
                                                 </button>
@@ -1088,7 +1088,7 @@ export function SettingsGtdPage({
                                                     type="button"
                                                     onClick={() => moveFieldInGroup(fieldId, 1, group.fields)}
                                                     disabled={index === groupOrder.length - 1}
-                                                    className="text-xs px-2 py-1 rounded bg-muted/50 hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                    className="text-xs px-2 py-1 rounded bg-well hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                                 >
                                                     ↓
                                                 </button>

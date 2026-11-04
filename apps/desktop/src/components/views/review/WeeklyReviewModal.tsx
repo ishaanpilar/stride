@@ -409,7 +409,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             className={cn(
                                 "flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-semibold",
                                 current
-                                    ? "bg-primary text-primary-foreground"
+                                    ? "bg-accent-soft text-accent-text"
                                     : complete
                                         ? "bg-success text-success-foreground"
                                         : "bg-muted text-muted-foreground",
@@ -605,7 +605,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
     };
 
     const renderMindSweepNudge = () => (
-        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-control bg-well p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
                 <div className="text-sm font-semibold text-foreground">{t('mindSweep.title')}</div>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('mindSweep.intro')}</p>
@@ -655,7 +655,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             const visibleEvents = isExpanded ? day.events : day.events.slice(0, 2);
                             return (
                                 <>
-                        <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        <div className="text-[13px] font-semibold text-muted-foreground ">
                             {safeFormatDate(day.dayStart, 'EEEE, PP')} · {day.totalCount} {t('calendar.events')}
                         </div>
                         <div className="mt-1.5 space-y-1">
@@ -747,7 +747,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             </button>
                         </div>
                         <div className="space-y-2">
-                            <h3 className="font-semibold text-muted-foreground uppercase text-xs tracking-wider">
+                            <h3 className="font-semibold text-muted-foreground text-[13px] ">
                                 {t('calendar.events')}
                             </h3>
                             <p className="text-xs text-muted-foreground">{t('review.calendarStepDesc')}</p>
@@ -756,7 +756,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             </div>
                         </div>
                         <div className="space-y-2">
-                            <h3 className="font-semibold text-muted-foreground uppercase text-xs tracking-wider">
+                            <h3 className="font-semibold text-muted-foreground text-[13px] ">
                                 {t('review.calendarStep')}
                             </h3>
                             <p className="text-xs text-muted-foreground">{t('review.upcoming14Desc')}</p>
@@ -788,7 +788,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                                             <button
                                                 type="button"
                                                 onClick={() => setShowScheduledWaiting((prev) => !prev)}
-                                                className="mb-2 flex items-center gap-1 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                                                className="mb-2 flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground"
                                             >
                                                 {showScheduledWaiting ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                                                 {t('review.notDueYet')} ({waitingGroups.scheduled.length})
@@ -938,7 +938,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             </div>
                             <button
                                 onClick={runAiAnalysis}
-                                className="bg-primary text-primary-foreground px-3 py-1.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="btn-gradient px-3 py-1.5 text-[13px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 disabled={aiLoading}
                             >
                                 {aiLoading ? t('review.aiRunning') : t('review.aiRun')}
@@ -973,7 +973,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                                                     className={cn(
                                                         "mt-1 h-4 w-4 rounded border flex items-center justify-center text-xs",
                                                         aiSelectedIds.has(suggestion.id)
-                                                            ? "bg-primary text-primary-foreground border-primary"
+                                                            ? "bg-accent-soft text-accent-text border-transparent"
                                                             : "border-border text-muted-foreground",
                                                     )}
                                                     aria-label={`${suggestionTitle}: ${actionLabel}`}
@@ -999,7 +999,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                                 <div className="flex justify-end">
                                     <button
                                         onClick={applyAiSuggestions}
-                                        className="bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="btn-gradient px-4 py-2 text-[13px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                         disabled={aiSelectedIds.size === 0}
                                     >
                                         {t('review.aiApply')} ({aiSelectedIds.size})
@@ -1134,7 +1134,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                                             <button
                                                 type="button"
                                                 onClick={() => setShowScheduledSomeday((prev) => !prev)}
-                                                className="mb-2 flex items-center gap-1 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                                                className="mb-2 flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground"
                                             >
                                                 {showScheduledSomeday ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                                                 {t('review.notDueYet')} ({somedayGroups.scheduled.length})
@@ -1161,7 +1161,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                         <p className="text-muted-foreground text-lg max-w-md mx-auto">
                             {t('review.completeDesc')}
                         </p>
-                        <div className="mx-auto max-w-lg text-left rounded-lg border border-border bg-muted/30 p-4 space-y-2.5">
+                        <div className="mx-auto max-w-lg text-left rounded-control bg-well p-4 space-y-2.5">
                             {reviewLookBack.completedCount > 0 && (
                                 <div className="space-y-2.5 border-b border-border pb-2.5">
                                     <p className="text-sm font-semibold text-muted-foreground">
@@ -1227,14 +1227,14 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                             <button
                                 type="button"
                                 onClick={() => setShareCardOpen(true)}
-                                className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-5 py-3 text-base font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="inline-flex items-center gap-2 rounded-card bg-card shadow-soft-sm px-5 py-3 text-base font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
                                 <ImageIcon className="h-4 w-4" aria-hidden="true" />
                                 {t('shareCard.action')}
                             </button>
                             <button
                                 onClick={finishReview}
-                                className="bg-primary text-primary-foreground px-8 py-3 rounded-lg text-lg font-medium hover:bg-primary/90 transition-colors"
+                                className="btn-gradient px-8 py-3 text-lg transition-colors"
                             >
                                 {t('review.finish')}
                             </button>
@@ -1303,7 +1303,7 @@ export function WeeklyReviewGuideModal({ onClose }: WeeklyReviewGuideModalProps)
                         </button>
                         <button
                             onClick={nextStep}
-                            className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
+                            className="flex items-center gap-2 btn-gradient px-5 py-2 text-[13px] transition-colors"
                         >
                             {t('review.nextStepBtn')} <ArrowRight className="w-3.5 h-3.5" />
                         </button>

@@ -141,15 +141,15 @@ export function PromptModal({
 
             panelClassName="max-h-[70vh]"
         >
-            <DialogHeader className="px-4 py-3 border-b">
-                <h3 id={titleId} className="font-semibold">{title}</h3>
+            <DialogHeader className="px-5 pt-5 pb-1">
+                <h3 id={titleId} className="text-[17px] font-semibold">{title}</h3>
                 {description && (
                     <p id={descriptionId} className="text-xs text-muted-foreground mt-1">
                         {description}
                     </p>
                 )}
             </DialogHeader>
-            <DialogBody className="p-4 space-y-3">
+            <DialogBody className="px-5 py-4 space-y-3">
                 {inputType === 'datetime-local' ? (
 
 
@@ -205,7 +205,7 @@ export function PromptModal({
                         aria-invalid={showValidation || Boolean(refusal)}
                         aria-describedby={showValidation || refusal ? validationId : description ? descriptionId : undefined}
                         rows={4}
-                        className="w-full resize-y rounded-lg border border-border bg-card px-3 py-2 shadow-sm transition-colors focus:border-transparent focus:ring-2 focus:ring-primary"
+                        className="w-full resize-y rounded-lg bg-well shadow-soft-inset px-3 py-2 transition-colors focus-ring"
                     />
                 ) : (
                     <AutocompleteTextInput
@@ -226,19 +226,19 @@ export function PromptModal({
                         placeholder={placeholder}
                         aria-invalid={showValidation || Boolean(refusal)}
                         aria-describedby={showValidation || refusal ? validationId : undefined}
-                        className="w-full rounded-lg border border-border bg-card px-3 py-2 shadow-sm transition-colors focus:border-transparent focus:ring-2 focus:ring-primary"
+                        className="w-full rounded-lg bg-well shadow-soft-inset px-3 py-2 transition-colors focus-ring"
                     />
                 )}
                 {showValidation && (
-                    <p id={validationId} className="text-xs text-destructive">
+                    <p id={validationId} className="text-xs text-danger-text">
                         {t('common.validationRequired')}
                     </p>
                 )}
                 {refusal && (
-                    <p id={validationId} role="alert" className="text-xs text-destructive">{refusal}</p>
+                    <p id={validationId} role="alert" className="text-xs text-danger-text">{refusal}</p>
                 )}
                 {errorMessage && (
-                    <p role="alert" className="text-xs text-destructive">{errorMessage}</p>
+                    <p role="alert" className="text-xs text-danger-text">{errorMessage}</p>
                 )}
                 {numericField && (
                     <div className="flex flex-col gap-1">
@@ -260,7 +260,7 @@ export function PromptModal({
                             onKeyDown={handleFieldKeyDown}
                             placeholder={numericField.placeholder}
                             aria-label={numericField.label}
-                            className="w-full rounded-lg border border-border bg-card px-3 py-2 shadow-sm transition-colors focus:border-transparent focus:ring-2 focus:ring-primary"
+                            className="w-full rounded-lg bg-well shadow-soft-inset px-3 py-2 transition-colors focus-ring"
                         />
                     </div>
                 )}

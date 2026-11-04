@@ -648,7 +648,7 @@ export function SettingsView({ initialPage, onboardingHintPage, onResumeOnboardi
     }, [currentPage]);
 
     return (
-      <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
+      <div className="soft-surface rounded-card p-6 text-sm text-muted-foreground">
         {translate("common.loading")}
       </div>
     );
@@ -675,17 +675,17 @@ export function SettingsView({ initialPage, onboardingHintPage, onResumeOnboardi
               <div className={`space-y-6 ${LIST_END_GAP}`} data-list-end>
                 <header className="flex items-start justify-between gap-4">
                   <div>
-                    <h2 className="text-xl font-semibold tracking-tight">
+                    <h2 className="text-[30px] leading-9 font-bold tracking-[-0.02em]">
                       {pageTitle}
                     </h2>
                   </div>
                 </header>
                 {onboardingHintContent ? (
                   <div
-                    className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-foreground"
+                    className="flex items-start gap-3 rounded-card bg-accent-soft px-4 py-3 text-sm text-foreground"
                     role="note"
                   >
-                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-accent-text" aria-hidden="true" />
                     <div className="min-w-0 flex-1">
                       <div className="font-medium">{onboardingHintContent.title}</div>
                       <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
@@ -696,7 +696,7 @@ export function SettingsView({ initialPage, onboardingHintPage, onResumeOnboardi
                       <button
                         type="button"
                         onClick={onResumeOnboarding}
-                        className="shrink-0 rounded-md border border-primary/30 bg-background/50 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                        className="shrink-0 focus-ring rounded-control bg-card shadow-soft-sm px-3 py-1.5 text-xs font-medium text-accent-text hover:bg-accent"
                       >
                         Continue setup
                       </button>
@@ -704,7 +704,7 @@ export function SettingsView({ initialPage, onboardingHintPage, onResumeOnboardi
                     <button
                       type="button"
                       onClick={dismissOnboardingHint}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-muted-foreground hover:bg-accent hover:text-foreground focus-ring"
                       aria-label="Dismiss onboarding hint"
                     >
                       <X className="h-4 w-4" aria-hidden="true" />

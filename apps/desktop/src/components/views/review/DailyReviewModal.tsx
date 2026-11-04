@@ -275,7 +275,7 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
                             className={cn(
                                 "flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-semibold",
                                 current
-                                    ? "bg-primary text-primary-foreground"
+                                    ? "bg-accent-soft text-accent-text"
                                     : complete
                                         ? "bg-success text-success-foreground"
                                         : "bg-muted text-muted-foreground",
@@ -303,7 +303,7 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
             );
         }
         return (
-            <div className="divide-y divide-border/30">
+            <div className="flex flex-col gap-2.5">
                 {list.map((task) => (
                     <div key={task.id} className={cn(options?.showFollowUpToday && "py-2")}>
                         <TaskItem task={task} showProjectBadgeInActions={false} />
@@ -313,7 +313,7 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
                                     type="button"
                                     onClick={() => handleFollowUpToday(task)}
                                     disabled={isDueForReview(task.reviewAt, today)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="inline-flex items-center gap-1.5 rounded-control bg-well px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                                     aria-label={`${followUpTodayLabel}: ${task.title}`}
                                 >
                                     <Calendar className="h-3.5 w-3.5" aria-hidden="true" />
@@ -462,13 +462,13 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
                         </div>
                         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             <div className="bg-card border border-border rounded-lg p-3 space-y-2">
-                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                <h4 className="text-[13px] font-semibold text-muted-foreground">
                                     {safeFormatDate(today, 'P')} · {t('calendar.events')}
                                 </h4>
                                 {renderCalendarEventList(todayCalendarEvents)}
                             </div>
                             <div className="bg-card border border-border rounded-lg p-3 space-y-2">
-                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                <h4 className="text-[13px] font-semibold text-muted-foreground">
                                     {safeFormatDate(tomorrow, 'P')} · {t('calendar.events')}
                                 </h4>
                                 {renderCalendarEventList(tomorrowCalendarEvents)}
@@ -547,7 +547,7 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
                         <p className="text-muted-foreground text-lg max-w-md mx-auto">{t('dailyReview.completeDesc')}</p>
                         <button
                             onClick={finishReview}
-                            className="bg-primary text-primary-foreground px-8 py-3 rounded-lg text-lg font-medium hover:bg-primary/90 transition-colors"
+                            className="btn-gradient px-8 py-3 text-lg transition-colors"
                         >
                             {t('review.finish')}
                         </button>
@@ -614,7 +614,7 @@ export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
                         </button>
                         <button
                             onClick={nextStep}
-                            className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
+                            className="flex items-center gap-2 btn-gradient px-5 py-2 text-[13px] transition-colors"
                         >
                             {t('review.nextStepBtn')} <ArrowRight className="w-3.5 h-3.5" />
                         </button>

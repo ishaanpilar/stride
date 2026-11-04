@@ -71,7 +71,7 @@ export function ReviewTaskList({
 
     if (!shouldVirtualize) {
         return (
-            <div className="divide-y divide-border/30">
+            <div className="flex flex-col gap-2.5">
                 {tasks.map((task) => (
                     <StoreTaskItem
                         key={task.id}

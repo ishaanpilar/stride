@@ -105,7 +105,7 @@ export function ProjectTaskToolbarMenu({
                 aria-label={triggerLabel}
                 title={triggerLabel}
                 onClick={() => setOpen((value) => !value)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-control bg-well text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
             >
                 <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -114,7 +114,7 @@ export function ProjectTaskToolbarMenu({
                     ref={panelRef}
                     role="menu"
                     style={menuStyle}
-                    className="z-50 min-w-[210px] overscroll-contain rounded-md border border-border bg-card p-1 shadow-lg"
+                    className="z-50 min-w-[210px] overscroll-contain rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                 >
                     {showColumns && (
                         <button

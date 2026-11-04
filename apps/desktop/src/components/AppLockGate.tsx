@@ -170,12 +170,12 @@ export function AppLockGate() {
             style={{ zIndex: 2147483647 }}
         >
             <img src="/logo.png" alt="" className="h-14 w-14 rounded-xl" />
-            <h1 id="app-lock-title" className="text-lg font-semibold">{t('appLock.title')}</h1>
+            <h1 id="app-lock-title" className="text-[17px] font-semibold">{t('appLock.title')}</h1>
             <button
                 type="button"
                 onClick={() => void unlock()}
                 disabled={authInFlight}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                className="rounded-control btn-gradient px-4 py-2 text-sm font-medium focus-ring disabled:opacity-60"
             >
                 {authInFlight ? t('appLock.authenticating') : t('appLock.unlock')}
             </button>
@@ -184,7 +184,7 @@ export function AppLockGate() {
                 <button
                     type="button"
                     onClick={() => void turnOff()}
-                    className="rounded-md border border-border px-4 py-2 text-sm hover:bg-muted/60"
+                    className="h-9 rounded-control bg-card border border-border shadow-soft-sm px-4 text-[13px] font-medium hover:bg-accent focus-ring"
                 >
                     {t('appLock.turnOff')}
                 </button>

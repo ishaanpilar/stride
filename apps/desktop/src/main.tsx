@@ -19,7 +19,8 @@ import {
     type Language,
 } from '@stride/core';
 import { LanguageProvider } from './contexts/language-context';
-import { isTauriRuntime } from './lib/runtime';
+import { isMacRuntime, isTauriRuntime } from './lib/runtime';
+import { installSystemAccent } from './lib/system-accent';
 import { invokeNative, preloadNativeTransport } from './lib/tauri-invoke';
 import { reportError } from './lib/report-error';
 import { webStorage } from './lib/storage-adapter-web';
@@ -214,6 +215,12 @@ async function bootstrap() {
         sandboxMode ? sandboxSettings.theme : localStorage.getItem(THEME_STORAGE_KEY),
     );
     applyThemeMode(initialTheme);
+    // macOS system accent -> CSS variables (fallback indigo elsewhere); re-reads on focus and native event.
+    installSystemAccent();
+    // The main window uses an overlay title bar on macOS (see src-tauri/src/lib.rs): lets the shell pad for the traffic lights.
+    if (isTauriRuntime() && isMacRuntime() && !isQuickAddWindow) {
+        document.documentElement.classList.add('macos-overlay-titlebar');
+    }
     let appOwnsTheme = false;
     if (((initialTheme ?? 'system') === 'system' || initialTheme === 'system-oled') && isTauriRuntime()) {
         void applyStartupSystemThemeBeforeApp(

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+</head>
+<body style="margin:0">
+<title>Stride UI Direction</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one proposal page. Two Mac window mockups (light, dark) share one token set, then the spec.
+   Palette: ink (from the icon ribbon), warm paper, one orange used only as the signature + primary action. */
+:root{
+  --bg:#F3F1F6; --fg:#1E1B2B; --fg2:#5B5768; --line:#DEDAE6; --card:#FFFFFF; --accent-text:#B9460A;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro",system-ui,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121018;--fg:#F2F0F7;--fg2:#A9A4B9;--line:#2C2938;--card:#1B1923;--accent-text:#FF9145;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121018;--fg:#F2F0F7;--fg2:#A9A4B9;--line:#2C2938;--card:#1B1923;--accent-text:#FF9145;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 var(--font);padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:32px 64px}
+.wrap{max-width:1180px;margin-inline:auto;display:grid;gap:36px}
+h1{font-size:28px;line-height:1.15;margin:0 0 6px;letter-spacing:-.02em;text-wrap:balance}
+h2{font-size:17px;margin:0 0 10px;letter-spacing:-.01em}
+.lede{color:var(--fg2);max-width:66ch;margin:0}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg2);font-weight:600;margin-bottom:8px}
+.pair{display:grid;gap:28px}
+@media(min-width:1100px){.pair{grid-template-columns:1fr}}
+.cap{font-size:12px;color:var(--fg2);margin:0 0 8px}
+
+/* ---------- the window mockup ---------- */
+.win{--w-bg:#FFFFFF;--w-side:rgba(244,242,247,.92);--w-fg:#1E1B2B;--w-fg2:#5B5768;--w-fg3:#767282;--w-line:rgba(30,27,43,.10);--w-chip:#F0EEF4;
+  --w-sel:rgba(185,70,10,.11);--w-acc:#B9460A;--w-orange:#FF7A1F;--w-ink:#1E1B2B;--w-red:#C4262E;--w-green:#1F7A3D;--w-hover:rgba(30,27,43,.05);
+  display:grid;grid-template-columns:232px 1fr;min-height:600px;border-radius:12px;overflow:hidden;background:var(--w-bg);color:var(--w-fg);
+  box-shadow:0 0 0 .5px rgba(0,0,0,.28),0 18px 48px rgba(20,16,40,.22);font-size:13px;line-height:16px}
+.win.dark{--w-bg:#1B1923;--w-side:rgba(37,34,47,.9);--w-fg:#F2F0F7;--w-fg2:#A9A4B9;--w-fg3:#8F8AA0;--w-line:rgba(255,255,255,.09);--w-chip:#2A2736;
+  --w-sel:rgba(255,145,69,.16);--w-acc:#FF9145;--w-orange:#FF9145;--w-ink:#1B1923;--w-red:#FF6B6B;--w-green:#4CD07D;--w-hover:rgba(255,255,255,.06)}
+.side{background:var(--w-side);border-right:.5px solid var(--w-line);padding:14px 10px;display:flex;flex-direction:column;gap:2px}
+.lights{display:flex;gap:8px;padding:2px 8px 18px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}.lights i:nth-child(3){background:#28C840}
+.grp{font-size:11px;font-weight:600;color:var(--w-fg2);padding:12px 8px 4px}
+.item{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:7px;color:var(--w-fg)}
+.item svg{width:16px;height:16px;flex:none;color:var(--w-acc)}
+.item .n{margin-left:auto;color:var(--w-fg2);font-variant-numeric:tabular-nums;font-size:12px}
+.item.sel{background:var(--w-sel);font-weight:600}
+.item.quiet svg{color:var(--w-fg2)}
+.side .foot{margin-top:auto;display:flex;align-items:center;gap:8px;padding:10px 8px 0;color:var(--w-fg2);font-size:12px}
+.side .foot b{display:inline-grid;place-items:center;border:.5px solid var(--w-line);border-radius:5px;padding:1px 5px;font-weight:500;background:var(--w-chip)}
+.main{display:flex;flex-direction:column;min-width:0}
+.bar{display:flex;align-items:center;gap:10px;height:52px;padding:0 18px;border-bottom:.5px solid var(--w-line)}
+.search{flex:1;max-width:340px;height:28px;border-radius:7px;background:var(--w-chip);display:flex;align-items:center;gap:6px;padding:0 9px;color:var(--w-fg3)}
+.search svg{width:14px;height:14px}
+.seg{display:flex;border:.5px solid var(--w-line);border-radius:7px;overflow:hidden;background:var(--w-chip)}
+.seg span{padding:6px 10px;color:var(--w-fg2);font-size:12px}
+.seg span+span{border-left:.5px solid var(--w-line)}
+.cta{margin-left:auto;height:28px;border-radius:7px;background:var(--w-orange);color:var(--w-ink);font-weight:600;padding:0 12px;display:flex;align-items:center;gap:6px}
+.cta kbd{font:500 11px var(--font);opacity:.7}
+.head{padding:20px 24px 14px}
+.title{display:flex;align-items:baseline;gap:10px}
+.title h3{margin:0;font-size:26px;line-height:32px;font-weight:700;letter-spacing:-.02em}
+.title span{color:var(--w-fg2);font-size:13px}
+.ribbon{margin-top:12px;display:grid;gap:6px}
+.ribbon .meta{display:flex;justify-content:space-between;color:var(--w-fg2);font-size:12px}
+.ribbon .track{height:4px;border-radius:2px;background:var(--w-chip);overflow:hidden}
+.ribbon .track i{display:block;height:100%;width:33%;border-radius:2px;background:linear-gradient(90deg,var(--w-orange),#FF4D00)}
+.list{padding:0 12px;display:flex;flex-direction:column}
+.sec{font-size:11px;font-weight:600;color:var(--w-fg2);padding:12px 12px 4px}
+.row{display:grid;grid-template-columns:22px 1fr auto;gap:2px 10px;align-items:start;padding:10px 12px;border-radius:9px}
+.row+.row{box-shadow:0 -.5px 0 var(--w-line)}
+.row.sel{background:var(--w-sel);box-shadow:none}.row.sel+.row{box-shadow:none}
+.row.sel + .row{box-shadow:none}
+.chk{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--w-fg3);margin-top:-1px}
+.row .t{font-size:14px;line-height:18px;font-weight:500}
+.row .sub{grid-column:2;color:var(--w-fg2);font-size:12px;line-height:15px}
+.chips{grid-column:2;display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:10px;background:var(--w-chip);color:var(--w-fg2);font-size:11px}
+.chip.proj::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--c,#7C5CFF)}
+.chip.due{color:var(--w-acc);font-weight:600}
+.chip.late{color:var(--w-red);font-weight:600}
+.row .side-r{grid-row:1;grid-column:3;color:var(--w-fg2);font-size:11px;padding-top:1px}
+.row .side-r.hi{color:var(--w-red);font-weight:600}
+
+/* ---------- spec ---------- */
+.cols{display:grid;gap:28px}
+@media(min-width:900px){.cols{grid-template-columns:1fr 1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
+.sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.sw div{border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12px}
+.sw i{display:block;height:44px}
+.sw p{margin:0;padding:6px 8px;line-height:1.35}
+.sw small{color:var(--fg2);display:block}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg2);font-weight:600}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.pass{color:#1F7A3D}.warn{color:#B9460A}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .pass{color:#4CD07D}}
+:root[data-theme="dark"] .pass{color:#4CD07D}
+ol.plan{margin:0;padding-left:20px;display:grid;gap:8px}
+@media(max-width:760px){.win{grid-template-columns:1fr}.side{display:none}.bar{flex-wrap:wrap;height:auto;padding:10px 14px}.search{max-width:none}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Stride for Mac</div>
+    <h1>A calmer, more native Stride</h1>
+    <p class="lede">The window keeps today's job in front: what's next, and how far through the day you are. Navigation and controls follow the Mac's own conventions. The only loud things are one orange ribbon and one primary button, both taken from the icon.</p>
+  </header>
+
+  <section class="pair">
+    <div>
+      <p class="cap">Light · Next Actions</p>
+      <div class="win" id="light"></div>
+    </div>
+    <div>
+      <p class="cap">Dark · Next Actions</p>
+      <div class="win dark" id="dark"></div>
+    </div>
+  </section>
+
+  <section class="cols">
+    <div class="card">
+      <h2>What changes</h2>
+      <ol class="plan">
+        <li><b>Sidebar becomes a real Mac sidebar.</b> Translucent material, 28 pt rows, sentence-case group titles instead of tiny uppercase, a tinted selection, counts on the right.</li>
+        <li><b>One toolbar.</b> Search, the view controls grouped as one control, and the single primary action, <i>Capture</i>, as the only filled button.</li>
+        <li><b>A real title.</b> 26 pt view title with the count beside it, then today's progress as one thin orange line. That line is the signature.</li>
+        <li><b>Quieter rows.</b> No coloured left stripes or boxed badges. Title at 14 pt, notes at 12 pt, a project dot, and dates in accent text only when they matter. Overdue is red and says so in words.</li>
+        <li><b>Both appearances done properly.</b> Dark is its own palette, not an inversion, and follows the system setting.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h2>Type, on Apple's macOS scale</h2>
+      <table>
+        <tr><th>Role</th><th>Size / line</th><th>Weight</th></tr>
+        <tr><td>View title</td><td class="num">26 / 32</td><td>Bold</td></tr>
+        <tr><td>Task title</td><td class="num">14 / 18</td><td>Medium</td></tr>
+        <tr><td>Controls, sidebar</td><td class="num">13 / 16</td><td>Regular, selected Semibold</td></tr>
+        <tr><td>Notes, counts</td><td class="num">12 / 15</td><td>Regular</td></tr>
+        <tr><td>Chips, group titles</td><td class="num">11 / 14</td><td>Regular / Semibold</td></tr>
+      </table>
+      <p class="cap" style="margin-top:10px">Font: the system font (SF Pro), which the app already uses. Minimum on screen is 11 pt, above Apple's 10 pt floor.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Colour, with contrast measured</h2>
+    <div class="sw" style="margin-bottom:16px">
+      <div><i style="background:#1E1B2B"></i><p><b>Ink</b> #1E1B2B<small>Text, from the icon ribbon</small></p></div>
+      <div><i style="background:#FF7A1F"></i><p><b>Orange</b> #FF7A1F<small>Fills only: ribbon, Capture</small></p></div>
+      <div><i style="background:#B9460A"></i><p><b>Orange text</b> #B9460A<small>Dates, links, selection</small></p></div>
+      <div><i style="background:#F4F2F7"></i><p><b>Sidebar</b> #F4F2F7<small>Over system material</small></p></div>
+      <div><i style="background:#1B1923"></i><p><b>Dark surface</b> #1B1923<small>Dark content</small></p></div>
+      <div><i style="background:#FF9145"></i><p><b>Dark orange</b> #FF9145<small>Dark accent, text and fill</small></p></div>
+    </div>
+    <table>
+      <tr><th>Pair</th><th>Ratio</th><th>Needs</th></tr>
+      <tr><td>Ink on white</td><td class="num pass">16.8 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Secondary text #5B5768 on white</td><td class="num pass">7.0 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Orange text #B9460A on white</td><td class="num pass">5.3 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Ink on orange fill #FF7A1F (Capture)</td><td class="num pass">6.5 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Bright orange #FF6A13 as text on white</td><td class="num warn">2.9 : 1, so never used for text</td><td class="num">4.5</td></tr>
+      <tr><td>Dark: text #F2F0F7 on #1B1923</td><td class="num pass">15.4 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Dark: secondary #A9A4B9 on #1B1923</td><td class="num pass">7.2 : 1</td><td class="num">4.5</td></tr>
+      <tr><td>Dark: orange #FF9145 on #1B1923</td><td class="num pass">7.8 : 1</td><td class="num">4.5</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Build order</h2>
+    <ol class="plan">
+      <li><b>Tokens.</b> New light and dark palette, type scale and radii in the existing theme variables, so every screen picks them up at once.</li>
+      <li><b>Window and sidebar.</b> Overlay title bar with the traffic lights inset, system sidebar material, new sidebar rows.</li>
+      <li><b>Toolbar, title and task rows.</b> The three things on screen all day.</li>
+      <li><b>Capture, Assistant, Settings, menu bar panel.</b> Brought in line with the same tokens.</li>
+      <li><b>Audit.</b> Keyboard focus rings, Reduce Transparency, Increase Contrast, Reduce Motion, largest text size.</li>
+    </ol>
+  </section>
+</div>
+
+<script>
+const I={
+ inbox:'<path d="M3 9l2-5h6l2 5v4H3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M3 9h3l1 1.5h2L10 9h3" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+ next:'<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 5.8L10 8l-3.5 2.2z" fill="currentColor"/>',
+ today:'<circle cx="8" cy="8" r="3" fill="currentColor"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M3.4 12.6l1.3-1.3M11.3 4.7l1.3-1.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+ cal:'<rect x="2.5" y="3.5" width="11" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+ wait:'<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 5v3.3l2 1.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+ later:'<path d="M2.5 8.2a5.5 5.5 0 0 0 9.6 3.6A5.5 5.5 0 0 1 7.6 2.5 5.5 5.5 0 0 0 2.5 8.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
+ proj:'<path d="M2.5 5a1.5 1.5 0 0 1 1.5-1.5h2.6l1.2 1.5H12A1.5 1.5 0 0 1 13.5 6.5v5A1.5 1.5 0 0 1 12 13H4a1.5 1.5 0 0 1-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
+ spark:'<path d="M8 2l1.3 3.7L13 7l-3.7 1.3L8 12l-1.3-3.7L3 7l3.7-1.3z" fill="currentColor"/>',
+ search:'<circle cx="7" cy="7" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.3 10.3L13 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+ plus:'<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
+};
+const ic=n=>`<svg viewBox="0 0 16 16" aria-hidden="true">${I[n]}</svg>`;
+const it=(n,l,c,cls='')=>`<div class="item ${cls}">${ic(n)}<span>${l}</span>${c!=null?`<span class="n">${c}</span>`:''}</div>`;
+const rows=[
+ {t:'Call Yaman about HDFC Bank visit for current account',p:'Open company current account at Indiranagar HDFC Bank',c:'#E5484D',d:'Today',dc:'due',pr:'High',sel:1},
+ {t:'Visit Indiranagar HDFC Bank to open the current account',s:'Coordinate with Yaman',p:'Open company current account at Indiranagar HDFC Bank',c:'#E5484D',d:'Sat, 8 Nov',dc:''},
+ {t:'Call Akash about Meta Ads',s:'Discuss what is needed to get him set up to run Meta Ads',p:'Get Akash set up to run Meta Ads',c:'#7C5CFF',d:''},
+ {t:'Send Pradeep the reel edit',p:'',d:'Today',dc:'due',pr:'High'},
+ {t:'Meet Nijrika to plan the November calendar',p:'',d:'Yesterday, overdue',dc:'late',pr:'Urgent'}
+];
+const chips=r=>[r.p?`<span class="chip proj" style="--c:${r.c}">${r.p}</span>`:'',r.d?`<span class="chip ${r.dc||''}">${r.d}</span>`:''].join('');
+const win=`
+<aside class="side">
+  <div class="lights"><i></i><i></i><i></i></div>
+  ${it('spark','Capture',null,'quiet')}
+  <div class="grp">Plan</div>
+  ${it('today','Today',6)}${it('cal','Calendar',null)}
+  <div class="grp">Do</div>
+  ${it('inbox','Inbox',3)}${it('next','Next Actions',15,'sel')}${it('wait','Waiting',2)}${it('later','Someday',8)}
+  <div class="grp">Organise</div>
+  ${it('proj','Projects',5)}
+  <div class="foot"><b>⌘⇧K</b> Capture &nbsp; <b>⌘⇧J</b> Ask</div>
+</aside>
+<div class="main">
+  <div class="bar">
+    <div class="search">${ic('search')}<span>Search</span></div>
+    <div class="seg"><span>Filters</span><span>Sort: Default</span><span>Group: None</span></div>
+    <div class="cta">${ic('plus').replace('<svg','<svg width="12" height="12"')}Capture <kbd>⌘⇧K</kbd></div>
+  </div>
+  <div class="head">
+    <div class="title"><h3>Next Actions</h3><span>15 tasks</span></div>
+    <div class="ribbon"><div class="meta"><span>Today: 3 of 9 done</span><span>6 left · about 2 h 10 m</span></div><div class="track"><i></i></div></div>
+  </div>
+  <div class="list">
+    ${rows.map(r=>`<div class="row ${r.sel?'sel':''}"><div class="chk"></div><div class="t">${r.t}</div><div class="side-r ${r.pr==='Urgent'||r.pr==='High'?'hi':''}">${r.pr||''}</div>${r.s?`<div class="sub">${r.s}</div>`:''}<div class="chips">${chips(r)}</div></div>`).join('')}
+  </div>
+</div>`;
+document.getElementById('light').innerHTML=win;document.getElementById('dark').innerHTML=win;
+</script>
+
+</body>
+</html>

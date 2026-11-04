@@ -94,7 +94,7 @@ export function SettingsAboutPage({
 
     return (
         <>
-            <div className="bg-muted/30 rounded-lg p-6 space-y-4 border border-border">
+            <div className="p-6 space-y-4 bg-well rounded-card">
                 <div data-settings-key="version" className="flex justify-between items-center">
                     <span className="text-muted-foreground">{t.version}</span>
                     <span className="font-mono bg-muted px-2 py-1 rounded text-sm">v{appVersion}</span>
@@ -119,7 +119,7 @@ export function SettingsAboutPage({
                             "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
                             isCheckingUpdate
                                 ? "bg-muted text-muted-foreground cursor-not-allowed"
-                                : "bg-primary text-primary-foreground hover:bg-primary/90",
+                                : "btn-gradient focus-ring",
                         )}
                     >
                         <RefreshCw className={cn("w-4 h-4", isCheckingUpdate && "animate-spin")} />
@@ -128,7 +128,7 @@ export function SettingsAboutPage({
                 </div>
                 </>)}
                 {updateError && (
-                    <div className="text-destructive text-sm">{t.checkFailed}</div>
+                    <div className="text-danger-text text-sm">{t.checkFailed}</div>
                 )}
                 {updateNotice && !updateError && (
                     <div className="text-sm text-muted-foreground">{updateNotice}</div>
@@ -138,7 +138,7 @@ export function SettingsAboutPage({
                     <span className="text-muted-foreground">{t.feedback}</span>
                     <button
                         onClick={() => onOpenLink('https://github.com/ishaanpilar/stride/issues')}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-control text-sm font-medium btn-gradient focus-ring transition-colors"
                     >
                         <MessageSquare className="w-4 h-4" />
                         {t.feedback}
@@ -149,7 +149,7 @@ export function SettingsAboutPage({
                     <span className="text-muted-foreground">{t.documentation}</span>
                     <button
                         onClick={() => onOpenLink(getDocsGuideUrl('', language))}
-                        className="text-primary hover:underline flex items-center gap-1"
+                        className="text-accent-text hover:underline flex items-center gap-1"
                     >
                         github.com/ishaanpilar/stride/tree/main/docs
                         <ExternalLink className="w-3 h-3" />
@@ -160,7 +160,7 @@ export function SettingsAboutPage({
                     <span className="text-muted-foreground">{t.github}</span>
                     <button
                         onClick={() => onOpenLink('https://github.com/ishaanpilar/stride')}
-                        className="text-primary hover:underline flex items-center gap-1"
+                        className="text-accent-text hover:underline flex items-center gap-1"
                     >
                         github.com/ishaanpilar/stride
                         <ExternalLink className="w-3 h-3" />
@@ -176,7 +176,7 @@ export function SettingsAboutPage({
                     Stride is based on{' '}
                     <button
                         onClick={() => onOpenLink('https://github.com/dongdongbh/Mindwtr')}
-                        className="text-primary hover:underline"
+                        className="text-accent-text hover:underline"
                     >
                         Mindwtr
                     </button>{' '}
