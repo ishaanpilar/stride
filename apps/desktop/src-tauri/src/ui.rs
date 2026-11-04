@@ -1,0 +1,1105 @@
+use crate::*;
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow},
+};
+
+const QUIT_WATCHDOG_SECONDS: u64 = 5;
+const QUICK_ADD_WINDOW_WIDTH: f64 = 620.0;
+const QUICK_ADD_WINDOW_HEIGHT: f64 = 420.0;
+const GNOME_INTERFACE_SCHEMA: &str = "org.gnome.desktop.interface";
+const GNOME_COLOR_SCHEME_KEY: &str = "color-scheme";
+const GNOME_GTK_THEME_KEY: &str = "gtk-theme";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuickAddFocusPolicy {
+    RestoreWindowsForegroundWindow,
+    None,
+}
+
+fn quick_add_focus_policy_for_os(os: &str) -> QuickAddFocusPolicy {
+    match os {
+        "windows" => QuickAddFocusPolicy::RestoreWindowsForegroundWindow,
+        _ => QuickAddFocusPolicy::None,
+    }
+}
+
+fn current_quick_add_focus_policy() -> QuickAddFocusPolicy {
+    quick_add_focus_policy_for_os(std::env::consts::OS)
+}
+
+#[cfg(target_os = "windows")]
+fn webview_window_hwnd(window: &tauri::WebviewWindow) -> Option<isize> {
+    window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
+}
+
+#[cfg(target_os = "windows")]
+fn capture_windows_previous_foreground_hwnd(window: &tauri::WebviewWindow) -> Option<isize> {
+    let foreground = unsafe { GetForegroundWindow() } as isize;
+    if foreground == 0 || Some(foreground) == webview_window_hwnd(window) {
+        return None;
+    }
+    Some(foreground)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn capture_windows_previous_foreground_hwnd(_window: &tauri::WebviewWindow) -> Option<isize> {
+    None
+}
+
+fn capture_quick_add_focus_snapshot(window: &tauri::WebviewWindow) -> QuickAddFocusSnapshot {
+    match current_quick_add_focus_policy() {
+        QuickAddFocusPolicy::RestoreWindowsForegroundWindow => QuickAddFocusSnapshot {
+            windows_hwnd: capture_windows_previous_foreground_hwnd(window),
+        },
+        QuickAddFocusPolicy::None => QuickAddFocusSnapshot::default(),
+    }
+}
+
+fn remember_quick_add_focus(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let snapshot = capture_quick_add_focus_snapshot(window);
+    let state = app.state::<QuickAddFocusState>();
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = snapshot;
+    };
+}
+
+fn take_quick_add_focus_snapshot(app: &tauri::AppHandle) -> QuickAddFocusSnapshot {
+    let state = app.state::<QuickAddFocusState>();
+    let Ok(mut guard) = state.0.lock() else {
+        return QuickAddFocusSnapshot::default();
+    };
+    let snapshot = *guard;
+    *guard = QuickAddFocusSnapshot::default();
+    snapshot
+}
+
+#[cfg(target_os = "windows")]
+fn restore_windows_foreground_window(hwnd: isize) {
+    if hwnd != 0 {
+        unsafe {
+            let _ = SetForegroundWindow(hwnd as HWND);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_windows_foreground_window(_hwnd: isize) {}
+
+fn restore_quick_add_focus(snapshot: QuickAddFocusSnapshot) {
+    match current_quick_add_focus_policy() {
+        QuickAddFocusPolicy::RestoreWindowsForegroundWindow => {
+            if let Some(hwnd) = snapshot.windows_hwnd {
+                restore_windows_foreground_window(hwnd);
+            }
+        }
+        QuickAddFocusPolicy::None => {}
+    }
+}
+
+fn normalize_gsettings_output(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn parse_gnome_color_scheme(value: &str) -> Option<&'static str> {
+    match normalize_gsettings_output(value).as_str() {
+        "prefer-dark" => Some("dark"),
+        "default" | "prefer-light" => Some("light"),
+        _ => None,
+    }
+}
+
+fn parse_gnome_gtk_theme(value: &str) -> Option<&'static str> {
+    let normalized = normalize_gsettings_output(value);
+    if normalized.contains("dark") {
+        Some("dark")
+    } else if normalized.is_empty() {
+        None
+    } else {
+        Some("light")
+    }
+}
+
+fn resolve_gnome_system_theme_preference(
+    color_scheme: Option<&str>,
+    gtk_theme: Option<&str>,
+) -> Option<&'static str> {
+    color_scheme
+        .and_then(parse_gnome_color_scheme)
+        .or_else(|| gtk_theme.and_then(parse_gnome_gtk_theme))
+}
+
+#[cfg(target_os = "linux")]
+fn read_gsettings_value(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_gsettings_value(_schema: &str, _key: &str) -> Option<String> {
+    None
+}
+
+fn is_kde_desktop_value(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(':')
+        .any(|part| part == "kde" || part == "plasma")
+}
+
+fn is_kde_desktop() -> bool {
+    ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP"]
+        .iter()
+        .any(|var| std::env::var(var).is_ok_and(|value| is_kde_desktop_value(&value)))
+}
+
+fn parse_portal_color_scheme(output: &str) -> Option<&'static str> {
+    let rest = output.split("uint32").nth(1)?;
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    match digits.parse::<u32>().ok()? {
+        1 => Some("dark"),
+        2 => Some("light"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_portal_color_scheme() -> Option<&'static str> {
+    for method in ["ReadOne", "Read"] {
+        let output = Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.freedesktop.portal.Desktop",
+                "--object-path",
+                "/org/freedesktop/portal/desktop",
+                "--method",
+                &format!("org.freedesktop.portal.Settings.{method}"),
+                "org.freedesktop.appearance",
+                "color-scheme",
+            ])
+            .output();
+        let Ok(output) = output else { return None };
+        if !output.status.success() {
+            continue;
+        }
+        if let Some(preference) = std::str::from_utf8(&output.stdout)
+            .ok()
+            .and_then(parse_portal_color_scheme)
+        {
+            return Some(preference);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_portal_color_scheme() -> Option<&'static str> {
+    None
+}
+
+fn parse_kde_color_scheme(contents: &str) -> Option<String> {
+    let mut in_general = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_general = line == "[General]";
+            continue;
+        }
+        if !in_general {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("ColorScheme=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn kde_dark_hint_from_scheme(scheme: Option<&str>) -> Option<&'static str> {
+    scheme
+        .filter(|value| value.to_ascii_lowercase().contains("dark"))
+        .map(|_| "dark")
+}
+
+#[cfg(target_os = "linux")]
+fn read_kde_color_scheme_preference() -> Option<&'static str> {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|home| std::path::PathBuf::from(home).join(".config"))
+        })?;
+    let contents = std::fs::read_to_string(config_dir.join("kdeglobals")).ok()?;
+    kde_dark_hint_from_scheme(parse_kde_color_scheme(&contents).as_deref())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_kde_color_scheme_preference() -> Option<&'static str> {
+    None
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_system_theme_preference() -> Option<String> {
+    if let Some(preference) = read_portal_color_scheme() {
+        return Some(preference.to_string());
+    }
+    if is_kde_desktop() {
+        return read_kde_color_scheme_preference().map(str::to_string);
+    }
+    let color_scheme = read_gsettings_value(GNOME_INTERFACE_SCHEMA, GNOME_COLOR_SCHEME_KEY);
+    let gtk_theme = read_gsettings_value(GNOME_INTERFACE_SCHEMA, GNOME_GTK_THEME_KEY);
+    resolve_gnome_system_theme_preference(color_scheme.as_deref(), gtk_theme.as_deref())
+        .map(str::to_string)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn start_portal_theme_watcher(app: tauri::AppHandle) {
+    let result = std::thread::Builder::new()
+        .name("portal-theme-watcher".into())
+        .spawn(move || {
+            let portal_result = (|| -> zbus::Result<()> {
+                let connection = zbus::blocking::Connection::session()?;
+                let proxy = zbus::blocking::Proxy::new(
+                    &connection,
+                    "org.freedesktop.portal.Desktop",
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.Settings",
+                )?;
+                let signals = proxy.receive_signal_with_args(
+                    "SettingChanged",
+                    &[(0, "org.freedesktop.appearance"), (1, "color-scheme")],
+                )?;
+                for _ in signals {
+                    if let Some(theme) = get_system_theme_preference() {
+                        log::info!(
+                            "Linux portal theme change resolved theme={theme}"
+                        );
+                        let _ = app.emit("system-theme-portal-changed", theme);
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = portal_result {
+                log::warn!("Linux portal theme watcher stopped: {error}");
+            }
+
+            if is_kde_desktop() {
+                let mut last = read_kde_color_scheme_preference();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let next = read_kde_color_scheme_preference();
+                    if next != last {
+                        last = next;
+                        if let Some(theme) = get_system_theme_preference() {
+                            let _ = app.emit("system-theme-portal-changed", theme);
+                        }
+                    }
+                }
+            }
+        });
+    if let Err(error) = result {
+        log::warn!("Linux portal theme watcher could not start: {error}");
+    }
+}
+
+#[tauri::command]
+pub(crate) fn consume_quick_add_pending(
+    state: tauri::State<'_, QuickAddPending>,
+    target: Option<String>,
+) -> bool {
+    let requested_target = target.as_deref();
+    let Ok(mut pending_target) = state.0.lock() else {
+        return false;
+    };
+    let Some(current_target) = pending_target.as_deref() else {
+        return false;
+    };
+    if requested_target.is_some_and(|target| target != current_target) {
+        return false;
+    }
+    *pending_target = None;
+    true
+}
+
+#[tauri::command]
+pub(crate) fn acknowledge_close_request(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, CloseRequestHandled>,
+) {
+    crate::logging::append_native_log_line(
+        &app,
+        "Close trace: acknowledge_close_request command invoked",
+    );
+    state.0.store(true, Ordering::SeqCst);
+}
+
+fn normalize_global_quick_add_shortcut(shortcut: Option<&str>) -> Result<Option<String>, String> {
+    let trimmed = shortcut.map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        return Ok(Some(default_global_quick_add_shortcut().to_string()));
+    }
+
+    if trimmed.eq_ignore_ascii_case(GLOBAL_QUICK_ADD_SHORTCUT_DISABLED) {
+        return Ok(None);
+    }
+
+    if trimmed == GLOBAL_QUICK_ADD_SHORTCUT_DEFAULT
+        || trimmed == GLOBAL_QUICK_ADD_SHORTCUT_ALTERNATE_N
+        || trimmed == GLOBAL_QUICK_ADD_SHORTCUT_ALTERNATE_Q
+        || trimmed == GLOBAL_QUICK_ADD_SHORTCUT_LEGACY
+    {
+        return Ok(Some(trimmed.to_string()));
+    }
+
+    Err("Unsupported quick add shortcut".to_string())
+}
+
+pub(crate) fn apply_global_quick_add_shortcut(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, GlobalQuickAddShortcutState>,
+    shortcut: Option<&str>,
+) -> Result<String, String> {
+    let normalized = normalize_global_quick_add_shortcut(shortcut)?;
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "Shortcut state lock poisoned".to_string())?;
+
+    if *guard == normalized {
+        return Ok(guard
+            .clone()
+            .unwrap_or_else(|| GLOBAL_QUICK_ADD_SHORTCUT_DISABLED.to_string()));
+    }
+
+    if let Some(existing) = guard.as_ref() {
+        if let Err(error) = app.global_shortcut().unregister(existing.as_str()) {
+            log::warn!("Failed to unregister existing quick add shortcut: {error}");
+        }
+    }
+
+    if let Some(next_shortcut) = normalized.as_ref() {
+        app.global_shortcut()
+            .on_shortcut(next_shortcut.as_str(), move |app, _shortcut, _event| {
+                show_quick_add_window(app);
+            })
+            .map_err(|error| format!("Failed to register global quick add shortcut: {error}"))?;
+    }
+
+    *guard = normalized.clone();
+    Ok(normalized.unwrap_or_else(|| GLOBAL_QUICK_ADD_SHORTCUT_DISABLED.to_string()))
+}
+
+#[tauri::command]
+pub(crate) fn set_global_quick_add_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalQuickAddShortcutState>,
+    shortcut: Option<String>,
+) -> Result<GlobalQuickAddShortcutApplyResult, String> {
+    #[cfg(target_os = "linux")]
+    if is_flatpak() {
+        let disabled = apply_global_quick_add_shortcut(
+            &app,
+            &state,
+            Some(GLOBAL_QUICK_ADD_SHORTCUT_DISABLED),
+        )?;
+        let requested_shortcut = shortcut.as_deref().unwrap_or("");
+        let warning = if requested_shortcut.is_empty()
+            || requested_shortcut.eq_ignore_ascii_case(GLOBAL_QUICK_ADD_SHORTCUT_DISABLED)
+        {
+            None
+        } else {
+            Some(
+                "Flatpak/Wayland requires a desktop custom shortcut. Use: flatpak run com.ishaanpilar.stride --quick-add"
+                    .to_string(),
+            )
+        };
+        return Ok(GlobalQuickAddShortcutApplyResult {
+            shortcut: disabled,
+            warning,
+        });
+    }
+
+    match apply_global_quick_add_shortcut(&app, &state, shortcut.as_deref()) {
+        Ok(applied) => Ok(GlobalQuickAddShortcutApplyResult {
+            shortcut: applied,
+            warning: None,
+        }),
+        Err(error) => {
+            log::warn!(
+                "Failed to apply global quick add shortcut; falling back to disabled: {error}"
+            );
+            let disabled = apply_global_quick_add_shortcut(
+                &app,
+                &state,
+                Some(GLOBAL_QUICK_ADD_SHORTCUT_DISABLED),
+            )?;
+            Ok(GlobalQuickAddShortcutApplyResult {
+                shortcut: disabled,
+                warning: Some(
+                    "Global quick add shortcut is unavailable (likely already used by another app), so it was disabled."
+                        .to_string(),
+                ),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn quit_app(app: tauri::AppHandle) {
+    crate::logging::append_native_log_line(
+        &app,
+        "Close trace: quit_app command invoked, calling app.exit(0)",
+    );
+    app.exit(0);
+
+    let watchdog_app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(QUIT_WATCHDOG_SECONDS));
+        crate::logging::append_native_log_line(
+            &watchdog_app,
+            "Close trace: still running after app.exit(0); the exit did not terminate the process",
+        );
+    });
+}
+
+pub(crate) fn build_tray_menu(
+    app: &tauri::AppHandle,
+    quick_add: &str,
+    show: &str,
+    lock: Option<&str>,
+    quit: &str,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let quick_add_item = MenuItem::with_id(app, "quick_add", quick_add, true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", show, true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", quit, true, None::<&str>)?;
+    match lock {
+        Some(lock) => {
+            let lock_item = MenuItem::with_id(app, "lock", lock, true, None::<&str>)?;
+            Menu::with_items(app, &[&quick_add_item, &show_item, &lock_item, &quit_item])
+        }
+        None => Menu::with_items(app, &[&quick_add_item, &show_item, &quit_item]),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn set_tray_labels(
+    app: tauri::AppHandle,
+    quick_add: String,
+    show: String,
+    lock: Option<String>,
+    quit: String,
+) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id("main") else {
+        return Ok(());
+    };
+    // macOS has no tray menu: the menu bar panel replaces it (see the tray setup in lib.rs).
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let lock = lock.filter(|_| crate::app_lock::is_enabled());
+    let menu = build_tray_menu(&app, &quick_add, &show, lock.as_deref(), &quit)
+        .map_err(|e| e.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    // Replacing the menu re-enables "show menu on left click" on macOS, which swallows the
+    // left-click that opens the menu bar panel. Keep the menu on right-click only.
+    let _ = tray.set_show_menu_on_left_click(false);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_tray_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id("main") {
+        tray.set_visible(visible).map_err(|e| e.to_string())
+    } else {
+        log::warn!("set_tray_visible called but no tray icon exists");
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub(crate) fn set_tray_tooltip(
+    app: tauri::AppHandle,
+    tooltip: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (&app, &tooltip);
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some(tray) = app.tray_by_id("main") else {
+            return Ok(());
+        };
+        let tooltip = crate::app_lock::tray_tooltip(tooltip);
+        tray.set_tooltip(tooltip.as_deref())
+            .map_err(|e| e.to_string())
+    }
+}
+
+const MAIN_WINDOW_REVEAL_TIMEOUT_SECONDS: u64 = 4;
+
+#[derive(Default)]
+pub(crate) struct MainWindowReveal {
+    suppressed: AtomicBool,
+    shown: AtomicBool,
+}
+
+impl MainWindowReveal {
+    pub(crate) fn suppress(&self) {
+        self.suppressed.store(true, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn reveal_main_window(app: &tauri::AppHandle) {
+    let state = app.state::<MainWindowReveal>();
+    if state.suppressed.load(Ordering::SeqCst) {
+        return;
+    }
+    if state.shown.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    show_main(app);
+}
+
+#[tauri::command]
+pub(crate) fn notify_ui_ready(app: tauri::AppHandle) {
+    reveal_main_window(&app);
+}
+
+pub(crate) fn reveal_main_window_after_timeout(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(MAIN_WINDOW_REVEAL_TIMEOUT_SECONDS));
+        let _ = handle
+            .clone()
+            .run_on_main_thread(move || reveal_main_window(&handle));
+    });
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn nudge_wayland_csd_after_show(window: &tauri::WebviewWindow) {
+    if std::env::var("WAYLAND_DISPLAY").is_err() {
+        return;
+    }
+    if window.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let _ = window.set_resizable(false);
+    let _ = window.set_resizable(true);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn nudge_wayland_csd_after_show(_window: &tauri::WebviewWindow) {}
+
+pub(crate) fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = crate::platform::apply_macos_activation_policy(app, false);
+        let _ = window.set_skip_taskbar(false);
+        let _ = window.unminimize();
+        let _ = window.show();
+        nudge_wayland_csd_after_show(&window);
+        let _ = window.set_focus();
+    }
+}
+
+pub(crate) fn show_main_and_emit(app: &tauri::AppHandle) {
+    show_main(app);
+    if let Ok(mut pending_target) = app.state::<QuickAddPending>().0.lock() {
+        *pending_target = Some(QUICK_ADD_TARGET_MAIN.to_string());
+    }
+    let payload = QuickAddEventPayload {
+        target: QUICK_ADD_TARGET_MAIN.to_string(),
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("quick-add", payload);
+    } else {
+        let _ = app.emit("quick-add", payload);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn convert_quick_add_window_to_panel(window: &tauri::WebviewWindow) {
+    let converted = window
+        .ns_window()
+        .ok()
+        .is_some_and(|ns_window| unsafe { stride_macos_make_quick_add_panel(ns_window) });
+    if !converted {
+        log::warn!(
+            "Quick add window could not become a non-activating panel; \
+             falling back to the activating focus path."
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn convert_quick_add_window_to_panel(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+fn present_quick_add_panel(window: &tauri::WebviewWindow) -> bool {
+    window
+        .ns_window()
+        .ok()
+        .is_some_and(|ns_window| unsafe { stride_macos_present_quick_add_panel(ns_window) })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn present_quick_add_panel(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
+fn quick_add_show_needs_focus_call(os: &str, panel_presented: bool) -> bool {
+    !(os == "macos" && panel_presented)
+}
+
+#[cfg(target_os = "linux")]
+fn present_x11_quick_add_window(window: &gtk::ApplicationWindow) -> bool {
+    use gtk::prelude::*;
+
+    window.set_accept_focus(true);
+    window.show();
+    let Some(native) = window
+        .window()
+        .and_then(|native| native.downcast::<gdkx11::X11Window>().ok())
+    else {
+        return false;
+    };
+
+    let gdk_window = native.upcast_ref::<gtk::gdk::Window>();
+    gdk_window.set_events(gdk_window.events() | gtk::gdk::EventMask::PROPERTY_CHANGE_MASK);
+    let timestamp = gdkx11::functions::x11_get_server_time(&native);
+    window.present_with_time(timestamp);
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn log_quick_add_focus(app: &tauri::AppHandle, backend: &str, outcome: &str) {
+    let message = format!(
+        "Quick add focus extra.releaseCheck=v1.3.5/linux-quick-add-focus backend={backend} outcome={outcome}"
+    );
+    log::info!("{message}");
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::logging::append_native_log_line(&app, &message);
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn focus_quick_add_window(window: &tauri::WebviewWindow) {
+    let target = window.clone();
+    if window
+        .run_on_main_thread(move || {
+            if target
+                .gtk_window()
+                .ok()
+                .is_some_and(|native| present_x11_quick_add_window(&native))
+            {
+                log_quick_add_focus(target.app_handle(), "x11", "requested");
+            } else {
+                let outcome = if target.set_focus().is_ok() {
+                    "requested"
+                } else {
+                    "request-failed"
+                };
+                log_quick_add_focus(target.app_handle(), "fallback", outcome);
+            }
+        })
+        .is_err()
+    {
+        let _ = window.set_focus();
+        log_quick_add_focus(window.app_handle(), "fallback", "dispatch-failed");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn focus_quick_add_window(window: &tauri::WebviewWindow) {
+    let _ = window.set_focus();
+}
+
+pub(crate) fn create_quick_add_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if app.get_webview_window(QUICK_ADD_WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        QUICK_ADD_WINDOW_LABEL,
+        tauri::WebviewUrl::App(QUICK_ADD_WINDOW_URL.into()),
+    );
+
+    if let Some(webview_dir) = crate::storage::portable_webview_data_dir() {
+        let _ = std::fs::create_dir_all(&webview_dir);
+        builder = builder.data_directory(webview_dir);
+    }
+    builder
+        .title("Stride Quick Add")
+        .inner_size(QUICK_ADD_WINDOW_WIDTH, QUICK_ADD_WINDOW_HEIGHT)
+        .resizable(false)
+        .decorations(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false)
+        .build()
+        .map(|window| {
+            crate::allow_webview_clipboard_read(&window);
+            crate::install_renderer_recovery(&window);
+            convert_quick_add_window_to_panel(&window);
+            #[cfg(target_os = "linux")]
+            {
+                let app = app.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        let outcome = if *focused { "focused" } else { "blurred" };
+                        log_quick_add_focus(&app, "native", outcome);
+                    }
+                });
+            }
+        })
+        .map_err(|error| format!("Failed to create quick add window: {error}"))
+}
+
+fn quick_add_window_physical_size(scale_factor: f64) -> tauri::PhysicalSize<u32> {
+    tauri::LogicalSize::new(QUICK_ADD_WINDOW_WIDTH, QUICK_ADD_WINDOW_HEIGHT)
+        .to_physical(scale_factor)
+}
+
+fn centered_quick_add_position(
+    work_area: &tauri::PhysicalRect<i32, u32>,
+    window_size: &tauri::PhysicalSize<u32>,
+) -> tauri::PhysicalPosition<i32> {
+    let x_offset = work_area.size.width.saturating_sub(window_size.width) / 2;
+    let y_offset = work_area.size.height.saturating_sub(window_size.height) / 2;
+    tauri::PhysicalPosition::new(
+        work_area.position.x + x_offset as i32,
+        work_area.position.y + y_offset as i32,
+    )
+}
+
+fn quick_add_target_monitor(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Option<tauri::Monitor> {
+    app.cursor_position()
+        .ok()
+        .and_then(|position| {
+            app.monitor_from_point(position.x, position.y)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn center_quick_add_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let Some(monitor) = quick_add_target_monitor(app, window) else {
+        if let Err(error) = window.center() {
+            log::warn!("Failed to center quick add window: {error}");
+        }
+        return;
+    };
+    let window_size = quick_add_window_physical_size(monitor.scale_factor());
+    let position = centered_quick_add_position(monitor.work_area(), &window_size);
+    if let Err(error) = window.set_position(position) {
+        log::warn!("Failed to position quick add window: {error}");
+    }
+}
+
+pub(crate) fn hide_quick_add_window_for_app(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(QUICK_ADD_WINDOW_LABEL) {
+        window
+            .hide()
+            .map_err(|error| format!("Failed to hide quick add window: {error}"))?;
+    }
+    let snapshot = take_quick_add_focus_snapshot(app);
+    restore_quick_add_focus(snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn hide_quick_add_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_quick_add_window_for_app(&app)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuickAddRequestSource {
+    Standard,
+    MacosWidget,
+}
+
+fn quick_add_unavailable_reveals_main(source: QuickAddRequestSource) -> bool {
+    source == QuickAddRequestSource::Standard
+}
+
+fn quick_add_requires_nonactivating_panel(source: QuickAddRequestSource, os: &str) -> bool {
+    source == QuickAddRequestSource::MacosWidget && os == "macos"
+}
+
+fn show_quick_add_window_for_source(app: &tauri::AppHandle, source: QuickAddRequestSource) {
+    if crate::app_lock::is_locked() {
+        show_main(app);
+        return;
+    }
+    if let Ok(mut pending_target) = app.state::<QuickAddPending>().0.lock() {
+        *pending_target = Some(QUICK_ADD_TARGET_WINDOW.to_string());
+    }
+
+    if let Some(window) = app.get_webview_window(QUICK_ADD_WINDOW_LABEL) {
+        remember_quick_add_focus(app, &window);
+        let _ = window.set_skip_taskbar(true);
+        let _ = window.unminimize();
+        center_quick_add_window(app, &window);
+        let _ = window.show();
+        let panel_presented = present_quick_add_panel(&window);
+        if quick_add_requires_nonactivating_panel(source, std::env::consts::OS) && !panel_presented
+        {
+            let _ = window.hide();
+            log::warn!(
+                "macOS widget capture could not present the non-activating quick add panel; \
+                 keeping the main window hidden"
+            );
+            return;
+        }
+        if quick_add_show_needs_focus_call(std::env::consts::OS, panel_presented) {
+            focus_quick_add_window(&window);
+        }
+        let payload = QuickAddEventPayload {
+            target: QUICK_ADD_TARGET_WINDOW.to_string(),
+        };
+        let _ = window.emit("quick-add", payload);
+        return;
+    }
+
+    if quick_add_unavailable_reveals_main(source) {
+        log::warn!("Quick add window unavailable; falling back to the main window.");
+        show_main_and_emit(app);
+    } else {
+        log::warn!(
+            "macOS widget capture could not find the quick add panel; keeping the main window hidden"
+        );
+    }
+}
+
+pub(crate) fn show_quick_add_window(app: &tauri::AppHandle) {
+    show_quick_add_window_for_source(app, QuickAddRequestSource::Standard);
+}
+
+pub(crate) fn show_macos_widget_quick_add_window(app: &tauri::AppHandle) {
+    show_quick_add_window_for_source(app, QuickAddRequestSource::MacosWidget);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display; never opens a window in ordinary test runs"]
+    fn x11_quick_add_restores_accept_focus_and_preserves_event_mask() {
+        use gtk::prelude::*;
+
+        gtk::init().expect("test requires an X11 display");
+        let window = gtk::ApplicationWindow::builder()
+            .title("Stride Quick Add activation test")
+            .accept_focus(false)
+            .build();
+        window.realize();
+        let native = window.window().expect("realized test window");
+        let original_events = native.events();
+        assert!(!window.accepts_focus());
+        assert!(present_x11_quick_add_window(&window));
+        assert!(window.accepts_focus());
+        assert!(native.events().contains(original_events));
+        assert!(native
+            .events()
+            .contains(gtk::gdk::EventMask::PROPERTY_CHANGE_MASK));
+        window.close();
+    }
+
+    #[test]
+    fn parses_gnome_color_scheme_values() {
+        assert_eq!(parse_gnome_color_scheme("'prefer-dark'"), Some("dark"));
+        assert_eq!(parse_gnome_color_scheme("'prefer-light'"), Some("light"));
+        assert_eq!(parse_gnome_color_scheme("'default'"), Some("light"));
+        assert_eq!(parse_gnome_color_scheme("'unknown'"), None);
+    }
+
+    #[test]
+    fn falls_back_to_gtk_theme_when_color_scheme_is_missing() {
+        assert_eq!(
+            resolve_gnome_system_theme_preference(None, Some("'Adwaita-dark'")),
+            Some("dark")
+        );
+        assert_eq!(
+            resolve_gnome_system_theme_preference(None, Some("'Adwaita'")),
+            Some("light")
+        );
+    }
+
+    #[test]
+    fn prefers_color_scheme_over_gtk_theme() {
+        assert_eq!(
+            resolve_gnome_system_theme_preference(Some("'prefer-dark'"), Some("'Adwaita'")),
+            Some("dark")
+        );
+    }
+
+    #[test]
+    fn detects_kde_desktop_values() {
+        assert!(is_kde_desktop_value("KDE"));
+        assert!(is_kde_desktop_value("plasma"));
+        assert!(is_kde_desktop_value("ubuntu:KDE"));
+        assert!(!is_kde_desktop_value("GNOME"));
+        assert!(!is_kde_desktop_value("niri"));
+        assert!(!is_kde_desktop_value("kde-something"));
+        assert!(!is_kde_desktop_value(""));
+    }
+
+    #[test]
+    fn parses_portal_color_scheme_replies() {
+        assert_eq!(parse_portal_color_scheme("(<uint32 1>,)"), Some("dark"));
+        assert_eq!(parse_portal_color_scheme("(<<uint32 1>>,)"), Some("dark"));
+        assert_eq!(parse_portal_color_scheme("(<uint32 2>,)"), Some("light"));
+        assert_eq!(parse_portal_color_scheme("(<uint32 0>,)"), None);
+        assert_eq!(parse_portal_color_scheme("(<uint32 7>,)"), None);
+        assert_eq!(parse_portal_color_scheme(""), None);
+        assert_eq!(parse_portal_color_scheme("uint32"), None);
+    }
+
+    #[test]
+    fn parses_kde_color_scheme_from_kdeglobals() {
+        let contents = "[Icons]\nTheme=breeze\n\n[General]\nColorScheme=BreezeDark\nName=x\n";
+        assert_eq!(
+            parse_kde_color_scheme(contents).as_deref(),
+            Some("BreezeDark")
+        );
+
+        let misplaced = "[KDE]\nColorScheme=BreezeDark\n[General]\nName=x\n";
+        assert_eq!(parse_kde_color_scheme(misplaced), None);
+        assert_eq!(parse_kde_color_scheme(""), None);
+    }
+
+    #[test]
+    fn kde_scheme_names_only_ever_report_dark() {
+        assert_eq!(kde_dark_hint_from_scheme(Some("BreezeDark")), Some("dark"));
+        assert_eq!(kde_dark_hint_from_scheme(Some("Fedora Dark")), Some("dark"));
+
+        assert_eq!(kde_dark_hint_from_scheme(Some("Breeze")), None);
+        assert_eq!(kde_dark_hint_from_scheme(None), None);
+    }
+
+    #[test]
+    fn centered_quick_add_position_uses_monitor_work_area() {
+        let work_area = tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(100, -20),
+            size: tauri::PhysicalSize::new(1200, 800),
+        };
+        let window_size = tauri::PhysicalSize::new(620, 420);
+
+        assert_eq!(
+            centered_quick_add_position(&work_area, &window_size),
+            tauri::PhysicalPosition::new(390, 170)
+        );
+    }
+
+    #[test]
+    fn centered_quick_add_position_clamps_to_work_area_when_window_is_larger() {
+        let work_area = tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(-1280, 0),
+            size: tauri::PhysicalSize::new(500, 300),
+        };
+        let window_size = tauri::PhysicalSize::new(620, 420);
+
+        assert_eq!(
+            centered_quick_add_position(&work_area, &window_size),
+            tauri::PhysicalPosition::new(-1280, 0)
+        );
+    }
+
+    #[test]
+    fn quick_add_window_physical_size_uses_monitor_scale_factor() {
+        assert_eq!(
+            quick_add_window_physical_size(2.0),
+            tauri::PhysicalSize::new(1240, 840)
+        );
+    }
+
+    #[test]
+    fn quick_add_focus_policy_is_platform_specific() {
+        assert_eq!(
+            quick_add_focus_policy_for_os("macos"),
+            QuickAddFocusPolicy::None
+        );
+        assert_eq!(
+            quick_add_focus_policy_for_os("windows"),
+            QuickAddFocusPolicy::RestoreWindowsForegroundWindow
+        );
+        assert_eq!(
+            quick_add_focus_policy_for_os("linux"),
+            QuickAddFocusPolicy::None
+        );
+        assert_eq!(
+            quick_add_focus_policy_for_os("freebsd"),
+            QuickAddFocusPolicy::None
+        );
+    }
+
+    #[test]
+    fn macos_panel_show_skips_the_activating_focus_call() {
+        assert!(!quick_add_show_needs_focus_call("macos", true));
+
+        assert!(quick_add_show_needs_focus_call("macos", false));
+    }
+
+    #[test]
+    fn macos_widget_capture_requires_panel_and_never_reveals_main() {
+        assert!(quick_add_requires_nonactivating_panel(
+            QuickAddRequestSource::MacosWidget,
+            "macos"
+        ));
+        assert!(!quick_add_unavailable_reveals_main(
+            QuickAddRequestSource::MacosWidget
+        ));
+        assert!(quick_add_unavailable_reveals_main(
+            QuickAddRequestSource::Standard
+        ));
+    }
+
+    #[test]
+    fn other_platforms_always_keep_the_focus_call() {
+        for os in ["windows", "linux", "freebsd"] {
+            assert!(quick_add_show_needs_focus_call(os, false));
+            assert!(quick_add_show_needs_focus_call(os, true));
+        }
+    }
+}

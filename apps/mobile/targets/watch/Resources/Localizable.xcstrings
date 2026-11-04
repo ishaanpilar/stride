@@ -1,0 +1,115 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Connect to your iPhone to continue." : {},
+    "Couldn’t save this item. Please try again." : {},
+    "Couldn’t start recording." : {},
+    "Delivered" : {},
+    "Edit capture" : {},
+    "Stride timer finished" : {},
+    "Please shorten this capture before sending." : {},
+    "Ready to focus?" : {},
+    "Recording is waiting for iPhone confirmation." : {},
+    "Recording saved for delivery" : {},
+    "Recording saved. It will retry when the connection changes." : {},
+    "Recording stopped unexpectedly." : {},
+    "Resend capture" : {},
+    "Retry recording" : {},
+    "Saved for delivery" : {},
+    "Sent" : {},
+    "Time for a break." : {},
+    "Checklist" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checklist"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查清单"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "檢查清單"
+          }
+        }
+      }
+    },
+    "These details are too large for the Watch. Open this task on your iPhone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "These details are too large for the Watch. Open this task on your iPhone."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容过多，无法在手表上完整显示。请在 iPhone 上打开此任务。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "內容過多，無法在手錶上完整顯示。請在 iPhone 上開啟此任務。"
+          }
+        }
+      }
+    },
+    "This checklist changed. Open Stride on your iPhone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This checklist changed. Open Stride on your iPhone."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查清单已更改。请在 iPhone 上打开 Stride。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "檢查清單已更改。請在 iPhone 上開啟 Stride。"
+          }
+        }
+      }
+    },
+    "Saved on iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved on iPhone"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存到 iPhone"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已儲存到 iPhone"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

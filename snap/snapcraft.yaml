@@ -1,0 +1,33 @@
+name: stride
+base: core22
+version: '1.3.7'
+summary: AI-powered personal organiser: capture, briefing, GTD lists
+description: |
+  Stride is an AI-powered personal organiser. Capture tasks and ideas in
+  seconds, get an AI morning briefing, chat with a built-in assistant that
+  uses your own AI provider, and keep GTD lists with a guided weekly review
+  and a Pomodoro focus timer.
+
+  Works offline with no account. Your data stays on your device; sync is
+  optional through Dropbox, a folder you control, WebDAV, or your own server.
+grade: stable
+confinement: strict
+
+apps:
+  stride:
+    command: usr/bin/stride
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - network-bind
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+
+parts:
+  stride:
+    plugin: dump
+    source: apps/desktop/src-tauri/target/release/bundle/deb/stride_1.3.7_amd64.deb
+    source-type: deb

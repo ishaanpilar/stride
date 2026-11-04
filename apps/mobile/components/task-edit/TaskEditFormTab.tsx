@@ -1,0 +1,611 @@
+import React from 'react';
+import {
+    Alert,
+    View,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    ScrollView,
+    KeyboardAvoidingView,
+    Platform,
+    ActivityIndicator,
+    Keyboard,
+    Dimensions,
+    UIManager,
+    findNodeHandle,
+    type ScrollViewProps,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Type } from 'lucide-react-native';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { countTaskEditorFilledFields, parseRRuleString, tFallback, type Attachment, type Task, type TaskEditorFieldId, type TaskEditorSectionId, type TimeEstimate, type ViewSectionDefinition } from '@stride/core';
+import { formatTaskCopilotApplied } from '@stride/core/ai-task-actions';
+import type { TaskDraft } from '@stride/core/task-draft';
+import type { ThemeColors } from '@/hooks/use-theme-colors';
+import { CollapsibleSection } from './CollapsibleSection';
+import { FieldHeading } from './FieldHeading';
+import type { CopilotPart } from './use-task-edit-copilot';
+import { SomedaySectionPicker } from '../someday-section-picker';
+import { FocusStarIcon } from '../FocusStarIcon';
+import { ChecklistDragScrollContext, type ChecklistDragScroll } from './use-checklist-handle-drag';
+
+type TaskEditFormTabProps = {
+    t: (key: string) => string;
+    tc: ThemeColors;
+    styles: Record<string, any>;
+    inputStyle: Record<string, any>;
+    attachments: Attachment[] | undefined;
+    checklist: Task['checklist'];
+    draft: TaskDraft | null;
+    aiEnabled: boolean;
+    isAIWorking: boolean;
+    handleAIClarify: () => void;
+    handleAIBreakdown: () => void;
+    pendingCopilotParts: CopilotPart[];
+    applyCopilotPart: (part: CopilotPart) => void;
+    applyCopilotSuggestion: () => void;
+    copilotContext: string | undefined;
+    copilotEstimate: TimeEstimate | undefined;
+    copilotTags: string[];
+    timeEstimatesEnabled: boolean;
+    renderField: (fieldId: TaskEditorFieldId) => React.ReactNode;
+    basicFields: TaskEditorFieldId[];
+    somedaySections?: readonly ViewSectionDefinition[];
+    selectedSomedaySectionId?: string;
+    onSomedaySectionChange?: (sectionId: string | undefined) => void;
+    onCreateSomedaySection?: (title: string) => Promise<string | null>;
+    schedulingFields: TaskEditorFieldId[];
+    organizationFields: TaskEditorFieldId[];
+    detailsFields: TaskEditorFieldId[];
+    sectionOpenDefaults: Record<TaskEditorSectionId, boolean>;
+    showDatePicker: string | null;
+    pendingStartDate: Date | null;
+    pendingDueDate: Date | null;
+    getSafePickerDateValue: (dateStr?: string) => Date;
+    onDateChange: (event: DateTimePickerEvent, selectedDate?: Date) => void;
+    containerWidth: number;
+    textDirectionStyle: Record<string, any>;
+    titleDraft: string;
+    focusStar?: { focused: boolean; disabled: boolean; label: string; onToggle: () => void };
+    titleInputRef?: React.RefObject<TextInput | null>;
+    onTitleDraftChange: (text: string) => void;
+    onTitleSelectionChange?: (selection: { start: number; end: number }) => void;
+    onInputFocusTracked?: (targetInput?: number | string) => void;
+    onTitleInputFocusChange?: (focused: boolean) => void;
+    registerScrollToEnd?: (handler: ((targetInput?: number | string) => void) | null) => void;
+    formResetKey?: string;
+    suspendKeyboardHandling?: boolean;
+    accessibilityHidden?: boolean;
+};
+
+const TASK_FORM_BASE_BOTTOM_PADDING = 32;
+
+const DESCRIPTION_REVEAL_FRACTION = 0.4;
+
+function TaskEditFormTabComponent({
+    t,
+    tc,
+    styles,
+    inputStyle,
+    attachments,
+    checklist,
+    draft,
+    aiEnabled,
+    isAIWorking,
+    handleAIClarify,
+    handleAIBreakdown,
+    pendingCopilotParts,
+    applyCopilotPart,
+    applyCopilotSuggestion,
+    copilotContext,
+    copilotEstimate,
+    copilotTags,
+    timeEstimatesEnabled,
+    renderField,
+    basicFields,
+    somedaySections = [],
+    selectedSomedaySectionId,
+    onSomedaySectionChange,
+    onCreateSomedaySection,
+    schedulingFields,
+    organizationFields,
+    detailsFields,
+    sectionOpenDefaults,
+    showDatePicker,
+    pendingStartDate,
+    pendingDueDate,
+    getSafePickerDateValue,
+    onDateChange,
+    containerWidth,
+    textDirectionStyle,
+    titleDraft,
+    focusStar,
+    titleInputRef,
+    onTitleDraftChange,
+    onTitleSelectionChange,
+    onInputFocusTracked,
+    onTitleInputFocusChange,
+    registerScrollToEnd,
+    formResetKey,
+    suspendKeyboardHandling = false,
+    accessibilityHidden = false,
+}: TaskEditFormTabProps) {
+    const [titleFocused, setTitleFocused] = React.useState(false);
+    const formScrollRef = React.useRef<ScrollView | null>(null);
+    const formScrollOffsetRef = React.useRef(0);
+    const [checklistDragging, setChecklistDragging] = React.useState(false);
+    const formViewportRef = React.useRef({ top: 0, bottom: 0 });
+    const formContentHeightRef = React.useRef(0);
+    const measureDragViewport = React.useCallback(() => {
+        const handle = findNodeHandle(formScrollRef.current);
+        if (handle == null) return;
+        UIManager.measureInWindow(handle, (_x, y, _width, height) => {
+            formViewportRef.current = { top: y, bottom: y + height };
+        });
+    }, []);
+    const checklistDragScroll = React.useMemo<ChecklistDragScroll>(() => ({
+        begin: () => { measureDragViewport(); setChecklistDragging(true); },
+        end: () => setChecklistDragging(false),
+        offset: () => formScrollOffsetRef.current,
+        viewport: () => formViewportRef.current,
+        scrollBy: (delta) => {
+            const viewport = formViewportRef.current;
+            const maximum = Math.max(0, formContentHeightRef.current - (viewport.bottom - viewport.top));
+            const y = Math.max(0, Math.min(maximum, formScrollOffsetRef.current + delta));
+            formScrollOffsetRef.current = y;
+            formScrollRef.current?.scrollTo({ y, animated: false });
+        },
+    }), [measureDragViewport]);
+    const keyboardTopRef = React.useRef(Dimensions.get('window').height);
+    const keyboardVisibleRef = React.useRef(false);
+
+
+    const pendingScrollHandleRef = React.useRef<number | null>(null);
+    const [keyboardBottomInset, setKeyboardBottomInset] = React.useState(0);
+    const androidScrollViewFocusProps: Partial<ScrollViewProps> & { scrollsChildToFocus?: boolean } = (
+        Platform.OS === 'android' ? { scrollsChildToFocus: false } : {}
+    );
+    const aiWorkingLabel = t('ai.working');
+    const aiWorkingText = aiWorkingLabel === 'ai.working' ? 'Working...' : aiWorkingLabel;
+    const hasAppliedCopilot = Boolean(copilotContext) || Boolean(copilotEstimate) || copilotTags.length > 0;
+    const taskEditorLayoutHelpLabel = tFallback(t, 'taskEdit.editorLayoutHelpLabel', 'Editor layout help');
+    const taskEditorLayoutHelpText = tFallback(
+        t,
+        'taskEdit.editorLayoutHelpText',
+        'You can customize which fields appear here in Settings -> GTD -> Task Editor Layout.'
+    );
+    const showTaskEditorLayoutHelp = React.useCallback(() => {
+        Alert.alert(taskEditorLayoutHelpLabel, taskEditorLayoutHelpText);
+    }, [taskEditorLayoutHelpLabel, taskEditorLayoutHelpText]);
+
+    React.useEffect(() => {
+        formScrollOffsetRef.current = 0;
+        const resetScroll = () => {
+            formScrollRef.current?.scrollTo({ y: 0, animated: false });
+        };
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(resetScroll);
+        } else {
+            setTimeout(resetScroll, 0);
+        }
+    }, [formResetKey]);
+
+    const scrollHandleIntoView = React.useCallback((targetHandle: number) => {
+        const scrollView = formScrollRef.current;
+        if (!scrollView) return;
+
+        const scrollHandle = findNodeHandle(scrollView);
+        if (!scrollHandle) return;
+
+        UIManager.measureInWindow(targetHandle, (_x, targetY, _w, targetH) => {
+            if (!Number.isFinite(targetY) || !Number.isFinite(targetH)) return;
+            UIManager.measureInWindow(scrollHandle, (_sx, scrollY, _sw, scrollH) => {
+                if (!Number.isFinite(scrollY) || !Number.isFinite(scrollH)) return;
+                const visibleTop = scrollY;
+                const keyboardTop = keyboardTopRef.current;
+                const visibleBottom = Math.min(scrollY + scrollH, keyboardTop);
+                const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+                const bottomClearance = visibleHeight * 0.18;
+                const effectiveVisibleBottom = visibleBottom - bottomClearance;
+                const targetTop = targetY;
+
+
+                const maxReveal = visibleHeight * DESCRIPTION_REVEAL_FRACTION;
+                const targetBottom = targetY + Math.min(targetH, maxReveal);
+
+                if (targetBottom > effectiveVisibleBottom) {
+                    const delta = targetBottom - effectiveVisibleBottom;
+                    const nextOffset = Math.max(0, formScrollOffsetRef.current + delta);
+
+
+                    formScrollRef.current?.scrollTo({ y: nextOffset, animated: Platform.OS !== 'android' });
+                    return;
+                }
+
+                if (targetTop < visibleTop && Platform.OS !== 'android') {
+                    const delta = visibleTop - targetTop;
+                    const nextOffset = Math.max(0, formScrollOffsetRef.current - delta);
+                    formScrollRef.current?.scrollTo({ y: nextOffset, animated: true });
+                }
+            });
+        });
+    }, []);
+
+    const scheduleScrollHandleIntoView = React.useCallback((targetHandle: number) => {
+        if (Platform.OS === 'android' && !keyboardVisibleRef.current) {
+
+            pendingScrollHandleRef.current = targetHandle;
+            return;
+        }
+        const scrollIntoView = () => scrollHandleIntoView(targetHandle);
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+                scrollIntoView();
+                if (Platform.OS === 'android') {
+                    requestAnimationFrame(scrollIntoView);
+                }
+            });
+        } else {
+            setTimeout(scrollIntoView, 0);
+        }
+
+
+        setTimeout(scrollIntoView, 180);
+        setTimeout(scrollIntoView, 360);
+    }, [scrollHandleIntoView]);
+
+    React.useEffect(() => {
+        if (suspendKeyboardHandling) {
+            keyboardTopRef.current = Dimensions.get('window').height;
+            keyboardVisibleRef.current = false;
+            pendingScrollHandleRef.current = null;
+            setKeyboardBottomInset(0);
+            return;
+        }
+        if (typeof Keyboard?.addListener !== 'function') return;
+        const updateKeyboardTop = (event: { endCoordinates?: { screenY?: number; height?: number } }) => {
+            const windowHeight = Dimensions.get('window').height;
+            const endCoords = event.endCoordinates;
+            let nextKeyboardTop = windowHeight;
+            if (typeof endCoords?.screenY === 'number') {
+                nextKeyboardTop = endCoords.screenY;
+            } else if (typeof endCoords?.height === 'number') {
+                nextKeyboardTop = Math.max(0, windowHeight - endCoords.height);
+            }
+            keyboardTopRef.current = nextKeyboardTop;
+            keyboardVisibleRef.current = nextKeyboardTop < windowHeight;
+            setKeyboardBottomInset(Math.max(0, windowHeight - nextKeyboardTop));
+            if (keyboardVisibleRef.current && pendingScrollHandleRef.current != null) {
+                const pendingHandle = pendingScrollHandleRef.current;
+                pendingScrollHandleRef.current = null;
+                scheduleScrollHandleIntoView(pendingHandle);
+            }
+        };
+        const resetKeyboardTop = () => {
+            keyboardTopRef.current = Dimensions.get('window').height;
+            keyboardVisibleRef.current = false;
+            pendingScrollHandleRef.current = null;
+            setKeyboardBottomInset(0);
+        };
+        const showListener = Keyboard.addListener(
+            Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+            updateKeyboardTop
+        );
+        const changeListener = Keyboard.addListener(
+            Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidChangeFrame',
+            updateKeyboardTop
+        );
+        const hideListener = Keyboard.addListener(
+            Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+            resetKeyboardTop
+        );
+        return () => {
+            showListener.remove();
+            changeListener.remove();
+            hideListener.remove();
+            pendingScrollHandleRef.current = null;
+        };
+    }, [suspendKeyboardHandling, scheduleScrollHandleIntoView]);
+
+    const ensureInputVisible = React.useCallback((targetInput?: number | string) => {
+        const normalizedHandle = typeof targetInput === 'number'
+            ? targetInput
+            : typeof targetInput === 'string'
+                ? Number(targetInput)
+                : NaN;
+        const hasTargetHandle = Number.isFinite(normalizedHandle) && normalizedHandle > 0;
+        if (!hasTargetHandle) {
+            return;
+        }
+        scheduleScrollHandleIntoView(normalizedHandle);
+    }, [scheduleScrollHandleIntoView]);
+
+    React.useEffect(() => {
+        if (!registerScrollToEnd) return;
+        if (suspendKeyboardHandling) {
+            registerScrollToEnd(null);
+            return;
+        }
+        registerScrollToEnd((targetInput) => {
+            ensureInputVisible(targetInput);
+        });
+        return () => registerScrollToEnd(null);
+    }, [ensureInputVisible, registerScrollToEnd, suspendKeyboardHandling]);
+    const countFilledFields = (fieldIds: TaskEditorFieldId[]): number => (
+        countTaskEditorFilledFields(fieldIds, { draft, checklist, attachments })
+    );
+    const schedulingFilledCount = countFilledFields(schedulingFields);
+    const organizationFilledCount = countFilledFields(organizationFields);
+    const detailsFilledCount = countFilledFields(detailsFields);
+
+    return (
+        <View
+            accessibilityElementsHidden={accessibilityHidden}
+            importantForAccessibility={accessibilityHidden ? 'no-hide-descendants' : 'auto'}
+            style={[styles.tabPage, { width: containerWidth || '100%' }]}
+        >
+            <KeyboardAvoidingView
+                behavior={suspendKeyboardHandling ? undefined : (Platform.OS === 'android' ? 'height' : undefined)}
+                style={{ flex: 1 }}
+                keyboardVerticalOffset={0}
+            >
+                <ScrollView
+                    ref={formScrollRef}
+                    style={styles.content}
+                    contentContainerStyle={[
+                        styles.contentContainer,
+                        keyboardBottomInset > 0
+                            ? { paddingBottom: TASK_FORM_BASE_BOTTOM_PADDING + keyboardBottomInset }
+                            : null,
+                    ]}
+                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'none'}
+                    keyboardShouldPersistTaps="handled"
+                    scrollEnabled={!suspendKeyboardHandling && !checklistDragging}
+                    onLayout={measureDragViewport}
+                    onContentSizeChange={(_width, height) => { formContentHeightRef.current = height; }}
+                    {...androidScrollViewFocusProps}
+                    onScroll={(event) => {
+                        formScrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+                    }}
+                    scrollEventThrottle={16}
+                    nestedScrollEnabled
+                >
+                    <ChecklistDragScrollContext.Provider value={checklistDragScroll}>
+                        <View style={styles.formGroup}>
+                            <View style={styles.labelRow}>
+                                <FieldHeading
+                                    icon={Type}
+                                    label={t('taskEdit.titleLabel')}
+                                    iconColor={tc.secondaryText}
+                                    labelStyle={[styles.label, { color: tc.secondaryText, marginBottom: 0 }]}
+                                    rowStyle={{ marginBottom: 0 }}
+                                />
+                                <View style={styles.titleActions}>
+                                {focusStar ? (
+                                    <TouchableOpacity
+                                        onPress={focusStar.onToggle}
+                                        disabled={focusStar.disabled}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={focusStar.label}
+                                        accessibilityState={{ disabled: focusStar.disabled, selected: focusStar.focused }}
+                                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                        style={[
+                                            styles.fieldHelpButton,
+                                            { backgroundColor: tc.filterBg, borderColor: tc.border },
+                                        ]}
+                                        testID="task-edit-focus-star"
+                                    >
+                                        <FocusStarIcon focused={focusStar.focused} disabled={focusStar.disabled} inactiveColor={tc.secondaryText} size={18} />
+                                    </TouchableOpacity>
+                                ) : null}
+                                <TouchableOpacity
+                                    accessibilityLabel={taskEditorLayoutHelpLabel}
+                                    accessibilityRole="button"
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    onPress={showTaskEditorLayoutHelp}
+                                    style={[
+                                        styles.fieldHelpButton,
+                                        { backgroundColor: tc.filterBg, borderColor: tc.border },
+                                    ]}
+                                >
+                                    <Ionicons name="help-circle-outline" size={18} color={tc.secondaryText} />
+                                </TouchableOpacity>
+                                </View>
+                            </View>
+                            <TextInput
+                            ref={titleInputRef}
+                            style={[styles.input, inputStyle, textDirectionStyle, styles.titleInput]}
+                            value={titleDraft}
+                            onChangeText={(text) => onTitleDraftChange(text.replace(/[\r\n]+/g, ' '))}
+                            placeholderTextColor={tc.secondaryText}
+                            multiline
+                            onFocus={() => {
+                                onInputFocusTracked?.(undefined);
+                                setTitleFocused(true);
+                                onTitleInputFocusChange?.(true);
+                            }}
+                            onBlur={() => {
+                                setTitleFocused(false);
+                                onTitleInputFocusChange?.(false);
+                            }}
+                            onSelectionChange={(event) => onTitleSelectionChange?.(event.nativeEvent.selection)}
+                            selection={titleFocused ? undefined : { start: 0, end: 0 }}
+                        />
+                    </View>
+                    {aiEnabled && (
+                        <View style={styles.aiRow}>
+                            <TouchableOpacity
+                                style={[styles.aiButton, { backgroundColor: tc.filterBg, borderColor: tc.border }]}
+                                onPress={handleAIClarify}
+                                disabled={isAIWorking}
+                            >
+                                <Text style={[styles.aiButtonText, { color: tc.tint }]}>{t('taskEdit.aiClarify')}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.aiButton, { backgroundColor: tc.filterBg, borderColor: tc.border }]}
+                                onPress={handleAIBreakdown}
+                                disabled={isAIWorking}
+                            >
+                                <Text style={[styles.aiButtonText, { color: tc.tint }]}>{t('taskEdit.aiBreakdown')}</Text>
+                            </TouchableOpacity>
+                            {isAIWorking && (
+                                <View style={styles.aiWorking}>
+                                    <ActivityIndicator size="small" color={tc.tint} />
+                                    <Text style={[styles.aiWorkingText, { color: tc.secondaryText }]}>
+                                        {aiWorkingText}
+                                    </Text>
+                                </View>
+                            )}
+                        </View>
+                    )}
+                    {aiEnabled && pendingCopilotParts.length > 0 && (
+                        <View style={[styles.copilotPill, { borderColor: tc.border, backgroundColor: tc.filterBg }]}>
+                            <View style={styles.copilotChipRow}>
+                                <Ionicons
+                                    name="sparkles-outline"
+                                    size={16}
+                                    color={tc.text}
+                                    accessible={false}
+                                />
+                                <Text style={[styles.copilotText, { color: tc.text }]}>
+                                    {t('copilot.suggested')}
+                                </Text>
+                                {pendingCopilotParts.map((part) => (
+                                    <TouchableOpacity
+                                        key={`${part.kind}:${part.value}`}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={part.value}
+                                        style={[styles.copilotChip, { borderColor: tc.border, backgroundColor: tc.cardBg }]}
+                                        onPress={() => applyCopilotPart(part)}
+                                    >
+                                        <Text style={[styles.copilotText, { color: tc.text }]}>{part.value}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                                {pendingCopilotParts.length > 1 && (
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t('copilot.applyAll')}
+                                        style={styles.copilotApplyAll}
+                                        onPress={applyCopilotSuggestion}
+                                    >
+                                        <Text style={[styles.copilotText, { color: tc.tint }]}>{t('copilot.applyAll')}</Text>
+                                    </TouchableOpacity>
+                                )}
+                            </View>
+                            <Text style={[styles.copilotHint, { color: tc.secondaryText }]}>
+                                {t('copilot.applyHint')}
+                            </Text>
+                        </View>
+                    )}
+                    {aiEnabled && hasAppliedCopilot && (
+                        <View style={[styles.copilotPill, { borderColor: tc.border, backgroundColor: tc.filterBg }]}>
+                            <View style={{ flexDirection: 'row', alignItems: 'flex-start', columnGap: 4 }}>
+                                <Ionicons
+                                    name="checkmark-circle-outline"
+                                    size={16}
+                                    color={tc.text}
+                                    accessible={false}
+                                />
+                                <Text style={[styles.copilotText, { color: tc.text, flexShrink: 1 }]}>
+                                    {formatTaskCopilotApplied(t, { context: copilotContext, timeEstimate: copilotEstimate, tags: copilotTags }, timeEstimatesEnabled)}
+                                </Text>
+                            </View>
+                        </View>
+                    )}
+                    {basicFields.map((fieldId) => (
+                        <React.Fragment key={fieldId}>{renderField(fieldId)}</React.Fragment>
+                    ))}
+
+                    {draft?.status === 'someday' && onSomedaySectionChange && onCreateSomedaySection ? (
+                        <View style={styles.formGroup}>
+                            <Text style={[styles.label, { color: tc.secondaryText }]}>
+                                {tFallback(t, 'viewSections.somedaySection', 'Someday section')}
+                            </Text>
+                            <SomedaySectionPicker
+                                sections={somedaySections}
+                                selectedId={selectedSomedaySectionId}
+                                onSelect={onSomedaySectionChange}
+                                onCreate={onCreateSomedaySection}
+                                t={t}
+                                themeColors={tc}
+                                optionsStyle={styles.statusContainer}
+                                optionStyle={styles.statusChip}
+                                optionTextStyle={styles.statusText}
+                            />
+                        </View>
+                    ) : null}
+
+                    {schedulingFields.length > 0 && (
+                        <CollapsibleSection
+                            resetKey={`${formResetKey ?? 'task'}:scheduling`}
+                            title={t('taskEdit.scheduling')}
+                            badge={schedulingFilledCount}
+                            defaultExpanded={sectionOpenDefaults.scheduling || schedulingFilledCount > 0}
+                            help={{ topic: 'scheduling', t }}
+                        >
+                            {schedulingFields.map((fieldId) => (
+                                <React.Fragment key={fieldId}>{renderField(fieldId)}</React.Fragment>
+                            ))}
+                        </CollapsibleSection>
+                    )}
+
+                    {organizationFields.length > 0 && (
+                        <CollapsibleSection
+                            resetKey={`${formResetKey ?? 'task'}:organization`}
+                            title={t('taskEdit.organization')}
+                            badge={organizationFilledCount}
+                            defaultExpanded={sectionOpenDefaults.organization || organizationFilledCount > 0}
+                        >
+                            {organizationFields.map((fieldId) => (
+                                <React.Fragment key={fieldId}>{renderField(fieldId)}</React.Fragment>
+                            ))}
+                        </CollapsibleSection>
+                    )}
+
+                    {detailsFields.length > 0 && (
+                        <CollapsibleSection
+                            resetKey={`${formResetKey ?? 'task'}:details`}
+                            title={t('taskEdit.details')}
+                            badge={detailsFilledCount}
+                            defaultExpanded={sectionOpenDefaults.details || detailsFilledCount > 0}
+                            help={{ topic: 'details', t }}
+                        >
+                            {detailsFields.map((fieldId) => (
+                                <React.Fragment key={fieldId}>{renderField(fieldId)}</React.Fragment>
+                            ))}
+                        </CollapsibleSection>
+                    )}
+
+                    <View style={{ height: 100 }} />
+
+                    {showDatePicker && Platform.OS === 'android' && (
+                        <View>
+                            <DateTimePicker
+                                value={(() => {
+                                    if (showDatePicker === 'start') return getSafePickerDateValue(draft?.startTime);
+                                    if (showDatePicker === 'start-time') return pendingStartDate ?? getSafePickerDateValue(draft?.startTime);
+                                    if (showDatePicker === 'review' || showDatePicker === 'review-time') return getSafePickerDateValue(draft?.reviewAt);
+                                    if (showDatePicker === 'recurrence-end') {
+                                        return getSafePickerDateValue(parseRRuleString(draft?.recurrenceRRule ?? '').until);
+                                    }
+                                    if (showDatePicker === 'due-time') return pendingDueDate ?? getSafePickerDateValue(draft?.dueDate);
+                                    return getSafePickerDateValue(draft?.dueDate);
+                                })()}
+                                mode={
+                                    showDatePicker === 'start-time' || showDatePicker === 'due-time' || showDatePicker === 'review-time'
+                                        ? 'time'
+                                        : 'date'
+                                }
+                                display="default"
+                                onChange={onDateChange}
+                            />
+                        </View>
+                    )}
+                    </ChecklistDragScrollContext.Provider>
+                </ScrollView>
+            </KeyboardAvoidingView>
+        </View>
+    );
+}
+
+export const TaskEditFormTab = React.memo(TaskEditFormTabComponent);

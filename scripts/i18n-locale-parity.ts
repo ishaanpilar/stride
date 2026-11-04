@@ -1,0 +1,186 @@
+#!/usr/bin/env bun
+import { readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { en } from '../packages/core/src/i18n/locales/en';
+import { LOCALES, isEnglishResidueChecked, isMixedEnglishChecked } from '../packages/core/src/i18n/i18n-locales';
+import {
+    englishResidueWords,
+    hasTranslatableEnglishText,
+    hasMixedEnglishText,
+    isAllowedEnglishMirrorKey,
+    isAllowedEnglishResidueKey,
+    missingSlashCommandTokens,
+    quotedEnglishLabels,
+} from '../packages/core/src/i18n/locale-quality';
+import { i18nTemplateSlots } from '../packages/core/src/i18n/index';
+
+type Dictionary = Record<string, string>;
+
+const englishKeys = Object.keys(en).sort();
+const englishKeySet = new Set(englishKeys);
+
+
+const localeTargets = Object.entries(LOCALES).map(([locale, descriptor]) => ({
+    locale,
+    path: `packages/core/src/i18n/locales/${descriptor.file}.ts`,
+
+    fullParity: descriptor.translatedKeyFloor === 'all',
+    mixedEnglishChecked: isMixedEnglishChecked(descriptor, englishKeys.length),
+    englishResidueChecked: isEnglishResidueChecked(descriptor),
+}));
+
+const args = new Set(process.argv.slice(2));
+const shouldFix = args.has('--fix');
+const shouldCheck = args.has('--check') || !shouldFix;
+
+function resolveDictionary(moduleExports: Record<string, unknown>): Dictionary {
+    if (moduleExports.zhHans && typeof moduleExports.zhHans === 'object') return moduleExports.zhHans as Dictionary;
+    if (moduleExports.zhHant && typeof moduleExports.zhHant === 'object') return moduleExports.zhHant as Dictionary;
+    const overrideEntry = Object.entries(moduleExports).find(([name, value]) => (
+        name.endsWith('Overrides') && value && typeof value === 'object'
+    ));
+    if (overrideEntry) return overrideEntry[1] as Dictionary;
+    throw new Error('Could not find a locale dictionary export.');
+}
+
+
+const STARTER_SEED_KEY_PREFIX = 'starter.';
+const STARTER_SEED_STRINGS_PATH = 'packages/core/src/i18n/starter-seed-strings.ts';
+const starterSeedKeys = englishKeys.filter((key) => key.startsWith(STARTER_SEED_KEY_PREFIX));
+
+function renderStarterSeedStrings(starterStringsByLocale: Map<string, Dictionary>): string {
+    const renderLocale = (strings: Dictionary) => starterSeedKeys
+        .map((key) => `        ${JSON.stringify(key)}: ${JSON.stringify(strings[key])},`)
+        .join('\n');
+    const blocks: Array<[string, Dictionary]> = [['en', en], ...starterStringsByLocale];
+    return [
+        `import type { Language } from './i18n-types';`,
+        ``,
+        `export const STARTER_SEED_STRINGS: Record<Language, Record<string, string>> = {`,
+        ...blocks.map(([locale, strings]) => `    ${JSON.stringify(locale)}: {\n${renderLocale(strings)}\n    },`),
+        `};`,
+        ``,
+    ].join('\n');
+}
+
+function removeKeys(filePath: string, keys: Set<string>) {
+    const entryPattern = /^\s*'([^']+)':\s*/;
+    const source = readFileSync(filePath, 'utf8');
+    const nextLines: string[] = [];
+    for (const line of source.split('\n')) {
+        const match = line.match(entryPattern);
+        if (match && keys.has(match[1])) {
+            if (nextLines.at(-1)?.trim() === '// English fallbacks keep shipped locale files in key parity.') {
+                nextLines.pop();
+            }
+            continue;
+        }
+        nextLines.push(line);
+    }
+    writeFileSync(filePath, nextLines.join('\n'));
+}
+
+let problemCount = 0;
+const starterStringsByLocale = new Map<string, Dictionary>();
+
+for (const target of localeTargets) {
+    const modulePath = join('..', target.path);
+    const moduleExports = await import(modulePath);
+    const dictionary = resolveDictionary(moduleExports);
+    const localeKeys = new Set(Object.keys(dictionary));
+
+    const unknownKeys = Object.keys(dictionary).filter((key) => !englishKeySet.has(key));
+    const mirroredEnglishKeys = Object.keys(dictionary)
+        .filter((key) => dictionary[key] === en[key]
+            && hasTranslatableEnglishText(en[key])
+            && !isAllowedEnglishMirrorKey(target.locale, key));
+    const mixedEnglishKeys = target.mixedEnglishChecked
+        ? Object.keys(dictionary).filter((key) => hasMixedEnglishText(target.locale, key, dictionary[key], en[key]))
+        : [];
+
+
+    const englishResidueKeys = target.englishResidueChecked
+        ? Object.keys(dictionary).filter((key) => (
+            key in en
+            && !isAllowedEnglishResidueKey(target.locale, key)
+            && englishResidueWords(target.locale, dictionary[key], en[key]).length > 0
+        ))
+        : [];
+    const slotMismatchKeys = Object.keys(dictionary).filter((key) => (
+        key in en && i18nTemplateSlots(dictionary[key]).join(',') !== i18nTemplateSlots(en[key]).join(',')
+    ));
+
+
+    const slashTokenKeys = Object.keys(dictionary).filter((key) => (
+        key in en && missingSlashCommandTokens(dictionary[key], en[key]).length > 0
+    ));
+    const quotedLabelKeys = Object.keys(dictionary).filter((key) => (
+        key in en && quotedEnglishLabels(key, dictionary[key], en, dictionary).length > 0
+    ));
+    const missingKeys = target.fullParity
+        ? englishKeys.filter((key) => !localeKeys.has(key))
+        : [];
+    const fixableKeys = new Set([...unknownKeys, ...mirroredEnglishKeys, ...mixedEnglishKeys]);
+
+
+    starterStringsByLocale.set(target.locale, Object.fromEntries(starterSeedKeys.map((key) => [
+        key,
+        (shouldFix && fixableKeys.has(key) ? undefined : dictionary[key]) ?? en[key],
+    ])));
+
+    if (missingKeys.length === 0 && unknownKeys.length === 0 && mirroredEnglishKeys.length === 0 && mixedEnglishKeys.length === 0 && slotMismatchKeys.length === 0 && englishResidueKeys.length === 0 && slashTokenKeys.length === 0 && quotedLabelKeys.length === 0) {
+        console.log(`${target.locale}: ok`);
+        continue;
+    }
+
+    problemCount += missingKeys.length + unknownKeys.length + mirroredEnglishKeys.length + mixedEnglishKeys.length + slotMismatchKeys.length + englishResidueKeys.length + slashTokenKeys.length + quotedLabelKeys.length;
+    if (missingKeys.length > 0) console.log(`${target.locale}: missing ${missingKeys.length} keys`);
+    if (unknownKeys.length > 0) console.log(`${target.locale}: unknown ${unknownKeys.length} keys`);
+    if (mirroredEnglishKeys.length > 0) console.log(`${target.locale}: mirrored English ${mirroredEnglishKeys.length} keys`);
+    if (mixedEnglishKeys.length > 0) console.log(`${target.locale}: mixed English ${mixedEnglishKeys.length} keys`);
+    if (slotMismatchKeys.length > 0) console.log(`${target.locale}: placeholder slot mismatch ${slotMismatchKeys.length} keys`);
+    if (englishResidueKeys.length > 0) console.log(`${target.locale}: word-substituted English ${englishResidueKeys.length} keys`);
+    if (slashTokenKeys.length > 0) console.log(`${target.locale}: missing slash command tokens ${slashTokenKeys.length} keys`);
+    if (quotedLabelKeys.length > 0) console.log(`${target.locale}: quoted English button labels ${quotedLabelKeys.length} keys`);
+    if (shouldFix) {
+        if (missingKeys.length > 0) {
+            console.log(`${target.locale}: missing full-parity translations require manual translation`);
+        }
+        if (fixableKeys.size > 0) {
+            removeKeys(target.path, fixableKeys);
+            console.log(`${target.locale}: removed stale override entries`);
+        }
+    } else if (shouldCheck) {
+        for (const [label, keys] of [
+            ['missing', missingKeys],
+            ['unknown', unknownKeys],
+            ['mirrored', mirroredEnglishKeys],
+            ['mixed English', mixedEnglishKeys],
+            ['placeholder slots', slotMismatchKeys],
+            ['substituted English', englishResidueKeys],
+            ['slash tokens', slashTokenKeys],
+            ['quoted labels', quotedLabelKeys],
+        ] as const) {
+            for (const key of keys.slice(0, 20)) {
+                console.log(`  - ${label}: ${key}`);
+            }
+            if (keys.length > 20) {
+                console.log(`  ...and ${keys.length - 20} more ${label}`);
+            }
+        }
+    }
+}
+
+const starterSeedStrings = renderStarterSeedStrings(starterStringsByLocale);
+if (shouldFix) {
+    writeFileSync(STARTER_SEED_STRINGS_PATH, starterSeedStrings);
+    console.log(`${STARTER_SEED_STRINGS_PATH}: regenerated`);
+} else if (readFileSync(STARTER_SEED_STRINGS_PATH, 'utf8') !== starterSeedStrings) {
+    problemCount += 1;
+    console.log(`${STARTER_SEED_STRINGS_PATH}: out of date — run bun run scripts/i18n-locale-parity.ts --fix`);
+}
+
+if (problemCount > 0 && shouldCheck && !shouldFix) {
+    console.error(`Locale parity failed: ${problemCount} problems. Run bun run scripts/i18n-locale-parity.ts --fix to remove stale override entries.`);
+    process.exit(1);
+}

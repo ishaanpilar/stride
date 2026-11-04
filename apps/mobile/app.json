@@ -1,0 +1,201 @@
+{
+  "expo": {
+    "name": "Stride",
+    "slug": "stride",
+    "version": "1.3.7",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "stride",
+    "userInterfaceStyle": "automatic",
+    "jsEngine": "hermes",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ishaanpilar.stride",
+      "infoPlist": {
+        "CFBundleLocalizations": [
+          "en", "vi", "zh-Hans", "zh-Hant", "es", "hu", "uk", "hi", "ar", "de", "ru", "ja",
+          "fr", "pt", "pl", "cs", "ko", "it", "tr", "nl", "fa", "sv", "da"
+        ],
+        "NSMicrophoneUsageDescription": "Stride uses the microphone to capture voice notes.",
+        "ITSAppUsesNonExemptEncryption": false,
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "UIFileSharingEnabled": true,
+        "UIBackgroundModes": [
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.expo.modules.backgroundtask.processing"
+        ]
+      },
+      "privacyManifests": {
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "C617.1",
+              "3B52.1"
+            ]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "1C8F.1"
+            ]
+          }
+        ]
+      },
+      "buildNumber": "4"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "versionCode": 159,
+      "package": "com.ishaanpilar.stride",
+      "permissions": [
+        "RECORD_AUDIO",
+        "POST_NOTIFICATIONS",
+        "SCHEDULE_EXACT_ALARM",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
+      ],
+      "blockedPermissions": [
+        "android.permission.CAMERA",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "react-native-quick-crypto",
+      "./plugins/ios-cloudkit-sync",
+      "./plugins/ios-fabric-unmount-guard",
+      "./plugins/expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 132,
+          "resizeMode": "contain",
+          "backgroundColor": "#f4f6fb",
+          "dark": {
+            "backgroundColor": "#0b1020"
+          }
+        }
+      ],
+      [
+        "./plugins/android-widget",
+        {
+          "label": "Stride",
+          "description": "Inbox, focus, and quick capture",
+          "minWidth": "120dp",
+          "minHeight": "120dp",
+          "minResizeWidth": "120dp",
+          "minResizeHeight": "120dp",
+          "targetCellWidth": 3,
+          "targetCellHeight": 2,
+          "resizeMode": "horizontal|vertical",
+          "previewImage": "./assets/images/widget-tasks-preview.png"
+        }
+      ],
+      [
+        "./plugins/abi-splits",
+        {
+          "architectures": [
+            "arm64-v8a",
+            "armeabi-v7a"
+          ],
+          "enableMinifyInReleaseBuilds": true,
+          "enableShrinkResourcesInReleaseBuilds": true,
+          "useLegacyPackaging": true
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "iosAppGroupIdentifier": "group.com.ishaanpilar.stride",
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 6,
+            "NSExtensionActivationSupportsMovieWithMaxCount": 6,
+            "NSExtensionActivationSupportsFileWithMaxCount": 6
+          },
+          "androidIntentFilters": [
+            "text/*",
+            "image/*",
+            "audio/*",
+            "video/*",
+            "application/*"
+          ],
+          "androidMultiIntentFilters": [
+            "image/*",
+            "audio/*",
+            "video/*",
+            "application/*"
+          ]
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24,
+            "extraProguardRules": "# expo-modules-core names the headless app loader only in an AndroidManifest meta-data value,\n# so R8 renames the class and the Class.forName in AppLoaderProvider throws\n# ClassNotFoundException. Without this rule expo-background-task tasks never run in a minified\n# release build: the background sync worker fails at startup and then hangs.\n-keep class expo.modules.adapters.react.apploader.RNHeadlessAppLoader { *; }\n"
+          }
+        }
+      ],
+      "./plugins/ios-widgets-and-shortcuts",
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Stride needs calendar access to show your events alongside tasks.",
+          "remindersPermission": "Stride needs reminders access to import your chosen Apple Reminders capture list into Inbox."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Stride uses Face ID to unlock the app when app lock is enabled."
+        }
+      ],
+      "expo-secure-store",
+      "./plugins/android-app-shortcuts",
+      "./plugins/android-quick-settings-tile",
+      "./plugins/android-legacy-text-metrics",
+      "./plugins/android-manifest-fixes",
+      "./plugins/android-monochrome-icon",
+      "./plugins/android-network-security-config",
+      "./plugins/android-system-bars",
+      "./plugins/android-startup-trace",
+      "./plugins/android-font-scale-layout",
+      "./plugins/patch-alarm-notification-gradle",
+      "./plugins/patch-expo-background-task",
+      "./plugins/patch-expo-document-picker"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "__STRIDE_EAS_PROJECT_ID__"
+      }
+    },
+    "owner": "ishaanpilar"
+  }
+}

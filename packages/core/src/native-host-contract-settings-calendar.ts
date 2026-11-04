@@ -1,0 +1,1257 @@
+
+
+
+import {
+    CALENDAR_PUSH_CALENDAR_ID_KEY,
+    CALENDAR_PUSH_CREATION_INTENT_KEY,
+    CALENDAR_PUSH_PENDING_KEY,
+    CalendarPushOwnershipChangedError,
+    createCalendarPushService,
+    DEFAULT_CALENDAR_PUSH_COLOR,
+    matchesCalendarPushCreationIntentRevision,
+    normalizeCalendarPushColor,
+    type CalendarPushService,
+    type CalendarPushServiceHost,
+    type CalendarPushTargetCalendar,
+    type DeviceCalendarWriter,
+} from './calendar-push-service';
+import {
+    addCalendarFeed,
+    addCalendarFile,
+    buildCalendarAreaChoice,
+    buildCalendarPushTargetChoices,
+    calendarSettingsToasts,
+    getCalendarFeedColorOptions,
+    getCalendarPushColorDescription,
+    getCalendarPushColorLabel,
+    getCalendarPushColorOptions,
+    getCalendarTestRange,
+    keptPushTargetEvents,
+    maskCalendarFeedUrl,
+    nextDeviceCalendarSelection,
+    planCalendarPushColor,
+    pruneDeviceCalendarSelection,
+    removeCalendarFeed,
+    resolveCalendarFeedsOnLoad,
+    setCalendarFeedColor,
+    setCalendarFeedEnabled,
+    toggleCalendarAreaId,
+    type CalendarSettingsToast,
+} from './calendar-settings-model';
+import { getDocsGuideUrl } from './docs-guidance';
+import {
+    createExternalCalendarFeeds,
+    decodeExternalCalendarSubscriptions,
+    decodeSystemCalendarSettings,
+    EXTERNAL_CALENDARS_KEY,
+    EXTERNAL_CALENDAR_REFRESH_THROTTLE_MS,
+    normalizeExternalCalendarSubscriptions,
+    normalizeSystemCalendarSettings,
+    SYSTEM_CALENDAR_SETTINGS_KEY,
+    type DeviceCalendarReader,
+    type ExternalCalendarFeeds,
+    type ExternalCalendarFetchOptions,
+    type SystemCalendarInfo,
+    type SystemCalendarPermissionStatus,
+    type SystemCalendarSettings,
+} from './external-calendar-feeds';
+import { resolveI18nText, type I18nTemplateValues } from './i18n';
+import type { Language } from './i18n/i18n-types';
+import { taskEditValuesEqual } from './json-value-equality';
+import type { ExternalCalendarSubscription } from './ics';
+import type { AppSettings, Area } from './types';
+import { NATIVE_HOST_CONTRACT_VERSION, type NativeHostResult } from './native-host-contract';
+import type { NativeCalendarFeed } from './native-host-contract-calendar';
+import { fail, isObjectRecord, isText } from './native-host-contract-menu-views';
+import { createNativeRequestReceipts, runStoreWrite, settleWrite, type NativeUnsavedWrite } from './native-request-receipts';
+import { getStorageAdapter, useTaskStore } from './store';
+import { isSandboxMode } from './sandbox';
+import { themeDescriptor } from './theme-scheme';
+import { deterministicHash128Hex } from './uuid';
+
+type Translate = (key: string) => string;
+
+export type NativeCalendarPushLifecycle = {
+    start(): Promise<boolean>;
+    stop(): void;
+    run(ids?: readonly string[]): Promise<void>;
+};
+
+function boundedFeedError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.length <= 2000 ? message : 'Calendar events could not be read';
+}
+
+
+export type NativeCalendarHost = {
+    platform: { os: 'android' | 'ios' };
+
+    storage: CalendarPushServiceHost['storage'] & {
+
+        multiGet?(names: readonly string[]): Promise<[string, string | null][]>;
+    };
+
+    repairFeedDeviceCopyOnOpen?: boolean;
+    fetch: typeof fetch;
+
+    readLocalFile(url: string, signal?: AbortSignal): Promise<string>;
+
+    calendars: DeviceCalendarReader & Partial<Omit<DeviceCalendarWriter, keyof DeviceCalendarReader>>;
+
+    syncEntries?: CalendarPushServiceHost['syncEntries'];
+
+    requestPartialSync?: CalendarPushServiceHost['requestPartialSync'];
+
+    bindPushLifecycle?: (lifecycle: NativeCalendarPushLifecycle) => void;
+
+    log: CalendarPushServiceHost['log'];
+};
+
+export type CalendarSettingsDeps = {
+    readiness: () => NativeHostResult<null>;
+    save: () => Promise<NativeHostResult<null>>;
+    t: () => Translate;
+    language: () => Language;
+    requestIdPattern: RegExp;
+    host: () => NativeCalendarHost | null;
+};
+
+export type NativeCalendarToast = { title: string; message: string; tone: CalendarSettingsToast['tone']; durationMs: number | null };
+
+type Permission = SystemCalendarPermissionStatus;
+
+export type NativeCalendarSettingsEdit =
+    | { type: 'push'; before: boolean; enabled: boolean }
+    | { type: 'pushTarget'; before: string | null; calendarId: string | null }
+    | { type: 'pushColor'; before: string; color: string }
+    | { type: 'deleteStrideCalendar'; calendarId: string | null; creationIntentRevision?: string | null }
+    | { type: 'deviceCalendars'; before: SystemCalendarSettings; value: SystemCalendarSettings }
+    | { type: 'feed'; feedId: string; field: 'enabled'; value: boolean; revision: string }
+    | { type: 'feed'; feedId: string; field: 'color'; value: string | null; revision: string }
+    | { type: 'feed'; feedId: string; field: 'areaIds'; value: string[]; revision: string }
+    | { type: 'removeFeed'; feedId: string; revision: string };
+
+export type CalendarSubscriptionSettingsModel = Pick<NativeCalendarSettings['feeds'],
+    'title' | 'description' | 'revision' | 'listTitle' | 'items'>;
+
+
+export function buildCalendarSubscriptionSettingsModel(feeds: readonly ExternalCalendarSubscription[], revision: string,
+    options: { t: Translate; areas: readonly Area[]; theme?: AppSettings['theme'] }): CalendarSubscriptionSettingsModel {
+    const { t, areas } = options;
+    const themePreset = themeDescriptor(options.theme)?.statusPreset ?? 'default';
+    return {
+        title: resolveI18nText(t, 'settings.calendarMobile.icsSubscriptions'),
+        description: t('settings.calendarDesc'), revision,
+        listTitle: feeds.length > 0 ? t('settings.externalCalendars') : null,
+        items: feeds.map((feed) => {
+            const area = buildCalendarAreaChoice(feed.areaIds ?? [], areas, t);
+            return {
+                id: feed.id, name: feed.name, url: maskCalendarFeedUrl(feed.url), enabled: feed.enabled,
+                toggle: { type: 'feed', feedId: feed.id, field: 'enabled', value: !feed.enabled, revision },
+                areas: area && { key: feed.id, label: area.label, options: area.options.map((option) => ({ ...option,
+                    edit: { type: 'feed', feedId: feed.id, field: 'areaIds', value: toggleCalendarAreaId(feed.areaIds ?? [], option.areaId), revision } as NativeCalendarSettingsEdit })) },
+                colors: getCalendarFeedColorOptions(feed, t, themePreset).map((option) => ({ ...option,
+                    edit: setCalendarFeedColor([feed], feed.id, option.color ?? undefined)
+                        ? { type: 'feed', feedId: feed.id, field: 'color', value: option.color, revision } as NativeCalendarSettingsEdit : null })),
+                remove: { label: t('settings.externalCalendarRemove'), edit: { type: 'removeFeed', feedId: feed.id, revision } },
+            };
+        }),
+    };
+}
+
+
+export type NativeCalendarFeedAdd =
+    | { requestId: string; name: string; url: string; revision: string }
+    | { requestId: string; name: string; fileName: string | null; uri: string; revision: string };
+
+function isFeedAdd(input: unknown): input is NativeCalendarFeedAdd {
+    if (!isObjectRecord(input) || typeof input.requestId !== 'string' || !isText(input.name, 500) || !isText(input.revision, 200)) return false;
+    const keys = Object.keys(input).sort().join(',');
+    if (keys === 'name,requestId,revision,url') return isText(input.url, 4000) && input.url.trim().length > 0;
+    return keys === 'fileName,name,requestId,revision,uri' && (input.fileName === null || isText(input.fileName, 500))
+        && isText(input.uri, 4000) && input.uri.trim().length > 0;
+}
+
+
+export type NativeCalendarAreaChoice = {
+    key: string;
+    label: string;
+    options: { areaId: string; label: string; accessibilityLabel: string; checked: boolean; edit: NativeCalendarSettingsEdit }[];
+};
+
+export type NativeCalendarSettings = {
+    version: typeof NATIVE_HOST_CONTRACT_VERSION;
+    title: string;
+
+    push: null | {
+        title: string;
+        description: string;
+        enabled: boolean;
+
+        toggle: NativeCalendarSettingsEdit;
+
+        denied: string | null;
+        target: null | {
+            title: string;
+            description: string;
+            localHint: string | null;
+            sharedAccountHint: string | null;
+
+            loading: boolean;
+            options: { key: string; name: string; description: string; color: string | null; selected: boolean; accessibilityLabel: string; edit: NativeCalendarSettingsEdit }[];
+            colors: null | {
+                title: string;
+                description: string;
+                options: { color: string; selected: boolean; accessibilityLabel: string; edit: NativeCalendarSettingsEdit }[];
+            };
+            refresh: { label: string; description: string };
+            delete: {
+                label: string;
+                description: string;
+                busy: boolean;
+                confirm: { title: string; message: string; cancel: string; confirm: string };
+                edit: NativeCalendarSettingsEdit;
+            };
+        };
+    };
+    device: {
+        title: string;
+        description: string;
+        enabled: boolean;
+        toggle: NativeCalendarSettingsEdit;
+
+        access: null | { text: string; grantLabel: string };
+        loading: boolean;
+
+        empty: string | null;
+        calendars: { id: string; name: string; subtitle: string; selected: boolean; edit: NativeCalendarSettingsEdit | null; areas: NativeCalendarAreaChoice | null }[];
+    };
+    feeds: {
+        title: string;
+        description: string;
+        guide: { title: string; description: string; url: string };
+        name: { label: string; placeholder: string };
+        url: { label: string; placeholder: string };
+
+        add: { label: string; enabled: boolean };
+        test: { label: string };
+
+        chooseFile: { label: string };
+
+        revision: string;
+
+        listTitle: string | null;
+        items: {
+            id: string;
+            name: string;
+
+            url: string;
+            enabled: boolean;
+            toggle: NativeCalendarSettingsEdit;
+            areas: NativeCalendarAreaChoice | null;
+            colors: { color: string | null; fill: string | null; selected: boolean; accessibilityLabel: string; edit: NativeCalendarSettingsEdit | null }[];
+            remove: { label: string; edit: NativeCalendarSettingsEdit };
+        }[];
+    };
+};
+
+export type NativeCalendarCommandResult = {
+    changed: boolean;
+    toasts: NativeCalendarToast[];
+
+    open: 'push' | 'device' | null;
+
+    clearDraft: boolean;
+
+
+    requestAccess?: true;
+};
+
+
+export const NATIVE_CALENDAR_FEED_SLOTS = ['calendar', 'weeklyReview', 'dailyReview'] as const;
+export type NativeCalendarFeedSlot = typeof NATIVE_CALENDAR_FEED_SLOTS[number];
+
+type Session = {
+    host: NativeCalendarHost;
+    push: {
+        enabled: boolean;
+        permission: Permission;
+        targetId: string | null;
+        targets: CalendarPushTargetCalendar[];
+        color: string;
+        loading: boolean;
+        deleting: boolean;
+    };
+    device: { settings: SystemCalendarSettings; permission: Permission; calendars: SystemCalendarInfo[]; loading: boolean };
+    storedFeeds: ExternalCalendarSubscription[];
+};
+
+type Draft = { name?: string; url?: string };
+
+const DEVICE_CALENDAR_SOURCE = (calendarId: string) => `system:${calendarId}`;
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+
+export function isSystemCalendarSettings(value: unknown): value is SystemCalendarSettings {
+    if (!isObjectRecord(value) || typeof value.enabled !== 'boolean' || typeof value.selectAll !== 'boolean'
+        || !Array.isArray(value.selectedCalendarIds) || !value.selectedCalendarIds.every((id) => isText(id, 500))) return false;
+    const areas = value.areaIdsByCalendar;
+    return areas === undefined || (isObjectRecord(areas)
+        && Object.values(areas).every((ids) => Array.isArray(ids) && ids.every((id) => isText(id, 200))));
+}
+
+export type NativeDeviceCalendarSettingsEdit = Extract<NativeCalendarSettingsEdit, { type: 'deviceCalendars' }>;
+
+
+export function planDeviceCalendarSetting(stored: SystemCalendarSettings, edit: NativeDeviceCalendarSettingsEdit): NativeHostResult<{
+    settings: SystemCalendarSettings; result: NativeCalendarCommandResult;
+}> {
+    const current = normalizeSystemCalendarSettings(stored);
+    const settings = normalizeSystemCalendarSettings(edit.value);
+    const changed = !taskEditValuesEqual(current, settings);
+    if (changed && !taskEditValuesEqual(current, normalizeSystemCalendarSettings(edit.before))) {
+        return fail('STALE_REVISION', 'The device calendar choices changed since the view showed them; read the view again');
+    }
+    return { ok: true, value: { settings, result: {
+        changed, toasts: [], open: changed && settings.enabled && !current.enabled ? 'device' : null, clearDraft: false,
+    } } };
+}
+
+function isEdit(edit: unknown): edit is NativeCalendarSettingsEdit {
+    if (!isObjectRecord(edit)) return false;
+    const keys = Object.keys(edit).sort().join(',');
+    switch (edit.type) {
+        case 'push': return keys === 'before,enabled,type' && typeof edit.before === 'boolean' && typeof edit.enabled === 'boolean';
+        case 'pushTarget': return keys === 'before,calendarId,type'
+            && (edit.before === null || isText(edit.before, 500)) && (edit.calendarId === null || isText(edit.calendarId, 500));
+        case 'pushColor': return keys === 'before,color,type' && isText(edit.before, 20) && isText(edit.color, 20);
+        case 'deleteStrideCalendar': return (keys === 'calendarId,type' || keys === 'calendarId,creationIntentRevision,type')
+            && (edit.calendarId === null || isText(edit.calendarId, 500))
+            && (!('creationIntentRevision' in edit) || edit.creationIntentRevision === null
+                || (typeof edit.creationIntentRevision === 'string' && /^[0-9a-f]{32}$/.test(edit.creationIntentRevision)));
+        case 'deviceCalendars': return keys === 'before,type,value' && isSystemCalendarSettings(edit.before) && isSystemCalendarSettings(edit.value);
+        case 'removeFeed': return keys === 'feedId,revision,type' && isText(edit.revision, 200) && isText(edit.feedId, 500);
+        case 'feed': {
+            if (keys !== 'feedId,field,revision,type,value' || !isText(edit.revision, 200) || !isText(edit.feedId, 500)) return false;
+            if (edit.field === 'enabled') return typeof edit.value === 'boolean';
+            if (edit.field === 'color') return edit.value === null || isText(edit.value, 20);
+            if (edit.field === 'areaIds') return Array.isArray(edit.value) && edit.value.length <= 500 && edit.value.every((id) => isText(id, 200));
+            return false;
+        }
+        default: return false;
+    }
+}
+
+const unavailable = (what: string) => async (): Promise<never> => {
+    throw new Error(`${what} is not available on this host yet`);
+};
+
+
+const hasCalendarPush = (host: NativeCalendarHost): boolean => Boolean(host.syncEntries)
+    && (['getSources', 'createCalendar', 'deleteCalendar', 'createEvent', 'updateEvent', 'deleteEvent'] as const)
+        .every((name) => typeof host.calendars[name] === 'function');
+
+export function createCalendarSettingsMethods(deps: CalendarSettingsDeps) {
+    const durableSave = async (): Promise<NativeHostResult<null>> => {
+        try {
+            if (useTaskStore.getState().persistenceFailure) await useTaskStore.getState().retryPersistence();
+        } catch (error) {
+            return fail('SAVE_FAILED', error instanceof Error ? error.message : String(error));
+        }
+        return deps.save();
+    };
+    const receipts = createNativeRequestReceipts({ save: durableSave });
+    const toasts: NativeCalendarToast[] = [];
+    let session: Session | null = null;
+    let bound: { host: NativeCalendarHost; feeds: ExternalCalendarFeeds; push: CalendarPushService } | null = null;
+    type FeedLoad = Promise<NativeHostResult<NativeCalendarFeed>>;
+    const feedLoads = new Map<NativeCalendarFeedSlot, {
+        key: string; controller: AbortController; running: FeedLoad | null; last: FeedLoad; refreshedAt: number;
+        watch: (signal?: AbortSignal) => void;
+    }>();
+    type SourceOwner = { host: NativeCalendarHost; adapter: ReturnType<typeof getStorageAdapter>; canonical: string | null };
+    type SourceCells = { subscriptions: string | null; system: string | null };
+    type Sources = NonNullable<ExternalCalendarFetchOptions['sources']>;
+    type Admission = SourceOwner & { base: string; acceptedOrder: number; acceptedKey: string | null };
+    const feedAdmissions = new Map<NativeCalendarFeedSlot, Admission>();
+    let admissionOrder = 0;
+
+    const canonicalSubscriptions = (): string | null => {
+        const subscriptions = useTaskStore.getState().settings.externalCalendars;
+        return Array.isArray(subscriptions) ? JSON.stringify(subscriptions) : null;
+    };
+    const sourceOwner = (host: NativeCalendarHost): SourceOwner => ({ host, adapter: getStorageAdapter(), canonical: canonicalSubscriptions() });
+    const ownsSources = (owner: SourceOwner): boolean => {
+        try {
+            return deps.readiness().ok && deps.host() === owner.host && getStorageAdapter() === owner.adapter
+                && canonicalSubscriptions() === owner.canonical && !isSandboxMode();
+        } catch { return false; }
+    };
+    const readSourceCells = async (owner: SourceOwner): Promise<SourceCells> => {
+
+        const names = owner.canonical === null ? [EXTERNAL_CALENDARS_KEY, SYSTEM_CALENDAR_SETTINGS_KEY] : [SYSTEM_CALENDAR_SETTINGS_KEY];
+        const rows = owner.host.storage.multiGet
+            ? await owner.host.storage.multiGet(names)
+            : await Promise.all(names.map(async (name): Promise<[string, string | null]> => [name, await owner.host.storage.getItem(name)]));
+        if (!Array.isArray(rows) || rows.length !== names.length || rows.some((row, index) => !Array.isArray(row)
+            || row.length !== 2 || row[0] !== names[index] || (row[1] !== null && typeof row[1] !== 'string'))) {
+            throw new Error('Calendar sources could not be read');
+        }
+        return { subscriptions: owner.canonical === null ? rows[0][1] : null, system: rows[rows.length - 1][1] };
+    };
+    const sameCells = (left: SourceCells, right: SourceCells) => left.subscriptions === right.subscriptions && left.system === right.system;
+    const freezeSources = (owner: SourceOwner, cells: SourceCells): Sources => {
+
+        const subscriptions = owner.canonical === null
+            ? decodeExternalCalendarSubscriptions(cells.subscriptions)
+            : normalizeExternalCalendarSubscriptions(JSON.parse(owner.canonical) as ExternalCalendarSubscription[]);
+        return { subscriptions, systemSettings: decodeSystemCalendarSettings(cells.system) };
+    };
+    const staleLoad = () => fail('STALE_REVISION', 'A newer load for this screen replaced it');
+    const sourceReadFailed = (): NativeHostResult<NativeCalendarFeed> => ({ ok: true, value: { status: 'error', message: 'Calendar sources could not be read' } });
+    const logSource = (owner: SourceOwner) => {
+        if (owner.host.platform.os !== 'ios') return;
+        try {
+            owner.host.log.info('Native iOS calendar source selected', { scope: 'calendar', extra: {
+                releaseCheck: 'v1.3.5/ios-calendar-source', outcome: owner.canonical === null ? 'legacy' : 'canonical',
+            } });
+        } catch {                                       }
+    };
+
+
+    const device = (host: NativeCalendarHost) => {
+        if (bound?.host === host) return bound;
+        const syncEntries = host.syncEntries ?? {
+            ensureReady: unavailable('Calendar push'),
+            get: async () => null,
+            upsert: unavailable('Calendar push'),
+            delete: unavailable('Calendar push'),
+            getAll: async () => [],
+        };
+        const calendars = host.calendars;
+        bound = {
+            host,
+            feeds: createExternalCalendarFeeds({
+                platform: () => host.platform.os,
+                storage: host.storage,
+                fetch: host.fetch,
+                readLocalFile: (url, signal) => host.readLocalFile(url, signal),
+                calendars,
+                getAllCalendarSyncEntries: (platform) => syncEntries.getAll(platform),
+                logInfo: (message, context) => host.log.info(message, context),
+                syncedSubscriptions: () => useTaskStore.getState().settings.externalCalendars,
+            }),
+            push: createCalendarPushService({
+                platform: host.platform.os,
+                os: () => host.platform.os,
+                storage: host.storage,
+                calendars: {
+                    getPermissions: () => calendars.getPermissions(),
+                    requestPermissions: () => calendars.requestPermissions(),
+                    getCalendars: () => calendars.getCalendars(),
+                    getEvents: (ids, start, end) => calendars.getEvents(ids, start, end),
+                    getSources: calendars.getSources ? () => calendars.getSources!() : unavailable('Calendar push'),
+                    createCalendar: calendars.createCalendar ? (details) => calendars.createCalendar!(details) : unavailable('Calendar push'),
+                    ...(calendars.updateCalendar ? { updateCalendar: (id: string, details: { color: string }) => calendars.updateCalendar!(id, details) } : {}),
+                    deleteCalendar: calendars.deleteCalendar ? (id) => calendars.deleteCalendar!(id) : unavailable('Calendar push'),
+                    createEvent: calendars.createEvent ? (id, details, context) => calendars.createEvent!(id, details, context) : unavailable('Calendar push'),
+                    updateEvent: calendars.updateEvent ? (id, details, context) => calendars.updateEvent!(id, details, context) : unavailable('Calendar push'),
+                    deleteEvent: calendars.deleteEvent ? (id, context) => calendars.deleteEvent!(id, context) : unavailable('Calendar push'),
+                },
+                syncEntries,
+                log: host.log,
+                store: useTaskStore,
+                requestPartialSync: host.requestPartialSync,
+            }),
+        };
+        return bound;
+    };
+
+    const translators = () => {
+        const t = deps.t();
+        const tr = (key: string, values?: I18nTemplateValues) => resolveI18nText(t, key, { values });
+        return { t, tr, toastsOf: calendarSettingsToasts(tr, t) };
+    };
+    const showToast = (toast: CalendarSettingsToast) => {
+        toasts.push({ title: toast.title, message: toast.message, tone: toast.tone, durationMs: toast.durationMs ?? null });
+    };
+    const takeToasts = (): NativeCalendarToast[] => toasts.splice(0, toasts.length);
+    const logError = (current: Session, error: unknown) => {
+        try {
+            current.host.log.error(error, { scope: 'calendar-settings', extra: {} });
+        } catch {                                      }
+    };
+
+
+    const shownFeeds = (current: Session): ExternalCalendarSubscription[] => {
+        const synced = useTaskStore.getState().settings.externalCalendars;
+        return Array.isArray(synced) ? synced : current.storedFeeds;
+    };
+
+
+    const feedsRevision = (current: Session): string => {
+        const settings = useTaskStore.getState().settings;
+        return Array.isArray(settings.externalCalendars)
+            ? `synced:${settings.syncPreferencesUpdatedAt?.externalCalendars ?? ''}`
+            : `device:${deterministicHash128Hex(JSON.stringify(current.storedFeeds))}`;
+    };
+
+
+    const loadPushTargets = async (current: Session) => {
+        const { push } = device(current.host);
+        current.push.loading = true;
+        try {
+            const [targetId, targets, color] = await Promise.all([
+                push.getCalendarPushTargetCalendarId(),
+                push.getCalendarPushTargetCalendars(),
+                push.getCalendarPushColor(),
+            ]);
+            current.push.targetId = targetId;
+            current.push.targets = targets;
+            current.push.color = color;
+        } catch (error) {
+            logError(current, error);
+            showToast(translators().toastsOf.loadWritableCalendarsFailed());
+        } finally {
+            current.push.loading = false;
+        }
+    };
+
+    const loadPush = async (current: Session) => {
+        const { push } = device(current.host);
+        const [enabled, permission] = await Promise.all([push.getCalendarPushEnabled(), push.getCalendarWritePermissionStatus()]);
+        current.push.enabled = enabled;
+        current.push.permission = permission;
+        if (permission === 'granted') {
+            await loadPushTargets(current);
+        } else {
+            current.push.targetId = await push.getCalendarPushTargetCalendarId();
+        }
+    };
+
+    const loadDevice = async (current: Session, requestAccess = false) => {
+        const { feeds } = device(current.host);
+        current.device.loading = true;
+        try {
+            const stored = await feeds.getSystemCalendarSettings();
+            current.device.settings = { ...stored, areaIdsByCalendar: stored.areaIdsByCalendar ?? {} };
+            const permission = requestAccess
+                ? await feeds.requestSystemCalendarPermission()
+                : await feeds.getSystemCalendarPermissionStatus();
+            current.device.permission = permission;
+            if (permission !== 'granted') {
+                current.device.calendars = [];
+                return;
+            }
+            const calendars = await feeds.getSystemCalendars();
+            current.device.calendars = calendars;
+            const filteredSelection = pruneDeviceCalendarSelection(stored, calendars.map((calendar) => calendar.id));
+            if (!filteredSelection) return;
+            current.device.settings = { ...current.device.settings, selectedCalendarIds: filteredSelection };
+            await feeds.saveSystemCalendarSettings({
+                enabled: stored.enabled,
+                selectAll: false,
+                selectedCalendarIds: filteredSelection,
+                areaIdsByCalendar: stored.areaIdsByCalendar,
+            });
+        } catch (error) {
+            logError(current, error);
+            showToast(translators().toastsOf.loadDeviceCalendarsFailed());
+        } finally {
+            current.device.loading = false;
+        }
+    };
+
+    const loadFeeds = async (current: Session) => {
+        const { feeds } = device(current.host);
+        try {
+            const stored = await feeds.getExternalCalendars();
+            current.storedFeeds = stored;
+            const shown = resolveCalendarFeedsOnLoad(useTaskStore.getState().settings.externalCalendars, stored);
+            if (shown.saveDeviceCopy && current.host.repairFeedDeviceCopyOnOpen !== false) await feeds.saveExternalCalendars(shown.feeds);
+        } catch (error) {
+            logError(current, error);
+            showToast(translators().toastsOf.loadSavedCalendarsFailed());
+        }
+    };
+
+
+    let shownCalendarId: string | null = null;
+    let shownCreationIntentRevision: string | null = null;
+
+    const buildView = (current: Session, draft: Draft): NativeCalendarSettings => {
+        const { t, tr } = translators();
+        const settings = useTaskStore.getState().settings;
+        const areas = useTaskStore.getState().areas;
+        const { push } = current;
+        const choices = buildCalendarPushTargetChoices({ targets: push.targets, targetId: push.targetId, color: push.color, tr, platform: current.host.platform.os });
+        const deviceSettings = current.device.settings;
+        const deviceEdit = (value: SystemCalendarSettings): NativeCalendarSettingsEdit => ({
+            type: 'deviceCalendars',
+            before: deviceSettings,
+            value: { ...value, areaIdsByCalendar: value.areaIdsByCalendar ?? {} },
+        });
+        const areaChoice = (key: string, selectedIds: string[], edit: (areaId: string) => NativeCalendarSettingsEdit): NativeCalendarAreaChoice | null => {
+            const choice = buildCalendarAreaChoice(selectedIds, areas, t);
+            return choice && { key, label: choice.label, options: choice.options.map((option) => ({ ...option, edit: edit(option.areaId) })) };
+        };
+        const feedsShown = shownFeeds(current);
+        const revision = feedsRevision(current);
+        const url = draft.url ?? '';
+        const selectedDevice = new Set(deviceSettings.selectedCalendarIds);
+        return {
+            version: NATIVE_HOST_CONTRACT_VERSION,
+            title: t('settings.calendar'),
+
+            push: hasCalendarPush(current.host) ? {
+                title: tr('settings.calendarMobile.pushTasksToCalendar'),
+                description: tr('settings.calendarMobile.scheduledTasksAndTasksWithDueDatesAreAddedTo'),
+                enabled: push.enabled,
+                toggle: { type: 'push', before: push.enabled, enabled: !push.enabled },
+                denied: push.enabled && push.permission === 'denied' ? tr('settings.calendarMobile.calendarAccessWasDeniedPleaseGrantAccessInSettings') : null,
+                target: push.enabled && push.permission === 'granted' ? {
+                    title: tr('settings.calendarMobile.syncTarget'),
+                    description: tr('settings.calendarMobile.chooseAnAccountCalendarIfYourCalendarAppHidesLocal'),
+                    localHint: choices.localHint ? tr('settings.calendarMobile.localCalendarTargetsStayOnThisDeviceUseAGoogle') : null,
+                    sharedAccountHint: choices.sharedAccountHint ? tr('settings.calendarMobile.forASeparateColorInGoogleCalendarSelectADedicated') : null,
+                    loading: push.loading,
+                    options: choices.options.map((option) => ({
+                        key: option.id ?? 'stride-managed',
+                        name: option.name,
+                        description: option.description,
+                        color: option.color ?? null,
+                        selected: option.id === push.targetId,
+                        accessibilityLabel: `${option.name}. ${option.description}`,
+                        edit: { type: 'pushTarget', before: push.targetId, calendarId: option.id },
+                    })),
+                    colors: choices.showColors ? {
+                        title: getCalendarPushColorLabel(t),
+                        description: getCalendarPushColorDescription(t),
+                        options: getCalendarPushColorOptions(push.color, t).map((option) => ({
+                            ...option,
+                            edit: { type: 'pushColor', before: push.color, color: option.color },
+                        })),
+                    } : null,
+                    refresh: {
+                        label: tr('settings.calendarMobile.refreshCalendars'),
+                        description: tr('settings.calendarMobile.reloadTheListAfterAddingACalendarInGoogleCalendar'),
+                    },
+                    delete: {
+                        label: tr('settings.calendarMobile.deleteStrideCalendar'),
+                        description: tr('settings.calendarMobile.removeTheDedicatedCalendarAndItsPushedEventsFromThis'),
+                        busy: push.deleting,
+                        confirm: {
+                            title: tr('settings.calendarMobile.deleteStrideCalendar'),
+                            message: tr('settings.calendarMobile.removeTheDedicatedCalendarAndItsPushedEventsFromThis'),
+                            cancel: t('common.cancel'),
+                            confirm: t('common.delete'),
+                        },
+                        edit: { type: 'deleteStrideCalendar', calendarId: shownCalendarId, creationIntentRevision: shownCreationIntentRevision },
+                    },
+                } : null,
+            } : null,
+            device: {
+                title: t('settings.deviceCalendars'),
+                description: t('settings.deviceCalendarsDesc'),
+                enabled: deviceSettings.enabled,
+                toggle: deviceEdit({ ...deviceSettings, enabled: !deviceSettings.enabled }),
+                access: deviceSettings.enabled && current.device.permission !== 'granted' ? {
+                    text: current.device.permission === 'denied' ? t('settings.calendarAccessDenied') : t('settings.calendarAccessRequired'),
+                    grantLabel: t('settings.grantCalendarAccess'),
+                } : null,
+                loading: current.device.loading,
+                empty: deviceSettings.enabled && current.device.permission === 'granted' && !current.device.loading && current.device.calendars.length === 0
+                    ? t('settings.noDeviceCalendars')
+                    : null,
+                calendars: deviceSettings.enabled && current.device.permission === 'granted' && !current.device.loading
+                    ? current.device.calendars.map((calendar) => {
+                        const selected = deviceSettings.selectAll || selectedDevice.has(calendar.id);
+                        const selection = nextDeviceCalendarSelection({
+                            calendarIds: current.device.calendars.map((entry) => entry.id),
+                            selectAll: deviceSettings.selectAll,
+                            selectedCalendarIds: deviceSettings.selectedCalendarIds,
+                            calendarId: calendar.id,
+                            enabled: !selected,
+                        });
+                        const areaIds = deviceSettings.areaIdsByCalendar ?? {};
+                        return {
+                            id: calendar.id,
+                            name: calendar.name,
+                            subtitle: t('settings.deviceCalendar'),
+                            selected,
+                            edit: selection ? deviceEdit({ ...deviceSettings, ...selection }) : null,
+                            areas: areaChoice(DEVICE_CALENDAR_SOURCE(calendar.id), areaIds[calendar.id] ?? [], (areaId) => deviceEdit({
+                                ...deviceSettings,
+                                areaIdsByCalendar: { ...areaIds, [calendar.id]: toggleCalendarAreaId(areaIds[calendar.id] ?? [], areaId) },
+                            })),
+                        };
+                    })
+                    : [],
+            },
+            feeds: {
+                ...buildCalendarSubscriptionSettingsModel(feedsShown, revision, { t, areas, theme: settings.theme }),
+                guide: {
+                    title: t('settings.calendarIntegrationGuideTitle'),
+                    description: t('settings.calendarIntegrationGuideDesc'),
+                    url: getDocsGuideUrl('use/calendar-integration', deps.language()),
+                },
+                name: { label: t('settings.externalCalendarName'), placeholder: tr('settings.calendarMobile.optional') },
+                url: { label: t('settings.externalCalendarUrl'), placeholder: t('settings.externalCalendarUrlPlaceholder') },
+                add: { label: t('settings.externalCalendarAdd'), enabled: url.trim().length > 0 },
+                test: { label: tr('settings.calendarMobile.test') },
+                chooseFile: { label: tr('settings.calendarMobile.chooseLocalIcsFile') },
+            },
+        };
+    };
+
+    const newSession = (host: NativeCalendarHost): Session => ({
+        host,
+        push: { enabled: false, permission: 'undetermined', targetId: null, targets: [], color: DEFAULT_CALENDAR_PUSH_COLOR, loading: false, deleting: false },
+        device: { settings: { enabled: false, selectAll: true, selectedCalendarIds: [], areaIdsByCalendar: {} }, permission: 'undetermined', calendars: [], loading: false },
+        storedFeeds: [],
+    });
+
+    const loadSession = (current: Session) => Promise.all([loadPush(current), loadDevice(current), loadFeeds(current), refreshShownRevision(current.host)]);
+
+    const openedSession = (): NativeHostResult<Session> => {
+        const ready = deps.readiness();
+        if (!ready.ok) return ready;
+        const host = deps.host();
+        if (!host) return fail('ACTION_FAILED', 'Calendars are not available on this host yet');
+        if (!session || session.host !== host) return fail('ACTION_FAILED', 'Open Settings › Calendar first (openCalendarSettings)');
+        return { ok: true, value: session };
+    };
+
+    const result = (changed: boolean, extra: Partial<Omit<NativeCalendarCommandResult, 'changed' | 'toasts'>> = {}): NativeHostResult<NativeCalendarCommandResult> => ({
+        ok: true,
+        value: { changed, toasts: [], open: extra.open ?? null, clearDraft: extra.clearDraft ?? false, ...(extra.requestAccess ? { requestAccess: true as const } : {}) },
+    });
+    const staleFeeds = () => fail('STALE_REVISION', 'The subscriptions changed since the view showed them; read the view again');
+    const refreshShownRevision = async (host: NativeCalendarHost) => {
+        const [calendarId, intent] = await Promise.all([
+            host.storage.getItem(CALENDAR_PUSH_CALENDAR_ID_KEY),
+            host.platform.os === 'ios' ? host.storage.getItem(CALENDAR_PUSH_CREATION_INTENT_KEY) : null,
+        ]);
+        shownCalendarId = calendarId;
+        shownCreationIntentRevision = intent === null ? null : deterministicHash128Hex(intent);
+    };
+
+
+    const writeFeeds = async (current: Session, next: ExternalCalendarSubscription[], extra: Partial<NativeCalendarCommandResult> = {}) => {
+        await device(current.host).feeds.saveExternalCalendars(next);
+        current.storedFeeds = next;
+        const written = await runStoreWrite(() => useTaskStore.getState().updateSettings({ externalCalendars: next }));
+        return settleWrite(written, { changed: true, toasts: [] as NativeCalendarToast[], open: extra.open ?? null, clearDraft: extra.clearDraft ?? false });
+    };
+
+
+    const applyAdd = async (current: Session, input: NativeCalendarFeedAdd): Promise<NativeHostResult<NativeCalendarCommandResult> | NativeUnsavedWrite<NativeCalendarCommandResult>> => {
+        const shown = shownFeeds(current);
+        if (shown.some((feed) => feed.id === input.requestId)) return result(false, { clearDraft: true });
+        if (feedsRevision(current) !== input.revision) return staleFeeds();
+        const { tr, toastsOf } = translators();
+        const next = 'url' in input
+            ? addCalendarFeed(shown, { id: input.requestId, name: input.name, url: input.url, defaultName: tr('nav.calendar') })
+            : addCalendarFile(shown, { id: input.requestId, name: input.name, fileName: input.fileName, uri: input.uri, defaultName: tr('nav.calendar') });
+        if (!next) return fail('INVALID_INPUT', 'A subscription needs a URL');
+        const written = await writeFeeds(current, next, { clearDraft: true });
+        if (!('url' in input) && (written.ok || written.error.code === 'SAVE_FAILED')) showToast(toastsOf.localFileAdded());
+        return written;
+    };
+
+    const applyEdit = async (
+        current: Session,
+        edit: NativeCalendarSettingsEdit,
+    ): Promise<NativeHostResult<NativeCalendarCommandResult> | NativeUnsavedWrite<NativeCalendarCommandResult>> => {
+        const { toastsOf } = translators();
+        const { feeds, push } = device(current.host);
+        const pushAvailable = hasCalendarPush(current.host);
+        switch (edit.type) {
+            case 'push': {
+                const enabledNow = await push.getCalendarPushEnabled();
+                if (enabledNow === edit.enabled) return result(false);
+                if (enabledNow !== edit.before) return fail('STALE_REVISION', 'Calendar push changed since the view showed it; read the view again');
+                if (!edit.enabled) {
+                    await push.setCalendarPushEnabled(false);
+                    current.push.enabled = false;
+                    push.stopCalendarPushSync();
+                    showToast(toastsOf.pushDisabled());
+                    await refreshShownRevision(current.host);
+                    return result(true);
+                }
+                if (!pushAvailable) return fail('ACTION_FAILED', 'Calendar push is not available on this host yet');
+                const granted = current.push.permission === 'granted' ? true : await push.requestCalendarWritePermission();
+                if (!granted) {
+                    current.push.permission = 'denied';
+                    showToast(toastsOf.pushPermissionRequired());
+                    return result(false);
+                }
+                current.push.permission = 'granted';
+                await loadPushTargets(current);
+                await push.setCalendarPushEnabled(true);
+                current.push.enabled = true;
+                push.startCalendarPushSync();
+                const fullSync = push.runFullCalendarSync()
+                    .catch((error: unknown) => logError(current, error))
+                    .then(() => refreshShownRevision(current.host))
+                    .catch(() => undefined);
+
+                if (current.host.requestPartialSync) await fullSync;
+                await refreshShownRevision(current.host);
+                return result(true, { open: 'push' });
+            }
+            case 'pushTarget': {
+                const stored = await push.getCalendarPushTargetCalendarId();
+                if (stored === edit.calendarId) return result(false);
+                if (stored !== edit.before) return fail('STALE_REVISION', 'The push calendar changed since the view showed it; read the view again');
+                await push.setCalendarPushTargetCalendarId(edit.calendarId);
+                current.push.targetId = edit.calendarId;
+                if (current.push.enabled && pushAvailable) {
+                    const fullSync = push.runFullCalendarSync();
+                    if (current.host.requestPartialSync) await fullSync;
+                }
+                showToast(toastsOf.pushTargetUpdated());
+                await refreshShownRevision(current.host);
+                return result(true);
+            }
+            case 'pushColor': {
+                const stored = await push.getCalendarPushColor();
+                if (!planCalendarPushColor(stored, edit.color)) return result(false);
+                if (normalizeCalendarPushColor(edit.before) !== stored) return fail('STALE_REVISION', 'The Stride calendar color changed since the view showed it; read the view again');
+                if (!pushAvailable) return fail('ACTION_FAILED', 'Calendar push is not available on this host yet');
+                let updated: boolean;
+                try {
+                    updated = await push.updateStrideCalendarColor(edit.color);
+                } catch (error) {
+
+                    logError(current, error);
+                    return fail('ACTION_FAILED', 'The Stride calendar color could not be changed; try again');
+                }
+                current.push.color = normalizeCalendarPushColor(edit.color);
+                await loadPushTargets(current);
+                showToast(toastsOf.pushColorUpdated(updated));
+                await refreshShownRevision(current.host);
+                return result(true);
+            }
+            case 'deleteStrideCalendar': {
+                if (!pushAvailable) return fail('ACTION_FAILED', 'Calendar push is not available on this host yet');
+                if (current.push.deleting) return fail('ACTION_FAILED', 'The Stride calendar is being deleted');
+
+
+                const [savedId, marker, intent] = await Promise.all([
+                    current.host.storage.getItem(CALENDAR_PUSH_CALENDAR_ID_KEY),
+                    current.host.storage.getItem(CALENDAR_PUSH_PENDING_KEY),
+                    current.host.platform.os === 'ios' ? current.host.storage.getItem(CALENDAR_PUSH_CREATION_INTENT_KEY) : null,
+                ]);
+                if ((savedId !== null && savedId !== edit.calendarId)
+                    || !matchesCalendarPushCreationIntentRevision(intent, edit.creationIntentRevision)) {
+                    return fail('STALE_REVISION', 'A Stride calendar was made since the view showed it; read the view again');
+                }
+                if (savedId === null && marker === null && intent === null && !await push.getCalendarPushEnabled()) return result(false);
+                current.push.deleting = true;
+                try {
+
+
+                    await push.setCalendarPushEnabled(false);
+                    current.push.enabled = false;
+                    push.stopCalendarPushSync();
+                    const target = await push.getCalendarPushTargetCalendarId();
+                    await push.deleteStrideCalendar(edit);
+                    if (current.host.platform.os === 'ios') {
+                        try {
+                            await current.host.log.info('Native iOS calendar cleanup completed', {
+                                scope: 'calendar-settings', extra: { releaseCheck: 'v1.3.5/ios-calendar-cleanup', outcome: 'completed' },
+                            });
+                        } catch {                                                }
+                    }
+                    const keptTargetEvents = keptPushTargetEvents(target, await push.getCalendarPushTargetCalendarId());
+                    current.push.targetId = null;
+                    await loadPushTargets(current);
+                    showToast(toastsOf.strideCalendarDeleted(keptTargetEvents));
+                } catch (error) {
+                    if (error instanceof CalendarPushOwnershipChangedError) {
+                        return fail('STALE_REVISION', 'A Stride calendar was made since the view showed it; read the view again');
+                    }
+
+                    logError(current, error);
+                    return fail('ACTION_FAILED', 'The Stride calendar could not be deleted; try again');
+                } finally {
+                    current.push.deleting = false;
+                    await refreshShownRevision(current.host).catch(() => undefined);
+                }
+                return result(true);
+            }
+            case 'deviceCalendars': {
+                const planned = planDeviceCalendarSetting(await feeds.getSystemCalendarSettings(), edit);
+                if (!planned.ok) return planned;
+                if (!planned.value.result.changed) return { ok: true, value: planned.value.result };
+                current.device.settings = { ...edit.value, areaIdsByCalendar: edit.value.areaIdsByCalendar ?? {} };
+                await feeds.saveSystemCalendarSettings(edit.value);
+                const turnedOn = planned.value.result.open === 'device';
+                if (turnedOn && current.device.permission !== 'granted') return { ok: true, value: { ...planned.value.result, requestAccess: true } };
+                return { ok: true, value: planned.value.result };
+            }
+            case 'removeFeed': {
+                const shown = shownFeeds(current);
+                if (!shown.some((feed) => feed.id === edit.feedId)) return result(false);
+                if (feedsRevision(current) !== edit.revision) return staleFeeds();
+                return writeFeeds(current, removeCalendarFeed(shown, edit.feedId));
+            }
+            case 'feed': {
+                const shown = shownFeeds(current);
+                const feed = shown.find((entry) => entry.id === edit.feedId);
+                if (!feed) return staleFeeds();
+                const currentValue = edit.field === 'enabled' ? feed.enabled : edit.field === 'color' ? feed.color ?? null : feed.areaIds ?? [];
+                if (sameJson(currentValue, edit.value)) return result(false);
+                if (feedsRevision(current) !== edit.revision) return staleFeeds();
+                if (edit.field === 'color') {
+                    const next = setCalendarFeedColor(shown, edit.feedId, edit.value ?? undefined);
+                    if (!next) return fail('INVALID_INPUT', 'A color the swatches offer is required');
+                    return writeFeeds(current, next);
+                }
+                return writeFeeds(current, edit.field === 'enabled'
+                    ? setCalendarFeedEnabled(shown, edit.feedId, edit.value)
+                    : shown.map((entry) => (entry.id === edit.feedId ? { ...entry, areaIds: edit.value } : entry)));
+            }
+        }
+    };
+
+
+    const loadFeed = (host: NativeCalendarHost, start: Date, end: Date, timeoutMs: number | undefined, signal: AbortSignal, sources?: Sources) => {
+        let failedFeeds = 0;
+        return device(host).feeds.fetchExternalCalendarEvents(start, end, { signal, timeoutMs, sources, onFeedError: () => { failedFeeds += 1; } })
+            .then((data): NativeHostResult<NativeCalendarFeed> => (signal.aborted
+                ? fail('STALE_REVISION', 'A newer load for this screen replaced it')
+                : { ok: true, value: {
+                    status: 'ready', calendars: data.calendars, events: data.events,
+                    ...(failedFeeds > 0 ? { warning: translators().tr('settings.calendarMobile.failedToLoadEvents') } : {}),
+                } }))
+            .catch((error: unknown): NativeHostResult<NativeCalendarFeed> => (signal.aborted
+                ? fail('STALE_REVISION', 'A newer load for this screen replaced it')
+                : { ok: true, value: { status: 'error', message: boundedFeedError(error) } }));
+    };
+
+    const lifecycleHost = deps.host();
+    const lifecycleAdmission = lifecycleHost?.platform.os === 'ios'
+        ? Boolean(lifecycleHost.requestPartialSync)
+        : lifecycleHost?.platform.os === 'android' && !lifecycleHost.requestPartialSync;
+    if (lifecycleHost?.bindPushLifecycle && lifecycleAdmission) {
+        let generation = 0;
+        const push = () => {
+            if (deps.host() !== lifecycleHost || !deps.readiness().ok || !hasCalendarPush(lifecycleHost) || isSandboxMode()) {
+                throw new Error('NOT_READY: Calendar push lifecycle is unavailable');
+            }
+            return device(lifecycleHost).push;
+        };
+        lifecycleHost.bindPushLifecycle({
+            async start() {
+                const selected = ++generation;
+                const service = push();
+                const enabled = await service.getCalendarPushEnabled();
+                if (selected !== generation || push() !== service) throw new Error('NOT_READY: Calendar push lifecycle changed');
+                if (enabled) service.startCalendarPushSync();
+                else service.stopCalendarPushSync();
+                return enabled;
+            },
+            stop() {
+                generation += 1;
+                if (bound?.host === lifecycleHost) bound.push.stopCalendarPushSync();
+            },
+            async run(ids) {
+                const service = push();
+                if (ids === undefined) await service.runFullCalendarSync();
+                else await service.runPartialCalendarSync(ids);
+            },
+        });
+    }
+
+    return {
+
+        async openCalendarSettings(): Promise<NativeHostResult<NativeCalendarSettings & { toasts: NativeCalendarToast[] }>> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            const host = deps.host();
+            if (!host) return fail('ACTION_FAILED', 'Calendars are not available on this host yet');
+            takeToasts();
+            const current = newSession(host);
+            session = current;
+            try {
+                await loadSession(current);
+            } catch (error) {
+                logError(current, error);
+                return fail('ACTION_FAILED', 'Settings › Calendar could not read this device');
+            }
+            if (session !== current) return fail('ACTION_FAILED', 'Settings › Calendar closed or opened again before it finished opening');
+            return { ok: true, value: { ...buildView(current, {}), toasts: takeToasts() } };
+        },
+
+        closeCalendarSettings(): NativeHostResult<null> {
+            session = null;
+            takeToasts();
+            return { ok: true, value: null };
+        },
+
+
+        getCalendarSettings(input: { draft?: Draft } = {}): NativeHostResult<NativeCalendarSettings> {
+            const opened = openedSession();
+            if (!opened.ok) return opened;
+            const draft = isObjectRecord(input) ? input.draft ?? {} : null;
+            if (!draft || !isObjectRecord(draft) || Object.keys(draft).some((key) => key !== 'name' && key !== 'url')
+                || (draft.name !== undefined && !isText(draft.name, 500)) || (draft.url !== undefined && !isText(draft.url, 4000))) {
+                return fail('INVALID_INPUT', 'draft is an optional { name, url } of typed text');
+            }
+            return { ok: true, value: buildView(opened.value, draft as Draft) };
+        },
+
+
+        async setCalendarSetting(input: { requestId: string; edit: NativeCalendarSettingsEdit }): Promise<NativeHostResult<NativeCalendarCommandResult>> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            const host = deps.host();
+            if (!host) return fail('ACTION_FAILED', 'Calendars are not available on this host yet');
+            if (!isObjectRecord(input) || typeof input.requestId !== 'string' || !deps.requestIdPattern.test(input.requestId) || !isEdit(input.edit)) {
+                return fail('INVALID_INPUT', 'A request UUID and an edit the view gave are required');
+            }
+            const opened = session?.host === host ? session : null;
+            const outcome = await receipts.run<NativeCalendarCommandResult>(
+                input.requestId,
+                JSON.stringify(['calendarSetting', input.edit]),
+                async () => {
+                    const current = opened ?? newSession(host);
+                    if (!opened) await loadSession(current);
+                    return applyEdit(current, input.edit);
+                },
+            );
+            return outcome.ok ? { ok: true, value: { ...outcome.value, toasts: takeToasts() } } : outcome;
+        },
+
+
+        async addCalendarFeed(input: NativeCalendarFeedAdd): Promise<NativeHostResult<NativeCalendarCommandResult>> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            const host = deps.host();
+            if (!host) return fail('ACTION_FAILED', 'Calendars are not available on this host yet');
+            if (!isFeedAdd(input) || !deps.requestIdPattern.test(input.requestId)) {
+                return fail('INVALID_INPUT', 'A request UUID, a name, a URL (or a file name and URI) and the list\'s revision are required');
+            }
+            const opened = session?.host === host ? session : null;
+            const outcome = await receipts.run<NativeCalendarCommandResult>(
+                input.requestId,
+
+                JSON.stringify(['calendarFeedAdd', deterministicHash128Hex(JSON.stringify(input))]),
+                async () => {
+                    const current = opened ?? newSession(host);
+                    if (!opened) await loadSession(current);
+                    return applyAdd(current, input);
+                },
+            );
+            return outcome.ok ? { ok: true, value: { ...outcome.value, toasts: takeToasts() } } : outcome;
+        },
+
+
+        async grantDeviceCalendarAccess(): Promise<NativeHostResult<{ toasts: NativeCalendarToast[] }>> {
+            const opened = openedSession();
+            if (!opened.ok) return opened;
+            await loadDevice(opened.value, true);
+            return { ok: true, value: { toasts: takeToasts() } };
+        },
+
+
+        async refreshCalendarPushTargets(): Promise<NativeHostResult<{ toasts: NativeCalendarToast[] }>> {
+            const opened = openedSession();
+            if (!opened.ok) return opened;
+            await loadPushTargets(opened.value);
+            try {
+                await refreshShownRevision(opened.value.host);
+            } catch (error) {
+                logError(opened.value, error);
+            }
+            return { ok: true, value: { toasts: takeToasts() } };
+        },
+
+
+        async testCalendarFeeds(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<NativeHostResult<{ toasts: NativeCalendarToast[] }>> {
+            if (options?.signal?.aborted) return staleLoad();
+            const opened = openedSession();
+            if (!opened.ok) return opened;
+            const { toastsOf } = translators();
+            let owner: SourceOwner | null = null;
+            const controller = new AbortController();
+            const cancel = () => controller.abort(options?.signal?.reason);
+            options?.signal?.addEventListener('abort', cancel, { once: true });
+            if (options?.signal?.aborted) cancel();
+            let timedOut = false;
+            const timer = options?.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+                ? setTimeout(() => {
+                    timedOut = true;
+                    controller.abort(new Error('External calendar request timed out'));
+                }, options.timeoutMs) : null;
+            const current = () => !options?.signal?.aborted && session === opened.value
+                && (owner ? ownsSources(owner) : deps.readiness().ok && deps.host() === opened.value.host);
+
+
+            const read = <T,>(start: () => Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+                let settled = false;
+                const finish = (publish: () => void) => {
+                    if (settled) return;
+                    settled = true;
+                    controller.signal.removeEventListener('abort', abort);
+                    publish();
+                };
+                const abort = () => finish(() => reject(controller.signal.reason));
+                if (controller.signal.aborted) { abort(); return; }
+                controller.signal.addEventListener('abort', abort, { once: true });
+                if (controller.signal.aborted) { abort(); return; }
+                try {
+                    start().then(
+                        (value) => finish(() => resolve(value)),
+                        (error: unknown) => finish(() => reject(error)),
+                    );
+                } catch (error) { finish(() => reject(error)); }
+            });
+            try {
+                if (isSandboxMode()) {
+                    showToast(toastsOf.testResult(0, 0, deps.language()));
+                    return { ok: true, value: { toasts: takeToasts() } };
+                }
+                owner = sourceOwner(opened.value.host);
+                const capturedOwner = owner;
+                const cells = await read(() => readSourceCells(capturedOwner));
+                if (!current()) return staleLoad();
+                const sources = freezeSources(capturedOwner, cells);
+                const range = getCalendarTestRange(new Date());
+                let failedFeeds = 0;
+                const { events } = await read(() => device(opened.value.host).feeds.fetchExternalCalendarEvents(range.start, range.end, {
+                    sources, signal: controller.signal,
+                    onFeedError: () => { failedFeeds += 1; },
+                }));
+                if (!current()) return staleLoad();
+                const after = await read(() => readSourceCells(capturedOwner));
+                if (!current() || !sameCells(cells, after)) return staleLoad();
+                logSource(capturedOwner);
+                showToast(toastsOf.testResult(events.length, failedFeeds, deps.language()));
+            } catch (error) {
+                if (!current()) return staleLoad();
+
+                logError(opened.value, timedOut ? new Error('External calendar request timed out') : error);
+                showToast(toastsOf.testFailed());
+            } finally {
+                if (timer !== null) clearTimeout(timer);
+                options?.signal?.removeEventListener('abort', cancel);
+            }
+            return { ok: true, value: { toasts: takeToasts() } };
+        },
+
+
+        async loadExternalCalendarFeed(input: { slot: NativeCalendarFeedSlot; start: string; end: string; timeoutMs?: number; refresh?: boolean }, signal?: AbortSignal): Promise<NativeHostResult<NativeCalendarFeed>> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            const start = isObjectRecord(input) && isText(input.start, 40) ? new Date(input.start) : null;
+            const end = isObjectRecord(input) && isText(input.end, 40) ? new Date(input.end) : null;
+            if (!isObjectRecord(input) || !(NATIVE_CALENDAR_FEED_SLOTS as readonly unknown[]).includes(input.slot)
+                || !start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end.getTime() <= start.getTime()
+                || (input.timeoutMs !== undefined && (typeof input.timeoutMs !== 'number' || !Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0))
+                || (input.refresh !== undefined && typeof input.refresh !== 'boolean')) {
+                return fail('INVALID_INPUT', 'A screen slot, an ISO start before an ISO end, an optional positive timeoutMs and an optional refresh are required');
+            }
+            if (signal?.aborted) return fail('STALE_REVISION', 'This Calendar load was cancelled');
+
+            if (isSandboxMode()) return { ok: true, value: { status: 'ready', calendars: [], events: [] } };
+            const host = deps.host();
+            if (!host) return fail('ACTION_FAILED', 'Calendars are not available on this host yet');
+            let capturedOwner: SourceOwner | null = null;
+            let capturedAdmission: Admission | null = null;
+            let capturedOrder = 0;
+            try {
+                const owner = sourceOwner(host);
+                capturedOwner = owner;
+                const base = JSON.stringify([start.toISOString(), end.toISOString(), input.timeoutMs ?? null, owner.canonical]);
+                let admission = feedAdmissions.get(input.slot);
+                if (!admission || admission.host !== host || admission.adapter !== owner.adapter || admission.base !== base) {
+
+                    admission = { ...owner, base, acceptedOrder: 0, acceptedKey: null };
+                    feedAdmissions.set(input.slot, admission);
+                    feedLoads.get(input.slot)?.controller.abort(new Error('A newer load for this screen replaced it'));
+                    feedLoads.delete(input.slot);
+                }
+                const currentAdmission = admission;
+                capturedAdmission = currentAdmission;
+                const order = ++admissionOrder;
+                capturedOrder = order;
+                const current = () => !signal?.aborted && ownsSources(owner) && feedAdmissions.get(input.slot) === currentAdmission;
+                const cells = await readSourceCells(owner);
+                if (!current()) return staleLoad();
+                const key = JSON.stringify([base, cells.subscriptions, cells.system]);
+                if (order < currentAdmission.acceptedOrder && key !== currentAdmission.acceptedKey) return staleLoad();
+                currentAdmission.acceptedOrder = Math.max(order, currentAdmission.acceptedOrder);
+                currentAdmission.acceptedKey = key;
+                const previous = feedLoads.get(input.slot);
+                const now = Date.now();
+                if (previous?.key === key && !previous.controller.signal.aborted) {
+                    if (previous.running) {
+                        previous.watch(signal);
+                        const result = await previous.running;
+                        return current() && currentAdmission.acceptedKey === key ? result : staleLoad();
+                    }
+                    if (input.refresh && now - previous.refreshedAt < EXTERNAL_CALENDAR_REFRESH_THROTTLE_MS) {
+                        const result = await previous.last;
+                        if (!current() || currentAdmission.acceptedKey !== key) return staleLoad();
+                        logSource(owner);
+                        return result;
+                    }
+                }
+                previous?.controller.abort(new Error('A newer load for this screen replaced it'));
+
+                const sources = freezeSources(owner, cells);
+                const controller = new AbortController();
+                const owners = new Map<AbortSignal, () => void>();
+                const watch = (ticket?: AbortSignal) => {
+                    if (!ticket || owners.has(ticket)) return;
+                    const abort = () => {
+                        controller.abort(ticket.reason);
+                        if (feedLoads.get(input.slot)?.controller === controller) feedLoads.delete(input.slot);
+                    };
+                    owners.set(ticket, abort);
+                    ticket.addEventListener('abort', abort, { once: true });
+                    if (ticket.aborted) abort();
+                };
+                watch(signal);
+                const load: FeedLoad = loadFeed(host, start, end, input.timeoutMs, controller.signal, sources).then(async (result) => {
+                    const ownsLoad = () => !controller.signal.aborted && ownsSources(owner)
+                        && feedAdmissions.get(input.slot) === currentAdmission && currentAdmission.acceptedKey === key
+                        && feedLoads.get(input.slot)?.controller === controller;
+                    if (!ownsLoad()) {
+                        controller.abort(new Error('Calendar load ownership changed'));
+                        return staleLoad();
+                    }
+
+                    const after = await readSourceCells(owner);
+                    if (!ownsLoad() || !sameCells(cells, after)) {
+                        controller.abort(new Error('Calendar sources changed during this load'));
+                        return staleLoad();
+                    }
+                    logSource(owner);
+                    return result;
+                }).catch((): NativeHostResult<NativeCalendarFeed> => {
+                    const stale = controller.signal.aborted || !ownsSources(owner) || feedAdmissions.get(input.slot) !== currentAdmission;
+                    controller.abort(new Error('Calendar source admission failed'));
+                    return stale ? staleLoad() : sourceReadFailed();
+                }).finally(() => {
+                    for (const [ticket, abort] of owners) ticket.removeEventListener('abort', abort);
+                    owners.clear();
+                    const entry = feedLoads.get(input.slot);
+                    if (entry?.controller === controller) {
+                        if (controller.signal.aborted) feedLoads.delete(input.slot);
+                        else entry.running = null;
+                    }
+                });
+                const refreshedAt = input.refresh ? now : previous?.key === key ? previous.refreshedAt : 0;
+                feedLoads.set(input.slot, { key, controller, running: load, last: load, refreshedAt, watch });
+                return await load;
+            } catch {
+                return signal?.aborted || (capturedOwner && !ownsSources(capturedOwner))
+                    || (capturedAdmission && (feedAdmissions.get(input.slot) !== capturedAdmission
+                        || capturedAdmission.acceptedOrder > capturedOrder)) ? staleLoad() : sourceReadFailed();
+            }
+        },
+    };
+}

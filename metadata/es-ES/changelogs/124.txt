@@ -1,0 +1,4 @@
+- Los resultados de búsqueda permanecen estables mientras escribes.
+- Guardar y editar vuelve al proyecto correcto, la lista queda donde soltaste la tarea y Deshacer no tapa las pestañas.
+- Dropbox inicia la primera sincronización tras conectar y restaura la configuración verificada si falla.
+- Las listas omiten filas vacías, las áreas suman seis colores y el japonés está completo.

@@ -1,0 +1,11 @@
+{
+  "platforms": ["android", "ios"],
+  "android": {
+    "modules": ["com.ishaanpilar.stride.syncfilelock.SyncFileLockModule"]
+  },
+  "ios": {
+    "podspecPath": "ios/SyncFileLock.podspec",
+    "swiftModuleName": "SyncFileLock",
+    "modules": ["SyncFileLockModule"]
+  }
+}

@@ -1,0 +1,248 @@
+import { expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse } from 'yaml';
+import { pwshTest } from './pwsh-test.mjs';
+import { msstoreVersion } from './msstore-version.mjs';
+import { compareVersions, createStoreRequest, publishFlight } from './publish-msstore-flight.mjs';
+
+const flightId = '640b80df-45ed-4604-acaf-e8c28c983184';
+const root = `https://manage.devcenter.microsoft.com/v1.0/my/applications/9N0V5B0B6FRX/flights/${flightId}`;
+const archive = Buffer.from('fixture archive');
+const tag = 'v1.3.0-rc.2';
+const marker = `Stride flight ${tag}; MSIX 1.3.2.0; SHA256 ${createHash('sha256').update(archive).digest('hex')}`;
+
+function fixture({ flight = {}, submission = {}, statuses = ['PreProcessing'], published } = {}) {
+  const calls = [];
+  let polls = 0;
+  const created = { id: '123', flightId, status: 'PendingCommit', fileUploadUrl: 'https://example.blob.core.windows.net/upload?sig=secret', flightPackages: [], ...submission };
+  const request = async (method, url, data) => {
+    calls.push({ method, url, data });
+    if (method === 'GET' && url === root) return { flightId, friendlyName: 'Stride Beta', ...flight };
+    if (method === 'GET' && url.endsWith('/submissions/old')) return published;
+    if (method === 'GET' && url.endsWith('/submissions/123')) return created;
+    if (method === 'POST' && url === `${root}/submissions`) return created;
+    if (method === 'GET' && url.endsWith('/status')) return { status: statuses[Math.min(polls++, statuses.length - 1)] };
+    if (method === 'UPLOAD' || method === 'PUT' || url.endsWith('/commit')) return {};
+    throw new Error(`Unexpected fixture request ${method} ${url}`);
+  };
+  const run = overrides => publishFlight({ appId: '9N0V5B0B6FRX', flightId, tag, fileName: 'stride_1.3.0-rc.2_x64.msix', archive, request, sleep: async () => {}, log: () => {}, ...overrides });
+  return { calls, run };
+}
+
+test('Dev Center flight requests include the tenant header required by the current Store CLI', async () => {
+  const tenantId = '11111111-2222-3333-4444-555555555555';
+  const requests = [];
+  const request = createStoreRequest({
+    token: 'fixture-token',
+    tenantId,
+    log: () => {},
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.includes('.blob.core.windows.net')) return new Response('', { status: 201 });
+      if (options.headers.TenantId !== tenantId) return new Response('', { status: 403 });
+      return new Response(JSON.stringify({ flightId }), { status: 200 });
+    },
+  });
+
+  await expect(request('GET', root)).resolves.toEqual({ flightId });
+  await expect(request('UPLOAD', 'https://example.blob.core.windows.net/upload', archive)).resolves.toEqual({});
+  expect(requests[0].options.headers).toEqual({ Authorization: 'Bearer fixture-token', TenantId: tenantId });
+  expect(requests[1].options.headers).toEqual({ 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/octet-stream' });
+});
+
+test('Store versions order previous stable, RCs, stable, and next patch while reserving revision zero', () => {
+  const versions = ['1.2.8.0', ...['v1.3.0-rc.1', tag, 'v1.3.0-rc.98', 'v1.3.0', 'v1.3.1-rc.1', 'v1.3.1', 'v1.4.0-rc.1'].map(msstoreVersion)];
+  for (let i = 1; i < versions.length; i++) expect(compareVersions(versions[i], versions[i - 1])).toBe(1);
+  expect(msstoreVersion(tag)).toBe('1.3.2.0');
+  expect(msstoreVersion('v1.3.0')).toBe('1.3.100.0');
+  expect(compareVersions('1.3.2.0', '1.3.2.7')).toBe(0);
+  for (const invalid of ['v1.3.0-rc.0', 'v1.3.0-rc.99', 'v0.3.0', 'v1.3.655', 'v1.65536.0', 'v1.3.0-beta.1']) {
+    expect(() => msstoreVersion(invalid)).toThrow();
+  }
+});
+
+test('new flight sends only flightPackages, uploads before commit, and waits for ingestion', async () => {
+  const { run, calls } = fixture({ submission: { flightPackages: [{ fileName: 'old.msix', version: '1.3.1.0' }] }, statuses: ['CommitStarted', 'Certification'] });
+  expect(await run()).toEqual({ submissionId: '123', version: '1.3.2.0', status: 'Certification' });
+  const update = calls.find(call => call.method === 'PUT');
+  expect(update.data.applicationPackages).toBeUndefined();
+  expect(update.data.targetPublishMode).toBe('Immediate');
+  expect(update.data.flightPackages.map(pkg => pkg.fileStatus)).toEqual(['PendingDelete', 'PendingUpload']);
+  expect(update.data.notesForCertification).toBe(marker);
+  const uploadIndex = calls.findIndex(call => call.method === 'UPLOAD');
+  expect(uploadIndex).toBeGreaterThan(calls.indexOf(update));
+  expect(calls.findIndex(call => call.url.endsWith('/commit'))).toBeGreaterThan(uploadIndex);
+  for (const call of calls.filter(call => call.method !== 'UPLOAD')) expect(call.url.startsWith(root)).toBe(true);
+  expect(calls.some(call => call.method === 'DELETE')).toBe(false);
+});
+
+test('unrelated dashboard drafts and rebuilt archives are never overwritten', async () => {
+  for (const notesForCertification of ['', 'someone else', marker.replace('SHA256 ', 'SHA256 other')]) {
+    const { run, calls } = fixture({ flight: { pendingFlightSubmission: { id: '123' } }, submission: { notesForCertification } });
+    await expect(run()).rejects.toThrow('no draft was changed');
+    expect(calls.every(call => call.method === 'GET')).toBe(true);
+  }
+});
+
+test('exact pending archive resumes, while committed submissions are only polled', async () => {
+  const pending = { pendingFlightSubmission: { id: '123' } };
+  const draft = fixture({ flight: pending, submission: { notesForCertification: marker, flightPackages: [{ fileName: 'stride_1.3.0-rc.2_x64.msix', fileStatus: 'PendingUpload' }] } });
+  await draft.run();
+  expect(draft.calls.some(call => call.url === `${root}/submissions`)).toBe(false);
+  expect(draft.calls.some(call => call.method === 'PUT')).toBe(false);
+  const committing = fixture({ flight: pending, submission: { notesForCertification: marker, status: 'CommitStarted' } });
+  await committing.run();
+  expect(committing.calls.every(call => call.method === 'GET')).toBe(true);
+});
+
+test('published owned or Store-inherited exact packages are idempotent and older versions fail before mutation', async () => {
+  const flight = { lastPublishedFlightSubmission: { id: 'old' } };
+  const exact = fixture({ flight, published: { id: 'old', status: 'Published', notesForCertification: marker } });
+  expect((await exact.run()).status).toBe('Published');
+  expect(exact.calls.every(call => call.method === 'GET')).toBe(true);
+
+  const inherited = fixture({ flight, published: {
+    id: 'old',
+    status: 'Published',
+    flightPackages: [{ fileName: 'stride_1.3.0-rc.2_x64.msix', version: '1.3.2.7' }],
+  } });
+  expect(await inherited.run()).toEqual({ submissionId: 'old', version: '1.3.2.0', status: 'Published' });
+  expect(inherited.calls.every(call => call.method === 'GET')).toBe(true);
+
+  for (const version of ['1.3.2.7', '1.3.99.0']) {
+    const older = fixture({ flight, published: { flightPackages: [{ version }] } });
+    await expect(older.run()).rejects.toThrow('must be higher');
+    expect(older.calls.every(call => call.method === 'GET')).toBe(true);
+  }
+});
+
+test('wrong flight, missing configuration, failed status, and timeouts fail closed', async () => {
+  await expect(fixture({ flight: { friendlyName: 'Other' } }).run()).rejects.toThrow('not Stride Beta');
+  await expect(fixture().run({ flightId: '' })).rejects.toThrow('UUID');
+  await expect(fixture().run({ flightId: '1152921505701865456' })).rejects.toThrow('UUID');
+  for (const status of ['CommitFailed', 'PreProcessingFailed', 'CertificationFailed', 'PublishFailed', 'ReleaseFailed', 'Canceled']) {
+    await expect(fixture({ statuses: [status] }).run()).rejects.toThrow('failed');
+  }
+  await expect(fixture({ statuses: ['CommitStarted'] }).run()).rejects.toThrow('Timed out');
+  await expect(fixture({ submission: { fileUploadUrl: 'https://unexpected.example/upload' } }).run()).rejects.toThrow('upload destination');
+});
+
+test('upload failure does not commit and ambiguous create is not retried', async () => {
+  const calls = [];
+  const request = async (method, url) => {
+    calls.push({ method, url });
+    if (method === 'GET') return { flightId, friendlyName: 'Stride Beta' };
+    throw new Error('Network failure');
+  };
+  await expect(fixture().run({ request })).rejects.toThrow('Network failure');
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+  const broken = fixture();
+  await expect(broken.run({ request: async (method, url) => {
+    calls.push({ method, url });
+    if (method === 'GET') return { flightId, friendlyName: 'Stride Beta' };
+    if (url === `${root}/submissions`) return { id: '123', flightId, status: 'PendingCommit', fileUploadUrl: 'https://example.blob.core.windows.net/upload' };
+    if (method === 'UPLOAD') throw new Error('Upload failure');
+    return {};
+  } })).rejects.toThrow('Upload failure');
+  expect(calls.some(call => call.url.endsWith('/commit'))).toBe(false);
+});
+
+test('RC defaults enable only the flight; stable refreshes the configured tester flight', () => {
+  const rc = parse(readFileSync('.github/workflows/release-rc.yml', 'utf8'));
+  const stable = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
+  const windows = parse(readFileSync('.github/workflows/release-windows.yml', 'utf8'));
+  expect(rc.on.workflow_dispatch.inputs.run_msstore_flight.default).toBe(true);
+  expect(rc.jobs.windows.with.run_msstore).toBe(false);
+  const expression = rc.jobs.windows.with.run_msstore_flight.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+  const enabled = new Function('github', 'inputs', `return Boolean(${expression})`);
+  expect(enabled({ event_name: 'push' }, {})).toBe(true);
+  expect(enabled({ event_name: 'workflow_dispatch' }, { run_msstore_flight: true })).toBe(true);
+  expect(enabled({ event_name: 'workflow_dispatch' }, { run_msstore_flight: false })).toBe(false);
+  expect(stable.jobs.windows.with.run_msstore_flight).toBe("${{ vars.MSSTORE_FLIGHT_ID != '' && (github.event_name != 'workflow_dispatch' || inputs.run_msstore) }}");
+  for (const trigger of ['workflow_call', 'workflow_dispatch']) expect(windows.on[trigger].inputs.run_msstore_flight.default).toBe(false);
+  const steps = windows.jobs.standalone.steps;
+  const install = steps.find(step => step.name === 'Install dependencies').run;
+  expect(install).toContain('node scripts/ci/prepare-windows-bun-install.js');
+  expect(install).toContain("Join-Path $env:RUNNER_TEMP 'bun-install-cache-1'");
+  expect(install).toContain("Join-Path $env:RUNNER_TEMP 'bun-install-cache-2'");
+  expect(install).toContain('--cache-dir "$cacheDir" --backend copyfile');
+  expect(install).toContain('--network-concurrency 1 --concurrent-scripts 1');
+  expect(install).toContain('Remove-Item node_modules -Recurse -Force');
+  expect(install).not.toContain('bun pm cache');
+  for (const name of ['Ensure MakeAppx is available', 'Build MSIX package']) {
+    expect(steps.find(step => step.name === name).if).toBe("steps.version.outputs.store_package == 'true'");
+  }
+  expect(steps.find(step => step.name === 'Check Microsoft Store submission status').if).toBe("steps.version.outputs.store_stable == 'true'");
+  expect(steps.find(step => step.name === 'Publish to Microsoft Store (metadata + package)').if).toContain("steps.version.outputs.store_stable == 'true'");
+  const publishIndex = steps.findIndex(step => step.name === 'Publish to Microsoft Store (metadata + package)');
+  const flightIndex = steps.findIndex(step => step.name === 'Submit Microsoft Store beta flight');
+  const flightStep = steps[flightIndex];
+  expect(flightStep.if).toBe('inputs.run_msstore_flight');
+  expect(flightStep['continue-on-error']).toBe(true);
+  expect(flightIndex).toBeGreaterThan(publishIndex);
+
+  const recovery = parse(readFileSync('.github/workflows/release-msstore-flight.yml', 'utf8'));
+  const download = recovery.jobs['package-flight'].steps.find(step => step.id === 'release').run;
+  expect(recovery.on.workflow_dispatch.inputs.tag.description).toContain('stable or RC');
+  expect(download).toContain("(-rc\\.[1-9][0-9]*)?$");
+  expect(download).toContain('[bool]$release.prerelease -ne $isRc');
+});
+
+pwshTest('Windows PowerShell validates Store versions only for selected Store routes', () => {
+  const windows = parse(readFileSync('.github/workflows/release-windows.yml', 'utf8'));
+  const script = windows.jobs.standalone.steps.find(step => step.id === 'version').run;
+  const routingStart = script.indexOf("$tag = (($lines | Where-Object { $_ -like 'tag=*' })");
+  expect(routingStart).toBeGreaterThan(-1);
+  const routing = script.slice(routingStart);
+  const run = ({ tag = 'v1.3.0-rc.2', version = tag.replace(/^v/, ''), event = 'workflow_dispatch', ref = 'refs/heads/main', stable = false, flight = true, id = flightId } = {}) => {
+    const directory = mkdtempSync(join(tmpdir(), 'msstore-routing-'));
+    try {
+      const output = join(directory, 'output');
+      const command = `$ErrorActionPreference = 'Stop'\n$lines = @("tag=$env:TEST_RELEASE_TAG", "version=$env:TEST_RELEASE_VERSION")\n${routing}`;
+      execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
+        env: { ...process.env, GITHUB_OUTPUT: output, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, RUN_MSSTORE: String(stable), RUN_MSSTORE_FLIGHT: String(flight), MSSTORE_FLIGHT_ID: id, TEST_RELEASE_TAG: tag, TEST_RELEASE_VERSION: version },
+        stdio: 'pipe',
+      });
+      return readFileSync(output, 'utf8').trim().split(/\r?\n/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  expect(run()).toContain('store_stable=false');
+  expect(run()).toContain('store_package=true');
+  for (const disabled of [
+    { tag: 'v1.3.0-rc.2a', ref: 'refs/tags/v1.3.0-rc.2a' },
+    { tag: 'v1.2.6-a', ref: 'refs/heads/main' },
+    { tag: 'v1.3.0', ref: 'refs/tags/v1.3.0' },
+    { tag: 'v1.3.0', ref: 'refs/heads/main' },
+  ]) {
+    const output = run({ ...disabled, flight: false });
+    expect(output).toContain('store_stable=false');
+    expect(output).toContain('store_package=false');
+    expect(output.some(line => line.startsWith('msix_version='))).toBe(false);
+  }
+
+  expect(() => run({ stable: true })).toThrow();
+  expect(() => run({ id: '' })).toThrow();
+  expect(() => run({ tag: 'v1.3.0-rc.2a' })).toThrow();
+
+  const stablePush = run({ tag: 'v1.3.0', event: 'push', ref: 'refs/tags/v1.3.0', flight: false });
+  expect(stablePush).toContain('store_stable=true');
+  expect(stablePush).toContain('store_package=true');
+  expect(stablePush).toContain('msix_version=1.3.100.0');
+
+  const explicitStable = run({ tag: 'v1.3.0', stable: true, flight: false });
+  expect(explicitStable).toContain('store_stable=true');
+  expect(explicitStable).toContain('store_package=true');
+  expect(explicitStable).toContain('msix_version=1.3.100.0');
+
+  const branchPush = run({ tag: 'v1.3.0', event: 'push', ref: 'refs/heads/main', flight: false });
+  expect(branchPush).toContain('store_stable=false');
+  expect(branchPush).toContain('store_package=false');
+  expect(branchPush.some(line => line.startsWith('msix_version='))).toBe(false);
+}, 30_000);

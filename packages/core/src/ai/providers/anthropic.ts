@@ -1,0 +1,303 @@
+import type {
+    AIProvider,
+    AIProviderConfig,
+    BreakdownInput,
+    BreakdownResponse,
+    ClarifyInput,
+    ClarifyResponse,
+    CopilotInput,
+    CopilotResponse,
+    ReviewAnalysisInput,
+    ReviewAnalysisResponse,
+    AIRequestOptions,
+} from '../types';
+import { buildBreakdownPrompt, buildClarifyPrompt, buildCopilotPrompt, buildReviewAnalysisPrompt } from '../prompts';
+import {
+    fetchTextWithTimeout,
+    isAIRequestStopError,
+    normalizeTags,
+    normalizeTimeEstimate,
+    parseJson,
+    rateLimit,
+    throwIfAIRequestAborted,
+    type BufferedAIResponse,
+    waitForAIRequestRetry,
+    withAIRequestStopNotifications,
+} from '../utils';
+import { isBreakdownResponse, isClarifyResponse, isCopilotResponse, isReviewAnalysisResponse } from '../validators';
+import { resolveAnthropicModel } from '../catalog';
+
+export const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_RETRIES = 2;
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const DEFAULT_MAX_TOKENS = 1024;
+
+
+const ADAPTIVE_THINKING_MAX_TOKENS = 4096;
+
+
+export function isAdaptiveThinkingModel(model: string): boolean {
+    const id = String(model || '').trim().toLowerCase();
+    if (/^claude-(fable|mythos)-/.test(id)) return true;
+    const match = /^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?/.exec(id);
+    if (!match) return false;
+    const [, family, majorRaw, minorRaw] = match;
+    const major = Number(majorRaw);
+    const minor = minorRaw ? Number(minorRaw) : 0;
+    if (family === 'opus') return major > 4 || (major === 4 && minor >= 7);
+    return major >= 5;
+}
+
+const resolveTimeoutMs = (value?: number) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_TIMEOUT_MS;
+
+export async function buildAnthropicError(response: BufferedAIResponse, usingOfficialAnthropic: boolean): Promise<Error> {
+    const status = response.status;
+    let message = '';
+    let type = '';
+    let raw = '';
+
+
+    let requestId = response.headers.get('request-id') ?? '';
+    raw = response.bodyText;
+    if (raw) {
+        try {
+            const data = JSON.parse(raw) as { error?: { message?: string; type?: string }; request_id?: string };
+            if (typeof data?.request_id === 'string' && data.request_id) {
+                requestId = data.request_id;
+            }
+            if (data?.error) {
+                message = data.error.message ?? '';
+                type = data.error.type ?? '';
+                raw = '';
+            }
+        } catch {
+
+        }
+    }
+
+
+    const detail = [
+        message || raw,
+        requestId ? `request-id: ${requestId}` : '',
+    ].filter(Boolean).join(', ');
+    const withDetail = (friendly: string) => new Error(detail ? `${friendly} (${detail})` : friendly);
+
+    if (status === 401) {
+        return usingOfficialAnthropic
+            ? withDetail('Anthropic API key is invalid or missing.')
+            : withDetail('Anthropic-compatible endpoint rejected the request. Check the custom base URL, API key, and model.');
+    }
+    if (status === 403) {
+        return usingOfficialAnthropic
+            ? withDetail('Anthropic access denied for this model or key.')
+            : withDetail('Anthropic-compatible endpoint denied access. Check the API key and model permissions.');
+    }
+    if (status === 404) {
+        return usingOfficialAnthropic
+            ? withDetail('Anthropic model not found or unavailable for this key.')
+            : withDetail('Anthropic-compatible endpoint or model not found. Check the custom base URL and model.');
+    }
+    if (status === 429) {
+        return usingOfficialAnthropic
+            ? withDetail('Anthropic rate limit or quota exceeded. Please try again later.')
+            : withDetail('Anthropic-compatible endpoint rate limit or quota exceeded. Please try again later.');
+    }
+
+    const parts = [
+        `Anthropic request failed (${status})`,
+        type ? `[${type}]` : '',
+        requestId ? `(${requestId})` : '',
+        message ? `: ${message}` : '',
+        !message && raw ? `: ${raw}` : '',
+    ].filter(Boolean);
+    return new Error(parts.join(' ').trim());
+}
+
+async function requestAnthropic(
+    config: AIProviderConfig,
+    prompt: { system: string; user: string },
+    options?: AIRequestOptions
+) {
+
+
+    const apiKey = String(config.apiKey || '').trim();
+    if (!apiKey) {
+        throw new Error('Anthropic API key is required.');
+    }
+    const url = config.endpoint || ANTHROPIC_BASE_URL;
+    const usingOfficialAnthropic = url === ANTHROPIC_BASE_URL;
+
+
+    const model = usingOfficialAnthropic ? resolveAnthropicModel(config.model) : config.model;
+    const thinkingBudget = typeof config.thinkingBudget === 'number' ? config.thinkingBudget : 0;
+    const adaptiveThinking = isAdaptiveThinkingModel(model);
+    let maxTokens =
+        thinkingBudget > 0 && !adaptiveThinking
+            ? Math.max(DEFAULT_MAX_TOKENS, thinkingBudget + 256)
+            : DEFAULT_MAX_TOKENS;
+    if (adaptiveThinking) {
+
+
+        maxTokens = Math.max(maxTokens, ADAPTIVE_THINKING_MAX_TOKENS);
+    }
+
+    const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        system: prompt.system,
+        messages: [{ role: 'user', content: prompt.user }],
+    };
+
+
+    if (!adaptiveThinking && thinkingBudget <= 0) {
+        body.temperature = 0.2;
+    }
+
+    if (thinkingBudget > 0) {
+        body.thinking = adaptiveThinking
+            ? { type: 'adaptive' }
+            : { type: 'enabled', budget_tokens: thinkingBudget };
+    }
+
+    await rateLimit('anthropic', 250, options?.signal, 'Anthropic');
+
+    let response: BufferedAIResponse | null = null;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+        throwIfAIRequestAborted(options?.signal, 'Anthropic');
+        try {
+            response = await fetchTextWithTimeout(
+                url,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey,
+                        'anthropic-version': '2023-06-01',
+
+
+                        'anthropic-dangerous-direct-browser-access': 'true',
+                    },
+                    body: JSON.stringify(body),
+                },
+                resolveTimeoutMs(config.timeoutMs),
+                'Anthropic',
+                options?.signal,
+                config.fetcher
+            );
+        } catch (error) {
+            if (isAIRequestStopError(error)) throw error;
+            if (attempt < MAX_RETRIES) {
+                await waitForAIRequestRetry(400 * Math.pow(2, attempt), options?.signal, 'Anthropic');
+                continue;
+            }
+            throw error;
+        }
+
+        if (!response.ok) {
+            if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+                await waitForAIRequestRetry(400 * Math.pow(2, attempt), options?.signal, 'Anthropic');
+                continue;
+            }
+            throw await buildAnthropicError(response, usingOfficialAnthropic);
+        }
+        break;
+    }
+
+    if (!response) {
+        throw new Error('Anthropic request failed to start.');
+    }
+
+    const result = JSON.parse(response.bodyText) as {
+        content?: Array<{ type?: string; text?: string }>;
+    };
+
+    const textBlocks = (result.content || []).filter(
+        (block) => block.type === 'text' && typeof block.text === 'string'
+    ) as Array<{ text: string }>;
+
+    const text = textBlocks.map((block) => block.text).join('\n').trim();
+    if (!text) {
+        throw new Error('Anthropic returned no content.');
+    }
+    return text;
+}
+
+export function createAnthropicProvider(config: AIProviderConfig): AIProvider {
+    return withAIRequestStopNotifications(config, {
+        generateText: async (prompt: { system: string; user: string }, options?: AIRequestOptions): Promise<string> => requestAnthropic(config, prompt, options),
+        clarifyTask: async (input: ClarifyInput, options?: AIRequestOptions): Promise<ClarifyResponse> => {
+            const prompt = buildClarifyPrompt(input, config.language);
+            const text = await requestAnthropic(config, prompt, options);
+            try {
+                return parseJson<ClarifyResponse>(text, isClarifyResponse);
+            } catch {
+                const retryPrompt = {
+                    system: prompt.system,
+                    user: `${prompt.user}\n\nReturn ONLY valid JSON. Do not include any extra text.`,
+                };
+                const retryText = await requestAnthropic(config, retryPrompt, options);
+                return parseJson<ClarifyResponse>(retryText, isClarifyResponse);
+            }
+        },
+        breakDownTask: async (input: BreakdownInput, options?: AIRequestOptions): Promise<BreakdownResponse> => {
+            const prompt = buildBreakdownPrompt(input, config.language);
+            const text = await requestAnthropic(config, prompt, options);
+            try {
+                return parseJson<BreakdownResponse>(text, isBreakdownResponse);
+            } catch {
+                const retryPrompt = {
+                    system: prompt.system,
+                    user: `${prompt.user}\n\nReturn ONLY valid JSON. Do not include any extra text.`,
+                };
+                const retryText = await requestAnthropic(config, retryPrompt, options);
+                return parseJson<BreakdownResponse>(retryText, isBreakdownResponse);
+            }
+        },
+        analyzeReview: async (input: ReviewAnalysisInput, options?: AIRequestOptions): Promise<ReviewAnalysisResponse> => {
+            const prompt = buildReviewAnalysisPrompt(input.items, config.language);
+            const text = await requestAnthropic(config, prompt, options);
+            try {
+                return parseJson<ReviewAnalysisResponse>(text, isReviewAnalysisResponse);
+            } catch {
+                const retryPrompt = {
+                    system: prompt.system,
+                    user: `${prompt.user}\n\nReturn ONLY valid JSON. Do not include any extra text.`,
+                };
+                const retryText = await requestAnthropic(config, retryPrompt, options);
+                return parseJson<ReviewAnalysisResponse>(retryText, isReviewAnalysisResponse);
+            }
+        },
+        predictMetadata: async (input: CopilotInput, options?: AIRequestOptions): Promise<CopilotResponse> => {
+            const prompt = buildCopilotPrompt(input, config.language);
+            const text = await requestAnthropic(config, prompt, options);
+            try {
+                const parsed = parseJson<CopilotResponse>(text, isCopilotResponse);
+                const context = typeof parsed.context === 'string' ? parsed.context : undefined;
+                const timeEstimate = typeof parsed.timeEstimate === 'string' ? parsed.timeEstimate : undefined;
+                const tags = Array.isArray(parsed.tags) ? normalizeTags(parsed.tags) : [];
+                return {
+                    context,
+                    timeEstimate: normalizeTimeEstimate(timeEstimate) as CopilotResponse['timeEstimate'],
+                    tags,
+                };
+            } catch {
+                const retryPrompt = {
+                    system: prompt.system,
+                    user: `${prompt.user}\n\nReturn ONLY valid JSON. Do not include any extra text.`,
+                };
+                const retryText = await requestAnthropic(config, retryPrompt, options);
+                const parsed = parseJson<CopilotResponse>(retryText, isCopilotResponse);
+                const context = typeof parsed.context === 'string' ? parsed.context : undefined;
+                const timeEstimate = typeof parsed.timeEstimate === 'string' ? parsed.timeEstimate : undefined;
+                const tags = Array.isArray(parsed.tags) ? normalizeTags(parsed.tags) : [];
+                return {
+                    context,
+                    timeEstimate: normalizeTimeEstimate(timeEstimate) as CopilotResponse['timeEstimate'],
+                    tags,
+                };
+            }
+        },
+    });
+}

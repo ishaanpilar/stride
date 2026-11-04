@@ -1,0 +1,2161 @@
+import { addDays, addMonths, addWeeks, differenceInCalendarDays, format, startOfDay } from 'date-fns';
+
+import { safeFormatDate, safeParseDate } from './date';
+import { generateUUID as uuidv4 } from './uuid';
+import { computeRelativeStartTime } from './task-relative-start';
+import { logInfo } from './logger';
+import { isTaskActionable } from './task-status';
+import type { Recurrence, RecurrenceByDay, RecurrenceRule, RecurrenceStrategy, RecurrenceWeekday, Task, TaskStatus, ChecklistItem, Attachment } from './types';
+
+export const RECURRENCE_RULES: RecurrenceRule[] = ['daily', 'weekly', 'monthly', 'yearly'];
+export const RECURRENCE_INTERVAL_MAX = 999;
+
+// LEGACY: pre-Stride-rename value, persisted inside stored recurrence rules.
+const RRULE_SERIES_ID_KEY = 'X-MINDWTR-SERIES-ID';
+const WEEKDAY_ORDER: RecurrenceWeekday[] = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+export const MONTHLY_WEEKDAYS: RecurrenceWeekday[] = ['MO', 'TU', 'WE', 'TH', 'FR'];
+export const isMonthlyWeekdaySet = (days?: RecurrenceByDay[]): boolean =>
+    days?.length === MONTHLY_WEEKDAYS.length && MONTHLY_WEEKDAYS.every((day) => days.includes(day));
+
+export function isRecurrenceRule(value: string | undefined | null): value is RecurrenceRule {
+    return !!value && (RECURRENCE_RULES as readonly string[]).includes(value);
+}
+
+const RRULE_FREQ_MAP: Record<string, RecurrenceRule> = {
+    DAILY: 'daily',
+    WEEKLY: 'weekly',
+    MONTHLY: 'monthly',
+    YEARLY: 'yearly',
+};
+
+type ParsedRRule = {
+    rule?: RecurrenceRule;
+    byDay?: RecurrenceByDay[];
+    byMonthDay?: number[];
+    bySetPos?: number;
+    interval?: number;
+    weekStart?: RecurrenceWeekday;
+    count?: number;
+    until?: string;
+};
+
+type BuildRRuleOptions = {
+    byMonthDay?: number[];
+    bySetPos?: number;
+    weekStart?: RecurrenceWeekday;
+    count?: number;
+    until?: string;
+};
+
+export type RRuleEditOverrides = BuildRRuleOptions & {
+    byDay?: RecurrenceByDay[];
+    interval?: number;
+};
+
+type FormatRecurrenceLabelOptions = {
+    recurrence: Task['recurrence'];
+    t: (key: string) => string;
+    formatDate?: (value: string) => string;
+};
+
+const getSeriesIdFromRRule = (rrule: string | undefined): string | undefined => {
+    if (!rrule) return undefined;
+    const token = rrule.split(';').find((part) => (
+        part.slice(0, part.indexOf('=')).trim().toUpperCase() === RRULE_SERIES_ID_KEY
+    ));
+    if (!token) return undefined;
+    const raw = token.slice(token.indexOf('=') + 1).trim();
+    if (!raw) return undefined;
+    try {
+        return decodeURIComponent(raw).trim() || undefined;
+    } catch {
+        return raw;
+    }
+};
+
+const withSeriesIdInRRule = (rrule: string, seriesId: string): string => {
+    const parts = rrule.split(';').filter((part) => (
+        part.slice(0, part.indexOf('=')).trim().toUpperCase() !== RRULE_SERIES_ID_KEY
+    ));
+    parts.push(`${RRULE_SERIES_ID_KEY}=${encodeURIComponent(seriesId)}`);
+    return parts.join(';');
+};
+
+export type ProjectedRecurringTask = Task & {
+    isProjectedRecurringTask: true;
+    sourceTaskId: string;
+};
+
+const PROJECTED_RECURRENCE_ID_SUFFIX = ':projected-recurrence';
+
+export const getProjectedRecurringTaskId = (taskId: string): string => (
+    `${taskId}${PROJECTED_RECURRENCE_ID_SUFFIX}`
+);
+
+
+const getRangeProjectedRecurringTaskId = (taskId: string, occurrenceIso: string): string => (
+    `${taskId}${PROJECTED_RECURRENCE_ID_SUFFIX}:${occurrenceIso}`
+);
+
+export const isProjectedRecurringTaskId = (taskId: string | undefined | null): boolean => (
+    typeof taskId === 'string' && taskId.includes(PROJECTED_RECURRENCE_ID_SUFFIX)
+);
+
+export const isProjectedRecurringTask = (task: Partial<Task> | null | undefined): task is ProjectedRecurringTask => (
+    Boolean(
+        task
+        && (task as Partial<ProjectedRecurringTask>).isProjectedRecurringTask === true
+        && typeof (task as Partial<ProjectedRecurringTask>).sourceTaskId === 'string'
+    )
+);
+
+export const getTaskCalendarOccurrenceDate = (task: Pick<Task, 'startTime' | 'dueDate'>): string | undefined => (
+    task.startTime ?? task.dueDate
+);
+
+const parseByDayToken = (token: string): RecurrenceByDay | null => {
+    const trimmed = token.toUpperCase().trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(-1|1|2|3|4)?(SU|MO|TU|WE|TH|FR|SA)$/);
+    if (!match) return null;
+    const ordinal = match[1];
+    const weekday = match[2] as RecurrenceWeekday;
+    if (ordinal) {
+        return `${ordinal}${weekday}` as RecurrenceByDay;
+    }
+    return weekday;
+};
+
+const normalizeWeekdays = (days?: string[] | null): RecurrenceByDay[] | undefined => {
+    if (!days || days.length === 0) return undefined;
+    const normalized = days
+        .map(parseByDayToken)
+        .filter((day): day is RecurrenceByDay => Boolean(day));
+    return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
+};
+
+const normalizeWeekStart = (value?: string | null): RecurrenceWeekday | undefined => {
+    const parsed = parseByDayToken(String(value || ''));
+    return parsed && WEEKDAY_ORDER.includes(parsed as RecurrenceWeekday)
+        ? parsed as RecurrenceWeekday
+        : undefined;
+};
+
+const normalizeMonthDays = (days?: string[] | null): number[] | undefined => {
+    if (!days || days.length === 0) return undefined;
+    const normalized = days
+        .map((day) => Number(day))
+
+
+        .filter((day) => Number.isFinite(day) && ((day >= 1 && day <= 31) || day === -1));
+    const unique = Array.from(new Set(normalized)).sort((a, b) => a - b);
+    return unique.length > 0 ? unique : undefined;
+};
+
+const normalizeAnchorDay = (value: unknown): number | undefined => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+    const day = Math.floor(value);
+    return day >= 1 && day <= 31 ? day : undefined;
+};
+
+const parseUntilToken = (value: string | undefined): string | undefined => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return undefined;
+    const dateOnlyMatch = /^(\d{4})(\d{2})(\d{2})$/.exec(trimmed);
+    if (dateOnlyMatch) {
+        const [, year, month, day] = dateOnlyMatch;
+        return `${year}-${month}-${day}`;
+    }
+
+    const dateTimeMatch = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/i.exec(trimmed);
+    if (!dateTimeMatch) return undefined;
+
+    const [, year, month, day, hour, minute, second = '00', isUtc] = dateTimeMatch;
+    const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}${isUtc ? 'Z' : ''}`;
+    const parsed = safeParseDate(iso);
+    if (!parsed) return undefined;
+    return isUtc ? parsed.toISOString() : format(parsed, "yyyy-MM-dd'T'HH:mm:ss");
+};
+
+const formatUntilToken = (until: string | undefined): string | undefined => {
+    const trimmed = String(until || '').trim();
+    if (!trimmed) return undefined;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return trimmed.replace(/-/g, '');
+    }
+    const parsed = safeParseDate(trimmed);
+    if (!parsed) return undefined;
+    const year = String(parsed.getUTCFullYear()).padStart(4, '0');
+    const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getUTCDate()).padStart(2, '0');
+    const hour = String(parsed.getUTCHours()).padStart(2, '0');
+    const minute = String(parsed.getUTCMinutes()).padStart(2, '0');
+    const second = String(parsed.getUTCSeconds()).padStart(2, '0');
+    return `${year}${month}${day}T${hour}${minute}${second}Z`;
+};
+
+const rruleTokens = (rrule: string): Record<string, string> => (
+    rrule.split(';').reduce<Record<string, string>>((acc, part) => {
+        const [key, value] = part.split('=');
+        if (key && value) acc[key.toUpperCase()] = value;
+        return acc;
+    }, {})
+);
+
+
+const parseRRuleSelectors = (rrule: string): Omit<ParsedRRule, 'until'> => {
+    if (!rrule) return {};
+    const tokens = rruleTokens(rrule);
+    const freq = tokens.FREQ ? RRULE_FREQ_MAP[tokens.FREQ.toUpperCase()] : undefined;
+    const byDay = tokens.BYDAY ? normalizeWeekdays(tokens.BYDAY.split(',')) : undefined;
+    const byMonthDay = tokens.BYMONTHDAY ? normalizeMonthDays(tokens.BYMONTHDAY.split(',')) : undefined;
+    const rawSetPos = tokens.BYSETPOS ? Number(tokens.BYSETPOS) : undefined;
+    const bySetPos = rawSetPos && Number.isInteger(rawSetPos) && Math.abs(rawSetPos) <= 366
+        ? rawSetPos
+        : undefined;
+    const interval = tokens.INTERVAL ? Number(tokens.INTERVAL) : undefined;
+    const weekStart = normalizeWeekStart(tokens.WKST);
+    const count = tokens.COUNT ? Number(tokens.COUNT) : undefined;
+    return {
+        rule: freq,
+        byDay,
+        byMonthDay,
+        bySetPos,
+        interval: interval && interval > 0 ? interval : undefined,
+        weekStart,
+        count: count && count > 0 ? Math.round(count) : undefined,
+    };
+};
+
+export function parseRRuleString(rrule: string): ParsedRRule {
+    if (!rrule) return {};
+    return { ...parseRRuleSelectors(rrule), until: parseUntilToken(rruleTokens(rrule).UNTIL) };
+}
+
+export function normalizeRecurrenceForLoad(value: unknown): Recurrence | undefined {
+    if (!value) return undefined;
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return undefined;
+        if (isRecurrenceRule(trimmed)) return { rule: trimmed };
+        const parsed = parseRRuleString(trimmed);
+        return parsed.rule
+            ? {
+                rule: parsed.rule,
+                ...(parsed.byDay ? { byDay: parsed.byDay } : {}),
+                ...(parsed.byMonthDay ? { byMonthDay: parsed.byMonthDay } : {}),
+                ...(parsed.weekStart ? { weekStart: parsed.weekStart } : {}),
+                ...(parsed.count ? { count: parsed.count } : {}),
+                ...(parsed.until ? { until: parsed.until } : {}),
+                rrule: trimmed,
+            }
+            : undefined;
+    }
+
+    if (typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+    const recurrence = value as Partial<Recurrence>;
+    const rrule = typeof recurrence.rrule === 'string' && recurrence.rrule.trim().length > 0
+        ? recurrence.rrule.trim()
+        : undefined;
+    const parsed = rrule ? parseRRuleString(rrule) : {};
+    const rule = isRecurrenceRule(recurrence.rule) ? recurrence.rule : parsed.rule;
+    if (!rule) return undefined;
+
+    const explicitSeriesId = typeof recurrence.seriesId === 'string' && recurrence.seriesId.trim().length > 0
+        ? recurrence.seriesId.trim()
+        : undefined;
+    const seriesId = explicitSeriesId ?? getSeriesIdFromRRule(rrule);
+    const strategy = recurrence.strategy === 'fluid' || recurrence.strategy === 'strict'
+        ? recurrence.strategy
+        : undefined;
+    const explicitByDay = Array.isArray(recurrence.byDay)
+        ? normalizeWeekdays(recurrence.byDay)
+        : undefined;
+    const byDay = explicitByDay ?? parsed.byDay;
+    const explicitByMonthDay = Array.isArray(recurrence.byMonthDay)
+        ? normalizeMonthDays(recurrence.byMonthDay.map(String))
+        : undefined;
+    const byMonthDay = explicitByMonthDay ?? parsed.byMonthDay;
+    const weekStart = normalizeWeekStart(recurrence.weekStart) ?? parsed.weekStart;
+    const count = typeof recurrence.count === 'number' && Number.isFinite(recurrence.count) && recurrence.count > 0
+        ? Math.round(recurrence.count)
+        : parsed.count;
+    const until = typeof recurrence.until === 'string' && recurrence.until.trim().length > 0
+        ? recurrence.until
+        : parsed.until;
+    const completedOccurrences =
+        typeof recurrence.completedOccurrences === 'number'
+        && Number.isFinite(recurrence.completedOccurrences)
+        && recurrence.completedOccurrences >= 0
+            ? Math.floor(recurrence.completedOccurrences)
+            : undefined;
+    const anchorDay = normalizeAnchorDay(recurrence.anchorDay);
+    const startAnchorDay = normalizeAnchorDay(recurrence.startAnchorDay);
+    const dueAnchorDay = normalizeAnchorDay(recurrence.dueAnchorDay);
+    const reviewAnchorDay = normalizeAnchorDay(recurrence.reviewAnchorDay);
+    const compatibleRRule = seriesId
+        ? withSeriesIdInRRule(
+            rrule ?? buildRRuleString(rule, byDay, parsed.interval, {
+                byMonthDay,
+                bySetPos: parsed.bySetPos,
+                weekStart,
+                count,
+                until,
+            }),
+            seriesId,
+        )
+        : rrule;
+
+    return {
+        rule,
+        ...(seriesId ? { seriesId } : {}),
+        ...(typeof recurrence.preserveChecklistOnRepeat === 'boolean' ? { preserveChecklistOnRepeat: recurrence.preserveChecklistOnRepeat } : {}),
+        ...(strategy ? { strategy } : {}),
+        ...(byDay ? { byDay } : {}),
+        ...(byMonthDay ? { byMonthDay } : {}),
+        ...(weekStart ? { weekStart } : {}),
+        ...(count ? { count } : {}),
+        ...(until ? { until } : {}),
+        ...(completedOccurrences !== undefined ? { completedOccurrences } : {}),
+        ...(anchorDay ? { anchorDay } : {}),
+        ...(startAnchorDay ? { startAnchorDay } : {}),
+        ...(dueAnchorDay ? { dueAnchorDay } : {}),
+        ...(reviewAnchorDay ? { reviewAnchorDay } : {}),
+        ...(compatibleRRule ? { rrule: compatibleRRule } : {}),
+    };
+}
+
+
+export const canonicalRecurringFollowUp = (task: Task): Task => ({
+    ...task,
+    recurrence: normalizeRecurrenceForLoad(task.recurrence),
+    suppressStrideReminders: task.suppressStrideReminders ?? false,
+    pushCount: 0,
+});
+
+const normalizeWeeklyByDay = (days?: RecurrenceByDay[] | null): RecurrenceWeekday[] | undefined => {
+    const normalized = normalizeWeekdays(days as string[] | null);
+    if (!normalized) return undefined;
+    const weekly = normalized.filter((day) => WEEKDAY_ORDER.includes(day as RecurrenceWeekday)) as RecurrenceWeekday[];
+    return weekly.length > 0 ? Array.from(new Set(weekly)) : undefined;
+};
+
+export function buildRRuleString(
+    rule: RecurrenceRule,
+    byDay?: RecurrenceByDay[],
+    interval?: number,
+    options: BuildRRuleOptions = {}
+): string {
+    const parts = [`FREQ=${rule.toUpperCase()}`];
+    if (interval && interval > 1) {
+        parts.push(`INTERVAL=${interval}`);
+    }
+    const normalizedDays = normalizeWeekdays(byDay as string[] | null);
+    if (normalizedDays && normalizedDays.length > 0) {
+        if (rule === 'weekly') {
+            const weeklyDays = normalizeWeeklyByDay(normalizedDays);
+            if (weeklyDays && weeklyDays.length > 0) {
+                const ordered = WEEKDAY_ORDER.filter((day) => weeklyDays.includes(day));
+                parts.push(`BYDAY=${ordered.join(',')}`);
+            }
+        } else if (rule === 'monthly') {
+            const ordered = normalizedDays
+                .filter(Boolean)
+                .sort((a, b) => String(a).localeCompare(String(b)));
+            parts.push(`BYDAY=${ordered.join(',')}`);
+        }
+    } else if (rule === 'monthly') {
+        const normalizedMonthDays = normalizeMonthDays((options.byMonthDay || []).map(String));
+        if (normalizedMonthDays && normalizedMonthDays.length > 0) {
+            parts.push(`BYMONTHDAY=${normalizedMonthDays.join(',')}`);
+        }
+    }
+    if (rule === 'monthly' && (normalizedDays?.length || options.byMonthDay?.length)
+        && options.bySetPos && Number.isInteger(options.bySetPos) && Math.abs(options.bySetPos) <= 366) {
+        parts.push(`BYSETPOS=${options.bySetPos}`);
+    }
+    if (options.count && options.count > 0) {
+        parts.push(`COUNT=${Math.round(options.count)}`);
+    }
+    const weekStart = normalizeWeekStart(options.weekStart);
+    if (rule === 'weekly' && weekStart) {
+        parts.push(`WKST=${weekStart}`);
+    }
+    const untilToken = formatUntilToken(options.until);
+    if (untilToken) {
+        parts.push(`UNTIL=${untilToken}`);
+    }
+    return parts.join(';');
+}
+
+const EDITABLE_RRULE_TOKEN_KEYS = new Set([
+    'FREQ',
+    'INTERVAL',
+    'BYDAY',
+    'BYMONTHDAY',
+    'BYSETPOS',
+    'COUNT',
+    'WKST',
+    'UNTIL',
+]);
+
+const hasRRuleEditOverride = <TKey extends keyof RRuleEditOverrides>(
+    overrides: RRuleEditOverrides,
+    key: TKey,
+): boolean => Object.prototype.hasOwnProperty.call(overrides, key);
+
+
+export function editRRuleString(
+    existingRRule: string,
+    rule: RecurrenceRule,
+    overrides: RRuleEditOverrides = {},
+): string {
+    const parsed = parseRRuleString(existingRRule);
+    const byDay = hasRRuleEditOverride(overrides, 'byDay') ? overrides.byDay : parsed.byDay;
+    const interval = hasRRuleEditOverride(overrides, 'interval') ? overrides.interval : parsed.interval;
+    const byMonthDay = hasRRuleEditOverride(overrides, 'byMonthDay')
+        ? overrides.byMonthDay
+        : parsed.byMonthDay;
+    const bySetPos = hasRRuleEditOverride(overrides, 'bySetPos')
+        ? overrides.bySetPos
+        : hasRRuleEditOverride(overrides, 'byDay') || hasRRuleEditOverride(overrides, 'byMonthDay')
+            ? undefined
+            : parsed.bySetPos;
+    const count = hasRRuleEditOverride(overrides, 'count') ? overrides.count : parsed.count;
+    const weekStart = hasRRuleEditOverride(overrides, 'weekStart')
+        ? overrides.weekStart
+        : parsed.weekStart;
+    const until = hasRRuleEditOverride(overrides, 'until') ? overrides.until : parsed.until;
+    const edited = buildRRuleString(rule, byDay, interval, {
+        byMonthDay,
+        bySetPos,
+        count,
+        weekStart,
+        until,
+    });
+    const opaqueTokens = existingRRule
+        .split(';')
+        .map((part) => part.trim())
+        .filter((part) => {
+            const separator = part.indexOf('=');
+            if (separator <= 0 || separator === part.length - 1) return false;
+            return !EDITABLE_RRULE_TOKEN_KEYS.has(part.slice(0, separator).trim().toUpperCase());
+        });
+    return opaqueTokens.length > 0 ? `${edited};${opaqueTokens.join(';')}` : edited;
+}
+
+
+export function getRecurrenceRRuleValue(value: Task['recurrence']): string {
+    if (!value || typeof value === 'string' || !value.rule) return '';
+    if (value.rrule) return value.rrule;
+
+    const count = getRecurrenceCountValue(value);
+    const until = getRecurrenceUntilValue(value);
+    if (value.byDay?.length) {
+        return buildRRuleString(value.rule, value.byDay, undefined, {
+            count,
+            weekStart: value.weekStart,
+            until,
+        });
+    }
+    if (value.byMonthDay?.length) {
+        return buildRRuleString(value.rule, undefined, undefined, {
+            byMonthDay: value.byMonthDay,
+            count,
+            weekStart: value.weekStart,
+            until,
+        });
+    }
+    return buildRRuleString(value.rule, undefined, undefined, {
+        count,
+        weekStart: value.weekStart,
+        until,
+    });
+}
+
+export function hasRecurrenceRule(value: Task['recurrence']): boolean {
+    return getRecurrenceRule(value) !== null;
+}
+
+
+export function canSkipRecurringTaskOccurrence(task: Task): boolean {
+    const anchorField = getRecurrenceScheduleAnchorField(task);
+    return !task.deletedAt
+        && !task.purgedAt
+        && isTaskActionable(task)
+        && getRecurrenceRule(task.recurrence) !== null
+        && getRecurrenceStrategy(task.recurrence) === 'strict'
+        && Boolean(anchorField && safeParseDate(task[anchorField]));
+}
+
+function getRecurrenceRule(value: Task['recurrence']): RecurrenceRule | null {
+    if (!value) return null;
+    if (typeof value === 'string') {
+        return isRecurrenceRule(value) ? value : null;
+    }
+    if (typeof value === 'object') {
+        const rule = (value as Recurrence).rule;
+        if (isRecurrenceRule(rule)) return rule;
+        if ((value as Recurrence).rrule) {
+            const parsed = parseRRuleSelectors((value as Recurrence).rrule || '');
+            if (parsed.rule) return parsed.rule;
+        }
+    }
+    return null;
+}
+
+function getRecurrenceStrategy(value: Task['recurrence']): RecurrenceStrategy {
+    if (value && typeof value === 'object' && value.strategy === 'fluid') {
+        return 'fluid';
+    }
+    return 'strict';
+}
+
+function getRecurrenceByDay(value: Task['recurrence']): RecurrenceByDay[] | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    const explicit = normalizeWeekdays(recurrence.byDay);
+    if (explicit && explicit.length > 0) return explicit;
+    if (recurrence.rrule) {
+        const parsed = parseRRuleSelectors(recurrence.rrule);
+        return parsed.byDay;
+    }
+    return undefined;
+}
+
+function getRecurrenceByMonthDay(value: Task['recurrence']): number[] | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    const explicit = Array.isArray(recurrence.byMonthDay)
+        ? normalizeMonthDays(recurrence.byMonthDay.map(String))
+        : undefined;
+    if (explicit && explicit.length > 0) return explicit;
+    if (recurrence.rrule) {
+        const parsed = parseRRuleSelectors(recurrence.rrule);
+        return parsed.byMonthDay;
+    }
+    return undefined;
+}
+
+function getRecurrenceBySetPos(value: Task['recurrence']): number | undefined {
+    return value && typeof value === 'object' && value.rrule
+        ? parseRRuleSelectors(value.rrule).bySetPos
+        : undefined;
+}
+
+function getRecurrenceInterval(value: Task['recurrence']): number {
+    if (!value || typeof value === 'string') return 1;
+    const recurrence = value as Recurrence;
+    if (recurrence.rrule) {
+        const parsed = parseRRuleSelectors(recurrence.rrule);
+        if (parsed.interval && parsed.interval > 0) return parsed.interval;
+    }
+    return 1;
+}
+
+function getRecurrenceWeekStart(value: Task['recurrence']): RecurrenceWeekday | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    const explicit = normalizeWeekStart(recurrence.weekStart);
+    if (explicit) return explicit;
+    if (recurrence.rrule) {
+        return parseRRuleSelectors(recurrence.rrule).weekStart;
+    }
+    return undefined;
+}
+
+export function getRecurrenceCountValue(value: Task['recurrence']): number | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    if (typeof recurrence.count === 'number' && recurrence.count > 0) {
+        return Math.round(recurrence.count);
+    }
+    if (recurrence.rrule) {
+        const parsed = parseRRuleSelectors(recurrence.rrule);
+        if (parsed.count && parsed.count > 0) return parsed.count;
+    }
+    return undefined;
+}
+
+export function getRecurrenceUntilValue(value: Task['recurrence']): string | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    if (recurrence.until) return recurrence.until;
+    if (recurrence.rrule) {
+        return parseRRuleString(recurrence.rrule).until;
+    }
+    return undefined;
+}
+
+export function getRecurrenceCompletedOccurrencesValue(value: Task['recurrence']): number | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    if (typeof recurrence.completedOccurrences !== 'number' || recurrence.completedOccurrences < 0) {
+        return undefined;
+    }
+    return Math.floor(recurrence.completedOccurrences);
+}
+
+
+export function formatRecurrenceCountLabel(
+    count: number,
+    completedOccurrences: number | undefined,
+    t: (key: string) => string
+): string {
+    const progress = completedOccurrences && completedOccurrences > 0
+        ? `${completedOccurrences} ${t('recurrence.occurrenceProgressOf')} `
+        : '';
+    return `${t('recurrence.endsAfterCount')} ${progress}${count} ${t('recurrence.occurrenceUnit')}`;
+}
+
+export function formatRecurrenceLabel({ recurrence, t, formatDate }: FormatRecurrenceLabelOptions): string {
+    const rule = getRecurrenceRule(recurrence);
+    if (!rule) return '';
+
+    const strategy = getRecurrenceStrategy(recurrence);
+    const interval = getRecurrenceInterval(recurrence);
+    const until = getRecurrenceUntilValue(recurrence);
+    const count = getRecurrenceCountValue(recurrence);
+    const completed = getRecurrenceCompletedOccurrencesValue(recurrence);
+    const bySetPos = getRecurrenceBySetPos(recurrence);
+    const ordinalKey = ({ 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', [-1]: 'last' } as Record<number, string>)[bySetPos ?? 0];
+    const weekdayPosition = rule === 'monthly' && ordinalKey && isMonthlyWeekdaySet(getRecurrenceByDay(recurrence))
+        ? t('recurrence.onNthWeekday')
+            .replace('{ordinal}', t(`recurrence.ordinal.${ordinalKey}`))
+            .replace('{weekday}', t('recurrence.weekdayMonFri'))
+        : undefined;
+    const unitKey = rule === 'daily'
+        ? 'recurrence.dayUnit'
+        : rule === 'weekly'
+            ? 'recurrence.weekUnit'
+            : rule === 'monthly'
+                ? 'recurrence.monthUnit'
+                : rule === 'yearly'
+                    ? 'recurrence.yearUnit'
+                    : undefined;
+
+    return [
+        `${t(`recurrence.${rule}`) || rule}${strategy === 'fluid' ? ` · ${t('recurrence.afterCompletionShort')}` : ''}`,
+        unitKey && interval > 1
+            ? `${t('recurrence.repeatEvery')} ${interval} ${t(unitKey)}`
+            : undefined,
+        weekdayPosition,
+        until ? `${t('recurrence.endsOnDate')} ${(formatDate ?? ((value: string) => safeFormatDate(value, 'P')))(until)}` : undefined,
+        count ? formatRecurrenceCountLabel(count, completed, t) : undefined,
+    ].filter(Boolean).join(' · ');
+}
+
+function getRecurrenceFieldAnchorDay(
+    value: Task['recurrence'],
+    field: 'startTime' | 'dueDate' | 'reviewAt'
+): number | undefined {
+    if (!value || typeof value === 'string') return undefined;
+    const recurrence = value as Recurrence;
+    const fieldAnchor = field === 'startTime'
+        ? recurrence.startAnchorDay
+        : field === 'dueDate'
+            ? recurrence.dueAnchorDay
+            : recurrence.reviewAnchorDay;
+    return normalizeAnchorDay(fieldAnchor);
+}
+
+const getDateDay = (value: string | undefined): number | undefined => {
+    const parsed = safeParseDate(value);
+    return parsed ? parsed.getDate() : undefined;
+};
+
+type RecurrenceScheduleDates = Pick<Task, 'startTime' | 'dueDate' | 'reviewAt'>;
+type RecurrenceScheduleField = keyof RecurrenceScheduleDates;
+
+const getRecurrenceScheduleAnchorField = (
+    dates: RecurrenceScheduleDates,
+): RecurrenceScheduleField | null => (
+    (['dueDate', 'startTime', 'reviewAt'] as const).find((field) => Boolean(dates[field])) ?? null
+);
+
+
+function resolveRecurrenceFieldAnchorDays(
+    recurrence: Task['recurrence'],
+    dates: RecurrenceScheduleDates,
+): { startTime?: number; dueDate?: number; reviewAt?: number } {
+    const globalAnchor = normalizeAnchorDay(
+        recurrence && typeof recurrence === 'object' ? (recurrence as Recurrence).anchorDay : undefined
+    );
+    const ownerField: 'startTime' | 'dueDate' | 'reviewAt' | null = dates.dueDate
+        ? 'dueDate'
+        : dates.startTime
+            ? 'startTime'
+            : dates.reviewAt
+                ? 'reviewAt'
+                : null;
+    const resolve = (field: 'startTime' | 'dueDate' | 'reviewAt'): number | undefined => (
+        getRecurrenceFieldAnchorDay(recurrence, field)
+            ?? (field === ownerField ? globalAnchor : undefined)
+            ?? getDateDay(dates[field])
+    );
+    return {
+        startTime: resolve('startTime'),
+        dueDate: resolve('dueDate'),
+        reviewAt: resolve('reviewAt'),
+    };
+}
+
+function getNextRecurrenceAnchorDays(
+    task: Task,
+    rule: RecurrenceRule,
+    sourceAnchorDays: ReturnType<typeof resolveRecurrenceFieldAnchorDays>,
+) {
+    if (rule !== 'monthly' && rule !== 'yearly') return {};
+
+    const {
+        startTime: startAnchorDay,
+        dueDate: dueAnchorDay,
+        reviewAt: reviewAnchorDay,
+    } = sourceAnchorDays;
+    const anchorDay = normalizeAnchorDay(
+        typeof task.recurrence === 'object' ? task.recurrence.anchorDay : undefined
+    ) ?? dueAnchorDay ?? startAnchorDay ?? reviewAnchorDay;
+
+    return {
+        ...(anchorDay ? { anchorDay } : {}),
+        ...(startAnchorDay ? { startAnchorDay } : {}),
+        ...(dueAnchorDay ? { dueAnchorDay } : {}),
+        ...(reviewAnchorDay ? { reviewAnchorDay } : {}),
+    };
+}
+
+function addInterval(base: Date, rule: RecurrenceRule, interval: number = 1, anchorDay?: number): Date {
+    switch (rule) {
+        case 'daily':
+            return addDays(base, interval);
+        case 'weekly':
+            return addWeeks(base, interval);
+        case 'monthly':
+            return addMonthsClamped(base, interval, anchorDay);
+        case 'yearly':
+            return addYearsClamped(base, interval, anchorDay);
+    }
+}
+
+const weekdayIndex = (weekday: RecurrenceWeekday): number => WEEKDAY_ORDER.indexOf(weekday);
+
+const getLastDayOfMonth = (year: number, month: number): number => {
+    return new Date(year, month + 1, 0).getDate();
+};
+
+const buildDateWithTime = (year: number, month: number, day: number, base: Date): Date => {
+    return new Date(
+        year,
+        month,
+        day,
+        base.getHours(),
+        base.getMinutes(),
+        base.getSeconds(),
+        base.getMilliseconds()
+    );
+};
+
+const addMonthsClamped = (base: Date, interval: number, anchorDay?: number): Date => {
+    const seed = new Date(
+        base.getFullYear(),
+        base.getMonth() + interval,
+        1,
+        base.getHours(),
+        base.getMinutes(),
+        base.getSeconds(),
+        base.getMilliseconds()
+    );
+    const year = seed.getFullYear();
+    const month = seed.getMonth();
+    const lastDay = getLastDayOfMonth(year, month);
+    const day = Math.min(anchorDay ?? base.getDate(), lastDay);
+    return buildDateWithTime(year, month, day, base);
+};
+
+const addYearsClamped = (base: Date, interval: number, anchorDay?: number): Date => {
+    const year = base.getFullYear() + interval;
+    const month = base.getMonth();
+    const lastDay = getLastDayOfMonth(year, month);
+    const day = Math.min(anchorDay ?? base.getDate(), lastDay);
+    return buildDateWithTime(year, month, day, base);
+};
+
+const orderWeekdaysByWeekStart = (weekStart: RecurrenceWeekday): RecurrenceWeekday[] => {
+    const startIndex = WEEKDAY_ORDER.indexOf(weekStart);
+    if (startIndex < 0) return WEEKDAY_ORDER;
+    return [...WEEKDAY_ORDER.slice(startIndex), ...WEEKDAY_ORDER.slice(0, startIndex)];
+};
+
+function nextWeeklyByDay(
+    base: Date,
+    byDay: RecurrenceByDay[],
+    interval: number = 1,
+    weekStart: RecurrenceWeekday = 'MO'
+): Date {
+    const normalizedDays = normalizeWeeklyByDay(byDay);
+    if (!normalizedDays || normalizedDays.length === 0) {
+        return addWeeks(base, interval);
+    }
+    const safeInterval = interval > 0 ? interval : 1;
+    const normalizedWeekStart = normalizeWeekStart(weekStart) ?? 'MO';
+    const orderedDays = orderWeekdaysByWeekStart(normalizedWeekStart).filter((day) => normalizedDays.includes(day));
+    const weekStartIndex = weekdayIndex(normalizedWeekStart);
+    const anchorWeekStart = new Date(base);
+    anchorWeekStart.setDate(base.getDate() - ((base.getDay() - weekStartIndex + 7) % 7));
+
+    for (let weekOffset = 0; weekOffset <= safeInterval * 52; weekOffset += safeInterval) {
+        const candidateWeekStart = addWeeks(anchorWeekStart, weekOffset);
+        for (const weekday of orderedDays) {
+            const dayOffset = (weekdayIndex(weekday) - weekStartIndex + 7) % 7;
+            const candidate = addDays(candidateWeekStart, dayOffset);
+            if (weekOffset === 0 && candidate <= base) continue;
+            return candidate;
+        }
+    }
+    return addWeeks(base, safeInterval);
+}
+
+const getNthWeekdayOfMonth = (year: number, month: number, weekday: RecurrenceWeekday, ordinal: number): Date | null => {
+    if (ordinal === 0) return null;
+    if (ordinal > 0) {
+        const firstOfMonth = new Date(year, month, 1);
+        const firstWeekday = firstOfMonth.getDay();
+        const targetWeekday = weekdayIndex(weekday);
+        const offset = (targetWeekday - firstWeekday + 7) % 7;
+        const day = 1 + offset + (ordinal - 1) * 7;
+        const candidate = new Date(year, month, day);
+        return candidate.getMonth() === month ? candidate : null;
+    }
+
+    const lastOfMonth = new Date(year, month + 1, 0);
+    const lastWeekday = lastOfMonth.getDay();
+    const targetWeekday = weekdayIndex(weekday);
+    const offset = (lastWeekday - targetWeekday + 7) % 7;
+    const day = lastOfMonth.getDate() - offset;
+    const candidate = new Date(year, month, day);
+    return candidate.getMonth() === month ? candidate : null;
+};
+
+const parseOrdinalByDay = (token: RecurrenceByDay): { weekday: RecurrenceWeekday; ordinal?: number } | null => {
+    const match = String(token).match(/^(-?\d)?(SU|MO|TU|WE|TH|FR|SA)$/);
+    if (!match) return null;
+    const ordinal = match[1] ? Number(match[1]) : undefined;
+    const weekday = match[2] as RecurrenceWeekday;
+    return { weekday, ordinal };
+};
+
+function nextMonthlyByDay(base: Date, byDay: RecurrenceByDay[], interval: number = 1, bySetPos?: number): Date {
+    const normalized = normalizeWeekdays(byDay as string[] | null);
+    if (!normalized || normalized.length === 0) {
+        return addMonths(base, interval);
+    }
+    const candidates = normalized
+        .map(parseOrdinalByDay)
+        .filter((item): item is { weekday: RecurrenceWeekday; ordinal?: number } => Boolean(item));
+    const safeInterval = interval > 0 ? interval : 1;
+    for (let offset = 0; offset <= safeInterval * 12; offset += safeInterval) {
+        const monthDate = addMonths(base, offset);
+        const year = monthDate.getFullYear();
+        const month = monthDate.getMonth();
+        const monthCandidates: Date[] = [];
+        candidates.forEach((candidate) => {
+            if (typeof candidate.ordinal === 'number') {
+                const result = getNthWeekdayOfMonth(year, month, candidate.weekday, candidate.ordinal);
+                if (result) {
+                    monthCandidates.push(buildDateWithTime(
+                        result.getFullYear(),
+                        result.getMonth(),
+                        result.getDate(),
+                        base
+                    ));
+                }
+                return;
+            }
+
+            const targetWeekday = weekdayIndex(candidate.weekday);
+            for (let day = 1; day <= getLastDayOfMonth(year, month); day += 1) {
+                const result = buildDateWithTime(year, month, day, base);
+                if (result.getDay() === targetWeekday) {
+                    monthCandidates.push(result);
+                }
+            }
+        });
+        const ordered = monthCandidates
+            .sort((a, b) => a.getTime() - b.getTime())
+            .filter((date, index, dates) => index === 0 || date.getTime() !== dates[index - 1].getTime());
+        const positioned = bySetPos
+            ? [ordered[bySetPos > 0 ? bySetPos - 1 : ordered.length + bySetPos]].filter((date): date is Date => Boolean(date))
+            : ordered;
+        const filtered = positioned
+            .filter((date) => (offset === 0 ? date > base : true))
+            .sort((a, b) => a.getTime() - b.getTime());
+        if (filtered.length > 0) {
+            return filtered[0];
+        }
+    }
+    return addMonths(base, safeInterval);
+}
+
+function nextMonthlyByMonthDay(base: Date, byMonthDay: number[], interval: number = 1, bySetPos?: number): Date {
+    const normalized = normalizeMonthDays(byMonthDay.map(String));
+    if (!normalized || normalized.length === 0) {
+        return addMonths(base, interval);
+    }
+    const safeInterval = interval > 0 ? interval : 1;
+    for (let offset = 0; offset <= safeInterval * 12; offset += safeInterval) {
+        const monthDate = addMonths(base, offset);
+        const year = monthDate.getFullYear();
+        const month = monthDate.getMonth();
+        const candidates = normalized.map((day) => new Date(
+            year,
+
+            day === -1 ? month + 1 : month,
+            day === -1 ? 0 : day,
+            base.getHours(),
+            base.getMinutes(),
+            base.getSeconds(),
+            base.getMilliseconds()
+        ));
+        const ordered = candidates
+            .filter((date) => date.getMonth() === month)
+            .sort((a, b) => a.getTime() - b.getTime());
+        const positioned = bySetPos
+            ? [ordered[bySetPos > 0 ? bySetPos - 1 : ordered.length + bySetPos]].filter((date): date is Date => Boolean(date))
+            : ordered;
+        const filtered = positioned
+            .filter((date) => (offset === 0 ? date > base : true))
+            .sort((a, b) => a.getTime() - b.getTime());
+        if (filtered.length > 0) return filtered[0];
+    }
+    return addMonths(base, safeInterval);
+}
+
+function nextIsoFrom(
+    baseIso: string | undefined,
+    rule: RecurrenceRule,
+    fallbackBase: Date,
+    byDay?: RecurrenceByDay[],
+    interval: number = 1,
+    byMonthDay?: number[],
+    weekStart?: RecurrenceWeekday,
+    searchBase?: Date,
+    anchorDay?: number,
+    bySetPos?: number,
+): string | undefined {
+    const parsed = safeParseDate(baseIso);
+    const formatBase = parsed || fallbackBase;
+    const base = searchBase ?? formatBase;
+    const effectiveByDay = byDay && byDay.length > 0 ? byDay : undefined;
+    const effectiveByMonthDay = byMonthDay && byMonthDay.length > 0 ? byMonthDay : undefined;
+    let nextDate = rule === 'weekly' && effectiveByDay
+        ? nextWeeklyByDay(base, effectiveByDay, interval, weekStart)
+        : rule === 'monthly' && effectiveByDay
+            ? nextMonthlyByDay(base, effectiveByDay, interval, bySetPos)
+            : rule === 'monthly' && effectiveByMonthDay
+                ? nextMonthlyByMonthDay(base, effectiveByMonthDay, interval, bySetPos)
+                : addInterval(base, rule, interval, anchorDay ?? formatBase.getDate());
+
+
+    const isDateOnly = !!baseIso && /^\d{4}-\d{2}-\d{2}$/.test(baseIso);
+    if (isDateOnly) {
+        return format(nextDate, 'yyyy-MM-dd');
+    }
+    const hasTimezone = !!baseIso && /Z$|[+-]\d{2}:?\d{2}$/.test(baseIso);
+    const hasLocalTime = !!baseIso && /[T\s]\d{2}:\d{2}/.test(baseIso);
+    if (!hasTimezone && hasLocalTime) {
+        nextDate = buildDateWithTime(nextDate.getFullYear(), nextDate.getMonth(), nextDate.getDate(), formatBase);
+    }
+    return hasTimezone ? nextDate.toISOString() : format(nextDate, "yyyy-MM-dd'T'HH:mm");
+}
+
+
+function nextFluidIsoFrom(
+    baseIso: string | undefined,
+    rule: RecurrenceRule,
+    fallbackBase: Date,
+    byDay?: RecurrenceByDay[],
+    interval: number = 1,
+    byMonthDay?: number[],
+    weekStart?: RecurrenceWeekday,
+    bySetPos?: number,
+): string | undefined {
+    const hasByDay = !!byDay && byDay.length > 0;
+    const hasByMonthDay = !!byMonthDay && byMonthDay.length > 0;
+    const dayAligned = (rule === 'weekly' && hasByDay)
+        || (rule === 'monthly' && (hasByDay || hasByMonthDay));
+    if (!dayAligned || interval <= 1) {
+        return nextIsoFrom(baseIso, rule, fallbackBase, byDay, interval, byMonthDay, weekStart, undefined, undefined, bySetPos);
+    }
+    const base = safeParseDate(baseIso) || fallbackBase;
+    const shiftedBase = rule === 'weekly' ? addWeeks(base, interval - 1) : addMonths(base, interval - 1);
+    return nextIsoFrom(baseIso, rule, fallbackBase, byDay, 1, byMonthDay, weekStart, shiftedBase, undefined, bySetPos);
+}
+
+const preserveDateOnlyFormat = (
+    nextIso: string | undefined,
+    sourceIso: string | undefined
+): string | undefined => {
+    if (!nextIso || !sourceIso || !/^\d{4}-\d{2}-\d{2}$/.test(sourceIso)) return nextIso;
+    const parsed = safeParseDate(nextIso);
+    return parsed ? format(parsed, 'yyyy-MM-dd') : nextIso;
+};
+
+
+function shiftScheduleFieldFromAnchor(
+    sourceIso: string,
+    sourceAnchorIso: string,
+    nextAnchorIso: string,
+): string {
+    const source = safeParseDate(sourceIso);
+    const sourceAnchor = safeParseDate(sourceAnchorIso);
+    const nextAnchor = safeParseDate(nextAnchorIso);
+    if (!source || !sourceAnchor || !nextAnchor) return sourceIso;
+
+    const shifted = addDays(nextAnchor, differenceInCalendarDays(source, sourceAnchor));
+    shifted.setHours(
+        source.getHours(),
+        source.getMinutes(),
+        source.getSeconds(),
+        source.getMilliseconds(),
+    );
+    if (/^\d{4}-\d{2}-\d{2}$/.test(sourceIso)) return format(shifted, 'yyyy-MM-dd');
+    if (/Z$|[+-]\d{2}:?\d{2}$/.test(sourceIso)) return shifted.toISOString();
+    return format(shifted, "yyyy-MM-dd'T'HH:mm");
+}
+
+function rebuildScheduleFieldsFromAnchor(
+    sourceDates: RecurrenceScheduleDates,
+    anchorField: RecurrenceScheduleField,
+    nextAnchorIso: string,
+): RecurrenceScheduleDates {
+    const sourceAnchorIso = sourceDates[anchorField];
+    if (!sourceAnchorIso) return {};
+    const rebuild = (field: RecurrenceScheduleField): string | undefined => {
+        const sourceIso = sourceDates[field];
+        if (!sourceIso) return undefined;
+        return field === anchorField
+            ? preserveDateOnlyFormat(nextAnchorIso, sourceIso)
+            : shiftScheduleFieldFromAnchor(sourceIso, sourceAnchorIso, nextAnchorIso);
+    };
+    return {
+        startTime: rebuild('startTime'),
+        dueDate: rebuild('dueDate'),
+        reviewAt: rebuild('reviewAt'),
+    };
+}
+
+function copyRecurringChecklist(checklist: ChecklistItem[] | undefined, createId: () => string, preserve: boolean): ChecklistItem[] | undefined {
+    if (!checklist || checklist.length === 0) return undefined;
+    return checklist.map((item) => ({
+        ...item,
+        id: createId(),
+        isCompleted: preserve ? item.isCompleted : false,
+    }));
+}
+
+const shouldStopAtUntil = (nextIso: string | undefined, until: string | undefined): boolean => {
+    if (!nextIso || !until) return false;
+    const nextDate = safeParseDate(nextIso);
+    if (!nextDate) return false;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(until)) {
+        return format(nextDate, 'yyyy-MM-dd') > until;
+    }
+    const untilDate = safeParseDate(until);
+    if (!untilDate) return false;
+    return nextDate.getTime() > untilDate.getTime();
+};
+
+type ProjectedIsoResult = {
+    iso?: string;
+    steps: number;
+};
+
+const emptyProjectedIsoResult = (): ProjectedIsoResult => ({ iso: undefined, steps: 0 });
+
+const getProjectionBaseDate = (projectedAtIso: string): Date => {
+    const parsed = safeParseDate(projectedAtIso);
+    if (parsed) return parsed;
+    const fallback = new Date(projectedAtIso);
+    return Number.isNaN(fallback.getTime()) ? new Date() : fallback;
+};
+
+const hasMonthlyRuleDateAnchor = (byDay?: RecurrenceByDay[], byMonthDay?: number[]): boolean => (
+    Boolean(byMonthDay?.length)
+    || Boolean(byDay?.length)
+);
+
+
+const getStrictCatchUpBoundary = (
+    anchorField: RecurrenceScheduleField | null,
+    anchorIso: string | undefined,
+    at: Date,
+): Date => (
+    anchorField === 'startTime' && /^\d{4}-\d{2}-\d{2}$/.test(anchorIso ?? '')
+        ? new Date(startOfDay(at).getTime() - 1)
+        : at
+);
+
+function projectStrictIsoFrom(
+    baseIso: string | undefined,
+    rule: RecurrenceRule,
+    projectionBase: Date,
+    byDay?: RecurrenceByDay[],
+    interval: number = 1,
+    byMonthDay?: number[],
+    weekStart?: RecurrenceWeekday,
+    anchorDay?: number,
+    bySetPos?: number,
+): ProjectedIsoResult {
+    const parsedBase = safeParseDate(baseIso);
+    const safeInterval = interval > 0 ? interval : 1;
+    const hasComplexCalendarRule = Boolean(byDay?.length) || Boolean(byMonthDay?.length);
+    let skippedSteps = 0;
+    let fastForwardedBaseIso = baseIso;
+
+
+    if (parsedBase && parsedBase < projectionBase && !hasComplexCalendarRule) {
+        const calendarDayNumber = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+        const calendarDayDelta = Math.max(0, calendarDayNumber(projectionBase) - calendarDayNumber(parsedBase));
+        const calendarMonthDelta = Math.max(
+            0,
+            (projectionBase.getFullYear() - parsedBase.getFullYear()) * 12
+                + projectionBase.getMonth() - parsedBase.getMonth(),
+        );
+        const calendarYearDelta = Math.max(0, projectionBase.getFullYear() - parsedBase.getFullYear());
+        const estimatedSteps = rule === 'daily'
+            ? Math.floor(calendarDayDelta / safeInterval)
+            : rule === 'weekly'
+                ? Math.floor(calendarDayDelta / (safeInterval * 7))
+                : rule === 'monthly'
+                    ? Math.floor(calendarMonthDelta / safeInterval)
+                    : Math.floor(calendarYearDelta / safeInterval);
+        skippedSteps = Math.max(0, estimatedSteps - 1);
+        if (skippedSteps > 0) {
+            fastForwardedBaseIso = nextIsoFrom(
+                baseIso,
+                rule,
+                projectionBase,
+                undefined,
+                safeInterval * skippedSteps,
+                undefined,
+                weekStart,
+                undefined,
+                anchorDay,
+            );
+        }
+    }
+
+    let nextIso = nextIsoFrom(
+        fastForwardedBaseIso,
+        rule,
+        projectionBase,
+        byDay,
+        safeInterval,
+        byMonthDay,
+        weekStart,
+        undefined,
+        anchorDay,
+        bySetPos,
+    );
+    if (!nextIso) return { iso: undefined, steps: 0 };
+
+    let steps = skippedSteps + 1;
+    for (let guard = 0; guard < 1000; guard += 1) {
+        const parsedNext = safeParseDate(nextIso);
+        if (!parsedNext || parsedNext > projectionBase) break;
+        const followingIso = nextIsoFrom(nextIso, rule, projectionBase, byDay, interval, byMonthDay, weekStart, undefined, anchorDay, bySetPos);
+        if (!followingIso || followingIso === nextIso) break;
+        nextIso = followingIso;
+        steps += 1;
+    }
+    return { iso: nextIso, steps };
+}
+
+function projectFluidIsoFrom(
+    baseIso: string,
+    rule: RecurrenceRule,
+    projectedAtIso: string,
+    projectionBase: Date,
+    catchUpBase: Date | undefined,
+    byDay?: RecurrenceByDay[],
+    interval: number = 1,
+    byMonthDay?: number[],
+    weekStart?: RecurrenceWeekday,
+    bySetPos?: number,
+): ProjectedIsoResult {
+
+
+    const fieldBaseDate = safeParseDate(baseIso);
+    const fieldIsFuture = Boolean(fieldBaseDate && fieldBaseDate.getTime() > projectionBase.getTime());
+    const fluidBaseIso = fieldIsFuture ? baseIso : projectedAtIso;
+    const fluidFallbackBase = fieldIsFuture && fieldBaseDate ? fieldBaseDate : projectionBase;
+    let nextIso = preserveDateOnlyFormat(
+        nextFluidIsoFrom(fluidBaseIso, rule, fluidFallbackBase, byDay, interval, byMonthDay, weekStart, bySetPos),
+        baseIso,
+    );
+    if (!nextIso) return emptyProjectedIsoResult();
+
+    let steps = 1;
+    let parsedNext = safeParseDate(nextIso);
+    if (!catchUpBase || !parsedNext || parsedNext > catchUpBase) {
+        return { iso: nextIso, steps };
+    }
+
+    const safeInterval = interval > 0 ? interval : 1;
+    const canFastForwardByCalendarDays = (rule === 'daily' || rule === 'weekly')
+        && !byDay?.length
+        && !byMonthDay?.length;
+    if (canFastForwardByCalendarDays) {
+        const calendarDayNumber = (date: Date) => (
+            Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000
+        );
+        const calendarDayDelta = Math.max(
+            0,
+            calendarDayNumber(catchUpBase) - calendarDayNumber(parsedNext),
+        );
+        const recurrenceDays = safeInterval * (rule === 'weekly' ? 7 : 1);
+        const skippedSteps = Math.max(0, Math.floor(calendarDayDelta / recurrenceDays) - 1);
+        if (skippedSteps > 0) {
+            nextIso = preserveDateOnlyFormat(
+                nextIsoFrom(
+                    nextIso,
+                    rule,
+                    catchUpBase,
+                    undefined,
+                    safeInterval * skippedSteps,
+                    undefined,
+                    weekStart,
+                ),
+                baseIso,
+            );
+            steps += skippedSteps;
+            parsedNext = safeParseDate(nextIso);
+        }
+    }
+
+
+    for (let guard = 0; guard < 1000 && parsedNext && parsedNext <= catchUpBase; guard += 1) {
+        const followingIso = preserveDateOnlyFormat(
+            nextFluidIsoFrom(nextIso, rule, parsedNext, byDay, safeInterval, byMonthDay, weekStart, bySetPos),
+            baseIso,
+        );
+        if (!followingIso || followingIso === nextIso) break;
+        nextIso = followingIso;
+        parsedNext = safeParseDate(nextIso);
+        steps += 1;
+    }
+
+    return { iso: nextIso, steps };
+}
+
+function projectUnscheduledStart(
+    rule: RecurrenceRule,
+    projectionBase: Date,
+    byDay?: RecurrenceByDay[],
+    interval: number = 1,
+    byMonthDay?: number[],
+    weekStart?: RecurrenceWeekday,
+    bySetPos?: number,
+): ProjectedIsoResult {
+    const seedIso = format(projectionBase, 'yyyy-MM-dd');
+    if (rule === 'daily') return { iso: seedIso, steps: 1 };
+    if (rule === 'weekly' && normalizeWeeklyByDay(byDay)?.length) {
+
+        const iso = nextIsoFrom(seedIso, rule, projectionBase, byDay, 1, undefined, weekStart, addDays(projectionBase, -1));
+        return iso ? { iso, steps: 1 } : emptyProjectedIsoResult();
+    }
+
+    if (rule !== 'monthly' || !hasMonthlyRuleDateAnchor(byDay, byMonthDay)) {
+        return emptyProjectedIsoResult();
+    }
+
+    const iso = nextIsoFrom(seedIso, rule, projectionBase, byDay, interval, byMonthDay, weekStart, undefined, undefined, bySetPos);
+    return iso ? { iso, steps: 1 } : emptyProjectedIsoResult();
+}
+
+type ProjectedOccurrenceFields = {
+    startTime?: string;
+    dueDate?: string;
+    reviewAt?: string;
+    steps: number;
+};
+
+type ProjectedOccurrenceAnchors = {
+    startTime?: number;
+    dueDate?: number;
+    reviewAt?: number;
+};
+
+
+function resolveProjectedOccurrenceAnchors(task: Task, baseTask: Task): ProjectedOccurrenceAnchors {
+    return resolveRecurrenceFieldAnchorDays(task.recurrence, baseTask);
+}
+
+
+function projectNextRecurringOccurrenceFields(
+    task: Task,
+    baseTask: Task,
+    rule: RecurrenceRule,
+    projectedAtIso: string,
+    projectionBase: Date,
+    anchors: ProjectedOccurrenceAnchors,
+    fluidCatchUpBase?: Date,
+): ProjectedOccurrenceFields | null {
+    const strategy = getRecurrenceStrategy(task.recurrence);
+    const byDay = getRecurrenceByDay(task.recurrence);
+    const byMonthDay = getRecurrenceByMonthDay(task.recurrence);
+    const bySetPos = getRecurrenceBySetPos(task.recurrence);
+    const interval = getRecurrenceInterval(task.recurrence);
+    const weekStart = getRecurrenceWeekStart(task.recurrence);
+
+    const projectField = (field: RecurrenceScheduleField): ProjectedIsoResult => {
+        const baseIso = baseTask[field];
+        if (!baseIso) return { iso: undefined, steps: 0 };
+        if (strategy === 'fluid') {
+            return projectFluidIsoFrom(
+                baseIso,
+                rule,
+                projectedAtIso,
+                projectionBase,
+                fluidCatchUpBase,
+                byDay,
+                interval,
+                byMonthDay,
+                weekStart,
+                bySetPos,
+            );
+        }
+        return projectStrictIsoFrom(baseIso, rule, getStrictCatchUpBoundary(field, baseIso, projectionBase),
+            byDay, interval, byMonthDay, weekStart, anchors[field], bySetPos);
+    };
+
+    const hasScheduleFields = Boolean(baseTask.startTime || baseTask.dueDate || baseTask.reviewAt);
+    if (!hasScheduleFields) {
+        const nextStart = projectUnscheduledStart(
+            rule,
+            projectionBase,
+            byDay,
+            interval,
+            byMonthDay,
+            weekStart,
+            bySetPos,
+        );
+        return nextStart.iso
+            ? { startTime: nextStart.iso, dueDate: undefined, reviewAt: undefined, steps: nextStart.steps }
+            : null;
+    }
+
+    const anchorField = getRecurrenceScheduleAnchorField(baseTask);
+    if (!anchorField) return null;
+    const anchorProjection = projectField(anchorField);
+    if (!anchorProjection.iso || anchorProjection.steps <= 0) return null;
+    const steps = anchorProjection.steps;
+    const rebuiltFields = rebuildScheduleFieldsFromAnchor(baseTask, anchorField, anchorProjection.iso);
+    let nextStartIso = rebuiltFields.startTime;
+    const nextDueIso = rebuiltFields.dueDate;
+    const nextReviewIso = rebuiltFields.reviewAt;
+    if (task.relativeStartOffset && nextDueIso) {
+        nextStartIso = computeRelativeStartTime(nextDueIso, task.relativeStartOffset) ?? nextStartIso;
+    }
+    if (!nextStartIso && !nextDueIso) return null;
+
+    return { startTime: nextStartIso, dueDate: nextDueIso, reviewAt: nextReviewIso, steps };
+}
+
+
+export function createProjectedRecurringTask(
+    task: Task,
+    projectedAtIso: string = new Date().toISOString()
+): ProjectedRecurringTask | null {
+    if (!task.showFutureRecurrence) return null;
+    if (isProjectedRecurringTask(task)) return null;
+    if (task.deletedAt || !isTaskActionable(task)) {
+        return null;
+    }
+
+    const rule = getRecurrenceRule(task.recurrence);
+    if (!rule) return null;
+
+    const count = getRecurrenceCountValue(task.recurrence);
+    const until = getRecurrenceUntilValue(task.recurrence);
+    const completedOccurrences = getRecurrenceCompletedOccurrencesValue(task.recurrence) ?? 0;
+    const projectionBase = getProjectionBaseDate(projectedAtIso);
+    const baseTask = createCurrentRecurringCalendarTask(task, projectedAtIso) ?? task;
+    const anchors = resolveProjectedOccurrenceAnchors(task, baseTask);
+
+    const fields = projectNextRecurringOccurrenceFields(task, baseTask, rule, projectedAtIso, projectionBase, anchors);
+    if (!fields) return null;
+    if (count && completedOccurrences + fields.steps >= count) return null;
+
+    const nextOccurrenceAnchor = fields.dueDate ?? fields.startTime ?? fields.reviewAt;
+    if (shouldStopAtUntil(nextOccurrenceAnchor, until)) return null;
+
+    return {
+        ...task,
+        id: getProjectedRecurringTaskId(task.id),
+        sourceTaskId: task.id,
+        isProjectedRecurringTask: true,
+        startTime: fields.startTime,
+        dueDate: fields.dueDate,
+        reviewAt: fields.reviewAt,
+        attachments: undefined,
+        completedAt: undefined,
+        archivedAt: undefined,
+        deletedAt: undefined,
+        purgedAt: undefined,
+        isFocusedToday: false,
+        createdAt: task.createdAt,
+        updatedAt: projectedAtIso,
+    };
+}
+
+export function getProjectedRecurringTaskCalendarDate(
+    task: Task,
+    projectedAtIso: string = new Date().toISOString()
+): string | undefined {
+    const projectedTask = createProjectedRecurringTask(task, projectedAtIso);
+    return projectedTask ? getTaskCalendarOccurrenceDate(projectedTask) : undefined;
+}
+
+
+export function getRecurringTaskPreviewDate(
+    task: Task,
+    projectedAtIso: string = new Date().toISOString()
+): string | undefined {
+    const previewSource: Task = task.showFutureRecurrence ? task : { ...task, showFutureRecurrence: true };
+    const current = createCurrentRecurringCalendarTask(previewSource, projectedAtIso);
+    if (current?.startTime) return current.startTime;
+    return getProjectedRecurringTaskCalendarDate(previewSource, projectedAtIso);
+}
+
+export function createCurrentRecurringCalendarTask(
+    task: Task,
+    projectedAtIso: string = new Date().toISOString()
+): Task | null {
+    if (!task.showFutureRecurrence) return null;
+    if (isProjectedRecurringTask(task)) return null;
+    if (task.deletedAt || !isTaskActionable(task)) {
+        return null;
+    }
+    if (task.startTime || task.dueDate || task.reviewAt) return null;
+
+    const rule = getRecurrenceRule(task.recurrence);
+    if (!rule) return null;
+
+    const count = getRecurrenceCountValue(task.recurrence);
+    const completedOccurrences = getRecurrenceCompletedOccurrencesValue(task.recurrence) ?? 0;
+    if (count && completedOccurrences >= count) return null;
+
+    const projectionBase = getProjectionBaseDate(projectedAtIso);
+    const currentStart = projectUnscheduledStart(
+        rule,
+        projectionBase,
+        getRecurrenceByDay(task.recurrence),
+        getRecurrenceInterval(task.recurrence),
+        getRecurrenceByMonthDay(task.recurrence),
+        getRecurrenceWeekStart(task.recurrence),
+        getRecurrenceBySetPos(task.recurrence),
+    );
+    if (!currentStart.iso) return null;
+    if (shouldStopAtUntil(currentStart.iso, getRecurrenceUntilValue(task.recurrence))) return null;
+
+    return {
+        ...task,
+        startTime: currentStart.iso,
+    };
+}
+
+export function expandCalendarRecurringTasks(
+    task: Task,
+    projectedAtIso: string = new Date().toISOString()
+): Task[] {
+    const currentTask = createCurrentRecurringCalendarTask(task, projectedAtIso) ?? task;
+    const projectedTask = createProjectedRecurringTask(task, projectedAtIso);
+    return projectedTask ? [currentTask, projectedTask] : [currentTask];
+}
+
+
+export const CALENDAR_RANGE_PROJECTION_PER_TASK_CAP = 62;
+export const CALENDAR_RANGE_PROJECTION_TOTAL_CAP = 500;
+
+
+const MAX_RANGE_PROJECTION_ITERATIONS = 800;
+
+export type CalendarRecurrenceRange = {
+    startIso: string;
+    endIso: string;
+};
+
+
+export function expandCalendarRecurringTasksInRange(
+    task: Task,
+    range: CalendarRecurrenceRange,
+    projectedAtIso: string = new Date().toISOString(),
+    maxOccurrences: number = CALENDAR_RANGE_PROJECTION_PER_TASK_CAP
+): Task[] {
+    const currentTask = createCurrentRecurringCalendarTask(task, projectedAtIso) ?? task;
+    if (!task.showFutureRecurrence) return [currentTask];
+    if (isProjectedRecurringTask(task)) return [currentTask];
+    if (task.deletedAt || !isTaskActionable(task)) return [currentTask];
+
+    const rule = getRecurrenceRule(task.recurrence);
+    if (!rule) return [currentTask];
+
+    const rangeEndDate = safeParseDate(range.endIso);
+    if (!rangeEndDate) return [currentTask];
+    const rangeStartDate = safeParseDate(range.startIso);
+    const rangeStartMs = rangeStartDate ? rangeStartDate.getTime() : -Infinity;
+    const rangeEndMs = rangeEndDate.getTime();
+
+    const count = getRecurrenceCountValue(task.recurrence);
+    const until = getRecurrenceUntilValue(task.recurrence);
+    const baseCompletedOccurrences = getRecurrenceCompletedOccurrencesValue(task.recurrence) ?? 0;
+    const projectionBase = getProjectionBaseDate(projectedAtIso);
+
+
+    const catchUpBase = Number.isFinite(rangeStartMs) && rangeStartMs > projectionBase.getTime()
+        ? new Date(rangeStartMs - 1)
+        : undefined;
+    const strategy = getRecurrenceStrategy(task.recurrence);
+    const rangeProjectionBase = strategy === 'strict' && catchUpBase ? catchUpBase : projectionBase;
+    const anchors = resolveProjectedOccurrenceAnchors(task, currentTask);
+
+    const results: Task[] = [currentTask];
+    let baseTask: Task = currentTask;
+    let stepsSoFar = 0;
+    let pushedCount = 0;
+    const cap = Math.max(0, Math.min(CALENDAR_RANGE_PROJECTION_PER_TASK_CAP, maxOccurrences));
+
+    for (let iteration = 0; iteration < MAX_RANGE_PROJECTION_ITERATIONS && pushedCount < cap; iteration += 1) {
+        const fields = projectNextRecurringOccurrenceFields(
+            task,
+            baseTask,
+            rule,
+            projectedAtIso,
+            rangeProjectionBase,
+            anchors,
+            strategy === 'fluid' ? catchUpBase : undefined,
+        );
+        if (!fields) break;
+        stepsSoFar += fields.steps;
+        if (count && baseCompletedOccurrences + stepsSoFar >= count) break;
+
+        const anchorIso = fields.dueDate ?? fields.startTime ?? fields.reviewAt;
+        if (shouldStopAtUntil(anchorIso, until)) break;
+        const anchorDate = safeParseDate(anchorIso);
+
+
+        if (!anchorDate || anchorDate.getTime() > rangeEndMs) break;
+
+        const occurrenceTask: ProjectedRecurringTask = {
+            ...task,
+            id: getRangeProjectedRecurringTaskId(task.id, anchorIso as string),
+            sourceTaskId: task.id,
+            isProjectedRecurringTask: true,
+            startTime: fields.startTime,
+            dueDate: fields.dueDate,
+            reviewAt: fields.reviewAt,
+            attachments: undefined,
+            completedAt: undefined,
+            archivedAt: undefined,
+            deletedAt: undefined,
+            purgedAt: undefined,
+            isFocusedToday: false,
+            createdAt: task.createdAt,
+            updatedAt: projectedAtIso,
+        };
+
+        if (anchorDate.getTime() >= rangeStartMs) {
+            results.push(occurrenceTask);
+            pushedCount += 1;
+        }
+        baseTask = occurrenceTask;
+    }
+
+    return results;
+}
+
+
+export function expandCalendarRecurringTaskSetInRange(
+    tasks: readonly Task[],
+    range: CalendarRecurrenceRange,
+    projectedAtIso: string = new Date().toISOString(),
+    totalProjectionCap: number = CALENDAR_RANGE_PROJECTION_TOTAL_CAP,
+): Task[] {
+    const projectionCandidates = tasks.filter((task) => (
+        task.showFutureRecurrence === true
+        && !isProjectedRecurringTask(task)
+        && !task.deletedAt
+        && isTaskActionable(task)
+        && Boolean(getRecurrenceRule(task.recurrence))
+    ));
+    const candidateCount = projectionCandidates.length;
+    if (candidateCount === 0) return [...tasks];
+
+    const boundedTotalCap = Math.max(0, Math.floor(totalProjectionCap));
+    const perTaskCap = Math.min(CALENDAR_RANGE_PROJECTION_PER_TASK_CAP, boundedTotalCap);
+    const baseShare = Math.min(
+        perTaskCap,
+        Math.floor(boundedTotalCap / candidateCount),
+    );
+    let remainder = boundedTotalCap - baseShare * candidateCount;
+    const allocationByTaskId = new Map<string, number>();
+    const expansionByTaskId = new Map<string, Task[]>();
+    const activeTaskIds = new Set(projectionCandidates.map((task) => task.id));
+    const candidateOrder = new Map(projectionCandidates.map((task, index) => [task.id, index]));
+
+    for (const task of projectionCandidates) {
+        const extra = baseShare < perTaskCap && remainder > 0 ? 1 : 0;
+        allocationByTaskId.set(task.id, baseShare + extra);
+        remainder -= extra;
+    }
+
+    const expandAllocatedTasks = (allocatedTasks: readonly Task[]): void => {
+        for (const task of allocatedTasks) {
+            const allocation = allocationByTaskId.get(task.id) ?? 0;
+            if (allocation === 0) {
+                expansionByTaskId.set(task.id, [task]);
+                continue;
+            }
+            const expansion = expandCalendarRecurringTasksInRange(
+                task,
+                range,
+                projectedAtIso,
+                allocation,
+            );
+            expansionByTaskId.set(task.id, expansion);
+            const emitted = Math.max(0, expansion.length - 1);
+            if (emitted < allocation || allocation >= perTaskCap) {
+                activeTaskIds.delete(task.id);
+            }
+        }
+    };
+
+    expandAllocatedTasks(projectionCandidates);
+
+    const projectedCount = (): number => Array.from(expansionByTaskId.values())
+        .reduce((total, expansion) => total + Math.max(0, expansion.length - 1), 0);
+
+
+    remainder = boundedTotalCap - projectedCount();
+    while (remainder > 0 && activeTaskIds.size > 0) {
+        const activeTasks = projectionCandidates
+            .filter((task) => activeTaskIds.has(task.id))
+            .sort((left, right) => (
+                (allocationByTaskId.get(left.id) ?? 0) - (allocationByTaskId.get(right.id) ?? 0)
+                || (candidateOrder.get(left.id) ?? 0) - (candidateOrder.get(right.id) ?? 0)
+            ));
+        const minimumAllocation = allocationByTaskId.get(activeTasks[0]!.id) ?? 0;
+        const lowest = activeTasks.filter((task) => (
+            (allocationByTaskId.get(task.id) ?? 0) === minimumAllocation
+        ));
+        const nextAllocation = activeTasks.find((task) => (
+            (allocationByTaskId.get(task.id) ?? 0) > minimumAllocation
+        ));
+        const nextLevel = Math.min(
+            perTaskCap,
+            nextAllocation ? allocationByTaskId.get(nextAllocation.id) ?? perTaskCap : perTaskCap,
+        );
+        const fullLevelIncrease = Math.min(
+            nextLevel - minimumAllocation,
+            Math.floor(remainder / lowest.length),
+        );
+        const changed: Task[] = [];
+
+        if (fullLevelIncrease > 0) {
+            for (const task of lowest) {
+                allocationByTaskId.set(task.id, minimumAllocation + fullLevelIncrease);
+                changed.push(task);
+            }
+        } else {
+            for (const task of lowest.slice(0, remainder)) {
+                allocationByTaskId.set(task.id, minimumAllocation + 1);
+                changed.push(task);
+            }
+        }
+        if (changed.length === 0) break;
+
+        expandAllocatedTasks(changed);
+        remainder = boundedTotalCap - projectedCount();
+    }
+
+    return tasks.flatMap((task) => expansionByTaskId.get(task.id) ?? [task]);
+}
+
+type FrozenRecurrenceInstant = {
+    epochMs: number;
+    offsetMinutes: number;
+    local: string;
+};
+
+export type RecurrenceProjection = {
+    version: 1;
+    sourceAnchorDays: { startTime?: number; dueDate?: number; reviewAt?: number };
+    candidate: Pick<Task, 'startTime' | 'dueDate' | 'reviewAt' | 'relativeStartOffset'>;
+    rruleUntilSourceToken?: string;
+    until: null | {
+        normalized: string;
+        comparison: null | {
+            kind: 'local-day';
+            candidate: FrozenRecurrenceInstant;
+            candidateDay: string;
+            untilDay: string;
+        } | {
+            kind: 'epoch';
+            candidate: FrozenRecurrenceInstant;
+            untilInstant: FrozenRecurrenceInstant;
+            candidateMs: number;
+            untilMs: number;
+        };
+        rruleUntilToken?: string;
+    };
+    rruleText?: string;
+};
+
+const freezeRecurrenceInstant = (date: Date): FrozenRecurrenceInstant => ({
+    epochMs: date.getTime(),
+    offsetMinutes: date.getTimezoneOffset(),
+    local: format(date, "yyyy-MM-dd'T'HH:mm:ss.SSS"),
+});
+
+const frozenInstantMatches = (raw: string, frozen: FrozenRecurrenceInstant): boolean => {
+    if (!frozen || !Number.isFinite(frozen.epochMs) || !Number.isInteger(frozen.offsetMinutes)
+        || Math.abs(frozen.offsetMinutes) > 840
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/.test(frozen.local)) return false;
+    const wallUtc = Date.parse(`${frozen.local}Z`);
+    if (!Number.isFinite(wallUtc) || wallUtc + frozen.offsetMinutes * 60_000 !== frozen.epochMs) return false;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw) && frozen.local !== `${raw}T00:00:00.000`) return false;
+    const floating = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(raw);
+    if (floating && frozen.local !== `${floating[1]}:${floating[2] ?? '00'}.${(floating[3] ?? '').padEnd(3, '0')}`) return false;
+    if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) && Date.parse(raw) !== frozen.epochMs) return false;
+    return true;
+};
+
+const sourceAnchorDaysMatch = (
+    task: Task,
+    days: RecurrenceProjection['sourceAnchorDays'],
+): boolean => {
+    const owner = getRecurrenceScheduleAnchorField(task);
+    const globalAnchor = normalizeAnchorDay(
+        task.recurrence && typeof task.recurrence === 'object' ? task.recurrence.anchorDay : undefined
+    );
+    for (const field of ['startTime', 'dueDate', 'reviewAt'] as const) {
+        const anchor = days[field];
+        const explicit = getRecurrenceFieldAnchorDay(task.recurrence, field)
+            ?? (field === owner ? globalAnchor : undefined);
+        if (!task[field]) {
+            if (anchor !== explicit) return false;
+            continue;
+        }
+
+
+        if (anchor === undefined && explicit === undefined && !safeParseDate(task[field])) continue;
+        if (!Number.isInteger(anchor) || anchor! < 1 || anchor! > 31) return false;
+        if (explicit !== undefined && anchor !== explicit) return false;
+        if (explicit === undefined && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)?$/.test(task[field]!)
+            && anchor !== Number(task[field]!.slice(8, 10))) return false;
+    }
+    return true;
+};
+
+const stopAtFrozenUntil = (candidate: RecurrenceProjection['candidate'], until: RecurrenceProjection['until']): boolean => {
+    if (!until) return false;
+    const anchor = candidate.dueDate ?? candidate.startTime ?? candidate.reviewAt;
+    const structured = (value: string): boolean => (
+        /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(value)
+    );
+    if (!anchor || !until.comparison) {
+        if (until.comparison || (anchor && structured(anchor) && structured(until.normalized))) {
+            throw new Error('Missing recurrence UNTIL comparison');
+        }
+        return false;
+    }
+    const comparison = until.comparison;
+    if (!frozenInstantMatches(anchor, comparison.candidate)) throw new Error('Invalid recurrence candidate witness');
+    if (comparison.kind === 'local-day') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(until.normalized)
+            || comparison.candidateDay !== comparison.candidate.local.slice(0, 10)
+            || comparison.untilDay !== until.normalized) throw new Error('Invalid recurrence day comparison');
+        return comparison.candidateDay > comparison.untilDay;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(until.normalized)
+        || !frozenInstantMatches(until.normalized, comparison.untilInstant)
+        || comparison.candidateMs !== comparison.candidate.epochMs
+        || comparison.untilMs !== comparison.untilInstant.epochMs) throw new Error('Invalid recurrence instant comparison');
+    return comparison.candidateMs > comparison.untilMs;
+};
+
+
+export function projectNextRecurringTask(
+    task: Task,
+    completedAtIso: string,
+    advanceOne = false,
+): RecurrenceProjection | null {
+    const rule = getRecurrenceRule(task.recurrence);
+    if (!rule) return null;
+    const strategy = getRecurrenceStrategy(task.recurrence);
+    const byDay = getRecurrenceByDay(task.recurrence);
+    const byMonthDay = getRecurrenceByMonthDay(task.recurrence);
+    const bySetPos = getRecurrenceBySetPos(task.recurrence);
+    const interval = getRecurrenceInterval(task.recurrence);
+    const weekStart = getRecurrenceWeekStart(task.recurrence);
+    const until = getRecurrenceUntilValue(task.recurrence);
+    const recurrenceAnchorDays = resolveRecurrenceFieldAnchorDays(task.recurrence, task);
+    const parsedCompletedAt = safeParseDate(completedAtIso);
+    const fallbackCompletedAt = (() => {
+        const candidate = new Date(completedAtIso);
+        return Number.isNaN(candidate.getTime()) ? new Date() : candidate;
+    })();
+    const completedAtDate = parsedCompletedAt ?? fallbackCompletedAt;
+    const anchorField = getRecurrenceScheduleAnchorField(task);
+    const sourceAnchorIso = anchorField ? task[anchorField] : undefined;
+    let nextAnchorIso = sourceAnchorIso
+        ? preserveDateOnlyFormat(
+            strategy === 'fluid'
+                ? nextFluidIsoFrom(completedAtIso, rule, completedAtDate, byDay, interval, byMonthDay, weekStart, bySetPos)
+                : nextIsoFrom(
+                    sourceAnchorIso,
+                    rule,
+                    completedAtDate,
+                    byDay,
+                    interval,
+                    byMonthDay,
+                    weekStart,
+                    undefined,
+                    recurrenceAnchorDays[anchorField!],
+                    bySetPos,
+                ),
+            sourceAnchorIso,
+        )
+        : undefined;
+    let rebuiltFields = anchorField && nextAnchorIso
+        ? rebuildScheduleFieldsFromAnchor(task, anchorField, nextAnchorIso)
+        : {};
+    const catchUpBoundary = getStrictCatchUpBoundary(anchorField, sourceAnchorIso, completedAtDate);
+    if (
+        strategy === 'strict'
+        && !advanceOne
+        && (anchorField === 'dueDate' || anchorField === 'startTime')
+        && task.startTime
+        && rebuiltFields.startTime
+        && !task.relativeStartOffset
+    ) {
+        const parsedNextStart = safeParseDate(rebuiltFields.startTime);
+        if (parsedNextStart && parsedNextStart <= catchUpBoundary) {
+            let catchUpSource = sourceAnchorIso;
+            const sourceDate = safeParseDate(sourceAnchorIso);
+            if (sourceDate && ((rule === 'weekly' && byDay?.length)
+                || (rule === 'monthly' && (byDay?.length || byMonthDay?.length)))) {
+
+
+                const periods = rule === 'weekly'
+                    ? Math.floor(differenceInCalendarDays(catchUpBoundary, sourceDate) / 7)
+                    : (catchUpBoundary.getFullYear() - sourceDate.getFullYear()) * 12
+                        + catchUpBoundary.getMonth() - sourceDate.getMonth();
+                const skippedPeriods = Math.max(0, Math.floor(periods / interval) - 1);
+                if (skippedPeriods > 0) {
+                    catchUpSource = nextIsoFrom(sourceAnchorIso, rule, catchUpBoundary, undefined,
+                        skippedPeriods * interval, undefined, weekStart, undefined, recurrenceAnchorDays[anchorField]);
+                }
+            }
+            const caughtUpAnchor = projectStrictIsoFrom(
+                catchUpSource,
+                rule,
+                catchUpBoundary,
+                byDay,
+                interval,
+                byMonthDay,
+                weekStart,
+                recurrenceAnchorDays[anchorField],
+                bySetPos,
+            ).iso;
+            if (caughtUpAnchor) {
+                nextAnchorIso = preserveDateOnlyFormat(caughtUpAnchor, sourceAnchorIso);
+                rebuiltFields = rebuildScheduleFieldsFromAnchor(task, anchorField, nextAnchorIso!);
+            }
+        }
+    }
+    let nextStartTime = rebuiltFields.startTime;
+    let nextDueDate = rebuiltFields.dueDate;
+    let nextReviewAt = rebuiltFields.reviewAt;
+    let nextRelativeStartOffset = task.relativeStartOffset ? { ...task.relativeStartOffset } : undefined;
+    if (nextRelativeStartOffset) {
+        if (nextDueDate) {
+            const computedStartTime = computeRelativeStartTime(nextDueDate, nextRelativeStartOffset);
+            if (computedStartTime) {
+                nextStartTime = computedStartTime;
+            } else {
+                nextRelativeStartOffset = undefined;
+            }
+        } else {
+            nextRelativeStartOffset = undefined;
+        }
+    }
+    if (!nextStartTime && !nextDueDate && !nextReviewAt) {
+
+
+        const completedAtDatePart = /^\d{4}-\d{2}-\d{2}/.exec(completedAtIso)?.[0]
+            ?? format(completedAtDate, 'yyyy-MM-dd');
+        nextStartTime = nextFluidIsoFrom(completedAtDatePart, rule, completedAtDate, byDay, interval, byMonthDay, weekStart, bySetPos);
+    }
+
+    const nextOccurrenceAnchor = nextDueDate ?? nextStartTime ?? nextReviewAt;
+    const candidateDate = safeParseDate(nextOccurrenceAnchor);
+    const sourceToken = task.recurrence && typeof task.recurrence === 'object' && task.recurrence.rrule
+        ? rruleTokens(task.recurrence.rrule).UNTIL
+        : undefined;
+    const untilDate = until && !/^\d{4}-\d{2}-\d{2}$/.test(until) ? safeParseDate(until) : null;
+    const comparison = candidateDate && until
+        ? /^\d{4}-\d{2}-\d{2}$/.test(until)
+            ? { kind: 'local-day' as const, candidate: freezeRecurrenceInstant(candidateDate),
+                candidateDay: format(candidateDate, 'yyyy-MM-dd'), untilDay: until }
+            : untilDate
+                ? { kind: 'epoch' as const, candidate: freezeRecurrenceInstant(candidateDate),
+                    untilInstant: freezeRecurrenceInstant(untilDate),
+                    candidateMs: candidateDate.getTime(), untilMs: untilDate.getTime() }
+                : null
+        : null;
+    const rruleUntilToken = formatUntilToken(until);
+    const rruleText = task.recurrence && typeof task.recurrence === 'object' && task.recurrence.rrule
+        ? buildRRuleString(rule, byDay, interval, {
+            byMonthDay, bySetPos, weekStart, count: getRecurrenceCountValue(task.recurrence), until,
+        })
+        : undefined;
+    return {
+        version: 1,
+        sourceAnchorDays: recurrenceAnchorDays,
+        candidate: { startTime: nextStartTime, dueDate: nextDueDate, reviewAt: nextReviewAt,
+            relativeStartOffset: nextRelativeStartOffset },
+        rruleUntilSourceToken: sourceToken,
+        until: until ? { normalized: until, comparison, rruleUntilToken } : null,
+        rruleText,
+    };
+}
+
+
+export function matchesAdvanceOneCalendarProjection(
+    task: Task,
+    completedAtIso: string,
+    projection: RecurrenceProjection | null,
+    calendarTimeZone: string,
+): boolean {
+    if (!projection || !canSkipRecurringTaskOccurrence(task)
+        || typeof calendarTimeZone !== 'string' || calendarTimeZone.length < 1
+        || calendarTimeZone.length > 100) return false;
+    let formatter: Intl.DateTimeFormat;
+    try {
+        formatter = new Intl.DateTimeFormat('en-US', { timeZone: calendarTimeZone,
+            year: 'numeric', month: '2-digit', day: '2-digit' });
+    } catch { return false; }
+    const localDay = (raw: string | undefined): string | undefined => {
+        if (!raw) return undefined;
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) return /^\d{4}-\d{2}-\d{2}/.exec(raw)?.[0];
+        const epoch = Date.parse(raw);
+        if (!Number.isFinite(epoch)) return undefined;
+        const parts = Object.fromEntries(formatter.formatToParts(new Date(epoch))
+            .map((part) => [part.type, part.value]));
+        return parts.year && parts.month && parts.day ? `${parts.year}-${parts.month}-${parts.day}` : undefined;
+    };
+    const sourceDays = { startTime: localDay(task.startTime), dueDate: localDay(task.dueDate),
+        reviewAt: localDay(task.reviewAt) };
+    const candidateDays = { startTime: localDay(projection.candidate.startTime),
+        dueDate: localDay(projection.candidate.dueDate), reviewAt: localDay(projection.candidate.reviewAt) };
+    const calendarTask: Task = { ...task, ...sourceDays, relativeStartOffset: undefined };
+    const expected = projectNextRecurringTask(calendarTask, completedAtIso, true);
+    return Boolean(expected && (['startTime', 'dueDate', 'reviewAt'] as const).every((field) =>
+        field === 'startTime' && task.relativeStartOffset
+            ? true : candidateDays[field] === expected.candidate[field]));
+}
+
+
+export function buildNextRecurringTask(
+    task: Task,
+    completedAtIso: string,
+    previousStatus: TaskStatus,
+    projection: RecurrenceProjection | null,
+    createId: () => string = uuidv4,
+): Task | null {
+    const rule = getRecurrenceRule(task.recurrence);
+    if (!rule) {
+        if (projection !== null) throw new Error('Unexpected recurrence projection');
+        return null;
+    }
+    if (!projection || projection.version !== 1 || !projection.candidate || !projection.sourceAnchorDays) {
+        throw new Error('Missing recurrence projection');
+    }
+    if (!sourceAnchorDaysMatch(task, projection.sourceAnchorDays)) {
+        throw new Error('Invalid recurrence source anchor');
+    }
+    const byDay = getRecurrenceByDay(task.recurrence);
+    const byMonthDay = getRecurrenceByMonthDay(task.recurrence);
+    const bySetPos = getRecurrenceBySetPos(task.recurrence);
+    const interval = getRecurrenceInterval(task.recurrence);
+    const weekStart = getRecurrenceWeekStart(task.recurrence);
+    const count = getRecurrenceCountValue(task.recurrence);
+    const completedOccurrences = getRecurrenceCompletedOccurrencesValue(task.recurrence) ?? 0;
+    const until = projection.until?.normalized;
+    const recurrence = task.recurrence && typeof task.recurrence === 'object' ? task.recurrence : undefined;
+    if (recurrence?.until && recurrence.until !== until) throw new Error('Invalid recurrence UNTIL source');
+    if (recurrence?.rrule && rruleTokens(recurrence.rrule).UNTIL !== projection.rruleUntilSourceToken) {
+        throw new Error('Invalid recurrence UNTIL token');
+    }
+
+
+    const sourceUntilToken = projection.rruleUntilSourceToken;
+    if (!recurrence?.until && sourceUntilToken
+        && (/^\d{8}$/.test(sourceUntilToken) || /^\d{8}T\d{4}(?:\d{2})?Z$/i.test(sourceUntilToken))
+        && parseUntilToken(sourceUntilToken) !== until) {
+        throw new Error('Invalid recurrence UNTIL source');
+    }
+    if (!recurrence?.rrule && projection.rruleUntilSourceToken !== undefined) {
+        throw new Error('Unexpected recurrence UNTIL token');
+    }
+    if (!until && projection.until !== null) throw new Error('Invalid recurrence UNTIL projection');
+    if (recurrence?.rrule) {
+        const base = buildRRuleString(rule, byDay, interval, { byMonthDay, bySetPos, weekStart, count });
+        const expected = projection.until?.rruleUntilToken ? `${base};UNTIL=${projection.until.rruleUntilToken}` : base;
+        if (projection.rruleText !== expected) throw new Error('Invalid recurrence RRULE projection');
+    } else if (projection.rruleText !== undefined) throw new Error('Unexpected recurrence RRULE projection');
+
+    const candidate = projection.candidate;
+    if (candidate.relativeStartOffset !== undefined
+        && JSON.stringify(candidate.relativeStartOffset) !== JSON.stringify(task.relativeStartOffset)) {
+        throw new Error('Invalid recurrence relative start offset');
+    }
+    const hadSchedule = Boolean(task.startTime || task.dueDate || task.reviewAt);
+    for (const field of ['startTime', 'dueDate', 'reviewAt'] as const) {
+        if (Boolean(task[field]) !== Boolean(candidate[field])
+            && !(field === 'startTime' && Boolean(candidate.startTime)
+                && (!hadSchedule || Boolean(candidate.relativeStartOffset && candidate.dueDate)))) {
+            throw new Error('Incomplete recurrence candidate');
+        }
+    }
+    if (!hadSchedule && !candidate.startTime) throw new Error('Missing recurrence fallback candidate');
+
+    const stopsAtUntil = stopAtFrozenUntil(candidate, projection.until);
+    if (projection.until?.rruleUntilToken) {
+        const expectedToken = projection.until.comparison?.kind === 'epoch'
+            ? new Date(projection.until.comparison.untilMs).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+            : /^\d{4}-\d{2}-\d{2}$/.test(until ?? '') ? until!.replace(/-/g, '') : undefined;
+        if (projection.until.rruleUntilToken !== expectedToken) throw new Error('Invalid recurrence UNTIL token projection');
+    }
+
+    if (count && completedOccurrences + 1 >= count) return null;
+    if (stopsAtUntil) return null;
+
+    const { startTime: nextStartTime, dueDate: nextDueDate, reviewAt: nextReviewAt,
+        relativeStartOffset: nextRelativeStartOffset } = projection.candidate;
+
+    let newStatus: TaskStatus = previousStatus;
+    if (newStatus === 'done' || newStatus === 'archived') {
+        newStatus = 'next';
+    }
+
+
+    const duplicatedAttachments = (task.attachments || [])
+        .filter((attachment) => !attachment.deletedAt)
+        .map<Attachment>((attachment) => ({
+            ...attachment,
+            id: createId(),
+            createdAt: completedAtIso,
+            updatedAt: completedAtIso,
+            deletedAt: undefined,
+        }));
+
+    if (task.taskMode !== 'list' && recurrence?.preserveChecklistOnRepeat === true && task.checklist?.length) {
+        try {
+            logInfo('Recurring checklist progress copied', {
+                scope: 'recurrence', category: 'storage', force: true,
+                context: { releaseCheck: 'v1.3.7/recurring-checklist-progress', outcome: 'constructed' },
+            });
+        } catch {                                                           }
+    }
+    const nextCompletedOccurrences = completedOccurrences + 1;
+    const seriesId = typeof task.recurrence === 'object' && typeof task.recurrence.seriesId === 'string'
+        ? task.recurrence.seriesId.trim() || task.id
+        : task.id;
+    let nextRecurrence: Recurrence = { rule, seriesId };
+    const nextAnchorDays = getNextRecurrenceAnchorDays(task, rule, projection.sourceAnchorDays);
+    if (task.recurrence && typeof task.recurrence === 'object') {
+        const recurrence = task.recurrence as Recurrence;
+        nextRecurrence = {
+            ...recurrence,
+            seriesId,
+            ...nextAnchorDays,
+            ...(byMonthDay ? { byMonthDay } : {}),
+            ...(typeof recurrence.count === 'number' || count ? { count } : {}),
+            ...(typeof recurrence.until === 'string' || until ? { until } : {}),
+            ...(count ? { completedOccurrences: nextCompletedOccurrences } : {}),
+            ...(recurrence.rrule
+                ? {
+                    rrule: projection.rruleText,
+                }
+                : {}),
+        };
+    } else {
+        nextRecurrence = {
+            rule,
+            seriesId,
+            ...nextAnchorDays,
+        };
+    }
+
+    return {
+        id: createId(),
+        title: task.title,
+        status: newStatus,
+        priority: task.priority,
+        energyLevel: task.energyLevel,
+        assignedTo: task.assignedTo,
+        taskMode: task.taskMode,
+        startTime: nextStartTime,
+        relativeStartOffset: nextRelativeStartOffset,
+        dueDate: nextDueDate,
+        recurrence: nextRecurrence,
+        showFutureRecurrence: task.showFutureRecurrence ? true : undefined,
+        reminderPolicy: task.reminderPolicy,
+        suppressStrideReminders: task.suppressStrideReminders ? true : undefined,
+        repeatReminderMinutes: task.repeatReminderMinutes,
+        dueReminderLeadMinutes: task.dueReminderLeadMinutes,
+        startReminderLeadMinutes: task.startReminderLeadMinutes,
+        tags: [...(task.tags || [])],
+        contexts: [...(task.contexts || [])],
+        checklist: copyRecurringChecklist(task.checklist, createId, task.taskMode !== 'list' && recurrence?.preserveChecklistOnRepeat === true),
+        description: task.description,
+        textDirection: task.textDirection,
+        attachments: duplicatedAttachments.length > 0 ? duplicatedAttachments : undefined,
+        location: task.location,
+        projectId: task.projectId,
+        sectionId: task.sectionId,
+        areaId: task.areaId,
+        isFocusedToday: false,
+        completedAt: undefined,
+        cancelledAt: undefined,
+        timeEstimate: task.timeEstimate,
+        reviewAt: nextReviewAt,
+        createdAt: completedAtIso,
+        updatedAt: completedAtIso,
+    };
+}
+
+export function createNextRecurringTask(
+    task: Task,
+    completedAtIso: string,
+    previousStatus: TaskStatus,
+    options?: { advanceOne?: boolean; createId?: () => string },
+): Task | null {
+    const projection = projectNextRecurringTask(task, completedAtIso, options?.advanceOne);
+    const next = buildNextRecurringTask(task, completedAtIso, previousStatus, projection, options?.createId ?? uuidv4);
+    if (next && getRecurrenceRule(task.recurrence) === 'monthly'
+        && getRecurrenceBySetPos(task.recurrence)
+        && isMonthlyWeekdaySet(getRecurrenceByDay(task.recurrence))) {
+        logInfo('Monthly weekday recurrence advanced', {
+            scope: 'recurrence',
+            category: 'storage',
+            context: { releaseCheck: 'v1.3.3/monthly-weekday-position', position: getRecurrenceBySetPos(task.recurrence) },
+        });
+    }
+    return next;
+}

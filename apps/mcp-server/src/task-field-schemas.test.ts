@@ -1,0 +1,154 @@
+
+
+
+import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { TIME_ESTIMATE_OPTIONS } from '@stride/core';
+import { TASK_SYNC_FIELD_SCHEMA } from '@stride/core/task-sync-schema';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+import { addTaskSchema, registerStrideTools, updateTaskSchema } from './index.js';
+import type { StrideService } from './service.js';
+import {
+  TASK_CREATE_FIELD_NAMES,
+  TASK_PATCH_FIELD_NAMES,
+  TASK_WRITE_FIELD_EXCLUSIONS,
+} from './task-write-fields.js';
+
+
+const DEDICATED_FIELD_NAMES = new Set([
+  'title', 'status', 'priority', 'energyLevel', 'assignedTo', 'startTime', 'dueDate',
+  'recurrence', 'tags', 'contexts', 'description', 'projectId', 'sectionId', 'timeEstimate',
+  'attachments',
+]);
+
+describe('MCP task write-surface derivation (TASK_SYNC_FIELD_SCHEMA -> Zod tool schemas)', () => {
+  test('TASK_WRITE_FIELD_EXCLUSIONS names only real, currently-writable Task fields (non-stale)', () => {
+    const writableFieldNames = new Set(
+      TASK_SYNC_FIELD_SCHEMA
+        .filter((field) => field.cloudWrite === 'create-patch' || field.cloudWrite === 'patch')
+        .map((field) => field.name),
+    );
+    for (const excludedName of Object.keys(TASK_WRITE_FIELD_EXCLUSIONS) as (keyof typeof TASK_WRITE_FIELD_EXCLUSIONS)[]) {
+      expect(writableFieldNames.has(excludedName)).toBe(true);
+    }
+  });
+
+  test('TASK_CREATE_FIELD_NAMES matches an independent recomputation from the schema', () => {
+    const expected = TASK_SYNC_FIELD_SCHEMA
+      .filter((field) => (
+        field.cloudWrite === 'create-patch'
+        && !DEDICATED_FIELD_NAMES.has(field.name)
+        && !(field.name in TASK_WRITE_FIELD_EXCLUSIONS)
+      ))
+      .map((field) => field.name)
+      .sort();
+    expect([...TASK_CREATE_FIELD_NAMES].sort()).toEqual(expected);
+  });
+
+  test('TASK_PATCH_FIELD_NAMES matches an independent recomputation from the schema', () => {
+    const expected = TASK_SYNC_FIELD_SCHEMA
+      .filter((field) => (
+        (field.cloudWrite === 'create-patch' || field.cloudWrite === 'patch')
+        && !DEDICATED_FIELD_NAMES.has(field.name)
+        && !(field.name in TASK_WRITE_FIELD_EXCLUSIONS)
+      ))
+      .map((field) => field.name)
+      .sort();
+    expect([...TASK_PATCH_FIELD_NAMES].sort()).toEqual(expected);
+  });
+
+  test('stride_add_task exposes every TASK_CREATE_FIELD_NAMES field', () => {
+    const shapeKeys = new Set(Object.keys(addTaskSchema.shape));
+    for (const name of TASK_CREATE_FIELD_NAMES) {
+      expect(shapeKeys.has(name)).toBe(true);
+    }
+  });
+
+  test('stride_update_task exposes every TASK_PATCH_FIELD_NAMES field', () => {
+    const shapeKeys = new Set(Object.keys(updateTaskSchema.shape));
+    for (const name of TASK_PATCH_FIELD_NAMES) {
+      expect(shapeKeys.has(name)).toBe(true);
+    }
+  });
+
+  test('reminder policy accepts only inheritance and explicit send/skip values', () => {
+    for (const reminderPolicy of ['inherit', 'send', 'skip']) {
+      expect((addTaskSchema.parse({ title: 'Policy', reminderPolicy }) as Record<string, unknown>).reminderPolicy === reminderPolicy).toBe(true);
+      expect((updateTaskSchema.parse({ id: 'task-1', reminderPolicy }) as Record<string, unknown>).reminderPolicy === reminderPolicy).toBe(true);
+    }
+    for (const reminderPolicy of ['sometimes', null, true, 1, {}, []]) {
+      expect(addTaskSchema.safeParse({ title: 'Policy', reminderPolicy }).success).toBe(false);
+      expect(updateTaskSchema.safeParse({ id: 'task-1', reminderPolicy }).success).toBe(false);
+    }
+  });
+
+  test('cancellation timestamps round-trip and reject ambiguous or malformed values', () => {
+    const cancelledAt = '2026-09-07T16:00:00.000Z';
+    const created = addTaskSchema.parse({ title: 'Cancelled plan', cancelledAt }) as Record<string, unknown>;
+    const patched = updateTaskSchema.parse({ id: 'task-1', cancelledAt: null }) as Record<string, unknown>;
+    expect(created.cancelledAt === cancelledAt).toBe(true);
+    expect(patched.cancelledAt === null).toBe(true);
+    for (const value of ['2026-09-07', 'tomorrow', '', 123]) {
+      expect(updateTaskSchema.safeParse({ id: 'task-1', cancelledAt: value }).success).toBe(false);
+    }
+  });
+
+  test('the time-estimate enum stays core\'s list, custom values still parse', () => {
+    for (const estimate of TIME_ESTIMATE_OPTIONS) {
+      expect(addTaskSchema.safeParse({ title: 'Task', timeEstimate: estimate }).success).toBe(true);
+      expect(updateTaskSchema.safeParse({ id: 'task-1', timeEstimate: estimate }).success).toBe(true);
+    }
+    expect(updateTaskSchema.safeParse({ id: 'task-1', timeEstimate: 'custom:75' }).success).toBe(true);
+    expect(updateTaskSchema.safeParse({ id: 'task-1', timeEstimate: '7min' }).success).toBe(false);
+  });
+
+  test('task write schemas accept positive custom time estimates', () => {
+    expect(addTaskSchema.safeParse({ title: 'Task', timeEstimate: 'custom:42.5' }).success).toBe(true);
+    expect(updateTaskSchema.safeParse({ id: 'task-1', timeEstimate: 'custom:0' }).success).toBe(false);
+    expect(updateTaskSchema.safeParse({ id: 'task-1', timeEstimate: 'custom:0x10' }).success).toBe(false);
+  });
+
+  test('the canonical README lists every generated task write field', () => {
+    const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const addSection = readme.slice(readme.indexOf('- `stride_add_task`'), readme.indexOf('- `stride_update_task`'));
+    const updateSection = readme.slice(readme.indexOf('- `stride_update_task`'), readme.indexOf('- `stride_complete_task`'));
+
+    for (const name of TASK_CREATE_FIELD_NAMES) expect(addSection).toContain(`${name}?`);
+    for (const name of TASK_PATCH_FIELD_NAMES) expect(updateSection).toContain(`${name}?`);
+  });
+
+
+  test('closes the create-time gap: checklist, areaId, reviewAt, isFocusedToday reach stride_add_task', () => {
+    const shapeKeys = new Set(Object.keys(addTaskSchema.shape));
+    for (const name of ['checklist', 'areaId', 'reviewAt', 'isFocusedToday']) {
+      expect(shapeKeys.has(name)).toBe(true);
+    }
+  });
+
+
+  test('advertised update tools keep each generated field description on the property itself', async () => {
+    const server = new McpServer({ name: 'field-descriptions-test', version: '1' });
+    registerStrideTools(server, {} as StrideService, false, { localApi: false });
+    const client = new Client({ name: 'field-descriptions-client', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const { tools } = await client.listTools();
+      const properties = (name: string) => tools.find((tool) => tool.name === name)!.inputSchema.properties as Record<string, { description?: string }>;
+      const add = properties('stride_add_task');
+      const update = properties('stride_update_task');
+      for (const name of TASK_PATCH_FIELD_NAMES) {
+        if (add[name]?.description) expect({ name, description: update[name]?.description }).toEqual({ name, description: add[name].description });
+      }
+      expect(properties('stride_update_project').viewSectionIds?.description).toBe(properties('stride_add_project').viewSectionIds?.description);
+      expect(typeof properties('stride_update_project').viewSectionIds?.description).toBe('string');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});

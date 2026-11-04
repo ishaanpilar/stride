@@ -1,0 +1,123 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.bun-install/
+.bun-tmp/
+
+# Build outputs
+dist/
+dist-electron/
+build/
+.vite/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+crash-logs/
+plans/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.vitest/
+test-results/
+.perf/
+
+# Mobile (Expo)
+apps/mobile/.expo/
+apps/mobile/.expo-shared/
+.expo/
+apps/mobile/android/
+apps/mobile/ios/*
+!apps/mobile/ios/ci_scripts/
+apps/mobile/build
+*.apk
+*.aab
+*.ipa
+
+# EAS build artifacts
+apps/mobile/eas-build-*
+.eas/
+
+# Desktop (Electron)
+apps/desktop/dist/
+apps/desktop/dist-electron/
+
+# Desktop (Tauri)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/.tauri/
+apps/desktop/src-tauri/embedded.provisionprofile
+
+# Lock files (using bun)
+package-lock.json
+!apps/mobile/package-lock.json
+!apps/desktop/package-lock.json
+!packages/core/package-lock.json
+!tools/eas-cli/package-lock.json
+yarn.lock
+
+# AUR build artifacts
+aur/*.pkg.tar.zst
+aur/*.deb
+aur/pkg/
+aur/src/
+
+# Flatpak build cache
+.flatpak-builder/
+build-dir/
+
+# Agent files
+/CONTEXT.md
+AGENT.md
+AGENTS.md
+.codex
+.codegraph/
+.agents
+.serena
+.claude
+.cursor/
+.gemini
+.kiro
+skills-lock.json
+docs/agents
+.impeccable/
+
+# CI artifacts
+scripts/ci/__pycache__/
+scripts/maintenance/__pycache__/
+
+# Wiki (maintained in separate repo)
+Stride.wiki/
+
+# Local workspace configuration
+.worktrees/
+pnpm-workspace.yaml
+
+# Brainstorming/implementation working files (decisions distilled to docs/adr/)
+docs/superpowers/
+
+# CMake build caches from native module builds; Metro's watcher crashes on their transient dirs
+apps/mobile/modules/*/android/.cxx/

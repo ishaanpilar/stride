@@ -1,0 +1,666 @@
+import React from 'react';
+import { readFileSync } from 'node:fs';
+import { FlatList, Text, TextInput, TouchableOpacity } from 'react-native';
+import { act, create } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildEntityMap, buildPersonSearchQuery, safeFormatDate, type Task } from '@stride/core';
+import SearchScreen from './global-search';
+
+const routerPushMock = vi.hoisted(() => vi.fn());
+const setHighlightTaskMock = vi.hoisted(() => vi.fn());
+const taskEditModalPropsSpy = vi.hoisted(() => vi.fn());
+const updateTaskMock = vi.hoisted(() => vi.fn());
+const routeParams = vi.hoisted(() => ({
+    q: 'Launch' as string | undefined,
+    includeCompleted: undefined as string | undefined,
+}));
+const storageAdapterState = vi.hoisted(() => ({
+    searchAll: undefined as undefined | ((query: string) => Promise<any>),
+}));
+const storeState = vi.hoisted(() => ({
+    _allTasks: [] as Task[],
+
+
+    get _tasksById() {
+        return buildEntityMap(this._allTasks);
+    },
+    projects: [],
+    areas: [],
+    settings: {
+        savedSearches: [],
+    },
+    updateSettings: vi.fn(),
+    updateTask: updateTaskMock,
+    setHighlightTask: setHighlightTaskMock,
+}));
+
+vi.mock('@stride/core', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@stride/core')>();
+    return {
+        ...actual,
+        getStorageAdapter: () => (storageAdapterState.searchAll ? { searchAll: storageAdapterState.searchAll } : {}),
+        shallow: Object.is,
+        useTaskStore: (selector: (state: typeof storeState) => unknown) => selector(storeState),
+    };
+});
+
+vi.mock('expo-router', () => ({
+    useLocalSearchParams: () => routeParams,
+    useRouter: () => ({ push: routerPushMock }),
+}));
+
+vi.mock('react-native-safe-area-context', () => ({
+    SafeAreaView: ({ children }: any) => children,
+}));
+
+vi.mock('@/components/task-edit-modal', () => ({
+    TaskEditModal: (props: any) => {
+        taskEditModalPropsSpy(props);
+        return React.createElement('TaskEditModal', {
+            taskId: props.task?.id,
+            visible: props.visible,
+        });
+    },
+}));
+
+vi.mock('@/hooks/use-theme-colors', () => ({
+    useThemeColors: () => ({
+        bg: '#ffffff',
+        border: '#d1d5db',
+        cardBg: '#ffffff',
+        danger: '#dc2626',
+        filterBg: '#f8fafc',
+        icon: '#64748b',
+        inputBg: '#ffffff',
+        onTint: '#ffffff',
+        secondaryText: '#64748b',
+        success: '#16a34a',
+        tabIconDefault: '#64748b',
+        tabIconSelected: '#2563eb',
+        taskItemBg: '#ffffff',
+        text: '#0f172a',
+        tint: '#2563eb',
+        warning: '#f59e0b',
+    }),
+}));
+
+vi.mock('../contexts/language-context', () => ({
+    useLanguage: () => ({
+        t: (key: string) => ({
+            'common.cancel': 'Cancel',
+            'common.clear': 'Clear',
+            'common.close': 'Close',
+            'common.save': 'Save',
+            'common.search': 'Search',
+            'filters.label': 'Filters',
+            'search.helpOperators': 'Use operators',
+            'search.inProjectSuffix': 'in project',
+            'search.completedDate': 'Completed {{date}}',
+            'search.dueDate': 'Due {{date}}',
+            'search.hiddenCompletedMatches': '{{count}} more in Done & Archived',
+            'search.noResults': 'No results',
+            'search.placeholder': 'Search',
+            'search.resultTask': 'Task',
+            'search.saveSearch': 'Save search',
+            'search.searching': 'Searching',
+        }[key] ?? key),
+    }),
+}));
+
+vi.mock('@/lib/task-meta-navigation', () => ({
+    openContextsScreen: vi.fn(),
+    openProjectScreen: vi.fn(),
+}));
+
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock('../contexts/toast-context', () => ({
+    useToast: () => ({ showToast: showToastMock }),
+    ToastViewport: () => null,
+}));
+
+const nowIso = '2026-06-01T12:00:00.000Z';
+
+const makeTask = (id: string, title: string, overrides: Partial<Task> = {}): Task => ({
+    id,
+    title,
+    status: 'next',
+    tags: [],
+    contexts: [],
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    ...overrides,
+});
+
+describe('SearchScreen task results', () => {
+    const mountedTrees: ReturnType<typeof create>[] = [];
+    const trackTree = (tree: ReturnType<typeof create>) => {
+        mountedTrees.push(tree);
+        return tree;
+    };
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        routeParams.q = 'Launch';
+        routeParams.includeCompleted = undefined;
+        storageAdapterState.searchAll = undefined;
+        const tasks = [
+            makeTask('task-1', 'Launch checklist'),
+            makeTask('task-2', 'Home errands'),
+        ];
+        storeState._allTasks = tasks;
+        storeState.projects = [];
+        storeState.areas = [];
+        storeState.settings = { savedSearches: [] };
+        storeState.updateSettings = vi.fn();
+        storeState.updateTask = updateTaskMock;
+        storeState.setHighlightTask = setHighlightTaskMock;
+    });
+
+    afterEach(() => {
+        act(() => {
+            mountedTrees.splice(0).forEach((tree) => tree.unmount());
+        });
+        vi.useRealTimers();
+    });
+
+    it('keeps the frozen HEAD global search output', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-09-23T12:00:00.000Z'));
+        const tasks = [
+            makeTask('launch-next', 'Launch plan', { tags: ['#client'], contexts: ['@office'], dueDate: '2026-09-23', projectId: 'project-launch' }),
+            makeTask('launch-done', 'Launch report', { status: 'done', tags: ['#client'], completedAt: nowIso }),
+            makeTask('launch-future', 'Launch future', { startTime: '2026-10-01', tags: ['#later'] }),
+            makeTask('launch-reference', 'Launch reference', { status: 'reference' }),
+            makeTask('launch-office', 'Launch office', { location: 'Office', areaId: 'area-work' }),
+            makeTask('home', 'Home errand', { contexts: ['@home'] }),
+        ];
+        storeState._allTasks = tasks;
+        storeState.projects = [{ id: 'project-launch', title: 'Launch project', status: 'active', areaId: 'area-work', order: 0, tagIds: [], createdAt: nowIso, updatedAt: nowIso }] as never[];
+        storeState.areas = [{ id: 'area-work', name: 'Work', order: 0, createdAt: nowIso, updatedAt: nowIso }] as never[];
+        routeParams.q = 'Launch';
+        const cases: Record<string, unknown> = {};
+        let optionLabels: string[] = [];
+        const capture = async (name: string, query: string, chip?: string, location?: string) => {
+            routeParams.q = query;
+            let tree!: ReturnType<typeof create>;
+            await act(async () => { tree = trackTree(create(<SearchScreen />)); });
+            if (chip || location) {
+                const open = tree.root.findAllByType(TouchableOpacity).find((node) => node.props.accessibilityLabel === 'Filters');
+                act(() => { open!.props.onPress(); });
+                if (optionLabels.length === 0) optionLabels = tree.root.findAllByType(TouchableOpacity)
+                    .filter((node) => node.props.style?.[0]?.borderRadius === 16 && node.props.style?.[0]?.paddingHorizontal === 10)
+                    .map((node) => String(node.findByType(Text).props.children));
+                if (chip) {
+                    const target = tree.root.findAllByType(TouchableOpacity).find((node) =>
+                        node.findAllByType(Text).some((textNode) => textNode.props.children === chip));
+                    expect(target, chip).toBeDefined();
+                    act(() => { target!.props.onPress(); });
+                }
+                if (location) {
+                    const input = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'Location');
+                    expect(input).toBeDefined();
+                    act(() => { input!.props.onChangeText(location); });
+                }
+            }
+            cases[name] = JSON.parse(JSON.stringify(tree.root.findByType(FlatList).props.data));
+            act(() => { tree.unmount(); });
+        };
+        await capture('query', 'Launch');
+        await capture('empty', '');
+        await capture('status', 'Launch', 'done');
+        await capture('token', '', '#client');
+        await capture('due', '', 'Today');
+        await capture('scope', 'Launch', 'Projects only');
+        await capture('area', 'Launch', 'Work');
+        await capture('includeCompleted', 'Launch', 'search.includeCompleted');
+        await capture('hideReference', 'Launch', 'search.includeReference');
+        await capture('location', '', undefined, 'Office');
+        await capture('hideFuture', '', 'Hide future tasks');
+        await capture('noAdapter', 'Launch');
+        const fixture = JSON.parse(readFileSync(
+            decodeURIComponent(new URL('../../../packages/core/src/global-search-model-parity.fixtures.json', import.meta.url).pathname), 'utf8',
+        ));
+        expect(cases).toEqual(fixture.cases);
+        expect(optionLabels).toEqual(fixture.optionLabels);
+    });
+
+    it('keeps the frozen HEAD adapter order after the 200 ms debounce', async () => {
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        vi.setSystemTime(new Date('2026-09-23T12:00:00.000Z'));
+        const fixture = JSON.parse(readFileSync(
+            decodeURIComponent(new URL('../../../packages/core/src/global-search-model-parity.fixtures.json', import.meta.url).pathname), 'utf8',
+        ));
+        storeState._allTasks = fixture.tasks;
+        storeState.projects = fixture.projects;
+        storeState.areas = fixture.areas;
+        storageAdapterState.searchAll = vi.fn(async () => ({ tasks: [fixture.tasks[5], fixture.tasks[0]], projects: [] }));
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = trackTree(create(<SearchScreen />)); });
+        await act(async () => { vi.advanceTimersByTime(250); await Promise.resolve(); });
+        expect(storageAdapterState.searchAll).toHaveBeenCalledWith('Launch');
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => `${result.type}:${result.item.id}`))
+            .toEqual(fixture.extendedCases.adapter.ids);
+    });
+
+    it.each([undefined, '2099-12-10'])('opens the task editor directly for a result with start date %s', (startTime) => {
+        storeState._allTasks = [makeTask('task-1', 'Launch checklist', { startTime })];
+        let tree!: ReturnType<typeof create>;
+
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        const resultList = tree.root.findByType(FlatList);
+        expect(resultList.props.data.map((result: any) => result.item.id)).toEqual(['task-1']);
+
+        const resultRow = resultList.props.renderItem({
+            item: resultList.props.data[0],
+            index: 0,
+        });
+
+        act(() => {
+            resultRow.props.onPress();
+        });
+
+        expect(setHighlightTaskMock).toHaveBeenCalledWith('task-1');
+        expect(routerPushMock).not.toHaveBeenCalled();
+        expect(taskEditModalPropsSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            visible: true,
+            task: expect.objectContaining({ id: 'task-1' }),
+        }));
+    });
+
+    it('includes completed tasks when requested by route params', () => {
+        routeParams.q = 'report';
+        routeParams.includeCompleted = 'true';
+        storeState._allTasks = [makeTask('done', 'Completed report', {
+            status: 'done',
+            completedAt: nowIso,
+        })];
+
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual(['done']);
+    });
+
+    it('focuses blank searches but keeps the keyboard closed for prefilled reviews', () => {
+        vi.useFakeTimers();
+        const focus = vi.fn();
+        const blur = vi.fn();
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />, {
+                createNodeMock: () => ({ focus, blur }),
+            }));
+        });
+        act(() => {
+            vi.advanceTimersByTime(100);
+        });
+        expect(focus).not.toHaveBeenCalled();
+        expect(blur).toHaveBeenCalledTimes(1);
+
+        routeParams.q = '';
+        act(() => {
+            tree.update(<SearchScreen />);
+        });
+        act(() => {
+            vi.advanceTimersByTime(100);
+        });
+        expect(focus).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies later query and completed-filter route changes', async () => {
+        storeState._allTasks = [
+            makeTask('launch', 'Launch checklist'),
+            makeTask('done', 'Completed report', { status: 'done', completedAt: nowIso }),
+        ];
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual(['launch']);
+
+        routeParams.q = 'report';
+        routeParams.includeCompleted = 'true';
+        await act(async () => {
+            tree.update(<SearchScreen />);
+            await Promise.resolve();
+        });
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual(['done']);
+
+        routeParams.includeCompleted = undefined;
+        await act(async () => {
+            tree.update(<SearchScreen />);
+            await Promise.resolve();
+        });
+        expect(tree.root.findByType(FlatList).props.data).toEqual([]);
+    });
+
+    it('preserves literal percent escapes in already-decoded Expo route params', () => {
+        const names = ['Sales%20Ops', 'Alex%22Ops', 'Budget%25Owner'];
+        storeState._allTasks = names.map((name, index) => makeTask(`percent-${index}`, name, { assignedTo: name }));
+
+        for (const [index, name] of names.entries()) {
+            routeParams.q = buildPersonSearchQuery(name);
+            let tree!: ReturnType<typeof create>;
+            act(() => {
+                tree = trackTree(create(<SearchScreen />));
+            });
+            expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual([
+                `percent-${index}`,
+            ]);
+        }
+    });
+
+    it('highlights every nonadjacent query term in a result title', () => {
+        routeParams.q = 'checklist LAUNCH';
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        const resultList = tree.root.findByType(FlatList);
+        const resultRow = resultList.props.renderItem({
+            item: resultList.props.data[0],
+            index: 0,
+        });
+        let rowTree!: ReturnType<typeof create>;
+        act(() => {
+            rowTree = trackTree(create(resultRow));
+        });
+
+        const title = rowTree.root.findAllByType(Text).find(
+            (node) => node.props.accessibilityLabel === 'Launch checklist'
+        );
+        expect(title).toBeDefined();
+        expect(title!.findAllByType(Text)
+            .filter((node) => node !== title && node.props.style?.fontWeight === '600')
+            .map((node) => node.props.children))
+            .toEqual(['Launch', 'checklist']);
+    });
+
+    it('completes a task from the search row check icon with an undo toast', async () => {
+
+        updateTaskMock.mockResolvedValue({ success: true });
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        const resultList = tree.root.findByType(FlatList);
+        const resultRow = resultList.props.renderItem({
+            item: resultList.props.data[0],
+            index: 0,
+        });
+        let rowTree!: ReturnType<typeof create>;
+        act(() => {
+            rowTree = trackTree(create(resultRow));
+        });
+        const checkButton = rowTree.root.findAllByType(TouchableOpacity).find(
+            (node) => node.props.accessibilityLabel === 'Mark Done'
+        );
+        expect(checkButton).toBeDefined();
+
+        await act(async () => {
+            checkButton!.props.onPress();
+            await Promise.resolve();
+        });
+
+        expect(updateTaskMock).toHaveBeenCalledWith('task-1', { status: 'done' });
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+            actionLabel: expect.any(String),
+            onAction: expect.any(Function),
+        }));
+
+        expect(taskEditModalPropsSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            visible: false,
+        }));
+    });
+
+    it('shows matching tasks when only a tag filter is selected', () => {
+        routeParams.q = '';
+        storeState._allTasks = [
+            makeTask('task-1', 'Client launch', { tags: ['#client'] }),
+            makeTask('task-2', 'Home errands', { tags: ['#home'] }),
+        ];
+
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        const filterButton = tree.root
+            .findAllByType(TouchableOpacity)
+            .find((node) => node.props.accessibilityLabel === 'Filters');
+        expect(filterButton).toBeDefined();
+
+        act(() => {
+            filterButton!.props.onPress();
+        });
+
+        const tagChip = tree.root.findAllByType(TouchableOpacity).find((node) => (
+            node.findAllByType(Text).some((textNode) => textNode.props.children === '#client')
+        ));
+        expect(tagChip).toBeDefined();
+
+        act(() => {
+            tagChip!.props.onPress();
+        });
+
+        const resultList = tree.root.findByType(FlatList);
+        expect(resultList.props.data.map((result: any) => result.item.id)).toEqual(['task-1']);
+    });
+
+    it('refreshes hidden-future results at midnight and at an explicit start time', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-04-16T23:59:30'));
+        routeParams.q = '';
+        storeState._allTasks = [
+            makeTask('tomorrow-date', 'Tomorrow date task', { startTime: '2026-04-17' }),
+            makeTask('tomorrow-time', 'Tomorrow timed task', { startTime: '2026-04-17T00:01' }),
+        ];
+
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+        const filterButton = tree.root
+            .findAllByType(TouchableOpacity)
+            .find((node) => node.props.accessibilityLabel === 'Filters');
+        act(() => {
+            filterButton!.props.onPress();
+        });
+        const hideFutureChip = tree.root.findAllByType(TouchableOpacity).find((node) => (
+            node.findAllByType(Text).some((textNode) => textNode.props.children === 'Hide future tasks')
+        ));
+        act(() => {
+            hideFutureChip!.props.onPress();
+        });
+        const resultIds = () => tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id);
+        expect(resultIds()).toEqual([]);
+
+        act(() => {
+            vi.advanceTimersByTime(30_100);
+        });
+        expect(resultIds()).toEqual(['tomorrow-date']);
+
+        act(() => {
+            vi.advanceTimersByTime(60_100);
+        });
+        expect(resultIds()).toEqual(['tomorrow-date', 'tomorrow-time']);
+    });
+
+    it('offers to include hidden done and archived matches instead of hiding them silently', () => {
+        storeState._allTasks = [
+            makeTask('task-1', 'Launch checklist', { status: 'done' }),
+            makeTask('task-2', 'Home errands'),
+        ];
+
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        expect(tree.root.findByType(FlatList).props.data).toEqual([]);
+
+        const hint = tree.root.findAllByType(TouchableOpacity).find((node) =>
+            node.findAllByType(Text).some((textNode) =>
+                String(textNode.props.children).includes('more in Done & Archived')
+            )
+        );
+        expect(hint).toBeDefined();
+        expect(hint!.findAllByType(Text).some((textNode) =>
+            String(textNode.props.children).startsWith('1 more')
+        )).toBe(true);
+
+        act(() => {
+            hint!.props.onPress();
+        });
+
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual(['task-1']);
+    });
+
+    it('does not offer hidden matches when nothing matching is done or archived', () => {
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        const hint = tree.root.findAllByType(TouchableOpacity).find((node) =>
+            node.findAllByType(Text).some((textNode) =>
+                String(textNode.props.children).includes('more in Done & Archived')
+            )
+        );
+        expect(hint).toBeUndefined();
+    });
+
+    it('returns a done task looked up by id even though done matches are hidden by default', () => {
+        routeParams.q = 'id:task-1';
+        storeState._allTasks = [
+            makeTask('task-1', 'Launch checklist', { status: 'done' }),
+            makeTask('task-2', 'Home errands'),
+        ];
+
+        let tree!: ReturnType<typeof create>;
+        act(() => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        expect(tree.root.findByType(FlatList).props.data.map((result: any) => result.item.id)).toEqual(['task-1']);
+    });
+
+
+    describe('result dates', () => {
+        const completedAt = '2026-05-01T09:15:00.000Z';
+
+        const renderWithDateTasks = () => {
+            routeParams.q = 'Zeta';
+            storeState._allTasks = [
+                makeTask('t-done', 'Zeta done', { status: 'done', completedAt }),
+                makeTask('t-archived', 'Zeta archived', { status: 'archived', completedAt }),
+                makeTask('t-unstamped', 'Zeta unstamped', { status: 'archived' }),
+                makeTask('t-due', 'Zeta due', { dueDate: '2099-01-01' }),
+                makeTask('t-overdue', 'Zeta overdue', { dueDate: '2020-01-01' }),
+                makeTask('t-plain', 'Zeta plain'),
+            ];
+
+            let tree!: ReturnType<typeof create>;
+            act(() => {
+                tree = trackTree(create(<SearchScreen />));
+            });
+
+
+            const hint = tree.root.findAllByType(TouchableOpacity).find((node) =>
+                node.findAllByType(Text).some((textNode) =>
+                    String(textNode.props.children).includes('more in Done & Archived')
+                )
+            );
+            act(() => {
+                hint!.props.onPress();
+            });
+            return tree;
+        };
+
+
+        const dateLineOf = (tree: ReturnType<typeof create>, taskId: string) => {
+            const list = tree.root.findByType(FlatList);
+            const index = list.props.data.findIndex((result: any) => result.item.id === taskId);
+            expect(index, `search result for ${taskId}`).toBeGreaterThanOrEqual(0);
+            const element = list.props.renderItem({ item: list.props.data[index], index });
+            let rowTree!: ReturnType<typeof create>;
+            act(() => {
+                rowTree = trackTree(create(element));
+            });
+            return rowTree.root
+                .findAllByType(Text)
+                .map((node) => ({
+                    text: String(node.props.children),
+                    color: Array.isArray(node.props.style) ? node.props.style[1]?.color : undefined,
+                }))
+                .find((line) => /^(Completed|Due) /.test(line.text)) ?? null;
+        };
+
+        it('labels a finished task with its completion date', () => {
+            const tree = renderWithDateTasks();
+
+            const label = `Completed ${safeFormatDate(completedAt, 'Pp')}`;
+            expect(dateLineOf(tree, 't-done')?.text).toBe(label);
+
+            expect(dateLineOf(tree, 't-archived')?.text).toBe(label);
+        });
+
+        it('labels an unfinished task with its due date and reddens only the overdue one', () => {
+            const tree = renderWithDateTasks();
+
+            const due = dateLineOf(tree, 't-due');
+            expect(due?.text).toBe(`Due ${safeFormatDate('2099-01-01', 'P')}`);
+            expect(due?.color).toBe('#64748b');
+
+            expect(dateLineOf(tree, 't-overdue')?.color).toBe('#dc2626');
+        });
+
+        it('shows no date at all rather than an ambiguous or empty one', () => {
+            const tree = renderWithDateTasks();
+
+            expect(dateLineOf(tree, 't-plain')).toBeNull();
+
+            expect(dateLineOf(tree, 't-unstamped')).toBeNull();
+        });
+    });
+
+    it('keeps literal CJK substring matches when SQLite search returns partial token matches', async () => {
+        vi.useFakeTimers();
+        routeParams.q = '搬家';
+        const tasks = [
+            makeTask('task-1', '準備搬家了'),
+            makeTask('task-2', '列出需要處理的搬家物品'),
+            makeTask('task-3', '搬家到新住處'),
+        ];
+        storeState._allTasks = tasks;
+        storageAdapterState.searchAll = vi.fn(async () => ({
+            tasks: [tasks[2]],
+            projects: [],
+        }));
+
+        let tree!: ReturnType<typeof create>;
+        await act(async () => {
+            tree = trackTree(create(<SearchScreen />));
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(250);
+            await Promise.resolve();
+        });
+
+        const resultList = tree.root.findByType(FlatList);
+        expect(resultList.props.data.map((result: any) => result.item.id)).toEqual([
+            'task-3',
+            'task-1',
+            'task-2',
+        ]);
+        expect(storageAdapterState.searchAll).toHaveBeenCalledWith('搬家');
+    });
+});

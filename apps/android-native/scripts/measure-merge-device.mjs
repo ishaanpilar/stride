@@ -1,0 +1,371 @@
+
+
+
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { serveWebdav } from './sync-harness.mjs';
+import { assignTapAnswers, measuredTaps, TAPS_PER_SAMPLE } from './merge-tap-matching.mjs';
+import { budgetVerdict } from './merge-budget.mjs';
+
+const ADB = process.env.ADB ?? '/opt/android-sdk/platform-tools/adb';
+const TP = process.env.TRACE_PROCESSOR ?? '/home/dd/.cache/stride-performance-tmp/stride-perfetto/trace_processor';
+const PORT = 18781;
+const FOLDER = '/dav/merge-bench';
+const TAG = 'StrideNativeDev';
+const here = dirname(fileURLToPath(import.meta.url));
+const [command, ...args] = process.argv.slice(2);
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+const stats = (values) => {
+    const sorted = values.filter((v) => typeof v === 'number').sort((a, b) => a - b);
+    if (sorted.length === 0) return { n: 0 };
+    const at = (q) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
+    const round = (v) => Math.round(v * 10) / 10;
+    return { n: sorted.length, median: round(at(0.5)), p90: round(at(0.9)), min: round(sorted[0]), max: round(sorted.at(-1)) };
+};
+
+const sqlite3 = (file, sql) => execFileSync('sqlite3', [file, sql], { encoding: 'utf8' });
+
+if (command === 'rkstorage') {
+    const [out, port = String(PORT)] = args;
+    rmSync(out, { force: true });
+
+    const rows = [
+        ['@stride_sync_backend', 'webdav'],
+        ['@stride_webdav_url', `http://127.0.0.1:${port}${FOLDER}`],
+        ['@stride_webdav_username', ''],
+        ['@stride_webdav_allow_insecure_http', 'true'],
+    ];
+    sqlite3(out, `CREATE TABLE catalystLocalStorage (key TEXT PRIMARY KEY, value TEXT NOT NULL); ${rows.map(([k, v]) => `INSERT INTO catalystLocalStorage VALUES ('${k}', '${v}');`).join(' ')} PRAGMA user_version = 1;`);
+    console.log(`wrote ${out}`);
+} else if (command === 'run') {
+    const [serial, pkg, label, outDir, samplesText = '10', changesText = '250', tapsText = 'on', pushText = 'off', startText = 'cold'] = args;
+    if (!pkg.endsWith('.benchmark')) throw new Error(`REFUSED: ${pkg} is not a benchmark package`);
+
+
+    process.on('exit', () => {
+        try { execFileSync(ADB, ['-s', serial, 'uninstall', pkg], { stdio: 'ignore' }); } catch {                     }
+    });
+    for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(1));
+    const samples = Number(samplesText);
+    const changes = Number(changesText);
+    const taps = tapsText === 'on';
+    const push = pushText === 'on';
+    const resume = startText === 'resume';
+    const adb = (...a) => execFileSync(ADB, ['-s', serial, ...a], { maxBuffer: 256 << 20 }).toString('utf8');
+    const sh = (c) => adb('shell', c).replace(/\r/g, '').trim();
+    const activity = `${pkg}/${pkg}.MainActivity`;
+    mkdirSync(outDir, { recursive: true });
+
+    const dav = await serveWebdav({ port: PORT, username: '', password: '', open: true });
+    adb('reverse', `tcp:${PORT}`, `tcp:${PORT}`);
+    const documentPath = `${FOLDER}/data.json`;
+    let etagVersion = 0;
+    const attachmentsPerRound = Number(process.env.MERGE_BENCH_ATTACHMENTS ?? 0);
+    const attachmentBytes = Number(process.env.MERGE_BENCH_ATTACHMENT_KB ?? 512) * 1024;
+    if (attachmentsPerRound > 0) dav.state.files.set(`${FOLDER}/attachments`, { dir: true });
+
+    const addRemoteAttachments = (doc, round, now) => {
+        const owners = doc.tasks.filter((task) => !task.deletedAt).sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, attachmentsPerRound);
+        owners.forEach((task, i) => {
+            const id = `bench-attachment-${round}-${i}`;
+            const body = Buffer.alloc(attachmentBytes, `${id} `);
+            const cloudKey = `attachments/${id}.bin`;
+            dav.state.files.set(`${FOLDER}/${cloudKey}`, { body, etag: `"${id}"` });
+            task.attachments = [...(task.attachments ?? []), {
+                id, kind: 'file', title: `${id}.bin`, uri: '', mimeType: 'application/octet-stream', size: body.length, cloudKey,
+                fileHash: createHash('sha256').update(body).digest('hex'), createdAt: now, updatedAt: now,
+            }];
+            task.updatedAt = now;
+            task.rev = (task.rev ?? 0) + 1;
+            task.revBy = 'merge-bench-remote';
+        });
+        return owners.length;
+    };
+
+    const editRemote = (round) => {
+        const file = dav.state.files.get(documentPath);
+        if (!file) throw new Error('the folder holds no sync document yet');
+        const doc = JSON.parse(file.body.toString('utf8'));
+        const sorted = doc.tasks.filter((task) => !task.deletedAt).sort((a, b) => (a.id < b.id ? -1 : 1));
+        const live = sorted.slice(0, changes);
+        const older = push && round > 0 ? sorted[changes] : null;
+        if (older) {
+            older.title = `${older.title.replace(/ \(older \d+\)$/, '')} (older ${round})`;
+            older.rev = Math.max(0, (older.rev ?? 1) - 1);
+            older.updatedAt = '2020-01-01T00:00:00.000Z';
+        }
+        const now = new Date().toISOString();
+        for (const task of live) {
+            task.title = `${task.title.replace(/ \(remote \d+\)$/, '')} (remote ${round})`;
+            task.updatedAt = now;
+            task.rev = (task.rev ?? 0) + 1;
+            task.revBy = 'merge-bench-remote';
+        }
+        const attachments = round > 0 && attachmentsPerRound > 0 ? addRemoteAttachments(doc, round, now) : 0;
+        const body = Buffer.from(JSON.stringify(doc, null, 2));
+        dav.state.files.set(documentPath, { body, etag: `"bench-${++etagVersion}-${createHash('sha1').update(body).digest('hex').slice(0, 12)}"` });
+        return { tasks: doc.tasks.length, edited: live.length, attachments, bytes: body.length };
+    };
+    const phoneTime = () => sh('date +%s.%3N');
+
+    const cycleEnded = async (since, timeoutMs = 90_000) => {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+            const lines = adb('logcat', '-d', '-v', 'epoch', '-T', since, '-s', `${TAG}:I`).split('\n');
+            const ended = lines.find((line) => /Sync diagnostic (complete|error)/.test(line));
+            if (ended) return { line: ended.trim(), syncLines: lines.filter((line) => /Sync step|Full sync merge|Sync local reconcile|sync state|Sync diagnostic/.test(line)).map((l) => l.trim()) };
+            await sleep(500);
+        }
+        return null;
+    };
+    const launchCold = async () => {
+        sh(`am force-stop ${pkg}`);
+        await sleep(1000);
+        const since = phoneTime();
+        sh(`am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${activity}`);
+        return since;
+    };
+
+
+    const warm1 = await cycleEnded(await launchCold());
+    if (!warm1 || !dav.state.files.get(documentPath)) throw new Error(`warm-up: no sync document uploaded (${warm1?.line ?? 'no cycle'})`);
+    console.log(`warm-up 1: ${warm1.line}`);
+
+
+    let targets = null;
+    if (taps) {
+        sh('uiautomator dump /data/local/tmp/merge-bench-ui.xml >/dev/null');
+        const xml = sh('cat /data/local/tmp/merge-bench-ui.xml');
+        const nodes = [...xml.matchAll(/<node [^>]*>/g)].map(([n]) => Object.fromEntries([...n.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, v])));
+        const centre = (text) => {
+            const node = nodes.filter((n) => n.text === text).map((n) => n.bounds.match(/\d+/g).map(Number)).sort((a, b) => b[1] - a[1])[0];
+            return node ? [Math.round((node[0] + node[2]) / 2), Math.round((node[1] + node[3]) / 2)] : null;
+        };
+        targets = { focus: centre('Focus'), inbox: centre('Inbox') };
+        if (!targets.focus || !targets.inbox) throw new Error(`tab bar not found: ${JSON.stringify(targets)}`);
+        console.log(`tap targets ${JSON.stringify(targets)}`);
+    }
+    editRemote(0);
+    const warm2 = await cycleEnded(await launchCold());
+    if (!warm2) throw new Error('warm-up 2: no sync cycle ended');
+    console.log(`warm-up 2: ${warm2.line}`);
+
+    const config = `
+buffers { size_kb: 262144 fill_policy: RING_BUFFER }
+data_sources { config { name: "linux.ftrace" ftrace_config {
+    ftrace_events: "sched/sched_switch" ftrace_events: "sched/sched_wakeup" ftrace_events: "sched/sched_waking"
+    ftrace_events: "sched/sched_blocked_reason" ftrace_events: "power/cpu_frequency" ftrace_events: "task/task_newtask"
+    ftrace_events: "task/task_rename" ftrace_events: "sched/sched_process_exit" ftrace_events: "sched/sched_process_free"
+    atrace_categories: "am" atrace_categories: "wm" atrace_categories: "view" atrace_categories: "gfx" atrace_categories: "input"
+    atrace_categories: "dalvik" atrace_categories: "binder_driver"
+    atrace_apps: "${pkg}"
+} } }
+data_sources { config { name: "android.log" android_log_config { min_prio: PRIO_INFO filter_tags: "${TAG}" } } }
+data_sources { config { name: "linux.process_stats" process_stats_config { scan_all_processes_on_start: true } } }
+data_sources { config { name: "android.packages_list" } }
+duration_ms: 16000
+`;
+    const conditions = () => ({
+        at: new Date().toISOString(),
+        battery: sh('dumpsys battery').split('\n').filter((l) => /level|temperature|powered/.test(l)).map((l) => l.trim()),
+        thermal: sh('dumpsys thermalservice').split('\n').find((l) => /Thermal Status/.test(l))?.trim(),
+    });
+    const report = { label, pkg, serial, samples, changes, taps, push, resume, targets, before: conditions(), runs: [] };
+    for (let round = 1; round <= samples; round += 1) {
+
+        if (resume && !sh(`pidof ${pkg} || true`)) {
+            if (!await cycleEnded(await launchCold())) throw new Error('resume: the cold start before the sample did not sync');
+            await sleep(3000);
+        }
+        const remote = editRemote(round);
+        if (!resume) sh(`am force-stop ${pkg}`);
+        await sleep(1000);
+        const remoteTrace = `/data/misc/perfetto-traces/${pkg}-merge.perfetto-trace`;
+        execFileSync(ADB, ['-s', serial, 'shell', `perfetto --txt -c - -o ${remoteTrace} --background`], { input: config });
+        await sleep(2000);
+
+        if (resume) { sh('input keyevent KEYCODE_HOME'); await sleep(1500); }
+        const since = phoneTime();
+
+        let tapper = null;
+        if (taps) {
+            const steps = [];
+            for (let i = 0; i < TAPS_PER_SAMPLE; i += 1) steps.push(`input tap ${(i % 2 ? targets.inbox : targets.focus).join(' ')}; sleep 0.4`);
+            const child = spawn(ADB, ['-s', serial, 'shell', `sleep 0.3; ${steps.join('; ')}`], { stdio: 'ignore' });
+            tapper = new Promise((done) => child.on('exit', done));
+        }
+        sh(`am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${activity}`);
+        const ended = await cycleEnded(since);
+        if (tapper) await tapper;
+        for (let i = 0; i < 80 && sh('pidof perfetto || true'); i += 1) await sleep(250);
+        const trace = resolve(outDir, `${label}-${round}.perfetto-trace`);
+        adb('pull', remoteTrace, trace);
+        sh(`rm -f ${remoteTrace}`);
+        report.runs.push({ round, remote, trace, ended: ended?.line ?? null, syncLines: ended?.syncLines ?? [] });
+        console.log(`${label} #${round}: ${ended?.line ?? 'NO CYCLE'} -> ${trace}`);
+    }
+    report.after = conditions();
+    sh('input keyevent KEYCODE_HOME');
+    adb('reverse', '--remove', `tcp:${PORT}`);
+    await dav.close();
+    const file = resolve(outDir, `${label}.json`);
+    writeFileSync(file, JSON.stringify(report, null, 2));
+    console.log(`wrote ${file}`);
+    if (report.runs.some((run) => !run.ended)) process.exitCode = 1;
+} else if (command === 'analyze') {
+    const PKG_GLOB = '*.benchmark';
+    const query = (trace, sql) => {
+        const file = join(tmpdir(), `merge-q-${process.pid}.sql`);
+        writeFileSync(file, sql);
+        try {
+            const out = execFileSync(TP, ['-q', file, trace], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 });
+            const lines = out.trim().split('\n').filter((l) => l.startsWith('"') || /^[\d-]/.test(l));
+            const header = out.trim().split('\n').find((l) => l.startsWith('"'));
+            if (!header) return [];
+            const keys = header.split(',').map((k) => k.replace(/"/g, ''));
+            return lines.filter((l) => l !== header).map((l) => {
+                const values = l.match(/("([^"]*)"|[^,]+)/g).map((v) => v.replace(/^"|"$/g, ''));
+                return Object.fromEntries(keys.map((k, i) => [k, Number.isNaN(Number(values[i])) || values[i] === '' ? values[i] : Number(values[i])]));
+            });
+        } finally { rmSync(file, { force: true }); }
+    };
+    const engine = `(SELECT utid FROM thread JOIN process USING (upid) WHERE thread.name = 'stride-core' AND process.name GLOB '${PKG_GLOB}' ORDER BY thread.start_ts DESC LIMIT 1)`;
+    const budgetArg = args.find((a) => a.startsWith('--budget='));
+    const budgetMs = budgetArg ? Number(budgetArg.slice('--budget='.length)) : null;
+    const repeat = args.includes('--repeat');
+    if (budgetArg && !(Number.isFinite(budgetMs) && budgetMs > 0)) {
+        console.error(`usage: --budget=<ms> takes a positive number, not ${JSON.stringify(budgetArg.slice('--budget='.length))}`);
+        process.exit(2);
+    }
+    const results = [];
+    for (const trace of args.filter((a) => a !== budgetArg && a !== '--repeat')) {
+
+        const [span] = query(trace, `
+SELECT MIN(s.ts) AS start, MAX(s.ts + s.dur) AS end FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+WHERE tt.utid = ${engine} AND s.name GLOB 'sync:*';`);
+        if (!span || !span.start) { results.push({ trace, error: 'no sync sections' }); continue; }
+        const window = `s.ts < ${span.end} AND s.ts + s.dur > ${span.start}`;
+
+        const blocks = query(trace, `
+SELECT s.id, s.name, s.ts, round(s.dur / 1e6, 1) AS ms,
+  (SELECT group_concat(name, '|') FROM (SELECT DISTINCT d.name FROM descendant_slice(s.id) d WHERE d.name GLOB 'sync:*' OR d.name GLOB 'io:*')) AS inner
+FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+WHERE tt.utid = ${engine} AND s.depth = 0 AND ${window} ORDER BY s.dur DESC;`);
+
+        const sections = query(trace, `
+SELECT s.name, COUNT(*) AS n, round(SUM(s.dur) / 1e6, 1) AS ms, round(MAX(s.dur) / 1e6, 1) AS maxMs
+FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+WHERE tt.utid = ${engine} AND ${window} AND (s.name GLOB 'sync:*' OR s.name GLOB 'io:*' OR s.name GLOB 'sql:*' OR s.name GLOB 'core:*')
+GROUP BY s.name ORDER BY SUM(s.dur) DESC;`);
+        const states = query(trace, `
+SELECT state, round(SUM(MIN(ts + dur, ${span.end}) - MAX(ts, ${span.start})) / 1e6, 1) AS ms FROM thread_state
+WHERE utid = ${engine} AND ts < ${span.end} AND ts + dur > ${span.start} GROUP BY state ORDER BY ms DESC;`);
+
+
+        const syncWork = `(SELECT COALESCE(SUM(MIN(d.ts + d.dur, s.ts + s.dur) - MAX(d.ts, s.ts)), 0) FROM slice d JOIN thread_track dt ON d.track_id = dt.id
+     WHERE dt.utid = ${engine} AND (d.name GLOB 'sync:*' OR d.name GLOB 'io:*') AND d.ts < s.ts + s.dur AND d.ts + d.dur > s.ts
+     AND NOT EXISTS (SELECT 1 FROM ancestor_slice(d.id) a WHERE a.name GLOB 'sync:*' OR a.name GLOB 'io:*'))`;
+        const own = `FROM slice e JOIN thread_track et ON e.track_id = et.id WHERE et.utid = ${engine} AND e.depth = 0 AND e.name GLOB 'core:*'
+     AND e.name != 'core:idlePump' AND e.ts >= s.ts AND e.ts + e.dur <= s.ts + s.dur ORDER BY e.ts + e.dur DESC LIMIT 1`;
+        const inputs = `FROM slice i JOIN thread_track it ON i.track_id = it.id JOIN thread ti USING (utid) JOIN process pi USING (upid)
+     WHERE pi.name GLOB '${PKG_GLOB}' AND ti.tid = pi.pid AND i.name GLOB 'deliverInputEvent*'`;
+
+        const gateWaitsOf = (msg) => /gateWaitMs[^\d]{0,6}(\d+(?:[;,]\d+)*)/.exec(String(msg))?.[1].split(/[;,]/).map(Number);
+        const tapOf = (name) => /eventTimeNano=(\d+)/.exec(String(name ?? ''))?.[1] ?? null;
+        const waits = query(trace, `
+SELECT s.ts, s.dur, round(s.dur / 1e6, 1) AS waitMs, t.name AS thread,
+  (SELECT e.name ${own}) AS op,
+  (SELECT round((e.ts - s.ts) / 1e6, 1) ${own}) AS queueMs,
+  (SELECT round(e.dur / 1e6, 1) ${own}) AS runMs,
+  round(${syncWork} / 1e6, 1) AS syncWorkMs,
+  round((s.ts - ${span.start}) / 1e6, 1) AS atSyncMs
+FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t USING (utid) JOIN process p USING (upid)
+WHERE p.name GLOB '${PKG_GLOB}' AND s.name = 'core:wait' AND tt.utid != ${engine} ORDER BY s.ts;`)
+            .map((w) => Object.fromEntries(Object.entries(w).map(([k, v]) => [k, v === '[NULL]' ? null : v])));
+
+        const tapEvents = new Map();
+        for (const row of query(trace, `SELECT i.name, i.ts ${inputs} ORDER BY i.ts;`)) {
+            const tap = tapOf(row.name);
+            if (!tap) continue;
+            const known = tapEvents.get(tap);
+            tapEvents.set(tap, { tap, first: known?.first ?? row.ts, last: row.ts });
+        }
+        if (tapEvents.size !== 0 && tapEvents.size !== TAPS_PER_SAMPLE) {
+            results.push({ trace, error: `the app saw ${tapEvents.size} taps, not ${TAPS_PER_SAMPLE}` });
+            continue;
+        }
+        const reads = waits.filter((w) => w.thread === 'stride-read' && w.op).map((w) => ({ ts: w.ts, end: w.ts + w.dur, op: w.op, wait: w }));
+        const answers = assignTapAnswers([...tapEvents.values()].sort((a, b) => a.first - b.first), reads);
+
+        const [{ n: binds } = { n: 0 }] = query(trace, `SELECT COUNT(*) AS n FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+     JOIN thread t USING (utid) JOIN process p USING (upid) WHERE p.name GLOB '${PKG_GLOB}' AND s.name GLOB 'bindApplication*';`);
+
+
+        const measured = measuredTaps(answers, binds > 0);
+        const inSpan = measured.filter((a) => (a.call ? a.call.ts : a.last) >= span.start && (a.call ? a.call.ts : a.last) <= span.end);
+        for (const answer of measured) if (answer.call) answer.call.wait.tapToAnswerMs = answer.answerMs;
+        const taps = { inSpan: inSpan.length, answered: inSpan.filter((a) => a.call).length,
+            unanswered: inSpan.filter((a) => !a.call).length, answersMs: inSpan.filter((a) => a.call).map((a) => a.answerMs),
+
+            unansweredAt: inSpan.filter((a) => !a.call).map((a) => answers.indexOf(a)),
+            startTapsSkipped: answers.length - measured.length, coldStart: binds > 0 };
+        const steps = query(trace, `
+SELECT round((ts - ${span.start}) / 1e6, 1) AS atSyncMs, replace(replace(msg, ',', ';'), '"', '') AS msg FROM android_logs WHERE tag = '${TAG}'
+  AND (msg GLOB '*Sync step*' OR msg GLOB '*Full sync merge*' OR msg GLOB '*Sync local reconcile*' OR msg GLOB '*sync state*'
+    OR msg GLOB '*Sync save published to the store*') ORDER BY ts;`);
+
+        const gateWaitsMs = steps.map((step) => gateWaitsOf(step.msg)).filter(Boolean);
+        results.push({
+            trace, syncSpanMs: Math.round((span.end - span.start) / 1e5) / 10,
+            longestBlocks: blocks.slice(0, 6).map(({ name, ms, inner }) => ({ name, ms, inner })),
+            sections, states, waits, steps, taps, gateWaitsMs,
+        });
+    }
+
+    const byName = {};
+    for (const r of results.filter((r) => !r.error)) for (const s of r.sections) (byName[s.name] ??= []).push(s.ms);
+    const waits = results.flatMap((r) => r.waits ?? []).filter((w) => w.op);
+
+    const tapWaits = (during) => {
+        const chosen = waits.filter((w) => w.tapToAnswerMs != null && (w.syncWorkMs > 10) === during);
+        return { tapToAnswerMs: stats(chosen.map((w) => w.tapToAnswerMs)), waitMs: stats(chosen.map((w) => w.waitMs)), queueMs: stats(chosen.map((w) => w.queueMs)), runMs: stats(chosen.map((w) => w.runMs)) };
+    };
+    const ok = results.filter((r) => !r.error);
+    const summary = {
+        traces: results.length,
+        samples: ok.length,
+        syncSpanMs: stats(ok.map((r) => r.syncSpanMs)),
+        longestBlockMs: stats(ok.map((r) => r.longestBlocks[0]?.ms ?? 0)),
+        engineRunningMs: stats(ok.map((r) => r.states.filter((x) => x.state === 'Running').reduce((a, x) => a + x.ms, 0))),
+        sections: Object.fromEntries(Object.entries(byName).map(([name, values]) => [name, stats(values)]).sort((a, b) => (b[1].median ?? 0) - (a[1].median ?? 0))),
+        tapsDuringSync: tapWaits(true),
+        tapsOutsideSync: tapWaits(false),
+
+
+        tapsInSyncSpan: stats(ok.flatMap((r) => r.taps.answersMs)),
+
+        gateWaitMs: { first: stats(ok.flatMap((r) => r.gateWaitsMs.map((line) => line[0]))),
+            later: stats(ok.flatMap((r) => r.gateWaitsMs.flatMap((line) => line.slice(1)))) },
+        taps: (() => {
+            const sum = (key) => ok.reduce((total, r) => total + r.taps[key], 0);
+            const inSpan = sum('inSpan');
+            return { inSpan, answered: sum('answered'), unanswered: sum('unanswered'),
+                unansweredShare: inSpan ? Math.round((sum('unanswered') / inSpan) * 1000) / 1000 : null };
+        })(),
+        callsDuringSync: { n: waits.filter((w) => w.syncWorkMs > 10).length, waitMs: stats(waits.filter((w) => w.syncWorkMs > 10).map((w) => w.waitMs)), syncWorkMs: stats(waits.filter((w) => w.syncWorkMs > 10).map((w) => w.syncWorkMs)) },
+    };
+    console.log(JSON.stringify({ summary, results }, null, 2));
+    if (budgetMs !== null) {
+        const { verdict, reasons } = budgetVerdict(summary, { tapP90Ms: budgetMs, repeat });
+        console.error(`budget ${verdict}: ${reasons.join('; ')}`);
+        process.exitCode = { pass: 0, fail: 1, repeat: 3 }[verdict];
+    }
+} else {
+    console.error('usage: rkstorage | run | analyze (see the header)');
+    process.exit(2);
+}

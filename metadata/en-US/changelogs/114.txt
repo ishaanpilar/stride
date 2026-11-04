@@ -1,0 +1,4 @@
+- Repeating tasks show every occurrence across the visible calendar range.
+- Focus and Next hide timed-start tasks until the exact time.
+- Faster task rows, stable drag reordering, clearer accessibility, and better project return navigation.
+- Sync setup validates remote data and attachments before switching.

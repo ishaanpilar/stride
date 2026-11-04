@@ -1,0 +1,54 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ishaanpilar/stride",
+  "title": "Stride",
+  "description": "Task automation via SQLite, desktop Local API, or Stride Cloud; read-only by default.",
+  "version": "1.1.13",
+  "websiteUrl": "https://github.com/ishaanpilar/stride/tree/main/docs",
+  "repository": {
+    "url": "https://github.com/ishaanpilar/stride",
+    "source": "github",
+    "id": "1111978380",
+    "subfolder": "apps/mcp-server"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "stride-mcp",
+      "version": "1.1.13",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "STRIDE_DB_PATH",
+          "description": "Optional path to the local Stride SQLite database.",
+          "format": "filepath",
+          "isRequired": false
+        },
+        {
+          "name": "STRIDE_MCP_CLOUD_URL",
+          "description": "Optional self-hosted Stride Cloud base URL for Cloud mode.",
+          "isRequired": false
+        },
+        {
+          "name": "STRIDE_MCP_CLOUD_TOKEN",
+          "description": "Bearer token for self-hosted Stride Cloud mode.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "STRIDE_MCP_API_URL",
+          "description": "Desktop Local API origin, e.g. http://127.0.0.1:3456. Selects API mode.",
+          "isRequired": false
+        },
+        {
+          "name": "STRIDE_MCP_API_TOKEN",
+          "description": "Bearer token from the desktop Local API settings; required in API mode.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

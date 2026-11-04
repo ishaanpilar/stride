@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import importlib.util
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT_PATH = Path(__file__).with_name("prepare-google-play-listing-metadata.py")
+SPEC = importlib.util.spec_from_file_location("prepare_google_play_listing_metadata", SCRIPT_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"Unable to load {SCRIPT_PATH}")
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def write_listing(
+    root: Path,
+    locale: str,
+    *,
+    title: str = "Stride",
+    short_description: str = "Stride (mind water): local-first GTD capture.",
+    full_description: str = 'Stride (pronounced "mind water") keeps GTD tasks local.',
+) -> None:
+    locale_dir = root / locale
+    locale_dir.mkdir(parents=True)
+    (locale_dir / "title.txt").write_text(title + "\n", encoding="utf-8")
+    (locale_dir / "short_description.txt").write_text(short_description + "\n", encoding="utf-8")
+    (locale_dir / "full_description.txt").write_text(full_description + "\n", encoding="utf-8")
+
+
+class PrepareGooglePlayListingMetadataTest(unittest.TestCase):
+    def test_collects_localized_listing_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_listing(root, "en-US")
+            write_listing(
+                root,
+                "es-ES",
+                short_description="Un sistema GTD completo.",
+                full_description="Stride es un sistema GTD privado.",
+            )
+            write_listing(
+                root,
+                "fr-FR",
+                short_description="Gestionnaire GTD privé.",
+                full_description="Stride est un gestionnaire GTD privé.",
+            )
+            write_listing(
+                root,
+                "de-DE",
+                short_description="Privater GTD-Manager.",
+                full_description="Stride ist ein privater GTD-Manager.",
+            )
+            write_listing(
+                root,
+                "zh-CN",
+                short_description="本地优先 GTD 任务管理器。",
+                full_description="Stride 是本地优先的 GTD 任务管理器。",
+            )
+            (root / "chocolatey").mkdir()
+
+            listings = MODULE.collect_listings(root)
+
+        self.assertEqual([listing["language"] for listing in listings], ["de-DE", "en-US", "es-ES", "fr-FR", "zh-CN"])
+        self.assertEqual(listings[0]["title"], "Stride")
+        self.assertIn("shortDescription", listings[0])
+        self.assertIn("fullDescription", listings[0])
+
+    def test_requires_french_listing_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_listing(root, "en-US")
+            write_listing(root, "de-DE")
+            write_listing(root, "es-ES")
+            write_listing(root, "zh-CN")
+
+            with self.assertRaisesRegex(ValueError, "fr-FR"):
+                MODULE.collect_listings(root)
+
+    def test_en_us_metadata_must_include_mind_water(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_listing(
+                root,
+                "en-US",
+                short_description="Local-first GTD capture.",
+                full_description="A private GTD task manager.",
+            )
+            write_listing(root, "de-DE")
+            write_listing(root, "es-ES")
+            write_listing(root, "fr-FR")
+            write_listing(root, "zh-CN")
+
+            with self.assertRaisesRegex(ValueError, "mind water"):
+                MODULE.collect_listings(root)
+
+    def test_rejects_short_descriptions_over_google_play_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_listing(root, "en-US", short_description="Stride mind water " + ("x" * 80))
+            write_listing(root, "de-DE")
+            write_listing(root, "es-ES")
+            write_listing(root, "fr-FR")
+            write_listing(root, "zh-CN")
+
+            with self.assertRaisesRegex(ValueError, "shortDescription"):
+                MODULE.collect_listings(root)
+
+
+if __name__ == "__main__":
+    unittest.main()

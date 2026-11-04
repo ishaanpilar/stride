@@ -1,0 +1,131 @@
+import { type Attachment, DEFAULT_MAX_FILE_SIZE_BYTES, generateUUID, isSandboxMode, normalizeAttachmentInput } from '@stride/core';
+import { logWarn } from './app-log';
+import { FOLDER_LINK_MIME_TYPE } from './attachment-reference';
+import { getManagedPath } from './managed-paths';
+import { ATTACHMENTS_DIR_NAME, extractExtension } from './sync-service-utils';
+import { invokeNative } from './tauri-invoke';
+
+export type ImportPickedFileResult =
+    | { attachment: Attachment }
+    | { errorKey: 'attachments.fileTooLarge' | 'attachments.fileNotReadable' };
+
+
+export async function browseForLinkTarget(dialogTitle: string): Promise<string | null> {
+    if (isSandboxMode()) return null;
+    const { open } = await import('./native-dialog');
+    const selected = await open({
+        multiple: false,
+        directory: false,
+        title: dialogTitle,
+    });
+    return typeof selected === 'string' ? selected : null;
+}
+
+
+export async function pickFolderLinkAttachment(dialogTitle: string): Promise<Attachment | null> {
+    if (isSandboxMode()) return null;
+    const { open } = await import('./native-dialog');
+    const selected = await open({
+        multiple: false,
+        directory: true,
+        title: dialogTitle,
+    });
+    if (typeof selected !== 'string' || !selected.trim()) return null;
+    const { title, uri } = normalizeAttachmentInput(selected);
+    const now = new Date().toISOString();
+    const attachment: Attachment = {
+        id: generateUUID(),
+        kind: 'link',
+        title,
+        uri,
+        mimeType: FOLDER_LINK_MIME_TYPE,
+        createdAt: now,
+        updatedAt: now,
+    };
+    try {
+        await invokeNative('remember_link_folder_access', { attachmentId: attachment.id, path: uri });
+    } catch (error) {
+        void logWarn('Failed to remember linked folder access', {
+            scope: 'attachment',
+            extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+    }
+    return attachment;
+}
+
+
+export async function importPickedFileAttachment(selectedPath: string): Promise<ImportPickedFileResult> {
+    if (isSandboxMode()) return { errorKey: 'attachments.fileNotReadable' };
+    const title = selectedPath.split(/[/\\]/).pop() || selectedPath;
+    const id = generateUUID();
+    try {
+        const imported = await invokeNative<{ uri: string; size: number }>('import_attachment_file', {
+            path: selectedPath,
+            fileName: `${id}${extractExtension(title)}`,
+            maxBytes: DEFAULT_MAX_FILE_SIZE_BYTES,
+        });
+        const now = new Date().toISOString();
+        return {
+            attachment: {
+                id,
+                kind: 'file',
+                title,
+                uri: imported.uri,
+                size: imported.size,
+                localStatus: 'available',
+                createdAt: now,
+                updatedAt: now,
+            },
+        };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        void logWarn('Failed to import attachment file', {
+            scope: 'attachment',
+            extra: { error: message },
+        });
+        return {
+            errorKey: message === 'file_too_large'
+                ? 'attachments.fileTooLarge'
+                : 'attachments.fileNotReadable',
+        };
+    }
+}
+
+
+export async function importDroppedFileAttachment(file: File): Promise<ImportPickedFileResult> {
+    if (isSandboxMode()) return { errorKey: 'attachments.fileNotReadable' };
+    if (file.size > DEFAULT_MAX_FILE_SIZE_BYTES) {
+        return { errorKey: 'attachments.fileTooLarge' };
+    }
+    const id = generateUUID();
+    try {
+        const { mkdir, writeFile } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
+        const dir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+        await mkdir(dir, { recursive: true });
+        const targetPath = await join(dir, `${id}${extractExtension(file.name)}`);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await writeFile(targetPath, bytes);
+        const now = new Date().toISOString();
+        return {
+            attachment: {
+                id,
+                kind: 'file',
+                title: file.name,
+                uri: targetPath,
+                size: file.size,
+                localStatus: 'available',
+                createdAt: now,
+                updatedAt: now,
+                mimeType: file.type || undefined,
+            },
+        };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        void logWarn('Failed to import dropped file attachment', {
+            scope: 'attachment',
+            extra: { error: message },
+        });
+        return { errorKey: 'attachments.fileNotReadable' };
+    }
+}

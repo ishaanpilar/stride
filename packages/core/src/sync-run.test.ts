@@ -1,0 +1,5510 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { AppData, Attachment, Project, Task } from './types';
+import type {
+    SyncBackendIO,
+    SyncRunNotifier,
+    SyncRunDiagnosticEvent,
+    SyncRunPlatformHooks,
+    SyncRunPolicy,
+    SyncRunAttachmentHelpers,
+    SyncRunStorage,
+    SyncRunStoreBridge,
+    SyncStatusUpdates,
+} from './sync-run-ports';
+import { SyncRemoteWriteConflict } from './sync-run-ports';
+import { runStoreCommand } from './store-write-gate';
+import { clearIdleSyncCycleSnapshot, normalizeRemoteWriteResult, runSharedSyncCycle } from './sync-run';
+import { normalizeAppData } from './sync-normalization';
+import { cloneAppData } from './sync-runtime-utils';
+import { computeRemoteSyncDocumentFingerprint, parseSyncDocument, toRemoteSyncDocument } from './sync-document';
+import { toStableSyncJson } from './sync-helpers';
+import type { FastSyncState } from './sync-fast-sync';
+import {
+    SyncFileGenerationCorruptError,
+    SyncFileLockBusyError,
+    SyncFileLockUnavailableError,
+    type SyncBackend,
+} from './sync-service-utils';
+import type { SyncCycleIO, SyncCycleResult } from './sync-types';
+import { mergeAppData, performSyncCycle } from './sync';
+import {
+    SyncRemoteMutationFenceBusyError,
+    SyncRemoteMutationFenceLostError,
+    type SyncRemoteMutationFenceLease,
+} from './sync-remote-fence';
+import { AttachmentUploadTooLargeError, applyAttachmentPatches, runAttachmentTransferLifecycle } from './attachment-transfer';
+import { buildCloudKey } from './attachment-paths';
+import { isAttachmentKeptWithoutFile } from './unreachable-attachments';
+import { markAttachmentUnrecoverable } from './attachment-validation';
+import { createMobileAttachmentFiles } from './mobile-attachment-files';
+import { createMobileAttachmentCommon } from './mobile-attachment-common';
+import { createMobileAttachmentBackends } from './mobile-attachment-backends';
+import { cloudAttachmentExists } from './cloud';
+import { createMemoryFileSystem, createMemoryStorage, createRecordingLog, MANAGED } from './__fixtures__/mobile-attachment-fakes';
+import { SyncEncryptionPartlyEncryptedError } from './sync-encryption';
+import { NativeAttachmentCleanupUnconfirmedError } from './native-attachment-cleanup';
+import { LocalSyncAbort } from './sync-client-helpers';
+import { resetForTests } from './store';
+import { isArchiveRetentionSyncCompleted } from './store-archive-retention';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { openScratchSqlite } from './screen-parity.replay';
+import { SqliteAdapter } from './sqlite-adapter';
+
+
+beforeEach(() => {
+    clearIdleSyncCycleSnapshot();
+});
+
+const NOW = new Date('2026-07-13T10:00:00.000Z');
+const STAMP = '2026-07-01T00:00:00.000Z';
+
+const createTask = (id: string, title: string): Task => ({
+    id,
+    title,
+    status: 'inbox',
+    createdAt: STAMP,
+    updatedAt: STAMP,
+} as Task);
+
+const createData = (tasks: Task[] = [], settings: AppData['settings'] = {}): AppData => normalizeAppData({
+    tasks,
+    projects: [],
+    sections: [],
+    areas: [],
+    people: [],
+    settings,
+});
+
+const createFenceLease = (overrides: Partial<SyncRemoteMutationFenceLease> = {}): SyncRemoteMutationFenceLease => ({
+    assertHeld: vi.fn().mockResolvedValue(undefined),
+    renew: vi.fn().mockResolvedValue(undefined),
+    release: vi.fn().mockResolvedValue(undefined),
+    retryAfterMs: vi.fn(() => 5_000),
+    ...overrides,
+});
+
+type HarnessConfig = {
+    local?: AppData;
+    remote?: AppData | null;
+    backend?: SyncBackend;
+    fastSyncScope?: string | null;
+    locationScope?: string | null;
+    manual?: boolean;
+    activationProbe?: boolean;
+    ignorePendingRemoteWriteBackoff?: boolean;
+    policy?: Partial<SyncRunPolicy>;
+    io?: Partial<SyncBackendIO>;
+    hooks?: Partial<SyncRunPlatformHooks>;
+    storage?: Partial<SyncRunStorage>;
+    attachmentCleanupIntervalMs?: number;
+    performSyncCycle?: (io: SyncCycleIO) => Promise<SyncCycleResult>;
+};
+
+const createHarness = (config: HarnessConfig = {}) => {
+    const initial = config.local ?? createData([createTask('t-local', 'Local task')]);
+    const harness = {
+        lastDataChangeAt: 1,
+        inMemory: cloneAppData(initial),
+        persisted: cloneAppData(initial),
+        remote: (config.remote === undefined ? null : config.remote) as AppData | null,
+        fastStates: new Map<string, FastSyncState>(),
+        statusUpdates: [] as SyncStatusUpdates[],
+        steps: [] as string[],
+        warnings: [] as { message: string; error?: unknown }[],
+        infos: [] as { message: string; extra?: Record<string, string> }[],
+        diagnostics: [] as string[],
+        diagnosticEvents: [] as SyncRunDiagnosticEvent[],
+        uiErrors: [] as (string | null)[],
+        callOrder: [] as string[],
+    };
+
+    const io: SyncBackendIO = {
+        readRemote: vi.fn(async () => {
+            harness.callOrder.push('readRemote');
+            return harness.remote ? cloneAppData(harness.remote) : null;
+        }),
+        writeRemote: vi.fn(async (sanitized: AppData) => {
+            harness.callOrder.push('writeRemote');
+            harness.remote = cloneAppData(sanitized);
+            return { fingerprint: `remote-fp-${JSON.stringify(sanitized.tasks.map((task) => task.id).sort())}` };
+        }),
+        readRemoteFingerprint: vi.fn(async () => (
+            harness.remote
+                ? `remote-fp-${JSON.stringify(harness.remote.tasks.map((task) => task.id).sort())}`
+                : null
+        )),
+        ...config.io,
+    };
+
+    const store: SyncRunStoreBridge = {
+        getLastDataChangeAt: () => harness.lastDataChangeAt,
+        getInMemorySnapshot: () => cloneAppData(harness.inMemory),
+
+        captureInMemorySnapshot: () => ({
+            tasks: [...harness.inMemory.tasks],
+            projects: [...harness.inMemory.projects],
+            sections: [...harness.inMemory.sections],
+            areas: [...harness.inMemory.areas],
+            people: [...(harness.inMemory.people ?? [])],
+            settings: harness.inMemory.settings,
+        }),
+        flushPendingSave: vi.fn(async () => {
+            harness.callOrder.push('flush');
+        }),
+        setUiError: (message) => harness.uiErrors.push(message),
+        getSettings: () => harness.inMemory.settings,
+    };
+
+    const storage: SyncRunStorage = {
+        readPersistedLocal: vi.fn(async () => cloneAppData(harness.persisted)),
+        persistLocal: vi.fn(async (data: AppData) => {
+            harness.callOrder.push('persistLocal');
+            harness.persisted = cloneAppData(data);
+        }),
+        persistSyncStatus: vi.fn(async (updates) => {
+            harness.statusUpdates.push(updates);
+        }),
+
+        readTokenOf: () => ({ epoch: 0, generation: 0 }),
+        readFastSyncState: vi.fn(async (scope: string) => harness.fastStates.get(scope) ?? null),
+        writeFastSyncState: vi.fn(async (state: FastSyncState) => {
+            harness.fastStates.set(state.scope, state);
+        }),
+        injectExternalCalendars: vi.fn(async (data: AppData) => data),
+        persistExternalCalendars: vi.fn(async () => {}),
+        ...config.storage,
+    };
+
+    const notifier: SyncRunNotifier = {
+        setStep: (step) => harness.steps.push(step),
+        logInfo: (message, extra) => harness.infos.push({ message, extra }),
+        logWarning: (message, error) => harness.warnings.push({ message, error }),
+        logWarningExtra: (message) => harness.warnings.push({ message }),
+        sanitizeLogMessage: (message) => message,
+        logSyncError: vi.fn(async () => '/tmp/sync-error.log'),
+        logMergeSummary: vi.fn(),
+        onDiagnostic: (event) => { harness.diagnostics.push(event.event); harness.diagnosticEvents.push(event); },
+    };
+
+    const hooks: SyncRunPlatformHooks = {
+        setupCycle: vi.fn(async () => ({
+            kind: 'ready' as const,
+            backend: config.backend ?? 'cloud',
+            cloudProvider: 'selfhosted' as const,
+            io,
+            fastSyncScope: config.fastSyncScope ?? null,
+            locationScope: config.locationScope ?? null,
+        })),
+        requestFollowUp: vi.fn(),
+        requestFollowUpAfter: vi.fn(),
+        formatErrorMessage: (error, backend) => `[${backend}] ${error instanceof Error ? error.message : String(error)}`,
+        finalizeErrorStatus: vi.fn(async () => {}),
+        finalizeSuccess: vi.fn(async () => {}),
+        ...config.hooks,
+    };
+
+    const policy: SyncRunPolicy = {
+        preSyncAttachmentsBeforeFastCheck: false,
+        enableReadCheckSkip: false,
+        postMergeAttachmentErrorPolicy: 'warn',
+        attachmentPhasesEnabled: true,
+        ...config.policy,
+    };
+
+    const run = (options: {
+        manual?: boolean;
+        activationProbe?: boolean;
+        fileSyncLockBusyRetryAttempt?: number;
+        ignorePendingRemoteWriteBackoff?: boolean;
+        acceptMissingAttachmentIds?: readonly string[];
+    } = {}) => runSharedSyncCycle({
+        options: {
+            manual: config.manual ?? options.manual,
+            activationProbe: config.activationProbe ?? options.activationProbe,
+            acceptMissingAttachmentIds: options.acceptMissingAttachmentIds,
+            fileSyncLockBusyRetryAttempt: options.fileSyncLockBusyRetryAttempt,
+            ignorePendingRemoteWriteBackoff: config.ignorePendingRemoteWriteBackoff
+                ?? options.ignorePendingRemoteWriteBackoff,
+        },
+        storage,
+        notifier,
+        store,
+        hooks,
+        policy,
+        now: () => NOW,
+        attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
+        performSyncCycle: config.performSyncCycle,
+    });
+
+    return { harness, io, store, storage, notifier, hooks, policy, run };
+};
+
+describe('runSharedSyncCycle', () => {
+
+
+    beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-07-15T00:00:00.000Z') }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    describe('persisted-vs-in-memory reconcile short-circuit (#766)', () => {
+        it('uses the persisted side without merging when change fingerprints match', async () => {
+
+
+            const inMemory = createData([createTask('t-1', 'Zebra title')]);
+            const persisted = createData([createTask('t-1', 'Apple title')]);
+            let capturedLocal: AppData | null = null;
+            const { run } = createHarness({
+                local: inMemory,
+                storage: { readPersistedLocal: vi.fn(async () => cloneAppData(persisted)) },
+                performSyncCycle: async (io) => {
+                    capturedLocal = await io.readLocal();
+                    return performSyncCycle(io);
+                },
+            });
+
+            const result = await run();
+
+            expect(result.success).toBe(true);
+            expect(capturedLocal!.tasks.map((task) => task.title)).toEqual(['Apple title']);
+        });
+
+        it('still merges when the change fingerprints differ', async () => {
+
+
+            const inMemory = createData([
+                createTask('t-1', 'Shared task'),
+                createTask('t-extra', 'Only in memory'),
+            ]);
+            const persisted = createData([createTask('t-1', 'Shared task')]);
+            let capturedLocal: AppData | null = null;
+            const { run } = createHarness({
+                local: inMemory,
+                storage: { readPersistedLocal: vi.fn(async () => cloneAppData(persisted)) },
+                performSyncCycle: async (io) => {
+                    capturedLocal = await io.readLocal();
+                    return performSyncCycle(io);
+                },
+            });
+
+            const result = await run();
+
+            expect(result.success).toBe(true);
+            expect(capturedLocal!.tasks.map((task) => task.id).sort()).toEqual(['t-1', 't-extra']);
+        });
+    });
+
+    it('repairs an aligned file remote recovered from a fallback candidate', async () => {
+        const aligned = createData();
+        const { io, run } = createHarness({
+            local: aligned,
+            remote: aligned,
+            backend: 'file',
+            io: { requiresRemoteRepair: () => true },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('rewrites a repaired legacy attachment remote once before treating it as unchanged', async () => {
+        const legacyUri = 'https://example.test/issue/1';
+        const legacyRemote = createData([{
+            ...createTask('legacy-task', 'Legacy task'),
+            attachments: legacyUri,
+        } as unknown as Task]);
+        const parsedLocal = parseSyncDocument(legacyRemote, 'local');
+        if (!parsedLocal.ok) throw new Error('Expected the legacy fixture to parse');
+        const local = parsedLocal.data;
+        const fence = createFenceLease();
+        const { harness, io, run } = createHarness({
+            local,
+            remote: legacyRemote,
+            fastSyncScope: null,
+            policy: { enableReadCheckSkip: true },
+            io: { acquireRemoteMutationFence: vi.fn(async () => fence) },
+        });
+
+        const first = await run();
+
+        expect(first.success).toBe(true);
+        expect(first.skipped).toBeUndefined();
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0].attachments).toEqual(local.tasks[0].attachments);
+        expect(io.acquireRemoteMutationFence).toHaveBeenCalledTimes(1);
+        expect(fence.assertHeld).toHaveBeenCalled();
+        expect(fence.release).toHaveBeenCalledTimes(1);
+
+        const second = await run();
+
+        expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns success without any IO when setup reports the backend disabled', async () => {
+        const { harness, io, storage, run, hooks } = createHarness({
+            hooks: { setupCycle: vi.fn(async () => ({ kind: 'disabled' as const })) },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({ success: true, skipped: 'disabled' });
+        expect(hooks.setupCycle).toHaveBeenCalledTimes(1);
+        expect(io.readRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(harness.callOrder).toEqual(['flush']);
+    });
+
+    it('opens archive retention only after a cycle has read the remote (R-2)', async () => {
+        resetForTests();
+        await createHarness({ hooks: { setupCycle: vi.fn(async () => ({ kind: 'disabled' as const })) } }).run();
+        await createHarness({ io: { acquireRemoteMutationFence: vi.fn(async () => {
+            throw new SyncRemoteMutationFenceBusyError(5_000);
+        }) } }).run();
+        await createHarness({ remote: createData(), activationProbe: true }).run();
+        expect(isArchiveRetentionSyncCompleted()).toBe(false);
+
+        const { run } = createHarness({ remote: createData([createTask('t-remote', 'Remote task')]), fastSyncScope: 'scope-1' });
+        expect((await run()).skipped).toBeUndefined();
+        expect(isArchiveRetentionSyncCompleted()).toBe(true);
+        resetForTests();
+        expect(await run()).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(isArchiveRetentionSyncCompleted()).toBe(true);
+        resetForTests();
+    });
+
+    it('merges local and remote data, persists both sides, and finalizes success', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+        const remote = createData([createTask('t-remote', 'Remote task')]);
+        const { harness, io, hooks, run } = createHarness({ local, remote, fastSyncScope: 'scope-1' });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.stats).toBeDefined();
+        expect(result.skipped).toBeUndefined();
+        const persistedIds = harness.persisted.tasks.map((task) => task.id).sort();
+        expect(persistedIds).toEqual(['t-local', 't-remote']);
+        const remoteIds = harness.remote?.tasks.map((task) => task.id).sort();
+        expect(remoteIds).toEqual(['t-local', 't-remote']);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(hooks.finalizeSuccess).toHaveBeenCalledTimes(1);
+        expect(hooks.finalizeSuccess).toHaveBeenCalledWith(
+            expect.objectContaining({ tasks: expect.any(Array) }),
+            expect.objectContaining({ status: 'success', wroteLocal: true }),
+        );
+
+        expect(harness.persisted.settings.pendingRemoteWriteAt).toBeUndefined();
+        expect(harness.persisted.settings.lastSyncStatus).toBe('success');
+
+        expect(harness.fastStates.get('scope-1')?.remoteFingerprint).toContain('remote-fp-');
+        expect(harness.steps).toEqual(expect.arrayContaining(['flush', 'fast-check', 'read-local', 'read-remote', 'merge', 'write-local', 'write-remote', 'refresh']));
+        expect(harness.diagnostics).toEqual(expect.arrayContaining(['flush', 'merge-complete']));
+    });
+
+    it('does not finalize-upload stale local bytes when newer remote attachment content wins', async () => {
+        const localTask = createTask('t-shared', 'Shared task');
+        localTask.attachments = [{
+            id: 'attachment-shared',
+            kind: 'file',
+            title: 'notes.txt',
+            uri: '/local/notes.txt',
+            cloudKey: 'attachments/notes.txt',
+            fileHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            contentRev: 1,
+            contentMtimeMs: 1000,
+            contentSize: 10,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.updatedAt = '2026-07-02T00:00:00.000Z';
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            fileHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            contentRev: 3,
+            contentMtimeMs: undefined,
+            contentSize: undefined,
+            localStatus: 'missing',
+            updatedAt: '2026-07-02T00:00:00.000Z',
+        };
+        const seenPhases: string[] = [];
+        const syncAttachments = vi.fn(async (data: AppData, helpers: { phase?: string }) => {
+            seenPhases.push(helpers.phase ?? 'unknown');
+            if (helpers.phase !== 'prepare') return false;
+            const next = cloneAppData(data);
+            const attachment = next.tasks[0]?.attachments?.[0];
+            if (attachment) {
+                attachment.fileHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+                attachment.contentRev = 2;
+                attachment.contentMtimeMs = 2000;
+                attachment.contentSize = 20;
+                attachment.pendingContentUpload = true;
+            }
+            return next;
+        });
+        const { harness, io, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(seenPhases).toEqual(['prepare', 'post-merge']);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0]?.attachments?.[0]).toMatchObject({
+            cloudKey: 'attachments/notes.txt',
+            fileHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            contentRev: 3,
+        });
+        expect(harness.remote?.tasks[0]?.attachments?.[0]?.pendingContentUpload).toBeUndefined();
+    });
+
+    it('blocks a CloudKit document write while an existing blob replacement is pending', async () => {
+        const localTask = createTask('t-cloudkit-replacement', 'CloudKit replacement');
+        localTask.attachments = [{
+            id: 'attachment-cloudkit-replacement',
+            kind: 'file',
+            title: 'notes.txt',
+            uri: '/local/notes.txt',
+            cloudKey: 'cloudkit:notes',
+            fileHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            contentRev: 2,
+            contentMtimeMs: 2000,
+            contentSize: 20,
+            pendingContentUpload: true,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([localTask]);
+        const { io, run } = createHarness({
+            local,
+            remote: toRemoteSyncDocument(cloneAppData(local)),
+            backend: 'cloudkit',
+            io: { syncAttachments: vi.fn(async () => false) },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('Attachment upload incomplete'),
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('still permits CloudKit metadata for a local-only attachment with no cloud key', async () => {
+        const localTask = createTask('t-cloudkit-local-only', 'CloudKit local only');
+        localTask.attachments = [{
+            id: 'attachment-cloudkit-local-only',
+            kind: 'file',
+            title: 'notes.txt',
+            uri: '/local/notes.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([localTask]);
+        const { io, run } = createHarness({
+            local,
+            remote: cloneAppData(local),
+            backend: 'cloudkit',
+            io: { syncAttachments: vi.fn(async () => false) },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.attachmentWriteDeferred).toBeFalsy();
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the candidate attachment proof on a device without attachment storage (#1119)', async () => {
+        const remoteTask = createTask('t-remote', 'Remote task');
+        remoteTask.attachments = [{
+            id: 'attachment-remote',
+            kind: 'file',
+            title: 'scan.pdf',
+            uri: '',
+            cloudKey: 'attachments/scan.pdf',
+            fileHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            createdAt: remoteTask.createdAt,
+            updatedAt: remoteTask.updatedAt,
+        }];
+        const syncAttachments = vi.fn(async () => false);
+        const { io, run } = createHarness({
+            local: createData([]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            policy: { attachmentPhasesEnabled: false },
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(syncAttachments).not.toHaveBeenCalled();
+    });
+
+    it('keeps candidate remote data out of durable local storage when an activation probe fails', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+        const remote = createData([createTask('t-remote', 'Remote task')]);
+        const syncAttachments = vi.fn(async () => true);
+        const injectExternalCalendars = vi.fn(async (data: AppData) => data);
+        const persistExternalCalendars = vi.fn(async () => {});
+        const writeFastSyncState = vi.fn(async () => {});
+        const { harness, io, hooks, storage, run } = createHarness({
+            local,
+            remote,
+            activationProbe: true,
+            fastSyncScope: 'candidate-scope',
+            io: {
+                syncAttachments,
+                writeRemote: vi.fn(async () => {
+                    throw new Error('candidate write failed');
+                }),
+            },
+            storage: {
+                injectExternalCalendars,
+                persistExternalCalendars,
+                writeFastSyncState,
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: false, error: '[cloud] candidate write failed' });
+        expect(io.writeRemote).toHaveBeenCalledWith(expect.objectContaining({
+            tasks: expect.arrayContaining([
+                expect.objectContaining({ id: 't-local' }),
+                expect.objectContaining({ id: 't-remote' }),
+            ]),
+        }), expect.any(Function));
+        expect(harness.persisted.tasks.map((task) => task.id)).toEqual(['t-local']);
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(injectExternalCalendars).not.toHaveBeenCalled();
+        expect(persistExternalCalendars).not.toHaveBeenCalled();
+        expect(writeFastSyncState).not.toHaveBeenCalled();
+        expect(syncAttachments).not.toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(harness.statusUpdates).toEqual([]);
+    });
+
+    it('returns a side-effect-free requeue when an activation probe meets a remote write conflict', async () => {
+        const { hooks, storage, run } = createHarness({
+            activationProbe: true,
+            io: {
+                writeRemote: vi.fn(async () => {
+                    throw new SyncRemoteWriteConflict();
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({ success: true, skipped: 'requeued' });
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not scan or delete File Sync generations after an activation CAS conflict', async () => {
+        const initialRemote = createData([createTask('t-remote', 'Initial remote')]);
+        const readRemote = vi.fn().mockResolvedValueOnce(cloneAppData(initialRemote));
+        const { storage, run } = createHarness({
+            activationProbe: true,
+            backend: 'file',
+            remote: initialRemote,
+            io: {
+                readRemote,
+                writeRemote: vi.fn(async () => {
+                    throw new SyncRemoteWriteConflict();
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({ success: true, skipped: 'requeued' });
+        expect(readRemote).toHaveBeenCalledTimes(1);
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('does not persist candidate attachment metadata when an activation probe requeues', async () => {
+        const localTask = createTask('t-attached-requeue', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-requeue',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/local/notes.txt',
+            cloudKey: 'cloudkit:old',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const { harness, storage, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: {
+                syncAttachments: vi.fn(async (data: AppData) => {
+                    const attachment = data.tasks[0]?.attachments?.[0];
+                    if (attachment) {
+                        attachment.cloudKey = 'attachments/candidate.txt';
+                        attachment.localStatus = 'available';
+                    }
+                    return data;
+                }),
+                writeRemote: vi.fn(async () => {
+                    throw new SyncRemoteWriteConflict();
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({ success: true, skipped: 'requeued' });
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(harness.persisted.tasks[0]?.attachments?.[0]?.cloudKey).toBe('cloudkit:old');
+    });
+
+    it('forces a candidate remote write before an activation probe can succeed', async () => {
+        const local = createData([createTask('t-shared', 'Shared task')]);
+        const remote = cloneAppData(local);
+        const { harness, io, hooks, storage, run } = createHarness({
+            local,
+            remote,
+            activationProbe: true,
+            fastSyncScope: 'candidate-scope',
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(harness.fastStates.size).toBe(0);
+    });
+
+    it('proves local attachment bytes on the candidate before publishing their metadata', async () => {
+        const localTask = createTask('t-attached', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-1',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/local/notes.txt',
+
+
+            cloudKey: 'cloudkit:a',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([localTask]);
+        const syncAttachments = vi.fn(async (data: AppData, helpers: { activationProbe: boolean }) => {
+            expect(helpers.activationProbe).toBe(true);
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.localStatus).toBe('missing');
+            expect(attachment?.cloudKey).toBeUndefined();
+            if (attachment) {
+                attachment.cloudKey = 'attachments/a.txt';
+                attachment.localStatus = 'available';
+            }
+            return data;
+        });
+        const { harness, io, storage, run } = createHarness({
+            local,
+            activationProbe: true,
+            io: { syncAttachments },
+            hooks: { shouldRunAttachmentPhase: vi.fn(async () => false) },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).toHaveBeenCalledWith(expect.objectContaining({
+            tasks: expect.arrayContaining([
+                expect.objectContaining({
+                    attachments: expect.arrayContaining([
+                        expect.objectContaining({ cloudKey: 'attachments/a.txt' }),
+                    ]),
+                }),
+            ]),
+        }), expect.any(Function));
+        expect(harness.persisted.tasks[0]?.attachments?.[0]?.cloudKey).toBe('cloudkit:a');
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('continues a capped activation transfer until all 11 local attachments are proved (#1186)', async () => {
+        const localTask = createTask('t-capped-activation', 'Capped activation');
+        localTask.attachments = Array.from({ length: 11 }, (_, index) => ({
+            id: `attachment-capped-${index}`,
+            kind: 'file' as const,
+            title: `Attachment ${index}`,
+            uri: `/local/attachment-${index}.txt`,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const continuationFlags: Array<boolean | undefined> = [];
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            continuationFlags.push(helpers.activationContinuation);
+            let transferred = 0;
+            for (const attachment of data.tasks[0]?.attachments ?? []) {
+                if (attachment.cloudKey) continue;
+                if (transferred >= 10) {
+                    helpers.onTransferBatchDeferred?.();
+                    continue;
+                }
+                attachment.cloudKey = `attachments/${attachment.id}.txt`;
+                attachment.localStatus = 'available';
+                transferred += 1;
+            }
+            return data;
+        });
+        const { harness, io, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(2);
+        expect(continuationFlags).toEqual([undefined, true]);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0]?.attachments).toHaveLength(11);
+        expect(harness.remote?.tasks[0]?.attachments?.every((attachment) => attachment.cloudKey)).toBe(true);
+    });
+
+    it('proves 100 mixed task and project attachments before the single activation document write (#1186)', async () => {
+        const makeAttachments = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => ({
+            id: `${prefix}-${index}`,
+            kind: 'file' as const,
+            title: `${prefix} ${index}`,
+            uri: `/local/${prefix}-${index}.txt`,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const task = createTask('t-hundred-attachments', 'Task attachments');
+        task.attachments = makeAttachments(60, 'task-attachment');
+        const local = createData([task]);
+        local.projects = [{
+            id: 'p-hundred-attachments',
+            title: 'Project attachments',
+            status: 'active',
+            color: '#3b82f6',
+            order: 0,
+            tagIds: [],
+            attachments: makeAttachments(40, 'project-attachment'),
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        } satisfies Project];
+        const continuationFlags: Array<boolean | undefined> = [];
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            continuationFlags.push(helpers.activationContinuation);
+            const pending = [...data.tasks, ...data.projects]
+                .flatMap((owner) => owner.attachments ?? [])
+                .filter((attachment) => (
+                    attachment.kind === 'file'
+                    && !attachment.deletedAt
+                    && (!attachment.cloudKey || attachment.localStatus !== 'available')
+                ));
+            for (const attachment of pending.slice(0, 10)) {
+                attachment.cloudKey = `attachments/${attachment.id}.txt`;
+                attachment.localStatus = 'available';
+            }
+            if (pending.length > 10) helpers.onTransferBatchDeferred?.();
+            return data;
+        });
+        const { harness, io, run } = createHarness({
+            local,
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(10);
+        expect(continuationFlags[0]).toBeUndefined();
+        expect(continuationFlags.slice(1).every((flag) => flag === true)).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        const written = vi.mocked(io.writeRemote).mock.calls[0]?.[0];
+        const writtenAttachments = [...(written?.tasks ?? []), ...(written?.projects ?? [])]
+            .flatMap((owner) => owner.attachments ?? []);
+        expect(writtenAttachments).toHaveLength(100);
+        expect(writtenAttachments.every((attachment) => attachment.cloudKey)).toBe(true);
+        expect(harness.infos).toContainEqual({
+            message: 'Sync activation proved attachments across transfer batches',
+            extra: {
+                backend: 'cloud',
+                total: '100',
+                batches: '10',
+            },
+        });
+    });
+
+    it('does not continue when a cap signal is accompanied only by metadata churn (#1186)', async () => {
+        const task = createTask('t-no-proof-progress', 'No proof progress');
+        task.attachments = Array.from({ length: 11 }, (_, index) => ({
+            id: `attachment-no-progress-${index}`,
+            kind: 'file' as const,
+            title: `Attachment ${index}`,
+            uri: `/local/no-progress-${index}.txt`,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            if (attachment) attachment.updatedAt = '2026-07-02T00:00:00.000Z';
+            helpers.onTransferBatchDeferred?.();
+            return data;
+        });
+        const { harness, io, run } = createHarness({
+            local: createData([task]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: false });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(harness.infos.some((entry) => (
+            entry.message === 'Sync activation proved attachments across transfer batches'
+        ))).toBe(false);
+    });
+
+    it('keeps ordinary non-activation attachment finalization single-pass (#1186)', async () => {
+        const task = createTask('t-established-sync', 'Established sync');
+        task.attachments = [{
+            id: 'attachment-established-sync',
+            kind: 'file',
+            title: 'Established attachment',
+            uri: '/local/established.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            expect(helpers.activationProbe).toBe(false);
+            expect(helpers.activationContinuation).toBeUndefined();
+            expect(helpers.onTransferBatchDeferred).toBeUndefined();
+            const attachment = data.tasks[0]?.attachments?.[0];
+            if (attachment) {
+                attachment.cloudKey = 'attachments/established.txt';
+                attachment.localStatus = 'available';
+            }
+            return data;
+        });
+        const { run } = createHarness({
+            local: createData([task]),
+            io: { syncAttachments },
+            hooks: { shouldRunAttachmentPhase: vi.fn(async () => false) },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+    });
+
+    it('requeues without another batch or document write when local data changes after a capped pass (#1186)', async () => {
+        const task = createTask('t-batch-local-edit', 'Batch local edit');
+        task.attachments = Array.from({ length: 11 }, (_, index) => ({
+            id: `attachment-local-edit-${index}`,
+            kind: 'file' as const,
+            title: `Attachment ${index}`,
+            uri: `/local/edit-${index}.txt`,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            for (const attachment of (data.tasks[0]?.attachments ?? []).slice(0, 10)) {
+                attachment.cloudKey = `attachments/${attachment.id}.txt`;
+                attachment.localStatus = 'available';
+            }
+            helpers.onTransferBatchDeferred?.();
+            return data;
+        });
+        const bundle = createHarness({
+            local: createData([task]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+        let editedDuringBatchYield = false;
+        bundle.notifier.yieldToUi = vi.fn(async () => {
+            if (syncAttachments.mock.calls.length !== 1 || editedDuringBatchYield) return;
+            editedDuringBatchYield = true;
+            bundle.harness.lastDataChangeAt += 1;
+        });
+
+        const result = await bundle.run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(bundle.io.syncAttachments).toHaveBeenCalledTimes(1);
+        expect(bundle.io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('fails closed before another batch or document write when the mutation fence is lost (#1186)', async () => {
+        const task = createTask('t-batch-fence-loss', 'Batch fence loss');
+        task.attachments = Array.from({ length: 11 }, (_, index) => ({
+            id: `attachment-fence-loss-${index}`,
+            kind: 'file' as const,
+            title: `Attachment ${index}`,
+            uri: `/local/fence-${index}.txt`,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const lease = createFenceLease({
+            assertHeld: vi.fn(async () => {
+                if (vi.mocked(lease.assertHeld).mock.calls.length >= 2) {
+                    throw new SyncRemoteMutationFenceLostError();
+                }
+            }),
+        });
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            for (const attachment of (data.tasks[0]?.attachments ?? []).slice(0, 10)) {
+                attachment.cloudKey = `attachments/${attachment.id}.txt`;
+                attachment.localStatus = 'available';
+            }
+            helpers.onTransferBatchDeferred?.();
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([task]),
+            activationProbe: true,
+            io: {
+                acquireRemoteMutationFence: vi.fn(async () => lease),
+                syncAttachments,
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: false });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('drains capped candidate downloads while giving each exact local fallback one attempt (#1186)', async () => {
+        const hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        const localTask = createTask('t-capped-fallbacks', 'Capped fallbacks');
+        localTask.attachments = Array.from({ length: 25 }, (_, index) => ({
+            id: `attachment-fallback-${index}`,
+            kind: 'file' as const,
+            title: `Attachment ${index}`,
+            uri: `/managed/fallback-${index}.txt`,
+            cloudKey: `cloudkit:previous-${index}`,
+            fileHash: hash,
+            contentRev: 1,
+            localStatus: 'available' as const,
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }));
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        for (const attachment of remoteTask.attachments ?? []) {
+            attachment.uri = '';
+            attachment.cloudKey = `attachments/candidate-${attachment.id}.txt`;
+            attachment.localStatus = 'missing';
+        }
+        const fallbackAttempts = new Map<string, number>();
+        const continuationFlags: Array<boolean | undefined> = [];
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            continuationFlags.push(helpers.activationContinuation);
+            const attachments = data.tasks[0]?.attachments ?? [];
+            const fallbacks = attachments.filter((attachment) => (
+                !attachment.deletedAt
+                && attachment.pendingContentUpload === true
+                && !attachment.cloudKey
+            ));
+            if (fallbacks.length > 0) {
+                for (const attachment of fallbacks.slice(0, 10)) {
+                    fallbackAttempts.set(attachment.id, (fallbackAttempts.get(attachment.id) ?? 0) + 1);
+                    attachment.cloudKey = `attachments/recovered-${attachment.id}.txt`;
+                    attachment.localStatus = 'available';
+                    attachment.pendingContentUpload = undefined;
+                }
+                if (fallbacks.length > 10) helpers.onTransferBatchDeferred?.();
+                return data;
+            }
+            const downloads = attachments.filter((attachment) => (
+                !attachment.deletedAt
+                && attachment.localStatus === 'missing'
+                && Boolean(attachment.cloudKey)
+            ));
+            for (const attachment of downloads.slice(0, 10)) {
+                attachment.cloudKey = undefined;
+                attachment.fileHash = undefined;
+                attachment.localStatus = 'missing';
+                attachment.deletedAt = '2026-07-02T00:00:00.000Z';
+                attachment.updatedAt = '2026-07-02T00:00:00.000Z';
+            }
+            if (downloads.length > 10) helpers.onTransferBatchDeferred?.();
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(6);
+        expect(continuationFlags[0]).toBeUndefined();
+        expect(continuationFlags.slice(1).every((flag) => flag === true)).toBe(true);
+        expect(fallbackAttempts.size).toBe(25);
+        expect([...fallbackAttempts.values()].every((attempts) => attempts === 1)).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        const written = vi.mocked(io.writeRemote).mock.calls[0]?.[0];
+        expect(written?.tasks[0]?.attachments?.every((attachment) => (
+            attachment.cloudKey?.startsWith('attachments/recovered-')
+        ))).toBe(true);
+    });
+
+    it('ignores pre-existing attachment tombstones outside the live activation proof set', async () => {
+        const task = createTask('t-existing-tombstone', 'Existing tombstone');
+        task.attachments = [{
+            id: 'attachment-live-next-to-tombstone',
+            kind: 'file',
+            title: 'Live',
+            uri: '/local/live.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }, {
+            id: 'attachment-pre-existing-tombstone',
+            kind: 'file',
+            title: 'Deleted earlier',
+            uri: '',
+            localStatus: 'missing',
+            deletedAt: '2026-07-02T00:00:00.000Z',
+            createdAt: STAMP,
+            updatedAt: '2026-07-02T00:00:00.000Z',
+        }];
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const live = data.tasks[0]?.attachments?.find((attachment) => attachment.id === 'attachment-live-next-to-tombstone');
+            if (live) {
+                live.cloudKey = 'attachments/live.txt';
+                live.localStatus = 'available';
+            }
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([task]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('uploads an exact local fallback when the candidate attachment blob returns 404', async () => {
+        const sharedHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        const localTask = createTask('t-candidate-404-fallback', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-candidate-404-fallback',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/managed/attachment-candidate-404-fallback.txt',
+            cloudKey: 'cloudkit:previous-backend',
+            fileHash: sharedHash,
+            contentRev: 2,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/missing-on-candidate.txt',
+            localStatus: 'missing',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment).toBeDefined();
+            if (syncAttachments.mock.calls.length === 1) {
+                expect(attachment).toMatchObject({
+                    uri: '',
+                    cloudKey: 'attachments/missing-on-candidate.txt',
+                    fileHash: sharedHash,
+                    contentRev: 2,
+                    localStatus: 'missing',
+                });
+                attachment!.cloudKey = undefined;
+                attachment!.fileHash = undefined;
+                attachment!.localStatus = 'missing';
+                attachment!.deletedAt = '2026-07-02T00:00:00.000Z';
+                attachment!.updatedAt = '2026-07-02T00:00:00.000Z';
+                return data;
+            }
+            expect(attachment).toMatchObject({
+                uri: '/managed/attachment-candidate-404-fallback.txt',
+                cloudKey: undefined,
+                fileHash: sharedHash,
+                contentRev: 2,
+                localStatus: 'available',
+                pendingContentUpload: true,
+            });
+            expect(attachment!.deletedAt).toBeUndefined();
+            attachment!.cloudKey = 'attachments/recovered-on-candidate.txt';
+            attachment!.localStatus = 'available';
+            attachment!.pendingContentUpload = undefined;
+            return data;
+        });
+        const { harness, io, storage, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(2);
+        expect(harness.remote?.tasks[0]?.attachments?.[0]).toMatchObject({
+            cloudKey: 'attachments/recovered-on-candidate.txt',
+            fileHash: sharedHash,
+            contentRev: 2,
+        });
+        expect(harness.remote?.tasks[0]?.attachments?.[0]?.deletedAt).toBeUndefined();
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('does not upload stale local bytes when a missing candidate blob has a different hash', async () => {
+        const localTask = createTask('t-candidate-404-mismatch', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-candidate-404-mismatch',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/managed/stale-local-copy.txt',
+            cloudKey: 'cloudkit:previous-backend',
+            fileHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            contentRev: 2,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/missing-newer-candidate.txt',
+            fileHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            contentRev: 3,
+            localStatus: 'missing',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment).toMatchObject({
+                uri: '',
+                cloudKey: 'attachments/missing-newer-candidate.txt',
+                contentRev: 3,
+            });
+            if (attachment) {
+                attachment.cloudKey = undefined;
+                attachment.fileHash = undefined;
+                attachment.localStatus = 'missing';
+                attachment.deletedAt = '2026-07-02T00:00:00.000Z';
+                attachment.updatedAt = '2026-07-02T00:00:00.000Z';
+            }
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-candidate-404-mismatch'),
+        });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('marks a newer local content winner for upload while retaining the candidate key during activation', async () => {
+        const localTask = createTask('t-local-content-winner', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-local-content-winner',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/local/notes.txt',
+            cloudKey: 'cloudkit:old-backend',
+            fileHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+            contentRev: 4,
+            contentMtimeMs: 4000,
+            contentSize: 40,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/candidate.txt',
+            fileHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            contentRev: 3,
+            contentMtimeMs: undefined,
+            contentSize: undefined,
+            localStatus: 'missing',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.cloudKey).toBe('attachments/candidate.txt');
+            expect(attachment?.fileHash).toBe('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd');
+            expect(attachment?.contentRev).toBe(4);
+            expect(attachment?.pendingContentUpload).toBe(true);
+            if (attachment) {
+                attachment.pendingContentUpload = undefined;
+                attachment.localStatus = 'available';
+            }
+            return data;
+        });
+        const { harness, io, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0]?.attachments?.[0]).toMatchObject({
+            cloudKey: 'attachments/candidate.txt',
+            fileHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+            contentRev: 4,
+        });
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a candidate-proven attachment key when newer remote metadata points to a missing object', async () => {
+        const localTask = createTask('t-attached-conflict', 'Local title');
+        localTask.attachments = [{
+            id: 'attachment-conflict',
+            kind: 'file',
+            title: 'Local notes',
+            uri: '/local/notes.txt',
+            cloudKey: 'cloudkit:old-backend',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.title = 'Newer remote title';
+        remoteTask.updatedAt = '2026-07-02T00:00:00.000Z';
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            title: 'Newer remote notes',
+            uri: '',
+            cloudKey: 'attachments/missing-on-candidate.txt',
+            localStatus: 'missing',
+            updatedAt: '2026-07-02T00:00:00.000Z',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+
+
+            expect(attachment?.cloudKey).toBe('attachments/missing-on-candidate.txt');
+            expect(attachment?.pendingContentUpload).toBeUndefined();
+            expect(attachment?.uri).toBe('');
+            if (attachment) {
+                attachment.cloudKey = 'attachments/proven-on-candidate.txt';
+                attachment.localStatus = 'available';
+            }
+            return data;
+        });
+        const { harness, storage, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(harness.remote?.tasks[0]).toMatchObject({
+            title: 'Newer remote title',
+            attachments: [expect.objectContaining({
+                title: 'Newer remote notes',
+                cloudKey: 'attachments/proven-on-candidate.txt',
+            })],
+        });
+        expect(harness.persisted.tasks[0]?.attachments?.[0]?.cloudKey).toBe('cloudkit:old-backend');
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('rejects activation when a candidate-remote-only attachment object cannot be proved', async () => {
+        const remoteTask = createTask('t-remote-only', 'Remote-only attachment');
+        remoteTask.attachments = [{
+            id: 'attachment-remote-only',
+            kind: 'file',
+            title: 'Remote notes',
+            uri: '',
+            cloudKey: 'attachments/missing-remote-only.txt',
+            localStatus: 'missing',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { io, storage, run } = createHarness({
+            local: createData(),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-remote-only'),
+        });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('preserves an incoming owner deletion without probing its former local attachment', async () => {
+        const localTask = createTask('t-deleted-remotely', 'Delete me');
+        localTask.attachments = [{
+            id: 'attachment-deleted-owner',
+            kind: 'file',
+            title: 'Old notes',
+            uri: '/local/old-notes.txt',
+            cloudKey: 'cloudkit:old-notes',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.updatedAt = '2026-07-02T00:00:00.000Z';
+        remoteTask.deletedAt = '2026-07-02T00:00:00.000Z';
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { harness, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(harness.remote?.tasks[0]).toMatchObject({
+            id: 't-deleted-remotely',
+            deletedAt: '2026-07-02T00:00:00.000Z',
+        });
+        expect(syncAttachments).not.toHaveBeenCalled();
+    });
+
+    it('rejects activation when an existing cloud key is not proved on the candidate', async () => {
+        const localTask = createTask('t-attached', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-1',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/local/notes.txt',
+            cloudKey: 'attachments/from-old-backend.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const { io, storage, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: { syncAttachments: vi.fn(async () => false) },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-1'),
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+    });
+
+    it('does not let the proven backend retry state block an activation probe', async () => {
+        const retryAt = '2999-01-01T00:00:00.000Z';
+        const local = createData([createTask('t-local', 'Local task')], {
+            pendingRemoteWriteAt: STAMP,
+            pendingRemoteWriteRetryAt: retryAt,
+            pendingRemoteWriteAttempts: 2,
+            lastSyncStatus: 'error',
+            lastSyncError: 'Previous backend write failed.',
+        });
+        const { harness, io, storage, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            activationProbe: true,
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(result.skipped).toBeUndefined();
+        expect(io.readRemote).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(harness.persisted.settings.pendingRemoteWriteAt).toBe(STAMP);
+        expect(harness.persisted.settings.pendingRemoteWriteRetryAt).toBe(retryAt);
+        expect(harness.persisted.settings.pendingRemoteWriteAttempts).toBe(2);
+    });
+
+    it('adopts candidate attachment keys on the first durable post-activation sync', async () => {
+        const localTask = createTask('t-post-activation', 'Attached task');
+        localTask.attachments = [{
+            id: 'attachment-post-activation',
+            kind: 'file',
+            title: 'Notes',
+            uri: '/local/notes.txt',
+            cloudKey: 'cloudkit:a',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/a.txt',
+            localStatus: 'missing',
+        };
+        const { harness, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            ignorePendingRemoteWriteBackoff: true,
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toMatchObject({
+            cloudKey: 'attachments/a.txt',
+            uri: '/local/notes.txt',
+            localStatus: 'available',
+        });
+        expect(harness.remote?.tasks[0]?.attachments?.[0]?.cloudKey).toBe('attachments/a.txt');
+    });
+
+    it('applies and publishes the canonical snapshot returned by local persistence', async () => {
+        const concurrentTask = createTask('t-concurrent', 'Concurrent local task');
+        const applyDataToStore = vi.fn();
+        const { harness, hooks, run } = createHarness({
+            storage: {
+                persistLocal: vi.fn(async (data: AppData) => (
+                    data.tasks.some((task) => task.id === concurrentTask.id)
+                        ? data
+                        : { ...data, tasks: [...data.tasks, concurrentTask] }
+                )),
+                applyDataToStore,
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(harness.remote?.tasks.some((task) => task.id === concurrentTask.id)).toBe(true);
+        expect(applyDataToStore).toHaveBeenCalledWith(expect.objectContaining({
+            tasks: expect.arrayContaining([expect.objectContaining({ id: concurrentTask.id })]),
+        }));
+        expect(hooks.finalizeSuccess).toHaveBeenCalledWith(expect.objectContaining({
+            tasks: expect.arrayContaining([expect.objectContaining({ id: concurrentTask.id })]),
+        }), expect.anything());
+    });
+
+    it('completes a fresh file sync when the remote payload is missing sections and people (#990)', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+
+
+        const remote = { tasks: [], projects: [], areas: [], settings: {} } as unknown as AppData;
+        const { harness, hooks, run } = createHarness({ local, remote, backend: 'file' });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+        expect(harness.persisted.settings.lastSyncHistory?.at(-1)).toMatchObject({ status: 'success' });
+    });
+
+    it('normalizes a partial remote payload before the pre-write remote comparison (#990 guard)', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+        const partialRemote = { tasks: [], projects: [], areas: [], settings: {} } as unknown as AppData;
+        const { io, run } = createHarness({
+            local,
+            backend: 'file',
+            io: { readRemote: vi.fn(async () => partialRemote) },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+
+
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the second run as unchanged via the recorded fast-sync state', async () => {
+        const { harness, io, run } = createHarness({ fastSyncScope: 'scope-1' });
+
+        const first = await run();
+        expect(first.skipped).toBeUndefined();
+        const readsAfterFirst = vi.mocked(io.readRemote).mock.calls.length;
+
+        const second = await run();
+        expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(vi.mocked(io.readRemote).mock.calls.length).toBe(readsAfterFirst);
+        expect(harness.statusUpdates.at(-1)).toMatchObject({ lastSyncStatus: 'success' });
+        expect(harness.uiErrors.at(-1)).toBeNull();
+        expect(harness.infos.some((info) => info.message === 'Sync fast check found no changes')).toBe(true);
+    });
+
+    it('keeps a genuine unchanged fast-check lock-free', async () => {
+        const aligned = createData([createTask('t-aligned', 'Aligned task')]);
+        const acquireRemoteMutationFence = vi.fn().mockResolvedValue(createFenceLease());
+        const { run } = createHarness({
+            local: aligned,
+            remote: aligned,
+            fastSyncScope: 'scope-fence-fast-skip',
+            io: { acquireRemoteMutationFence },
+        });
+
+        expect((await run()).skipped).toBeUndefined();
+        expect(acquireRemoteMutationFence).toHaveBeenCalledTimes(1);
+
+        expect(await run()).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(acquireRemoteMutationFence).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds the remote mutation fence from the authoritative read through finalization', async () => {
+        const callOrder: string[] = [];
+        const lease = createFenceLease({
+            assertHeld: vi.fn(async () => { callOrder.push('assert-held'); }),
+            release: vi.fn(async () => { callOrder.push('release'); }),
+        });
+        const bundle = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                acquireRemoteMutationFence: vi.fn(async () => {
+                    callOrder.push('acquire');
+                    return lease;
+                }),
+                readRemote: vi.fn(async () => {
+                    callOrder.push('read-remote');
+                    return cloneAppData(bundle.harness.remote!);
+                }),
+                writeRemote: vi.fn(async () => {
+                    callOrder.push('write-remote');
+                }),
+            },
+            hooks: {
+                finalizeSuccess: vi.fn(async () => { callOrder.push('finalize'); }),
+            },
+        });
+
+        expect((await bundle.run()).success).toBe(true);
+        expect(callOrder.indexOf('acquire')).toBeLessThan(callOrder.indexOf('read-remote'));
+        expect(callOrder.indexOf('read-remote')).toBeLessThan(callOrder.indexOf('write-remote'));
+        expect(callOrder.indexOf('write-remote')).toBeLessThan(callOrder.indexOf('finalize'));
+        expect(callOrder.indexOf('finalize')).toBeLessThan(callOrder.indexOf('release'));
+        expect(lease.assertHeld).toHaveBeenCalled();
+    });
+
+    it('discards a read-check snapshot and rereads after acquiring the fence', async () => {
+        const staleRemote = createData([createTask('t-stale', 'Stale remote task')]);
+        const authoritativeRemote = createData([createTask('t-current', 'Current remote task')]);
+        const bundle = createHarness({
+            local: createData([createTask('t-local', 'Local task')]),
+            remote: staleRemote,
+            policy: { enableReadCheckSkip: true },
+            io: {
+                acquireRemoteMutationFence: vi.fn(async () => {
+                    bundle.harness.remote = cloneAppData(authoritativeRemote);
+                    return createFenceLease();
+                }),
+            },
+        });
+
+        expect((await bundle.run()).success).toBe(true);
+        expect(bundle.io.readRemote).toHaveBeenCalledTimes(2);
+        expect(bundle.harness.persisted.tasks.map((task) => task.id).sort()).toEqual(['t-current', 't-local']);
+        expect(bundle.harness.persisted.tasks.some((task) => task.id === 't-stale')).toBe(false);
+    });
+
+    it('defers a busy fence without recording an error or touching data', async () => {
+        const { harness, io, storage, hooks, run } = createHarness({
+            io: {
+                acquireRemoteMutationFence: vi.fn(async () => {
+                    throw new SyncRemoteMutationFenceBusyError(5_000);
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            skipped: 'remoteFenceBusy',
+            remoteFenceDeferred: 'busy',
+            retryAfterMs: 5_000,
+        });
+        expect(hooks.requestFollowUpAfter).toHaveBeenCalledWith(5_000);
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested', followUpReason: 'remote-fence-busy',
+        }));
+        expect(io.readRemote).not.toHaveBeenCalled();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('defers a busy File Sync lock with a bounded follow-up and no persisted error', async () => {
+        const requestFileSyncLockBusyFollowUpAfter = vi.fn();
+        const { harness, io, storage, hooks, run } = createHarness({
+            backend: 'file',
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new SyncFileLockBusyError(5_000);
+                }),
+                requestFileSyncLockBusyFollowUpAfter,
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            skipped: 'fileSyncLockBusy',
+            fileSyncLockDeferred: 'busy',
+            retryAfterMs: 5_000,
+        });
+        expect(requestFileSyncLockBusyFollowUpAfter).toHaveBeenCalledWith(5_000, 1);
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested', followUpReason: 'file-lock-busy',
+        }));
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+        expect(io.readRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-retry File Sync contention when the platform omits the bounded-retry hook', async () => {
+        const { hooks, run } = createHarness({
+            backend: 'file',
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new SyncFileLockBusyError(5_000);
+                }),
+            },
+        });
+
+        await expect(run()).resolves.toMatchObject({
+            success: true,
+            skipped: 'fileSyncLockBusy',
+            fileSyncLockDeferred: 'busy',
+        });
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+    });
+
+    it('does not retain a transient activation candidate when its File Sync lock is busy', async () => {
+        const { hooks, run } = createHarness({
+            backend: 'file',
+            activationProbe: true,
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new SyncFileLockBusyError(5_000);
+                }),
+            },
+        });
+
+        await expect(run()).resolves.toMatchObject({
+            success: true,
+            skipped: 'fileSyncLockBusy',
+            fileSyncLockDeferred: 'busy',
+        });
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+    });
+
+    it('stops after one deferred File Sync lock retry while remaining neutral', async () => {
+        const { hooks, run } = createHarness({
+            backend: 'file',
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new SyncFileLockBusyError(5_000);
+                }),
+            },
+        });
+
+        await expect(run({ fileSyncLockBusyRetryAttempt: 1 })).resolves.toMatchObject({
+            success: true,
+            skipped: 'fileSyncLockBusy',
+            fileSyncLockDeferred: 'busy',
+        });
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with an actionable outcome when safe File Sync locking is unavailable', async () => {
+        const { hooks, run } = createHarness({
+            backend: 'file',
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new SyncFileLockUnavailableError();
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            fileSyncLockUnavailable: true,
+        });
+        expect(result.error).toContain('Safe File Sync locking is unavailable');
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])(
+        'returns terminal corrupt-generation guidance without scheduling a retry (activationProbe=%s)',
+        async (activationProbe) => {
+            const { hooks, run } = createHarness({
+                backend: 'file',
+                hooks: {
+                    setupCycle: vi.fn(async () => {
+                        throw new SyncFileGenerationCorruptError();
+                    }),
+                },
+            });
+
+            await expect(run({ activationProbe })).resolves.toMatchObject({
+                success: false,
+                fileGenerationCorrupt: true,
+            });
+            expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+            expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+            expect(hooks.finalizeErrorStatus).toHaveBeenCalledTimes(activationProbe ? 0 : 1);
+        },
+    );
+
+    it('marks a successful run cleanup-deferred when conditional fence release fails', async () => {
+        const lease = createFenceLease({
+            release: vi.fn().mockRejectedValue(new Error('Dropbox versioned file delete timed out')),
+            retryAfterMs: vi.fn(() => 12_345),
+        });
+        const { harness, hooks, run } = createHarness({
+            io: { acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease) },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            remoteFenceDeferred: 'cleanup',
+            retryAfterMs: 12_345,
+        });
+        expect(hooks.requestFollowUpAfter).toHaveBeenCalledWith(12_345);
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested', followUpReason: 'remote-fence-release',
+        }));
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not downgrade fence loss during attachment pre-sync into a warning', async () => {
+        const lost = new SyncRemoteMutationFenceLostError();
+        const lease = createFenceLease({ assertHeld: vi.fn().mockRejectedValue(lost) });
+        const { io, storage, run } = createHarness({
+            io: {
+                acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease),
+
+
+                syncAttachments: vi.fn(async (_data, helpers) => {
+                    await helpers.assertRemoteMutationFenceHeld();
+                    return false;
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: false });
+        expect(io.readRemote).not.toHaveBeenCalled();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(result.hadAttachmentWarning).toBeUndefined();
+    });
+
+    it('does not record an unchanged fast sync when local data changes during the remote fingerprint read', async () => {
+        let editDuringFingerprintRead = false;
+        const bundle = createHarness({
+            fastSyncScope: 'scope-1',
+            io: {
+                readRemoteFingerprint: vi.fn(async () => {
+                    const remote = bundle.harness.remote;
+                    const fingerprint = remote
+                        ? `remote-fp-${JSON.stringify(remote.tasks.map((task) => task.id).sort())}`
+                        : null;
+
+                    if (editDuringFingerprintRead) bundle.harness.lastDataChangeAt += 1;
+                    return fingerprint;
+                }),
+            },
+        });
+        const { harness, storage, hooks, run } = bundle;
+
+        const first = await run();
+        expect(first.skipped).toBeUndefined();
+        const staleLocalFingerprint = harness.fastStates.get('scope-1')?.localFingerprint;
+        expect(staleLocalFingerprint).toBeDefined();
+        vi.mocked(storage.writeFastSyncState).mockClear();
+        vi.mocked(hooks.requestFollowUp).mockClear();
+
+        editDuringFingerprintRead = true;
+        const second = await run();
+
+
+        expect(second).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+        expect(storage.writeFastSyncState).not.toHaveBeenCalledWith(
+            expect.objectContaining({ localFingerprint: staleLocalFingerprint }),
+        );
+        expect(harness.statusUpdates.at(-1)?.lastSyncStatus).not.toBe('success');
+    });
+
+    it('never takes the fingerprint fast-check for manual syncs', async () => {
+        const { io, run } = createHarness({ fastSyncScope: 'scope-1' });
+
+        await run();
+        await run({ manual: true });
+
+
+        expect(vi.mocked(io.readRemote).mock.calls.length).toBe(2);
+    });
+
+    it('skips via the read-check when the remote payload equals local (no fingerprint scope)', async () => {
+        const { io, run } = createHarness({ fastSyncScope: null, policy: { enableReadCheckSkip: true } });
+
+        const first = await run();
+        expect(first.skipped).toBeUndefined();
+        const writesAfterFirst = vi.mocked(io.writeRemote).mock.calls.length;
+
+        const second = await run();
+        expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(vi.mocked(io.writeRemote).mock.calls.length).toBe(writesAfterFirst);
+    });
+
+    describe('fresh cleanup survives unchanged Sync guards', () => {
+        const localWithTombstone = (owner: 'task' | 'project'): AppData => {
+            const attachment = {
+                id: 'attachment-cleanup-fast-check',
+                kind: 'file' as const,
+                title: 'Private deleted file',
+                uri: 'file:///managed/private-deleted.txt',
+                localStatus: 'available' as const,
+                createdAt: STAMP,
+                updatedAt: STAMP,
+                deletedAt: STAMP,
+            };
+            const task = createTask('t-cleanup-fast-check', 'Private cleanup task');
+            if (owner === 'task') task.attachments = [attachment];
+            const local = createData([task], {
+                attachments: { lastCleanupAt: new Date().toISOString() },
+            });
+            if (owner === 'project') {
+                local.projects = [{
+                    id: 'p-cleanup-fast-check', title: 'Private cleanup project', status: 'active',
+                    color: '#3b82f6', order: 0, tagIds: [], attachments: [attachment],
+                    createdAt: STAMP, updatedAt: STAMP,
+                }];
+            }
+            return local;
+        };
+        const cleanupHook = () => vi.fn(async (data: AppData) => {
+            const cleaned = cloneAppData(data);
+            for (const owner of [...cleaned.tasks, ...cleaned.projects]) {
+                for (const attachment of owner.attachments ?? []) {
+                    if (attachment.deletedAt) attachment.localStatus = 'missing';
+                }
+            }
+            return { data: cleaned, invalidateFastSyncState: false };
+        });
+        const seedMatchedCache = (bundle: ReturnType<typeof createHarness>, local: AppData, scope: string,
+                                  localFingerprint = computeRemoteSyncDocumentFingerprint(toRemoteSyncDocument(local))) => {
+            bundle.harness.fastStates.set(scope, {
+                scope, localFingerprint,
+                remoteFingerprint: `remote-fp-${JSON.stringify(local.tasks.map((task) => task.id).sort())}`,
+                checkedAt: NOW.toISOString(),
+            });
+        };
+        const markerExtra = {
+            releaseCheck: 'v1.3.5/sync-cleanup-fast-check', operation: 'attachment-cleanup', outcome: 'required',
+        };
+
+        it.each([
+            ['manual', 'task'], ['manual', 'project'], ['cached', 'task'], ['cached', 'project'],
+        ] as const)('runs fresh %s cleanup for a %s despite matched fingerprints, then skips processed state', async (mode, owner) => {
+            const local = localWithTombstone(owner), runAttachmentCleanup = cleanupHook();
+            const scope = mode === 'cached' ? `scope-cleanup-${owner}` : null;
+            const bundle = createHarness({
+                local, remote: toRemoteSyncDocument(cloneAppData(local)), backend: 'webdav', fastSyncScope: scope,
+                policy: { enableReadCheckSkip: true }, hooks: { runAttachmentCleanup },
+            });
+            if (scope) seedMatchedCache(bundle, local, scope);
+
+            const first = await bundle.run({ manual: mode === 'manual' });
+
+            expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+            expect(first.success).toBe(true);
+            expect(first.skipped).toBeUndefined();
+            expect(bundle.io.readRemote).toHaveBeenCalledTimes(1);
+            expect([...bundle.harness.persisted.tasks, ...bundle.harness.persisted.projects]
+                .flatMap((item) => item.attachments ?? []).map((attachment) => attachment.localStatus)).toEqual(['missing']);
+            const markers = bundle.harness.infos.filter((info) => info.extra?.releaseCheck === markerExtra.releaseCheck);
+            expect(markers.length).toBeGreaterThan(0);
+            expect(markers.length).toBeLessThanOrEqual(3);
+            for (const info of markers) {
+                expect(info).toEqual({ message: 'Sync fast check retained fresh attachment cleanup', extra: markerExtra });
+            }
+            bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+            const second = await bundle.run({ manual: mode === 'manual' });
+
+            expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+            expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+            expect(bundle.harness.infos.filter((info) => info.extra?.releaseCheck === markerExtra.releaseCheck)).toHaveLength(markers.length);
+        });
+
+        it.each([
+            ['manual', 'disabled'], ['manual', 'absent'], ['cached', 'disabled'], ['cached', 'absent'],
+        ] as const)('preserves %s unchanged skip when attachment cleanup is %s', async (mode, control) => {
+            const local = localWithTombstone('task'), runAttachmentCleanup = cleanupHook();
+            const scope = mode === 'cached' ? 'scope-cleanup-unavailable' : null;
+            const bundle = createHarness({
+                local, remote: toRemoteSyncDocument(cloneAppData(local)), fastSyncScope: scope,
+                policy: { enableReadCheckSkip: true, attachmentPhasesEnabled: control !== 'disabled' },
+                hooks: control === 'absent' ? {} : { runAttachmentCleanup },
+            });
+            if (scope) seedMatchedCache(bundle, local, scope);
+
+            expect(await bundle.run({ manual: mode === 'manual' })).toMatchObject({ success: true, skipped: 'unchanged' });
+            expect(runAttachmentCleanup).not.toHaveBeenCalled();
+            expect(bundle.io.readRemote).toHaveBeenCalledTimes(mode === 'manual' ? 1 : 0);
+            expect(bundle.harness.infos.filter((info) => info.extra?.releaseCheck === markerExtra.releaseCheck)).toEqual([]);
+            expect(bundle.harness.persisted.tasks[0].attachments?.[0]?.localStatus).toBe('available');
+        });
+
+        it('refuses the local-only upload fast path while fresh cleanup still needs the full remote read', async () => {
+            const local = localWithTombstone('task'), runAttachmentCleanup = cleanupHook();
+            const adoptRemoteFingerprintForWrite = vi.fn(() => true), scope = 'scope-cleanup-local-only';
+            const bundle = createHarness({
+                local, remote: toRemoteSyncDocument(cloneAppData(local)), backend: 'webdav', fastSyncScope: scope,
+                policy: { preSyncAttachmentsBeforeFastCheck: true },
+                io: { adoptRemoteFingerprintForWrite }, hooks: { runAttachmentCleanup },
+            });
+            seedMatchedCache(bundle, local, scope, 'an-earlier-local-document');
+
+            expect((await bundle.run()).success).toBe(true);
+            expect(bundle.io.readRemote).toHaveBeenCalledTimes(1);
+            expect(adoptRemoteFingerprintForWrite).not.toHaveBeenCalled();
+            expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not record a matched fast state while a cleanup hook leaves fresh work unresolved', async () => {
+            const local = localWithTombstone('project'), runAttachmentCleanup = vi.fn(async () => null);
+            const bundle = createHarness({
+                local, remote: toRemoteSyncDocument(cloneAppData(local)), backend: 'webdav',
+                fastSyncScope: 'scope-cleanup-still-fresh', hooks: { runAttachmentCleanup },
+            });
+
+            expect((await bundle.run()).success).toBe(true);
+            expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+            expect(bundle.storage.writeFastSyncState).not.toHaveBeenCalled();
+            expect(bundle.harness.fastStates.size).toBe(0);
+        });
+
+        it('keeps fresh cleanup eligible when its fixed diagnostic throws', async () => {
+            const local = localWithTombstone('task'), runAttachmentCleanup = cleanupHook();
+            const bundle = createHarness({
+                local, remote: toRemoteSyncDocument(cloneAppData(local)), manual: true,
+                policy: { enableReadCheckSkip: true }, hooks: { runAttachmentCleanup },
+            });
+            const original = bundle.notifier.logInfo;
+            vi.spyOn(bundle.notifier, 'logInfo').mockImplementation((message, extra) => {
+                if (extra?.releaseCheck === markerExtra.releaseCheck) throw new Error('Synthetic logger refusal');
+                original(message, extra);
+            });
+
+            expect((await bundle.run()).success).toBe(true);
+            expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+            expect(bundle.harness.persisted.tasks[0].attachments?.[0]?.localStatus).toBe('missing');
+        });
+    });
+
+    it('rewrites legacy full tombstones once before treating sync as unchanged', async () => {
+        const local = createData([{
+            id: 'purged-task',
+            title: '(deleted)',
+            status: 'inbox',
+            tags: [],
+            contexts: [],
+            rev: 2,
+            revBy: 'device-a',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+            deletedAt: STAMP,
+            purgedAt: STAMP,
+        }]);
+        const remote = createData([{
+            ...local.tasks[0],
+            title: 'Private task',
+            description: 'Private task notes',
+        }]);
+        const { harness, io, run } = createHarness({
+            local,
+            remote,
+            fastSyncScope: null,
+            policy: { enableReadCheckSkip: true },
+        });
+
+        const first = await run();
+
+        expect(first.skipped).toBeUndefined();
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0]?.title).toBe('(deleted)');
+        expect(harness.remote?.tasks[0]?.description).toBeUndefined();
+
+        const second = await run();
+        expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses the read-check remote payload in the merge phase instead of reading twice', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+        const remote = createData([createTask('t-remote', 'Remote task')]);
+        const { io, run } = createHarness({
+            local,
+            remote,
+            fastSyncScope: null,
+            policy: { enableReadCheckSkip: true },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBeUndefined();
+        expect(io.readRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('requests a follow-up and skips fast-state recording when the server merged remote data', async () => {
+        const { harness, hooks, run } = createHarness({
+            fastSyncScope: 'scope-1',
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                writeRemote: vi.fn(async () => ({ fingerprint: 'fp-1', serverMergedRemoteData: true })),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+        expect(harness.fastStates.size).toBe(0);
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested',
+            followUpReason: 'server-contribution',
+            data: expect.objectContaining({ tasks: expect.any(Array) }),
+        }));
+    });
+
+    it('keeps the server-contribution queue and write count when its diagnostic observer throws', async () => {
+        const { notifier, io, hooks, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: { writeRemote: vi.fn(async () => ({ fingerprint: 'fp-1', serverMergedRemoteData: true })) },
+        });
+        const original = notifier.onDiagnostic!;
+        notifier.onDiagnostic = (event) => {
+            if (event.event === 'follow-up-requested') throw new Error('diagnostic unavailable');
+            original(event);
+        };
+        await expect(run()).resolves.toMatchObject({ success: true });
+        expect(hooks.requestFollowUp).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('requeues on a remote write conflict and keeps the pending-remote-write flag', async () => {
+        const { harness, hooks, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                writeRemote: vi.fn(async () => {
+                    throw new SyncRemoteWriteConflict(
+                        'WEBDAV_REMOTE_WRITE_CONFLICT: WebDAV document changed before replacement (412)',
+                    );
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+
+        expect(harness.persisted.settings.pendingRemoteWriteAt).toBeTruthy();
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested', followUpReason: 'remote-conflict',
+        }));
+        expect(harness.diagnostics).toContain('requeued');
+
+
+        expect(harness.infos).toContainEqual(expect.objectContaining({
+            message: 'Sync cycle requeued',
+            extra: expect.objectContaining({
+                reason: 'remote-write-conflict',
+                detail: 'WEBDAV_REMOTE_WRITE_CONFLICT: WebDAV document changed before replacement (412)',
+            }),
+        }));
+    });
+
+    it('records a setup-phase failure against the backend the hook reported, not the pre-setup default', async () => {
+        const { hooks, notifier, run } = createHarness({
+            hooks: {
+                setupCycle: vi.fn(async ({ setStep, setBackend }) => {
+                    setBackend('webdav');
+                    setStep('webdav_probe');
+                    throw new Error('WebDAV request timed out');
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('[webdav] WebDAV request timed out');
+        expect(notifier.logSyncError).toHaveBeenCalledWith(
+            expect.any(Error),
+            expect.objectContaining({ backend: 'webdav', step: 'webdav_probe' }),
+        );
+        expect(hooks.finalizeErrorStatus).toHaveBeenCalledWith(expect.objectContaining({
+            step: 'webdav_probe',
+            history: expect.arrayContaining([
+                expect.objectContaining({ status: 'error', backend: 'webdav', details: 'webdav_probe' }),
+            ]),
+        }));
+    });
+
+    it('marks the retry backoff locally and reports the error when the remote write fails', async () => {
+        const { harness, hooks, notifier, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                writeRemote: vi.fn(async () => {
+                    throw new Error('boom');
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('[cloud] boom');
+        expect(result.error).toContain('(log: /tmp/sync-error.log)');
+        expect(harness.persisted.settings.pendingRemoteWriteAt).toBeDefined();
+        expect(harness.persisted.settings.pendingRemoteWriteRetryAt).toBeDefined();
+        expect(harness.persisted.settings.pendingRemoteWriteAttempts).toBe(1);
+        expect(notifier.logSyncError).toHaveBeenCalledWith(expect.any(Error), expect.objectContaining({ backend: 'cloud' }));
+        expect(hooks.finalizeErrorStatus).toHaveBeenCalledWith(expect.objectContaining({
+            message: result.error,
+            history: expect.arrayContaining([expect.objectContaining({ status: 'error' })]),
+        }));
+    });
+
+    it('skips the cycle while the pending-remote-write backoff is active and surfaces the deferred write', async () => {
+        const retryAt = new Date(Date.now() + 60_000).toISOString();
+        const local = createData([createTask('t-local', 'Local task')], {
+            pendingRemoteWriteAt: STAMP,
+            pendingRemoteWriteRetryAt: retryAt,
+            pendingRemoteWriteAttempts: 2,
+            lastSyncStatus: 'error',
+            lastSyncError: 'Remote write failed. Retrying in the background.',
+        });
+        const { io, run } = createHarness({ local });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            skipped: 'pendingRemoteWriteBackoff',
+            remoteWriteDeferred: true,
+            error: 'Remote write failed. Retrying in the background.',
+        });
+        expect(io.readRemote).not.toHaveBeenCalled();
+    });
+
+    it('retries inherited pending work immediately on the first durable post-activation cycle', async () => {
+        const retryAt = '2999-01-01T00:00:00.000Z';
+        const local = createData([createTask('t-local', 'Local task')], {
+            pendingRemoteWriteAt: STAMP,
+            pendingRemoteWriteRetryAt: retryAt,
+            pendingRemoteWriteAttempts: 2,
+            lastSyncStatus: 'error',
+            lastSyncError: 'Previous backend write failed.',
+        });
+        const { harness, io, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            ignorePendingRemoteWriteBackoff: true,
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true });
+        expect(result.skipped).toBeUndefined();
+        expect(io.readRemote).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.persisted.settings.pendingRemoteWriteAt).toBeUndefined();
+        expect(harness.persisted.settings.pendingRemoteWriteRetryAt).toBeUndefined();
+        expect(harness.persisted.settings.pendingRemoteWriteAttempts).toBeUndefined();
+    });
+
+    it('surfaces a deferred remote write on a completed merge without failing the run', async () => {
+        const { run } = createHarness({
+            performSyncCycle: async (io) => {
+                const result = await performSyncCycle(io);
+                if (result.status === 'skipped') return result;
+                return {
+                    ...result,
+                    data: {
+                        ...result.data,
+                        settings: {
+                            ...result.data.settings,
+                            pendingRemoteWriteRetryAt: new Date(NOW.getTime() + 30_000).toISOString(),
+                            pendingRemoteWriteAttempts: 1,
+                            lastSyncStatus: 'error',
+                            lastSyncError: 'Remote write failed. Retrying in the background.',
+                        },
+                    },
+                };
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            remoteWriteDeferred: true,
+            error: 'Remote write failed. Retrying in the background.',
+        });
+    });
+
+    it('leaves remoteWriteDeferred falsy on a clean successful run', async () => {
+        const { run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.remoteWriteDeferred).toBeFalsy();
+        expect(result.attachmentWriteDeferred).toBeFalsy();
+    });
+
+    it('reports durable attachment work without hiding synced task and project data or queuing retries', async () => {
+        const task = createTask('t-attachment-deferred', 'Task data still syncs');
+        task.attachments = [{
+            id: 'attachment-deferred',
+            kind: 'file',
+            title: 'notes.txt',
+            uri: '/local/notes.txt',
+            cloudKey: 'attachments/notes.txt',
+            fileHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            contentRev: 1,
+            contentMtimeMs: 1000,
+            contentSize: 10,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([task]);
+        local.projects = [{
+            id: 'p-attachment-deferred',
+            title: 'Project data still syncs',
+            status: 'active',
+            color: '#3b82f6',
+            order: 0,
+            tagIds: [],
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        } satisfies Project];
+        let attachmentPass = 0;
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            attachmentPass += 1;
+            if (attachmentPass === 1) return data;
+            const next = cloneAppData(data);
+            const attachment = next.tasks[0]?.attachments?.[0];
+            if (attachment) {
+                attachment.pendingContentUpload = true;
+                attachment.localStatus = 'missing';
+            }
+            return next;
+        });
+        const { harness, hooks, run } = createHarness({
+            local,
+            remote: null,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.attachmentWriteDeferred).toBe(true);
+        expect(syncAttachments).toHaveBeenCalledTimes(2);
+        expect(harness.remote?.tasks[0]?.title).toBe('Task data still syncs');
+        expect(harness.remote?.projects[0]?.title).toBe('Project data still syncs');
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toMatchObject({
+            pendingContentUpload: true,
+            localStatus: 'missing',
+        });
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+    });
+
+    it('returns a neutral typed File Sync block for an oversized pending upload without retrying or changing metadata', async () => {
+        const task = createTask('t-oversized-file', 'Oversized attachment');
+        task.attachments = [{
+            id: 'attachment-oversized-file',
+            kind: 'file',
+            title: 'archive.zip',
+            uri: '/local/archive.zip',
+            cloudKey: 'attachments/archive.old.zip',
+            fileHash: 'ab'.repeat(32),
+            contentRev: 4,
+            contentMtimeMs: 1000,
+            contentSize: 42,
+            pendingContentUpload: true,
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([task]);
+        const syncAttachments = vi.fn(async () => {
+            throw new AttachmentUploadTooLargeError(101, 100);
+        });
+        const { harness, hooks, io, run } = createHarness({
+            local,
+            remote: cloneAppData(local),
+            backend: 'file',
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            fileAttachmentUploadBlocked: 'too-large',
+        });
+        expect(result.hadAttachmentWarning).toBeUndefined();
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toEqual(local.tasks[0]?.attachments?.[0]);
+        expect(harness.remote?.tasks[0]?.attachments?.[0]).toEqual(local.tasks[0]?.attachments?.[0]);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+
+    it('ends the cycle when an attachment pass refuses a partly encrypted location, and writes nothing remotely', async () => {
+        const task = createTask('t-partly', 'Pending upload');
+        task.attachments = [{
+            id: 'attachment-partly',
+            kind: 'file',
+            title: 'notes.txt',
+            uri: '/local/notes.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const local = createData([task]);
+        const syncAttachments = vi.fn(async () => {
+            throw new SyncEncryptionPartlyEncryptedError();
+        });
+        const { io, run } = createHarness({
+            local,
+            remote: cloneAppData(local),
+            backend: 'webdav',
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(false);
+        expect(String(result.error)).toContain('partly encrypted');
+        expect(result.hadAttachmentWarning).toBeUndefined();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+    it('fails a File Sync activation probe actionably when an attachment exceeds the buffered cap', async () => {
+        const task = createTask('t-oversized-activation', 'Oversized activation attachment');
+        task.attachments = [{
+            id: 'attachment-oversized-activation',
+            kind: 'file',
+            title: 'archive.zip',
+            uri: '/local/archive.zip',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async () => {
+            throw new AttachmentUploadTooLargeError(101, 100);
+        });
+        const { harness, hooks, io, storage, run } = createHarness({
+            local: createData([task]),
+            remote: null,
+            backend: 'file',
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({
+            success: false,
+            fileAttachmentUploadBlocked: 'too-large',
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toEqual(task.attachments[0]);
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('aborts to a requeued skip when local data changes mid-cycle', async () => {
+        const staleEvents: unknown[] = [];
+        const { harness, hooks, io, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: {
+                onStaleSnapshot: (details) => staleEvents.push(details),
+            },
+        });
+
+        vi.mocked(io.readRemote).mockImplementation(async () => {
+            harness.lastDataChangeAt += 1;
+            return cloneAppData(harness.remote!);
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+        expect(staleEvents.length).toBeGreaterThan(0);
+        expect(harness.diagnosticEvents).toContainEqual(expect.objectContaining({
+            event: 'follow-up-requested', followUpReason: 'stale-local',
+        }));
+    });
+
+    it('does not silently drop a local write that lands during the first local read (#910)', async () => {
+
+
+        const local = createData([createTask('t-recurring', 'Recurring task')]);
+        let raceMidRead: () => void = () => {
+            throw new Error('Harness mutation was not initialized');
+        };
+        const { harness, hooks, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            storage: {
+                readPersistedLocal: vi.fn(async () => {
+                    raceMidRead();
+                    return cloneAppData(harness.persisted);
+                }),
+            },
+        });
+        let raced = false;
+        raceMidRead = () => {
+            if (raced) return;
+            raced = true;
+            harness.inMemory.tasks[0] = {
+                ...harness.inMemory.tasks[0],
+                status: 'done',
+                completedAt: '2026-07-13T10:00:01.000Z',
+                updatedAt: '2026-07-13T10:00:01.000Z',
+            };
+            harness.inMemory.tasks.push(createTask('t-recurring-next', 'Recurring task'));
+            harness.lastDataChangeAt += 1;
+        };
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+
+
+        expect(harness.persisted.tasks.find((task) => task.id === 't-recurring')?.status).toBe('done');
+        expect(harness.persisted.tasks.some((task) => task.id === 't-recurring-next')).toBe(true);
+        expect(hooks.finalizeSuccess).toHaveBeenCalledWith(
+            expect.objectContaining({
+                tasks: expect.arrayContaining([
+                    expect.objectContaining({ id: 't-recurring-next' }),
+                ]),
+            }),
+            expect.anything(),
+        );
+    });
+
+    it('publishes the committed save, then requeues before uploading, when an ungated edit lands during persistence', async () => {
+        const local = createData([createTask('t-local', 'Before sync')]);
+        let raceMidPersist: () => void = () => {
+            throw new Error('Harness mutation was not initialized');
+        };
+        const applyDataToStore = vi.fn((data: AppData) => {
+            harness.inMemory = cloneAppData(data);
+        });
+        const { harness, hooks, io, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: {
+                onStaleSnapshot: vi.fn(),
+            },
+            storage: {
+                persistLocal: vi.fn(async (data: AppData) => {
+                    harness.persisted = cloneAppData(data);
+                    raceMidPersist();
+                }),
+                applyDataToStore,
+            },
+        });
+        let raced = false;
+        raceMidPersist = () => {
+            if (raced) return;
+            raced = true;
+            harness.inMemory.tasks[0] = {
+                ...harness.inMemory.tasks[0],
+                title: 'Edited while saving',
+                updatedAt: '2026-07-13T10:00:01.000Z',
+            };
+            harness.lastDataChangeAt += 1;
+        };
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+
+        expect(applyDataToStore).toHaveBeenCalledWith(harness.persisted);
+        expect(harness.inMemory).toEqual(harness.persisted);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+        expect(hooks.onStaleSnapshot).toHaveBeenCalled();
+    });
+
+    it('traces each store publish and logs every local save\'s gate wait on the one published line', async () => {
+        const applyDataToStore = vi.fn((data: AppData) => {
+            harness.inMemory = cloneAppData(data);
+        });
+        const { harness, io, run } = createHarness({
+            local: createData([createTask('t-local', 'Local task')]),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            storage: { applyDataToStore },
+        });
+        const sections: string[] = [];
+        const traced = globalThis as { __strideTraceSection?: (name: string) => void };
+        traced.__strideTraceSection = (name) => { if (name) sections.push(name); };
+
+        let release!: () => void;
+        const held = runStoreCommand(() => new Promise<void>((resolve) => { release = resolve; }));
+        vi.mocked(io.readRemote).mockImplementationOnce(async () => {
+
+            setTimeout(() => { vi.setSystemTime(Date.now() + 40); release(); }, 5);
+            return cloneAppData(harness.remote!);
+        });
+        try {
+            expect((await run()).success).toBe(true);
+        } finally {
+            delete traced.__strideTraceSection;
+            await held;
+        }
+        const saves = applyDataToStore.mock.calls.length;
+        expect(saves).toBeGreaterThanOrEqual(2);
+        expect(sections.filter((name) => name === 'sync:storePublish')).toHaveLength(saves);
+        const lines = harness.infos.filter((entry) => entry.message === 'Sync save published to the store');
+        expect(lines).toHaveLength(1);
+        const waits = String(lines[0].extra?.gateWaitMs).split(',').map(Number);
+        expect(waits).toHaveLength(saves);
+        expect(waits[0]).toBeGreaterThanOrEqual(40);
+        expect(lines[0].extra).toMatchObject({ step: 'write-local', releaseCheck: 'v1.3.7/sync-write-gate' });
+    });
+
+    it('gives the same documents in slices on a host that binds sliceYield, and never yields on one that does not (D9b change 3)', async () => {
+        const many = (prefix: string, title: string, count: number) => Array.from({ length: count }, (_, index) => createTask(`${prefix}-${index}`, `${title} ${index}`));
+        const cycle = async (bindSlices: boolean, count = 300) => {
+            const bundle = createHarness({
+                local: createData([...many('shared', 'Local', count), ...many('local', 'Only local', count)]),
+                remote: createData([...many('shared', 'Remote', count), ...many('remote', 'Only remote', count)]),
+            });
+            let yields = 0;
+            const sliceYield = vi.fn(async () => { yields += 1; });
+            if (bindSlices) bundle.notifier.sliceYield = sliceYield;
+
+            const yieldToUi = vi.fn(async () => undefined);
+            if (!bindSlices) bundle.notifier.yieldToUi = yieldToUi;
+
+            let clock = 0;
+            const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10));
+            try {
+                expect((await bundle.run()).success).toBe(true);
+            } finally {
+                now.mockRestore();
+            }
+            return { persisted: bundle.harness.persisted, remote: bundle.harness.remote, yields, uiYields: yieldToUi.mock.calls.length };
+        };
+        const atOnce = await cycle(false);
+        const sliced = await cycle(true);
+        expect(atOnce.yields).toBe(0);
+
+        expect(atOnce.uiYields).toBe((await cycle(false, 3)).uiYields);
+        expect(sliced.yields).toBeGreaterThan(10);
+        expect(sliced.persisted).toEqual(atOnce.persisted);
+        expect(sliced.remote).toEqual(atOnce.remote);
+    });
+
+    it('prepares each save\'s rows and store publish in slices before the gate, and never yields from the gate through the publish (D9b W6)', async () => {
+        const bundle = createHarness({ remote: createData([createTask('t-local', 'Local task'), createTask('t-remote', 'Remote task')]) });
+
+        const gateHeld = () => Promise.race([
+            runStoreCommand(async () => false),
+            new Promise<boolean>((resolve) => { setTimeout(() => resolve(true), 0); }),
+        ]);
+        const yieldsInGate: boolean[] = [];
+        bundle.notifier.sliceYield = async () => { yieldsInGate.push(await gateHeld()); };
+        const prepared: unknown[] = [];
+        const order = bundle.harness.callOrder;
+        bundle.storage.prepareLocalSave = vi.fn((data: AppData) => (function* () { order.push('prepareSave'); yield; yield; return void data; })());
+        bundle.storage.prepareStorePublish = vi.fn((data: AppData) => (function* () {
+            order.push('preparePublish');
+            yield;
+            const publish = { data, against: [], update: {} };
+            prepared.push(publish);
+            return publish;
+        })());
+        bundle.storage.applyDataToStore = vi.fn((data: AppData) => { bundle.harness.inMemory = cloneAppData(data); return true; });
+        let clock = 0;
+        const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10));
+        try {
+            expect((await bundle.run()).success).toBe(true);
+        } finally {
+            now.mockRestore();
+        }
+
+        const saves = vi.mocked(bundle.storage.persistLocal).mock.calls.length;
+        expect(saves).toBeGreaterThanOrEqual(1);
+
+        expect(order.filter((step) => ['prepareSave', 'preparePublish', 'persistLocal'].includes(step)))
+            .toEqual(Array.from({ length: saves }, () => ['prepareSave', 'preparePublish', 'persistLocal']).flat());
+        expect(vi.mocked(bundle.storage.applyDataToStore!).mock.calls.map((call) => call[1])).toEqual(prepared);
+        expect(yieldsInGate.length).toBeGreaterThanOrEqual(3 * saves);
+        expect(yieldsInGate.every((held) => !held)).toBe(true);
+    });
+
+    it('hands every attachment phase of one cycle the same transfer admission, and a new cycle a new one (D9b W7)', async () => {
+        const seen: unknown[] = [];
+        const syncAttachments = vi.fn(async (_data: AppData, helpers: { transferAdmission?: unknown; phase?: string }) => {
+            seen.push(helpers.transferAdmission);
+            return null;
+        });
+        const first = createHarness({ remote: createData([createTask('t-remote', 'Remote task')]), io: { syncAttachments } });
+        await first.run();
+        expect(seen.length).toBeGreaterThanOrEqual(2);
+        expect(seen[0]).toBeDefined();
+        expect(seen.every((admission) => admission === seen[0])).toBe(true);
+        const count = seen.length;
+        const second = createHarness({ remote: createData([createTask('t-remote', 'Remote task')]), io: { syncAttachments } });
+        await second.run();
+        expect(seen[count]).toBeDefined();
+        expect(seen[count]).not.toBe(seen[0]);
+    });
+
+    it('accepts a covered snapshot instead of aborting when the platform hook approves it', async () => {
+        const { harness, hooks, io, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: {
+                acceptCoveredSnapshot: vi.fn(() => true),
+            },
+        });
+        vi.mocked(io.readRemote).mockImplementation(async () => {
+            harness.lastDataChangeAt += 1;
+            return cloneAppData(harness.remote!);
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBeUndefined();
+        expect(hooks.acceptCoveredSnapshot).toHaveBeenCalled();
+    });
+
+    it('runs the attachment pre-sync before the fast-check only under the mobile ordering policy', async () => {
+        const syncAttachments = vi.fn(async () => false);
+        const desktop = createHarness({
+            fastSyncScope: 'scope-1',
+            io: { syncAttachments },
+        });
+        await desktop.run();
+        const callsAfterFirstMerge = syncAttachments.mock.calls.length;
+        await desktop.run();
+
+        expect(syncAttachments.mock.calls.length).toBe(callsAfterFirstMerge);
+
+        const mobileAttachments = vi.fn(async () => false);
+        const mobile = createHarness({
+            fastSyncScope: 'scope-1',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: { syncAttachments: mobileAttachments },
+        });
+        await mobile.run();
+        const mobileCalls = mobileAttachments.mock.calls.length;
+        const second = await mobile.run();
+        expect(second.skipped).toBe('unchanged');
+
+        expect(mobileAttachments.mock.calls.length).toBeGreaterThan(mobileCalls);
+    });
+
+    it('preserves an oversized File attachment block when mobile pre-sync is followed by an unchanged fast skip', async () => {
+        let attachmentIsOversized = false;
+        const syncAttachments = vi.fn(async () => {
+            if (attachmentIsOversized) {
+                throw new AttachmentUploadTooLargeError(101, 100);
+            }
+            return false;
+        });
+        const { hooks, run } = createHarness({
+            backend: 'file',
+            fastSyncScope: 'scope-file-oversized-fast-skip',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: { syncAttachments },
+        });
+        expect((await run()).skipped).toBeUndefined();
+
+        attachmentIsOversized = true;
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: true,
+            skipped: 'unchanged',
+            fileAttachmentUploadBlocked: 'too-large',
+        });
+        expect(hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect(hooks.requestFollowUpAfter).not.toHaveBeenCalled();
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('persists attachment pre-sync mutations when the cycle aborts before writing locally', async () => {
+        const local = createData([createTask('t-local', 'Local task')]);
+        const mutated = createData([createTask('t-local', 'Local task'), createTask('t-presync', 'Uploaded attachment task')]);
+        const { harness, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                syncAttachments: vi.fn(async () => cloneAppData(mutated)),
+                readRemote: vi.fn(async () => {
+                    harness.lastDataChangeAt += 1;
+                    return cloneAppData(harness.remote!);
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(harness.persisted.tasks.map((task) => task.id)).toContain('t-presync');
+    });
+
+    it('continues with a warning when the attachment pre-sync fails', async () => {
+        const { harness, run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                syncAttachments: vi.fn(async () => {
+                    throw new Error('upload failed');
+                }),
+            },
+
+            hooks: {
+                shouldRunAttachmentPhase: vi.fn(async (_data, phase) => phase === 'prepare'),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(result.hadAttachmentWarning).toBe(true);
+        expect(harness.warnings.some((warning) => warning.message === 'Attachment pre-sync warning')).toBe(true);
+    });
+
+    it('rethrows attachment pre-sync errors when the cycle was aborted', async () => {
+        const { run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                syncAttachments: vi.fn(async () => {
+                    throw new Error('aborted mid-upload');
+                }),
+            },
+            hooks: {
+                isCycleAborted: () => true,
+                shouldRunAttachmentPhase: vi.fn(async (_data, phase) => phase === 'prepare'),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('aborted mid-upload');
+    });
+
+    it('persists post-merge attachment mutations and skips fast-state recording', async () => {
+        const { harness, run } = createHarness({
+            fastSyncScope: 'scope-1',
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                syncAttachments: vi.fn(async (data: AppData) => {
+                    data.tasks.push(createTask('t-downloaded', 'Downloaded attachment task'));
+                    return true;
+                }),
+            },
+            hooks: {
+                shouldRunAttachmentPhase: vi.fn(async (_data, phase) => phase === 'post-merge'),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(harness.persisted.tasks.map((task) => task.id)).toContain('t-downloaded');
+        expect(harness.fastStates.size).toBe(0);
+        expect(harness.diagnostics).toContain('attachment-sync-applied');
+    });
+
+    it('applies the platform post-merge attachment error policy', async () => {
+        const failingIo = {
+            syncAttachments: vi.fn(async () => {
+                throw new Error('download failed');
+            }),
+        };
+        const postMergeOnly = {
+            shouldRunAttachmentPhase: vi.fn(async (_data: AppData, phase: string) => phase === 'post-merge'),
+        };
+
+        const warn = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: failingIo,
+            hooks: postMergeOnly,
+            policy: { postMergeAttachmentErrorPolicy: 'warn' },
+        });
+        const warnResult = await warn.run();
+        expect(warnResult.success).toBe(true);
+        expect(warnResult.hadAttachmentWarning).toBe(true);
+        expect(warn.harness.warnings.some((warning) => warning.message === 'Attachment sync warning')).toBe(true);
+
+        const fail = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: failingIo,
+            hooks: postMergeOnly,
+            policy: { postMergeAttachmentErrorPolicy: 'fail' },
+        });
+        const failResult = await fail.run();
+        expect(failResult.success).toBe(false);
+        expect(failResult.error).toContain('download failed');
+    });
+
+    it.each([
+        ['prepare', false, false], ['post-merge', false, false],
+        ['post-merge', true, false], ['post-merge', false, true],
+    ] as const)('fails the real bounded Cloud %s pass without publication after refusal or success acknowledgment (activation=%s, late winner=%s)', async (phase, activationProbe, lateWinner) => {
+        const memory = createMemoryFileSystem();
+        const { log, lines } = createRecordingLog();
+        const files = createMobileAttachmentFiles({
+            fs: memory.fs, storage: createMemoryStorage().storage,
+            getSecureConfigValue: async () => null, log, core: { isSandboxMode: () => false },
+        });
+        const installer = {} as never;
+        const common = createMobileAttachmentCommon({
+            fs: memory.fs, files, installer, crypto: {} as never,
+            encryption: { logSyncEncryptionEvent: async () => undefined },
+            installerMayBeMissing: () => false, timersPaused: () => true,
+            uploads: { createUploadTask: () => null },
+        });
+        const cloudPutFile = vi.fn(async () => undefined);
+        const backends = createMobileAttachmentBackends({
+            fs: memory.fs, files, common, installer, log, maxCloudBufferedUploadBytes: 4,
+            core: { cloudPutFile, cloudAttachmentExists: async () => true },
+        });
+        const uri = `${MANAGED}bounded.txt`;
+        memory.put(uri, new Uint8Array(5));
+        const local = createData([{
+            ...createTask('t-local', 'Local task'),
+            attachments: [{
+                id: 'bounded', kind: 'file', title: 'private filename.txt', uri,
+                size: 1, localStatus: 'available', createdAt: STAMP, updatedAt: STAMP,
+                ...(lateWinner
+                    ? { cloudKey: 'attachments/bounded.txt', fileHash: 'a'.repeat(64), contentSize: 1, contentMtimeMs: 0 }
+                    : phase === 'prepare' ? { pendingContentUpload: true } : {}),
+            }],
+        }]);
+        const before = cloneAppData(local);
+        const remote = lateWinner ? cloneAppData(local) : createData([createTask('t-remote', 'Remote task')]);
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+            if (helpers.phase !== phase) return false;
+            return backends.syncCloudAttachments(data, { url: 'https://cloud.example/v1/data', token: 'synthetic' },
+                'https://cloud.example/v1', { phase: helpers.phase, activationProbe: helpers.activationProbe });
+        });
+        const bundle = createHarness({
+            backend: 'cloud', local, remote, activationProbe,
+            io: { syncAttachments },
+            hooks: { shouldRunAttachmentPhase: vi.fn(async (_data, selected) => selected === phase) },
+            policy: { postMergeAttachmentErrorPolicy: 'warn' },
+        });
+        const writesAtRefusal: number[] = [];
+        const remoteAtRefusal: (AppData | null)[] = [];
+        const warn = log.warn;
+        vi.spyOn(log, 'warn').mockImplementation((message, context) => {
+            if (context?.extra?.releaseCheck === 'v1.3.5/cloud-host-upload-limit') {
+                writesAtRefusal.push(bundle.harness.callOrder.filter((call) => call === 'writeRemote').length);
+                remoteAtRefusal.push(bundle.harness.remote ? cloneAppData(bundle.harness.remote) : null);
+            }
+            warn(message, context);
+        });
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Cloud attachment upload cannot be admitted by this host transport');
+        expect(result.fileAttachmentUploadBlocked).toBeUndefined();
+        expect(result.hadAttachmentWarning).not.toBe(true);
+        expect(bundle.harness.warnings.some((warning) => (
+            warning.message === 'Attachment pre-sync warning' || warning.message === 'Attachment sync warning'
+        ))).toBe(false);
+
+
+        expect(writesAtRefusal).toEqual([lateWinner ? 1 : 0]);
+        expect(bundle.io.writeRemote).toHaveBeenCalledTimes(lateWinner ? 1 : 0);
+        expect(bundle.hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(remoteAtRefusal).toHaveLength(1);
+        expect(bundle.harness.remote).toEqual(remoteAtRefusal[0]);
+        if (!lateWinner) expect(bundle.harness.remote).toEqual(remote);
+        expect(local).toEqual(before);
+        expect(bundle.harness.persisted.tasks.find((task) => task.id === 't-local')?.attachments).toEqual(before.tasks[0].attachments);
+        expect(cloudPutFile).not.toHaveBeenCalled();
+        expect(memory.read(uri)).toEqual(new Uint8Array(5));
+        expect(memory.calls.filter((call) => /^(readBytes|copy|sha256) /.test(call))).toEqual([]);
+        expect(lines.filter((line) => line.extra?.releaseCheck === 'v1.3.5/cloud-host-upload-limit')).toEqual([{
+            level: 'warn', message: 'Cloud host upload admission refused',
+            extra: { releaseCheck: 'v1.3.5/cloud-host-upload-limit', operation: 'upload', outcome: 'refused' },
+        }]);
+    });
+
+    it.each([
+        ['prepare presence', false], ['post-merge winner', false], ['activation candidate', false], ['activation candidate', true],
+    ] as const)('fails the real Cloud %s host response under warning policy (throwing diagnostic=%s)', async (site, throwingDiagnostic) => {
+        const failure = Object.assign(new TypeError('Response exceeds the 8 byte download limit'), {
+            code: 'response-too-large', limitBytes: 8,
+        });
+        const memory = createMemoryFileSystem();
+        const { log, lines } = createRecordingLog();
+        const files = createMobileAttachmentFiles({
+            fs: memory.fs, storage: createMemoryStorage().storage,
+            getSecureConfigValue: async () => null, log, core: { isSandboxMode: () => false },
+        });
+        const installer = {} as never;
+        const common = createMobileAttachmentCommon({
+            fs: memory.fs, files, installer, crypto: {} as never,
+            encryption: { logSyncEncryptionEvent: async () => undefined },
+            installerMayBeMissing: () => false, timersPaused: () => true, uploads: { createUploadTask: () => null },
+        });
+        const fetcher = vi.fn(async (): Promise<Response> => { throw failure; });
+        const cloudGetFile = vi.fn(async (): Promise<ArrayBuffer> => { throw failure; });
+        const cloudPutFile = vi.fn(async () => undefined);
+        const backends = createMobileAttachmentBackends({
+            fs: memory.fs, files, common, installer, log,
+            core: {
+                cloudGetFile, cloudPutFile,
+                cloudAttachmentExists: site === 'prepare presence'
+                    ? (url, options) => cloudAttachmentExists(url, { ...options, fetcher })
+                    : async () => true,
+            },
+        });
+        const uri = `${MANAGED}response.txt`;
+        const source = new Uint8Array([1, 2, 3, 4]);
+        const activationProbe = site === 'activation candidate';
+        if (!activationProbe) memory.put(uri, source);
+        const local = createData([{
+            ...createTask('t-local', 'Local task'),
+            attachments: [{
+                id: 'response', kind: 'file', title: 'private filename.txt', uri: activationProbe ? '' : uri,
+                cloudKey: 'attachments/response.txt', fileHash: 'a'.repeat(64), contentSize: 1, contentMtimeMs: 0,
+                localStatus: activationProbe ? 'missing' : 'available', createdAt: STAMP, updatedAt: STAMP,
+            }],
+        }]);
+        const before = cloneAppData(local);
+        const phase = site === 'prepare presence' ? 'prepare' : 'post-merge';
+        const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => backends.syncCloudAttachments(
+            data, { url: 'https://cloud.example/v1/data', token: 'synthetic' }, 'https://cloud.example/v1',
+            { phase: helpers.phase, activationProbe: helpers.activationProbe },
+        ));
+        const bundle = createHarness({
+            backend: 'cloud', local, remote: cloneAppData(local), activationProbe,
+            io: { syncAttachments },
+            hooks: { shouldRunAttachmentPhase: vi.fn(async (_data, selected) => selected === phase) },
+            policy: { postMergeAttachmentErrorPolicy: 'warn' },
+        });
+        const writesAtRefusal: number[] = [];
+        const remoteAtRefusal: (AppData | null)[] = [];
+        const warn = log.warn;
+        vi.spyOn(log, 'warn').mockImplementation((message, context) => {
+            if (context?.extra?.releaseCheck === 'v1.3.5/cloud-host-response-limit') {
+                writesAtRefusal.push(bundle.harness.callOrder.filter((call) => call === 'writeRemote').length);
+                remoteAtRefusal.push(bundle.harness.remote ? cloneAppData(bundle.harness.remote) : null);
+                if (throwingDiagnostic) throw new Error('sink unavailable');
+            }
+            warn(message, context);
+        });
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain(failure.message);
+        expect(result.hadAttachmentWarning).not.toBe(true);
+        expect(result.fileAttachmentUploadBlocked).toBeUndefined();
+        expect(bundle.harness.warnings.some((warning) => /Attachment (pre-sync|sync) warning/.test(warning.message))).toBe(false);
+        expect(writesAtRefusal).toEqual([site === 'post-merge winner' ? 1 : 0]);
+        expect(bundle.io.writeRemote).toHaveBeenCalledTimes(writesAtRefusal[0]);
+        expect(remoteAtRefusal).toHaveLength(1);
+        expect(bundle.harness.remote).toEqual(remoteAtRefusal[0]);
+        expect(bundle.hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(local).toEqual(before);
+        expect(bundle.harness.persisted.tasks[0].attachments).toEqual(before.tasks[0].attachments);
+        expect(cloudPutFile).not.toHaveBeenCalled();
+        expect(fetcher).toHaveBeenCalledTimes(site === 'prepare presence' ? 1 : 0);
+        expect(cloudGetFile).toHaveBeenCalledTimes(site === 'prepare presence' ? 0 : 1);
+        expect([...memory.files.keys()]).toEqual(activationProbe ? [] : [uri]);
+        if (!activationProbe) expect(memory.read(uri)).toEqual(source);
+        expect(memory.calls.filter((call) => /^(writeBytes|copy|move|delete) /.test(call))).toEqual([]);
+        expect(lines.filter((line) => line.extra?.releaseCheck === 'v1.3.5/cloud-host-response-limit')).toEqual(throwingDiagnostic ? [] : [{
+            level: 'warn', message: 'Cloud host response limit refused',
+            extra: { releaseCheck: 'v1.3.5/cloud-host-response-limit', operation: 'response', outcome: 'refused' },
+        }]);
+    });
+
+    it.each([
+        ['prepare', 'ordinary'], ['post-merge', 'ordinary'],
+        ['prepare', 'throwing'], ['post-merge', 'throwing'],
+    ] as const)(
+        'fails the real bounded WebDAV %s pass with %s diagnostic under warning policy', async (phase, diagnostic) => {
+            const memory = createMemoryFileSystem();
+            const { log, lines } = createRecordingLog();
+            const warn = log.warn;
+            const logWarning = vi.spyOn(log, 'warn').mockImplementation((message, context) => {
+                if (diagnostic === 'throwing'
+                    && context?.extra?.releaseCheck === 'v1.3.5/webdav-host-upload-limit') {
+                    throw new Error('Diagnostic sink is unavailable');
+                }
+                warn(message, context);
+            });
+            const files = createMobileAttachmentFiles({
+                fs: memory.fs, storage: createMemoryStorage().storage,
+                getSecureConfigValue: async () => null, log,
+                core: { isSandboxMode: () => false },
+            });
+            const installer = {} as never;
+            const common = createMobileAttachmentCommon({
+                fs: memory.fs, files, installer, crypto: {} as never,
+                encryption: { logSyncEncryptionEvent: async () => undefined },
+                installerMayBeMissing: () => false, timersPaused: () => true,
+                uploads: { createUploadTask: () => null },
+            });
+            const webdavMakeDirectory = vi.fn(async () => undefined);
+            const webdavPutFileVersioned = vi.fn(async () => undefined);
+            const backends = createMobileAttachmentBackends({
+                fs: memory.fs, files, common, installer, log,
+                maxWebdavBufferedUploadBytes: 4,
+                core: { webdavMakeDirectory, webdavPutFileVersioned, webdavFileExists: async () => true },
+            });
+            const uri = `${MANAGED}bounded.txt`;
+            memory.put(uri, new Uint8Array(5));
+            const local = createData([{
+                ...createTask('t-local', 'Local task'),
+                attachments: [{
+                    id: 'bounded', kind: 'file', title: 'private filename.txt', uri,
+                    size: 1, localStatus: 'available', createdAt: STAMP, updatedAt: STAMP,
+                    ...(diagnostic === 'throwing'
+                        ? { cloudKey: 'attachments/bounded.txt', fileHash: 'a'.repeat(64), contentSize: 1, contentMtimeMs: 0 }
+                        : phase === 'prepare' ? { pendingContentUpload: true } : {}),
+                }],
+            }]);
+            const before = structuredClone(local);
+            const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+                if (helpers.phase !== phase) return false;
+                return backends.syncWebdavAttachments(data, { url: 'https://dav.example/data.json' },
+                    'https://dav.example', undefined, { phase: helpers.phase });
+            });
+            const bundle = createHarness({
+                backend: 'webdav', local, remote: cloneAppData(local),
+                io: { syncAttachments },
+                hooks: { shouldRunAttachmentPhase: vi.fn(async (_data, selected) => selected === phase) },
+                policy: { postMergeAttachmentErrorPolicy: 'warn' },
+            });
+
+            const result = await bundle.run();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('WebDAV attachment upload cannot be admitted by this host transport');
+            expect(result.error).not.toContain('Diagnostic sink is unavailable');
+            expect(result.fileAttachmentUploadBlocked).toBeUndefined();
+            expect(result.hadAttachmentWarning).not.toBe(true);
+            expect(bundle.harness.warnings.some((warning) => (
+                warning.message === 'Attachment pre-sync warning' || warning.message === 'Attachment sync warning'
+            ))).toBe(false);
+            expect(syncAttachments.mock.calls.some((call) => call[1].phase === phase)).toBe(true);
+            expect(local).toEqual(before);
+            expect(bundle.harness.persisted.tasks[0].attachments).toEqual(before.tasks[0].attachments);
+            expect(webdavMakeDirectory).not.toHaveBeenCalled();
+            expect(webdavPutFileVersioned).not.toHaveBeenCalled();
+            expect(memory.calls.filter((call) => /^(readBytes|copy|sha256) /.test(call))).toEqual([]);
+            expect(logWarning.mock.calls.filter((call) => call[1]?.extra?.releaseCheck === 'v1.3.5/webdav-host-upload-limit'))
+                .toHaveLength(1);
+            expect(lines.filter((line) => line.extra?.releaseCheck === 'v1.3.5/webdav-host-upload-limit'))
+                .toHaveLength(diagnostic === 'throwing' ? 0 : 1);
+        },
+    );
+
+    it.each([
+        ['prepare', 'ordinary'], ['post-merge', 'ordinary'],
+        ['prepare', 'throwing'], ['post-merge', 'throwing'],
+    ] as const)(
+        'fails the real WebDAV host-response cap in %s with %s diagnostic under warning policy', async (phase, diagnostic) => {
+            const error = Object.assign(new TypeError('Response exceeds the 8 byte download limit'), {
+                code: 'response-too-large', limitBytes: 8,
+            });
+            const fetcher = vi.fn().mockRejectedValue(error);
+            vi.stubGlobal('fetch', fetcher);
+            try {
+                const memory = createMemoryFileSystem();
+                const { log, lines } = createRecordingLog();
+                const warn = log.warn;
+                const logWarning = vi.spyOn(log, 'warn').mockImplementation((message, context) => {
+                    if (diagnostic === 'throwing'
+                        && context?.extra?.releaseCheck === 'v1.3.5/webdav-host-download-limit') {
+                        throw new Error('Diagnostic sink is unavailable');
+                    }
+                    warn(message, context);
+                });
+                const files = createMobileAttachmentFiles({
+                    fs: memory.fs, storage: createMemoryStorage().storage,
+                    getSecureConfigValue: async () => null, log,
+                    core: { isSandboxMode: () => false },
+                });
+                const installGeneration = vi.fn();
+                const installer = { installAttachmentFileGeneration: installGeneration } as never;
+                const common = createMobileAttachmentCommon({
+                    fs: memory.fs, files, installer, crypto: {} as never,
+                    encryption: { logSyncEncryptionEvent: async () => undefined },
+                    installerMayBeMissing: () => false, timersPaused: () => true,
+                    uploads: { createUploadTask: () => null },
+                });
+                const open = vi.spyOn(common, 'openAttachmentBytesFromDownload');
+                const install = vi.spyOn(common, 'installAttachmentDownloadBytes');
+                const backends = createMobileAttachmentBackends({
+                    fs: memory.fs, files, common, installer, log,
+                    core: { withRetry: (operation) => operation() },
+                });
+                const uri = `${MANAGED}bounded.txt`;
+                const local = createData([{
+                    ...createTask('t-local', 'Local task'),
+                    attachments: [{
+                        id: 'bounded', kind: 'file', title: 'private filename.txt', uri,
+                        cloudKey: 'attachments/bounded.txt', fileHash: 'a'.repeat(64),
+                        size: 1, localStatus: 'available', createdAt: STAMP, updatedAt: STAMP,
+                    }],
+                }]);
+                const before = structuredClone(local);
+                const syncAttachments = vi.fn(async (data: AppData, helpers: SyncRunAttachmentHelpers) => {
+                    if (helpers.phase !== phase) return false;
+                    return backends.syncWebdavAttachments(data, { url: 'https://dav.example/data.json' },
+                        'https://dav.example', undefined, { phase: helpers.phase });
+                });
+                const bundle = createHarness({
+                    backend: 'webdav', local, remote: cloneAppData(local),
+                    io: { syncAttachments },
+                    hooks: { shouldRunAttachmentPhase: vi.fn(async (_data, selected) => selected === phase) },
+                    policy: { postMergeAttachmentErrorPolicy: 'warn' },
+                });
+
+                const result = await bundle.run();
+
+                expect(result.success).toBe(false);
+                expect(result.error).toContain(error.message);
+                expect(result.error).not.toContain('Diagnostic sink is unavailable');
+                expect(result.fileAttachmentUploadBlocked).toBeUndefined();
+                expect(result.hadAttachmentWarning).not.toBe(true);
+                expect(bundle.harness.warnings.some((warning) => (
+                    warning.message === 'Attachment pre-sync warning' || warning.message === 'Attachment sync warning'
+                ))).toBe(false);
+                expect(syncAttachments.mock.calls.some((call) => call[1].phase === phase)).toBe(true);
+
+                expect(fetcher).toHaveBeenCalledTimes(1);
+                expect(fetcher).toHaveBeenCalledWith('https://dav.example/attachments/bounded.txt',
+                    expect.objectContaining({ method: 'GET' }));
+                expect(local).toEqual(before);
+                expect(bundle.harness.persisted.tasks[0].attachments).toEqual(before.tasks[0].attachments);
+                expect(open).not.toHaveBeenCalled();
+                expect(install).not.toHaveBeenCalled();
+                expect(installGeneration).not.toHaveBeenCalled();
+                expect(memory.files.size).toBe(0);
+                expect(memory.calls.filter((call) => /^(readBytes|copy|sha256|writeBytes|move|delete) /.test(call))).toEqual([]);
+                expect(logWarning.mock.calls.filter((call) => call[1]?.extra?.releaseCheck === 'v1.3.5/webdav-host-download-limit'))
+                    .toHaveLength(1);
+                expect(lines.filter((line) => line.extra?.releaseCheck === 'v1.3.5/webdav-host-download-limit'))
+                    .toHaveLength(diagnostic === 'throwing' ? 0 : 1);
+                if (phase === 'prepare') expect(bundle.io.writeRemote).not.toHaveBeenCalled();
+            } finally {
+                vi.unstubAllGlobals();
+            }
+        },
+    );
+
+    it('runs the periodic attachment cleanup through the platform hook and persists its result', async () => {
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' },
+        });
+        const cleaned = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: NOW.toISOString() },
+        });
+        const runAttachmentCleanup = vi.fn(async () => ({ data: cloneAppData(cleaned), invalidateFastSyncState: true }));
+        const { harness, run } = createHarness({
+            local,
+            fastSyncScope: 'scope-1',
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+        expect(harness.persisted.settings.attachments?.lastCleanupAt).toBe(NOW.toISOString());
+
+        expect(harness.fastStates.size).toBe(0);
+    });
+
+    it('propagates unconfirmed native cleanup without any post-error work or remote lease release', async () => {
+        const fatal = new NativeAttachmentCleanupUnconfirmedError();
+        const lease = createFenceLease({ release: vi.fn().mockRejectedValue(new Error('Release must not run')) });
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' },
+        });
+        let atCleanup: (() => void) | undefined;
+        const runAttachmentCleanup = vi.fn(async () => { atCleanup!(); throw fatal; });
+
+        const applyDataToStore = vi.fn((data: AppData) => { bundle.harness.inMemory = cloneAppData(data); });
+        const bundle = createHarness({
+            local, remote: createData([createTask('t-remote', 'Remote task')]), fastSyncScope: 'fatal-scope',
+            io: { acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease) },
+            storage: { applyDataToStore },
+            hooks: {
+                runAttachmentCleanup,
+                handleRunErrorBeforeRequeue: vi.fn(async () => null),
+                handleRunErrorAfterRequeue: vi.fn(async () => null),
+            },
+        });
+        const { harness, io, storage, store, hooks, notifier, run } = bundle;
+        const afterError = [
+            vi.mocked(storage.persistLocal), vi.mocked(storage.persistSyncStatus), vi.mocked(storage.writeFastSyncState),
+            vi.mocked(storage.persistExternalCalendars), vi.mocked(io.writeRemote), vi.mocked(io.readRemote),
+            vi.mocked(hooks.handleRunErrorBeforeRequeue!), vi.mocked(hooks.handleRunErrorAfterRequeue!),
+            vi.mocked(hooks.finalizeErrorStatus), vi.mocked(hooks.finalizeSuccess),
+            vi.mocked(hooks.requestFollowUp), vi.mocked(hooks.requestFollowUpAfter!),
+            vi.mocked(notifier.logSyncError), vi.mocked(notifier.logMergeSummary),
+            vi.spyOn(notifier, 'logInfo'), vi.spyOn(notifier, 'logWarning'), vi.spyOn(notifier, 'logWarningExtra'),
+            vi.spyOn(notifier, 'onDiagnostic'), vi.spyOn(notifier, 'setStep'), vi.spyOn(store, 'setUiError'),
+            vi.mocked(lease.assertHeld), vi.mocked(lease.renew), vi.mocked(lease.retryAfterMs),
+        ];
+        let acknowledged: AppData | undefined;
+        atCleanup = () => {
+            expect(io.acquireRemoteMutationFence).toHaveBeenCalledTimes(1);
+            expect(lease.assertHeld).toHaveBeenCalled();
+            expect(storage.persistLocal).toHaveBeenCalled();
+            expect(applyDataToStore).toHaveBeenCalled();
+            expect(io.writeRemote).toHaveBeenCalled();
+            acknowledged = cloneAppData(harness.persisted);
+            expect(acknowledged.tasks.map((task) => task.id)).toEqual(expect.arrayContaining(['t-local', 't-remote']));
+            for (const callback of afterError) callback.mockClear();
+        };
+
+        await expect(run()).rejects.toBe(fatal);
+
+        expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+        expect(lease.release).not.toHaveBeenCalled();
+        for (const callback of afterError) expect(callback).not.toHaveBeenCalled();
+        expect(harness.persisted).toEqual(acknowledged);
+        expect(harness.remote?.tasks.map((task) => task.id)).toEqual(expect.arrayContaining(['t-local', 't-remote']));
+    });
+
+    it('keeps LocalSyncAbort cleanup requeue bookkeeping and ordinary lease release', async () => {
+        const abort = new LocalSyncAbort('local-data-changed');
+        const lease = createFenceLease();
+        const { harness, hooks, run } = createHarness({
+            local: createData([createTask('t-local', 'Local task')], { attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' } }),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: { acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease) },
+            hooks: { runAttachmentCleanup: vi.fn(async () => { throw abort; }), handleRunErrorBeforeRequeue: vi.fn(async () => null) },
+        });
+
+        await expect(run()).resolves.toMatchObject({ success: true, skipped: 'requeued' });
+
+        expect(hooks.handleRunErrorBeforeRequeue).toHaveBeenCalledWith(abort, expect.anything());
+        expect(harness.infos).toEqual(expect.arrayContaining([expect.objectContaining({ message: 'Sync cycle requeued' })]));
+        expect(harness.diagnostics).toContain('requeued');
+        expect(lease.release).toHaveBeenCalledTimes(1);
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+    });
+
+    it('keeps ordinary cleanup failure handling and lease release for a same-name plain Error', async () => {
+        const ordinary = Object.assign(new Error('Ordinary cleanup refusal'), { name: 'NativeAttachmentCleanupUnconfirmedError' });
+        const lease = createFenceLease();
+        const { hooks, notifier, run } = createHarness({
+            local: createData([createTask('t-local', 'Local task')], { attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' } }),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: { acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease) },
+            hooks: { runAttachmentCleanup: vi.fn(async () => { throw ordinary; }) },
+        });
+
+        await expect(run()).resolves.toMatchObject({ success: false });
+
+        expect(notifier.logSyncError).toHaveBeenCalledWith(ordinary, expect.anything());
+        expect(hooks.finalizeErrorStatus).toHaveBeenCalledTimes(1);
+        expect(lease.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases an ordinary successful cleanup lease and finalizes success', async () => {
+        const lease = createFenceLease();
+        const { hooks, run } = createHarness({
+            local: createData([createTask('t-local', 'Local task')], { attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' } }),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: { acquireRemoteMutationFence: vi.fn().mockResolvedValue(lease) },
+            hooks: { runAttachmentCleanup: vi.fn(async () => null) },
+        });
+
+        await expect(run()).resolves.toMatchObject({ success: true });
+
+        expect(hooks.runAttachmentCleanup).toHaveBeenCalledTimes(1);
+        expect(hooks.finalizeSuccess).toHaveBeenCalledTimes(1);
+        expect(lease.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs cleanup before the interval elapses when an attachment was just removed (#1064)', async () => {
+        const task = createTask('t-local', 'Local task');
+        task.attachments = [{
+            id: 'attachment-1',
+            kind: 'file',
+            title: 'removed',
+            uri: '/tmp/removed.pdf',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+            deletedAt: STAMP,
+        }];
+
+
+        const local = createData([task], {
+            attachments: { lastCleanupAt: new Date().toISOString() },
+        });
+        const runAttachmentCleanup = vi.fn(async (data: AppData) => ({
+            data: cloneAppData(data),
+            invalidateFastSyncState: false,
+        }));
+        const { run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the cleanup interval throttle when there is no orphaned attachment work', async () => {
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: new Date().toISOString() },
+        });
+        const runAttachmentCleanup = vi.fn(async (data: AppData) => ({
+            data: cloneAppData(data),
+            invalidateFastSyncState: false,
+        }));
+        const { run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(runAttachmentCleanup).not.toHaveBeenCalled();
+    });
+
+    it('keeps File Sync cleanup interval-gated when there is no tombstone work', async () => {
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: new Date().toISOString() },
+        });
+        const runAttachmentCleanup = vi.fn(async () => null);
+        const { run } = createHarness({
+            backend: 'file',
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(runAttachmentCleanup).not.toHaveBeenCalled();
+    });
+
+    it('keeps local purge metadata through merge until attachment cleanup removes it', async () => {
+        const local = createData([{
+            id: 'purged-task',
+            title: '(deleted)',
+            status: 'inbox',
+            tags: [],
+            contexts: [],
+            attachments: [{
+                id: 'attachment-1',
+                kind: 'file',
+                title: '',
+                uri: '/tmp/private.pdf',
+                createdAt: STAMP,
+                updatedAt: STAMP,
+            }],
+            createdAt: STAMP,
+            updatedAt: STAMP,
+            deletedAt: STAMP,
+            purgedAt: STAMP,
+        }], {
+            attachments: { lastCleanupAt: '2026-01-01T00:00:00.000Z' },
+        });
+        const remote = createData([{
+            ...local.tasks[0],
+            attachments: undefined,
+        }]);
+        const runAttachmentCleanup = vi.fn(async (data: AppData) => {
+            expect(data.tasks[0].attachments?.[0]?.uri).toBe('/tmp/private.pdf');
+            const cleaned = cloneAppData(data);
+            cleaned.tasks[0].attachments = undefined;
+            return { data: cleaned, invalidateFastSyncState: true };
+        });
+        const { harness, run } = createHarness({
+            local,
+            remote,
+            hooks: { runAttachmentCleanup },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(runAttachmentCleanup).toHaveBeenCalledTimes(1);
+        expect(harness.persisted.tasks[0].attachments).toBeUndefined();
+    });
+
+    it('requeues instead of persisting a cleanup snapshot when local data changes inside the hook', async () => {
+        const previousCleanupAt = '2026-01-01T00:00:00.000Z';
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: previousCleanupAt },
+        });
+        const cleaned = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: NOW.toISOString() },
+        });
+        let mutateLocalData: () => void = () => {
+            throw new Error('Harness mutation was not initialized');
+        };
+        const runAttachmentCleanup = vi.fn(async () => {
+            mutateLocalData();
+            return { data: cloneAppData(cleaned), invalidateFastSyncState: true };
+        });
+        const { harness, hooks, storage, run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+        mutateLocalData = () => {
+            harness.inMemory.tasks[0] = {
+                ...harness.inMemory.tasks[0],
+                title: 'Edited during cleanup',
+                updatedAt: '2026-07-13T10:00:01.000Z',
+            };
+            harness.lastDataChangeAt += 1;
+        };
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(hooks.requestFollowUp).toHaveBeenCalled();
+        expect(hooks.finalizeSuccess).not.toHaveBeenCalled();
+        expect(vi.mocked(storage.persistLocal).mock.calls.some(
+            ([data]) => data.settings.attachments?.lastCleanupAt === NOW.toISOString(),
+        )).toBe(false);
+        expect(harness.inMemory.tasks[0]?.title).toBe('Edited during cleanup');
+    });
+
+    it('skips the attachment cleanup inside the interval window', async () => {
+        const local = createData([createTask('t-local', 'Local task')], {
+            attachments: { lastCleanupAt: new Date(Date.now() - 60_000).toISOString() },
+        });
+        const runAttachmentCleanup = vi.fn(async () => null);
+        const { run } = createHarness({
+            local,
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            hooks: { runAttachmentCleanup },
+        });
+
+        await run();
+
+        expect(runAttachmentCleanup).not.toHaveBeenCalled();
+    });
+
+    it('lets the pre-requeue platform hook short-circuit error handling (mobile lifecycle abort)', async () => {
+        const { hooks, run } = createHarness({
+            hooks: {
+                setupCycle: vi.fn(async () => {
+                    throw new Error('aborted');
+                }),
+                handleRunErrorBeforeRequeue: vi.fn(async () => ({ success: true })),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toEqual({ success: true });
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('lets the post-requeue platform hook classify offline skips (mobile)', async () => {
+        const { hooks, run } = createHarness({
+            io: {
+                readRemote: vi.fn(async () => {
+                    throw new Error('network request failed');
+                }),
+            },
+            hooks: {
+                handleRunErrorAfterRequeue: vi.fn(async (error) => (
+                    error instanceof Error && error.message.includes('network')
+                        ? { success: true, skipped: 'offline' as const }
+                        : null
+                )),
+            },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'offline' });
+        expect(hooks.finalizeErrorStatus).not.toHaveBeenCalled();
+    });
+
+    it('treats a corrupted WebDAV remote as missing and repairs it with the merged data', async () => {
+        const { harness, io, run } = createHarness({
+            backend: 'webdav',
+            io: {
+                readRemote: vi.fn(async () => {
+                    throw new Error('WebDAV get failed: invalid JSON');
+                }),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks.map((task) => task.id)).toContain('t-local');
+        expect(harness.warnings.some((warning) => warning.message.includes('appears corrupted'))).toBe(true);
+        expect(harness.infos.some((info) => info.message.includes('Repairing corrupted WebDAV'))).toBe(true);
+    });
+
+    it('still reports the unchanged skip when persisting the status fails', async () => {
+        const failing = createHarness({
+            fastSyncScope: 'scope-1',
+            storage: {
+                persistSyncStatus: vi.fn(async () => {
+                    throw new Error('disk full');
+                }),
+            },
+        });
+
+        const first = await failing.run();
+        expect(first.success).toBe(true);
+        const second = await failing.run();
+
+        expect(second).toMatchObject({ success: true, skipped: 'unchanged' });
+        expect(failing.harness.warnings.some((warning) => warning.message === 'Failed to persist unchanged sync status')).toBe(true);
+    });
+
+    it('surfaces the attachment warning flag on failed runs too', async () => {
+        const { run } = createHarness({
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            io: {
+                syncAttachments: vi.fn(async () => {
+                    throw new Error('upload failed');
+                }),
+                writeRemote: vi.fn(async () => {
+                    throw new Error('server exploded');
+                }),
+            },
+            hooks: {
+                shouldRunAttachmentPhase: vi.fn(async (_data, phase) => phase === 'prepare'),
+            },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(false);
+        expect(result.hadAttachmentWarning).toBe(true);
+    });
+});
+
+describe('normalizeRemoteWriteResult', () => {
+    it('prefers an explicit fingerprint and reads the server-merge flag', () => {
+        expect(normalizeRemoteWriteResult('cloud', {
+            fingerprint: 'fp-explicit',
+            serverMergedRemoteData: true,
+        })).toEqual({ fingerprint: 'fp-explicit', serverMergedRemoteData: true });
+    });
+
+    it('builds an HTTP fingerprint from headers when none is provided', () => {
+        const normalized = normalizeRemoteWriteResult('webdav', {
+            etag: '"abc"',
+            lastModified: 'Mon, 13 Jul 2026 10:00:00 GMT',
+            contentLength: '123',
+        });
+        expect(normalized.fingerprint).toBeTruthy();
+        expect(normalized.serverMergedRemoteData).toBe(false);
+    });
+
+    it('handles boolean and missing results', () => {
+        expect(normalizeRemoteWriteResult('webdav', true)).toEqual({ fingerprint: null, serverMergedRemoteData: false });
+        expect(normalizeRemoteWriteResult('cloud', null)).toEqual({ fingerprint: null, serverMergedRemoteData: false });
+    });
+});
+
+describe('activation proof with unrecoverable attachments (#1119)', () => {
+    const fileAttachment = (id: string, title: string) => ({
+        id,
+        kind: 'file' as const,
+        title,
+        uri: '',
+        cloudKey: `attachments/${id}.txt`,
+        localStatus: 'missing' as const,
+        createdAt: STAMP,
+        updatedAt: STAMP,
+    });
+
+    it('activates when the trial tombstones a candidate blob this device never held bytes for', async () => {
+
+
+        const remoteTask = createTask('t-two-attachments', 'Two attachments');
+        remoteTask.attachments = [fileAttachment('attachment-ok', 'Fine'), fileAttachment('attachment-404', 'Gone')];
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            for (const attachment of data.tasks[0]?.attachments ?? []) {
+                if (attachment.id === 'attachment-ok') {
+                    attachment.localStatus = 'available';
+                } else {
+
+                    attachment.cloudKey = undefined;
+                    attachment.fileHash = undefined;
+                    attachment.localStatus = 'missing';
+                    attachment.deletedAt = '2026-07-02T00:00:00.000Z';
+                }
+            }
+            return data;
+        });
+        const { harness, io, run } = createHarness({
+            local: createData(),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(harness.remote?.tasks[0]?.attachments).toEqual([
+            expect.objectContaining({ id: 'attachment-ok', cloudKey: 'attachments/attachment-ok.txt' }),
+            expect.objectContaining({ id: 'attachment-404', deletedAt: '2026-07-02T00:00:00.000Z' }),
+        ]);
+    });
+
+    it('activates a sync folder whose blob has not arrived yet when this device holds no bytes', async () => {
+
+
+        const remoteTask = createTask('t-absent-blob', 'Blob not synced yet');
+        remoteTask.attachments = [fileAttachment('attachment-absent', 'Arrives later')];
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { harness, io, run } = createHarness({
+            backend: 'file',
+            local: createData(),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+
+
+        expect(harness.remote?.tasks[0]?.attachments).toEqual([
+            expect.objectContaining({
+                id: 'attachment-absent',
+                cloudKey: 'attachments/attachment-absent.txt',
+            }),
+        ]);
+        expect(harness.remote?.tasks[0]?.attachments?.[0]?.deletedAt).toBeUndefined();
+        expect(harness.warnings).toContainEqual(
+            expect.objectContaining({ message: 'Sync folder activation accepted attachments the folder does not hold yet' }),
+        );
+    });
+
+    it('still refuses a sync folder whose blob is absent when this device held bytes for the record', async () => {
+        const localTask = createTask('t-held-absent', 'Held here, absent there');
+        localTask.attachments = [{
+            id: 'attachment-held-absent',
+            kind: 'file',
+            title: 'Held locally',
+            uri: '/managed/held-absent.txt',
+            localStatus: 'available',
+            fileHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/attachment-held-absent.txt',
+            fileHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            localStatus: 'missing',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { io, run } = createHarness({
+            backend: 'file',
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('Candidate attachment proof failed for attachment-held-absent'),
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('refuses activation when the trial tombstones a record this device held bytes for', async () => {
+        const localTask = createTask('t-held-bytes', 'Held bytes');
+        localTask.attachments = [{
+            id: 'attachment-held',
+            kind: 'file',
+            title: 'Held locally',
+            uri: '/managed/held.txt',
+            localStatus: 'available',
+            fileHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const remoteTask = cloneAppData(createData([localTask])).tasks[0]!;
+        remoteTask.attachments![0] = {
+            ...remoteTask.attachments![0]!,
+            uri: '',
+            cloudKey: 'attachments/attachment-held.txt',
+            fileHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            localStatus: 'missing',
+        };
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            if (attachment) {
+                attachment.cloudKey = undefined;
+                attachment.fileHash = undefined;
+                attachment.localStatus = 'missing';
+                attachment.deletedAt = '2026-07-02T00:00:00.000Z';
+            }
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-held'),
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('refuses activation when an unreadable local attachment is tombstoned during upload', async () => {
+        const localTask = createTask('t-unreadable-attachment', 'Unreadable attachment');
+        localTask.attachments = [{
+            id: 'attachment-local-read-failure',
+            kind: 'file',
+            title: 'Unreadable',
+            uri: '/managed/unreadable.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.uri).toBe('/managed/unreadable.txt');
+            if (attachment) {
+
+
+                attachment.cloudKey = undefined;
+                attachment.fileHash = undefined;
+                attachment.localStatus = 'missing';
+                attachment.deletedAt = '2026-07-02T00:00:00.000Z';
+                attachment.updatedAt = '2026-07-02T00:00:00.000Z';
+            }
+            return data;
+        });
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-local-read-failure'),
+        });
+        expect(syncAttachments).toHaveBeenCalledTimes(1);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('still refuses activation when an expected attachment vanishes without a tombstone', async () => {
+        const remoteTask = createTask('t-two-attachments', 'Two attachments');
+        remoteTask.attachments = [fileAttachment('attachment-ok', 'Fine'), fileAttachment('attachment-dropped', 'Dropped')];
+        const syncAttachments = vi.fn(async (data: AppData) => {
+            const task = data.tasks[0]!;
+            for (const attachment of task.attachments ?? []) {
+                attachment.localStatus = 'available';
+            }
+            task.attachments = (task.attachments ?? []).filter((attachment) => attachment.id !== 'attachment-dropped');
+            return data;
+        });
+        const { run } = createHarness({
+            local: createData(),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: '[cloud] Candidate attachment proof incomplete: expected 2, proved 1',
+        });
+    });
+});
+
+describe('activation proof with metadata-only attachments (no blob anywhere)', () => {
+    it('activates when a candidate record has no blob and this device holds no bytes', async () => {
+        const remoteTask = createTask('t-orphan', 'Orphan attachment');
+        remoteTask.attachments = [{
+            id: 'attachment-orphan',
+            kind: 'file',
+            title: 'Never uploaded by the holder',
+            uri: '',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { harness, io, run } = createHarness({
+            local: createData(),
+            remote: createData([remoteTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result.success).toBe(true);
+        expect(io.writeRemote).toHaveBeenCalledTimes(1);
+
+
+        expect(harness.remote?.tasks[0]?.attachments).toEqual([
+            expect.objectContaining({ id: 'attachment-orphan', deletedAt: STAMP }),
+        ]);
+    });
+
+    it('still refuses when the record was reachable on the previous backend', async () => {
+        const localTask = createTask('t-old-backend', 'Old backend attachment');
+        localTask.attachments = [{
+            id: 'attachment-old-backend',
+            kind: 'file',
+            title: 'Only on the old backend',
+            uri: '',
+            cloudKey: 'cloudkit:old-backend',
+            localStatus: 'missing',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-old-backend'),
+        });
+
+        expect(result.error).toContain('"Only on the old backend" on task "Old backend attachment"');
+        expect(result.error).toContain('uploaded to iCloud');
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('keeps the refused file and its owner out of the logs and the stored sync status, by ID only', async () => {
+        const unproven = () => {
+            const task = createTask('t-private', 'Private task title');
+            task.attachments = [{
+                id: 'attachment-private',
+                kind: 'file',
+                title: 'private-file-name.pdf',
+                uri: '',
+                cloudKey: 'cloudkit:private',
+                localStatus: 'missing',
+                createdAt: STAMP,
+                updatedAt: STAMP,
+            }];
+            return task;
+        };
+        const leaks = (text: string) => ['Private task title', 'private-file-name'].filter((name) => text.includes(name));
+        const logged = (warnings: { message: string; error?: unknown }[]) => warnings
+            .map(({ message, error }) => `${message} ${error instanceof Error ? error.message : String(error ?? '')}`).join('\n');
+
+
+        const probe = createHarness({ local: createData([unproven()]), activationProbe: true, io: { syncAttachments: vi.fn(async (data: AppData) => data) } });
+        const probeResult = await probe.run();
+        expect(probeResult.error).toContain('"private-file-name.pdf" on task "Private task title"');
+        expect(logged(probe.harness.warnings)).toContain('attachment-private');
+        expect(leaks(logged(probe.harness.warnings))).toEqual([]);
+
+
+        const cycle = createHarness({ local: createData([unproven()]), activationProbe: false, io: { syncAttachments: vi.fn(async (data: AppData) => data) } });
+        const cycleResult = await cycle.run();
+        const stored = JSON.stringify([cycleResult, vi.mocked(cycle.hooks.finalizeErrorStatus).mock.calls,
+            vi.mocked(cycle.notifier.logSyncError).mock.calls.map(([error]) => (error instanceof Error ? error.message : String(error))), cycle.harness.uiErrors]);
+        expect(leaks(stored)).toEqual([]);
+        expect(leaks(logged(cycle.harness.warnings))).toEqual([]);
+    });
+
+    it('still refuses when this device claims the bytes but the transfer pass cannot read them', async () => {
+        const localTask = createTask('t-unreadable', 'Unreadable local attachment');
+        localTask.attachments = [{
+            id: 'attachment-unreadable',
+            kind: 'file',
+            title: 'Present but unreadable',
+            uri: '/managed/unreadable.txt',
+            localStatus: 'available',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+        }];
+
+        const syncAttachments = vi.fn(async (data: AppData) => data);
+        const { io, run } = createHarness({
+            local: createData([localTask]),
+            activationProbe: true,
+            io: { syncAttachments },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed for attachment-unreadable'),
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+});
+
+describe('sync cycle cost cuts', () => {
+    it('does not acquire the remote mutation fence for a pre-sync pass with nothing to mutate', async () => {
+        const acquireRemoteMutationFence = vi.fn(async () => createFenceLease());
+        const { run } = createHarness({
+            fastSyncScope: 'scope-idle-fence',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                acquireRemoteMutationFence,
+                syncAttachments: vi.fn(async () => false),
+            },
+        });
+
+        await run();
+        const afterFirstMerge = acquireRemoteMutationFence.mock.calls.length;
+        const second = await run();
+
+        expect(second.skipped).toBe('unchanged');
+        expect(acquireRemoteMutationFence.mock.calls.length).toBe(afterFirstMerge);
+    });
+
+    it('acquires the fence before an attachment pass that does mutate', async () => {
+        const acquireRemoteMutationFence = vi.fn(async () => createFenceLease());
+        const { run } = createHarness({
+            fastSyncScope: 'scope-mutating-fence',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                acquireRemoteMutationFence,
+                syncAttachments: vi.fn(async (_data, helpers) => {
+                    await helpers.assertRemoteMutationFenceHeld();
+                    return false;
+                }),
+            },
+        });
+
+        await run();
+
+        expect(acquireRemoteMutationFence).toHaveBeenCalled();
+    });
+
+    it('skips the local document write when the merge produced nothing new', async () => {
+        const bundle = createHarness({ fastSyncScope: 'scope-local-write' });
+
+
+        await bundle.run();
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        await bundle.run({ manual: true });
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        vi.mocked(bundle.storage.persistLocal).mockClear();
+        bundle.harness.statusUpdates.length = 0;
+
+        const second = await bundle.run({ manual: true });
+
+        expect(second).toMatchObject({ success: true, localWriteSkipped: true });
+        expect(bundle.storage.persistLocal).not.toHaveBeenCalled();
+        expect(bundle.harness.statusUpdates.at(-1)).toMatchObject({ lastSyncStatus: 'success' });
+        const info = vi.mocked(bundle.hooks.finalizeSuccess).mock.calls.at(-1)?.[1];
+        expect(info?.wroteLocal).toBe(false);
+
+        expect(info?.localWriteSkipped).toBe(true);
+    });
+
+    it('still writes locally when the merge brings in a remote change', async () => {
+        const bundle = createHarness({ fastSyncScope: 'scope-local-write-needed' });
+        await bundle.run();
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        await bundle.run({ manual: true });
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        vi.mocked(bundle.storage.persistLocal).mockClear();
+        bundle.harness.remote = createData([
+            createTask('t-local', 'Local task'),
+            createTask('t-remote', 'Arrived from another device'),
+        ]);
+
+        const second = await bundle.run({ manual: true });
+
+        expect(second.localWriteSkipped).toBeUndefined();
+        expect(bundle.storage.persistLocal).toHaveBeenCalled();
+        expect(bundle.harness.persisted.tasks.map((task) => task.id)).toContain('t-remote');
+    });
+
+    it('reuses the previous cycle\'s local snapshot for a back-to-back idle cycle', async () => {
+        const bundle = createHarness({ fastSyncScope: 'scope-idle-cache', policy: { carryIdleCycleSnapshot: true } });
+        await bundle.run();
+        await bundle.run();
+        vi.mocked(bundle.storage.readPersistedLocal).mockClear();
+        const third = await bundle.run();
+
+        expect(third.skipped).toBe('unchanged');
+        expect(bundle.storage.readPersistedLocal).not.toHaveBeenCalled();
+    });
+
+    it('re-reads the local snapshot when a write lands between idle cycles', async () => {
+        const bundle = createHarness({
+            fastSyncScope: 'scope-idle-cache-invalidated',
+            policy: { carryIdleCycleSnapshot: true },
+        });
+        await bundle.run();
+        await bundle.run();
+        vi.mocked(bundle.storage.readPersistedLocal).mockClear();
+        bundle.harness.lastDataChangeAt += 1;
+
+        await bundle.run();
+
+        expect(bundle.storage.readPersistedLocal).toHaveBeenCalled();
+    });
+});
+
+describe('attachment pre-sync reconcile short-circuit', () => {
+    const withAttachment = (data: AppData, cloudKey: string | undefined): AppData => ({
+        ...data,
+        tasks: data.tasks.map((task, index) => (index === 0
+            ? {
+                ...task,
+                attachments: [{
+                    id: 'a-1',
+                    kind: 'file' as const,
+                    title: 'file.txt',
+                    uri: 'file:///local/file.txt',
+                    localStatus: 'available' as const,
+                    cloudKey,
+                    createdAt: STAMP,
+                    updatedAt: STAMP,
+                }],
+            }
+            : task)),
+    });
+
+    it('hands back the pre-synced side without merging when both sides align', async () => {
+
+
+        const inMemory = createData([createTask('t-1', 'Zebra title')]);
+        const preSynced = createData([createTask('t-1', 'Apple title')]);
+        let capturedLocal: AppData | null = null;
+        const { run } = createHarness({
+            local: inMemory,
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: { syncAttachments: vi.fn(async () => cloneAppData(preSynced)) },
+            performSyncCycle: async (io) => {
+                capturedLocal = await io.readLocal();
+                return performSyncCycle(io);
+            },
+        });
+
+        await run();
+
+        expect(capturedLocal!.tasks.map((task) => task.title)).toEqual(['Apple title']);
+    });
+
+    it('still merges when only the attachment fields differ', async () => {
+
+
+        const base = createData([createTask('t-1', 'Shared task')]);
+        const inMemory = withAttachment(base, 'attachments/a-1.txt');
+        const preSynced = withAttachment(base, undefined);
+        let capturedLocal: AppData | null = null;
+        const { run } = createHarness({
+            local: inMemory,
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: { syncAttachments: vi.fn(async () => cloneAppData(preSynced)) },
+            performSyncCycle: async (io) => {
+                capturedLocal = await io.readLocal();
+                return performSyncCycle(io);
+            },
+        });
+
+        await run();
+
+        expect(capturedLocal!.tasks[0].attachments?.[0].cloudKey).toBe('attachments/a-1.txt');
+    });
+});
+
+describe('local-only upload fast path', () => {
+
+
+    const conditionalIo = { adoptRemoteFingerprintForWrite: vi.fn(() => true) };
+
+
+    const editedTask = (id: string, title: string, rev = 4, updatedAt = '2026-07-12T10:00:00.000Z'): Task => ({
+        ...createTask(id, title),
+        rev,
+        revBy: 'this-device',
+        updatedAt,
+    } as Task);
+
+
+    const rawLocal = (title: string, rev?: number, updatedAt?: string): AppData => createData([
+        editedTask('t-local', title, rev, updatedAt),
+        {
+            ...createTask('t-purged', 'Deleted and purged'),
+            deletedAt: '2026-06-01T00:00:00.000Z',
+            purgedAt: '2026-06-02T00:00:00.000Z',
+            description: 'body that compaction has to strip',
+        } as Task,
+        { ...createTask('t-skewed', 'Stamped in the future'), updatedAt: '2099-01-01T00:00:00.000Z' } as Task,
+    ]);
+
+    const EMPTY_REMOTE: AppData = {
+        tasks: [], projects: [], sections: [], areas: [], people: [], settings: {},
+    };
+
+
+    const messyLocal = (title: string, rev?: number, updatedAt?: string): AppData =>
+        mergeAppData(rawLocal(title, rev, updatedAt), EMPTY_REMOTE);
+
+
+    const settleThenEditLocally = async (bundle: ReturnType<typeof createHarness>, title: string) => {
+        await bundle.run();
+        bundle.harness.persisted = cloneAppData(messyLocal(title, 5, '2026-07-13T09:30:00.000Z'));
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        bundle.harness.lastDataChangeAt += 1;
+    };
+
+    beforeEach(() => {
+        conditionalIo.adoptRemoteFingerprintForWrite.mockClear();
+        conditionalIo.adoptRemoteFingerprintForWrite.mockReturnValue(true);
+    });
+
+    it('uploads without reading the remote document', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-upload',
+
+
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+        vi.mocked(bundle.io.writeRemote).mockClear();
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBeUndefined();
+        expect(bundle.io.readRemote).not.toHaveBeenCalled();
+        expect(bundle.io.writeRemote).toHaveBeenCalledTimes(1);
+        expect(bundle.harness.remote?.tasks.find((task) => task.id === 't-local')?.title)
+            .toBe('Edited only here');
+        expect(bundle.harness.infos.some((info) => (
+            info.message === 'Sync uploading a local-only change without a remote read'
+        ))).toBe(true);
+    });
+
+    it('writes the same remote bytes a full cycle would have written', async () => {
+        const fast = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-bytes',
+
+
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: conditionalIo,
+        });
+
+
+        const full = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-full-bytes',
+        });
+        await settleThenEditLocally(fast, 'Edited only here');
+        await settleThenEditLocally(full, 'Edited only here');
+        vi.mocked(fast.io.readRemote).mockClear();
+        vi.mocked(full.io.readRemote).mockClear();
+
+        await fast.run();
+        await full.run();
+
+        expect(fast.io.readRemote).not.toHaveBeenCalled();
+        expect(full.io.readRemote).toHaveBeenCalled();
+        expect(toStableSyncJson(toRemoteSyncDocument(fast.harness.remote!)))
+            .toBe(toStableSyncJson(toRemoteSyncDocument(full.harness.remote!)));
+
+
+        const uploaded = fast.harness.remote!;
+        expect(uploaded.tasks.find((task) => task.id === 't-local')?.suppressStrideReminders).toBe(false);
+        const purged = uploaded.tasks.find((task) => task.id === 't-purged');
+        expect(purged?.description).toBeUndefined();
+        expect(purged?.title).toBeUndefined();
+    });
+
+    it('skips the empty-remote merge entirely', async () => {
+
+
+        const nonCanonical = rawLocal('Edited only here', 5, '2026-07-13T09:30:00.000Z');
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-skips-merge',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: conditionalIo,
+        });
+        await bundle.run();
+        bundle.harness.persisted = cloneAppData(nonCanonical);
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        bundle.harness.lastDataChangeAt += 1;
+
+        await bundle.run();
+
+        const uploaded = bundle.harness.remote!.tasks.find((task) => task.id === 't-local');
+        expect(uploaded?.title).toBe('Edited only here');
+
+        expect(uploaded?.suppressStrideReminders).toBeUndefined();
+        expect(uploaded?.isFocusedToday).toBeUndefined();
+
+
+        expect(bundle.harness.remote!.tasks.find((task) => task.id === 't-purged')?.description)
+            .toBeUndefined();
+    });
+
+    it.each(['process-undefined', 'production', 'development'] as const)(
+        'runs the canonical-read backstop only in development (%s)',
+        async (environment) => {
+            let exerciseBackstop = false;
+            let fastPathArmed = false;
+            let documentReads = 0;
+            let writeFailure: unknown;
+            const afterBackstop = new Error('Reached the network check after the backstop');
+            const nonCanonical = rawLocal('Non-canonical local edit', 5, '2026-07-13T09:30:00.000Z');
+            const guardedDocument: AppData = {
+                ...nonCanonical,
+                get tasks() {
+                    documentReads += 1;
+                    if (environment !== 'development') {
+                        throw new Error('The backstop inspected the document outside development');
+                    }
+                    return nonCanonical.tasks;
+                },
+            };
+            const bundle = createHarness({
+                local: messyLocal('Local task'),
+                fastSyncScope: `scope-backstop-${environment}`,
+                policy: { preSyncAttachmentsBeforeFastCheck: true },
+                io: conditionalIo,
+                performSyncCycle: async (io) => {
+                    if (!exerciseBackstop) return performSyncCycle(io);
+                    fastPathArmed = io.skipEmptyRemoteMerge?.() === true;
+
+
+                    bundle.hooks.ensureNetworkStillAvailable = async () => { throw afterBackstop; };
+                    try {
+                        if (environment === 'process-undefined') {
+                            vi.stubGlobal('process', undefined);
+                        } else {
+                            vi.stubEnv('NODE_ENV', environment);
+                        }
+                        await io.writeRemote(guardedDocument);
+                    } catch (error) {
+                        writeFailure = error;
+                    } finally {
+                        vi.unstubAllGlobals();
+                        vi.unstubAllEnvs();
+                    }
+                    throw afterBackstop;
+                },
+            });
+            await settleThenEditLocally(bundle, 'Edited only here');
+            vi.mocked(bundle.io.writeRemote).mockClear();
+            exerciseBackstop = true;
+
+            await bundle.run();
+
+            expect(fastPathArmed).toBe(true);
+            expect(bundle.io.writeRemote).not.toHaveBeenCalled();
+            if (environment === 'development') {
+                expect(documentReads).toBeGreaterThan(0);
+                expect(writeFailure).toBeInstanceOf(Error);
+                expect((writeFailure as Error).message).toContain('Sync canonical-read invariant broken');
+            } else {
+                expect(documentReads).toBe(0);
+                expect(writeFailure).toBe(afterBackstop);
+            }
+        },
+    );
+
+    it('reads the remote when the backend cannot make the write conditional', async () => {
+
+
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-weak',
+            io: { adoptRemoteFingerprintForWrite: vi.fn(() => false) },
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when the backend exposes no fingerprint at all', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-nofp',
+            io: { ...conditionalIo, readRemoteFingerprint: undefined },
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when there is no recorded fast-sync state', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-norecord',
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        bundle.harness.fastStates.clear();
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when the remote fingerprint moved', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-moved',
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+
+
+        bundle.harness.remote = createData([
+            ...bundle.harness.remote!.tasks,
+            createTask('t-remote', 'Arrived from another device'),
+        ]);
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+        expect(bundle.harness.persisted.tasks.map((task) => task.id)).toContain('t-remote');
+    });
+
+    it('reads the remote while a pending remote-write marker is on disk', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-pending',
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        const withMarker = (data: AppData): AppData => ({
+            ...data,
+            settings: { ...data.settings, pendingRemoteWriteAt: '2026-07-13T09:00:00.000Z' },
+        });
+        bundle.harness.persisted = withMarker(bundle.harness.persisted);
+        bundle.harness.inMemory = withMarker(bundle.harness.inMemory);
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when an attachment upload is still pending', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-attachment',
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        const withPendingUpload = (data: AppData): AppData => ({
+            ...data,
+            tasks: data.tasks.map((task, index) => (index === 0
+                ? {
+                    ...task,
+                    attachments: [{
+                        id: 'a-1',
+                        kind: 'file' as const,
+                        title: 'file.txt',
+                        uri: 'file:///local/file.txt',
+                        localStatus: 'available' as const,
+                        pendingContentUpload: true,
+                        createdAt: STAMP,
+                        updatedAt: STAMP,
+                    }],
+                }
+                : task)),
+        });
+        bundle.harness.persisted = withPendingUpload(bundle.harness.persisted);
+        bundle.harness.inMemory = cloneAppData(bundle.harness.persisted);
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when the attachment pre-sync patched the local document', async () => {
+
+
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-presync',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                ...conditionalIo,
+
+
+                syncAttachments: vi.fn(async (data: AppData, attachmentHelpers) => (
+                    attachmentHelpers.phase === 'prepare'
+                        ? {
+                            ...data,
+                            tasks: data.tasks.map((task, index) => (
+                                index === 0 ? { ...task, title: 'Patched by the attachment pass' } : task
+                            )),
+                        }
+                        : null
+                )),
+            },
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when the transport says the remote needs repair', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-repair',
+            io: { ...conditionalIo, requiresRemoteRepair: () => true },
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run();
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote on a manual sync', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-manual',
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        await bundle.run({ manual: true });
+
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+    });
+
+    it('reads the remote when the platform runs the attachment pre-sync after the fast check', async () => {
+
+
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-late-presync',
+            policy: { preSyncAttachmentsBeforeFastCheck: false },
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(true);
+        expect(bundle.io.readRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to a full cycle when the conditional write loses the swap', async () => {
+        const bundle = createHarness({
+            local: messyLocal('Local task'),
+            fastSyncScope: 'scope-fast-precondition',
+
+
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: conditionalIo,
+        });
+        await settleThenEditLocally(bundle, 'Edited only here');
+
+        const peerRemote = createData([
+            ...bundle.harness.remote!.tasks,
+            createTask('t-remote', 'Arrived from another device'),
+        ]);
+        vi.mocked(bundle.io.writeRemote).mockImplementationOnce(async () => {
+            bundle.harness.remote = cloneAppData(peerRemote);
+            throw new SyncRemoteWriteConflict();
+        });
+        vi.mocked(bundle.io.readRemote).mockClear();
+
+        const conflicted = await bundle.run();
+
+        expect(conflicted).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(bundle.io.readRemote).not.toHaveBeenCalled();
+        expect(bundle.hooks.requestFollowUp).toHaveBeenCalled();
+
+
+        const followUp = await bundle.run();
+
+        expect(followUp.success).toBe(true);
+        expect(bundle.io.readRemote).toHaveBeenCalled();
+        expect(bundle.harness.persisted.tasks.map((task) => task.id)).toContain('t-remote');
+    });
+});
+
+
+describe('device-local AI settings survive a disk-vs-memory reconcile', () => {
+    const withAi = (ai: AppData['settings']['ai']): AppData => createData([createTask('t-1', 'Task')], { ai });
+
+    const OLD_AI: AppData['settings']['ai'] = {
+        enabled: true,
+        provider: 'openai',
+        baseUrl: 'http://old/v1',
+        openAIExtraBodyParams: { old: true },
+        speechToText: { enabled: true, provider: 'openai', baseUrl: 'http://old-speech/v1', offlineModelPath: '/old/model.bin' },
+    };
+    const NEW_AI: AppData['settings']['ai'] = {
+        enabled: true,
+        provider: 'openai',
+        baseUrl: 'http://new/v1',
+        openAIExtraBodyParams: { fresh: true },
+        speechToText: { enabled: true, provider: 'openai', baseUrl: 'http://new-speech/v1', offlineModelPath: '/new/model.bin' },
+    };
+
+
+    const runAbortCycle = async (
+        diskAi: AppData['settings']['ai'],
+        memoryAi: AppData['settings']['ai'],
+    ) => {
+        const { harness, run } = createHarness({
+            local: withAi(memoryAi),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                syncAttachments: vi.fn(async () => cloneAppData(withAi(diskAi))),
+                readRemote: vi.fn(async () => {
+                    harness.lastDataChangeAt += 1;
+                    return cloneAppData(harness.remote!);
+                }),
+            },
+        });
+        await run();
+        return harness.persisted.settings.ai;
+    };
+
+    it('keeps an endpoint typed while the cycle was running', async () => {
+        const ai = await runAbortCycle(OLD_AI, NEW_AI);
+
+        expect(ai?.baseUrl).toBe('http://new/v1');
+        expect(ai?.openAIExtraBodyParams).toEqual({ fresh: true });
+        expect(ai?.speechToText?.baseUrl).toBe('http://new-speech/v1');
+        expect(ai?.speechToText?.offlineModelPath).toBe('/new/model.bin');
+    });
+
+    it('keeps an endpoint cleared while the cycle was running', async () => {
+        const ai = await runAbortCycle(OLD_AI, {
+            enabled: true,
+            provider: 'openai',
+            speechToText: { enabled: true, provider: 'openai' },
+        });
+
+        expect(ai?.baseUrl).toBeUndefined();
+        expect(ai?.openAIExtraBodyParams).toBeUndefined();
+        expect(ai?.speechToText?.baseUrl).toBeUndefined();
+        expect(ai?.speechToText?.offlineModelPath).toBeUndefined();
+    });
+
+    it('keeps an endpoint typed while a cycle without pre-synced data was running', async () => {
+        const { harness, run } = createHarness({
+            local: withAi(NEW_AI),
+            remote: createData([createTask('t-remote', 'Remote task')]),
+        });
+
+
+        harness.persisted = cloneAppData(withAi(OLD_AI));
+
+        await run();
+
+        expect(harness.persisted.settings.ai?.baseUrl).toBe('http://new/v1');
+        expect(harness.persisted.settings.ai?.speechToText?.offlineModelPath).toBe('/new/model.bin');
+    });
+
+    it('never lets a remote document set them', async () => {
+        const remote = createData([createTask('t-remote', 'Remote task')], {
+            ai: {
+                enabled: true,
+                provider: 'openai',
+                baseUrl: 'https://attacker.example/v1',
+                openAIExtraBodyParams: { exfiltrate: true },
+                speechToText: { enabled: true, provider: 'openai', baseUrl: 'https://attacker.example/v1', offlineModelPath: '/remote/model.bin' },
+            },
+            syncPreferences: { ai: true },
+            syncPreferencesUpdatedAt: { ai: '2026-09-01T00:00:00.000Z' },
+        });
+        const { harness, run } = createHarness({ local: withAi(OLD_AI), remote });
+
+        await run();
+
+        const ai = harness.persisted.settings.ai;
+        expect(ai?.baseUrl).toBe('http://old/v1');
+        expect(ai?.openAIExtraBodyParams).toEqual({ old: true });
+        expect(ai?.speechToText?.baseUrl).toBe('http://old-speech/v1');
+        expect(ai?.speechToText?.offlineModelPath).toBe('/old/model.bin');
+        expect(harness.remote?.settings.ai?.baseUrl).toBeUndefined();
+    });
+});
+
+
+describe('sliced cycle write safety (D9b W1, W3)', () => {
+    const closers: (() => void)[] = [];
+    afterEach(() => { closers.splice(0).forEach((close) => close()); });
+    const NETWORK_ERROR = 'Network request failed';
+
+    const adapterHarness = async (config: HarnessConfig & { sliced: boolean; refuseAtSave?: number }) => {
+        const dir = mkdtempSync(join(tmpdir(), 'stride-sliced-safety-'));
+        const sql = openScratchSqlite(join(dir, 'stride.db'));
+        closers.push(() => { sql.close(); rmSync(dir, { recursive: true, force: true }); });
+        const local = config.local ?? createData([createTask('t-local', 'Local task')]);
+        await new SqliteAdapter(sql.client).saveData(local);
+        const adapter = new SqliteAdapter(sql.client, { rejectConcurrentWrites: true });
+        let saves = 0;
+        const voidToken = () => adapter.upsertCalendarSyncEntry({ taskId: 't-local', calendarEventId: `e-${saves}`, calendarId: 'c', platform: 'android', lastSyncedAt: STAMP });
+        const bundle = createHarness({
+            ...config,
+            local,
+            storage: {
+                readPersistedLocal: vi.fn(async (options?: Parameters<SyncRunStorage['readPersistedLocal']>[0]) => adapter.getData(options)),
+                persistLocal: vi.fn(async (data: AppData, options?: Parameters<SyncRunStorage['persistLocal']>[1]) => {
+                    saves += 1;
+                    if (saves === config.refuseAtSave) await voidToken();
+                    await (options ? adapter.saveData(data, options) : adapter.saveData(data));
+                }),
+                readTokenOf: (data) => adapter.readTokenOf(data),
+                ...config.storage,
+            },
+        });
+        if (config.sliced) bundle.notifier.sliceYield = async () => undefined;
+        return { ...bundle, adapter, voidToken };
+    };
+    const remoteWithNewTask = () => createData([createTask('t-local', 'Local task'), createTask('t-remote', 'Remote task')]);
+
+    const preparedAttachments = { syncAttachments: vi.fn(async (data: AppData, helpers: { phase?: string }) => (helpers.phase === 'prepare' ? cloneAppData(data) : false)) };
+
+    it.each([1, 2])('a foreign write before save %i refuses it: nothing more is written, no status, the marker stays, and the next cycle publishes', async (refuseAtSave) => {
+        const bundle = await adapterHarness({ sliced: true, refuseAtSave, remote: remoteWithNewTask(), io: preparedAttachments });
+
+        const result = await bundle.run();
+
+        expect(result).toMatchObject({ success: true, skipped: 'requeued' });
+        expect(bundle.hooks.requestFollowUp).toHaveBeenCalled();
+        expect(bundle.harness.infos.find((line) => line.message === 'Sync cycle requeued')?.extra?.reason).toBe('stale-db');
+
+        expect(bundle.storage.persistLocal).toHaveBeenCalledTimes(refuseAtSave);
+        expect(bundle.harness.statusUpdates).toEqual([]);
+        const disk = await bundle.adapter.getData();
+        if (refuseAtSave === 1) {
+            expect(disk.tasks.map((task) => task.id)).toEqual(['t-local']);
+            expect(bundle.io.writeRemote).not.toHaveBeenCalled();
+        } else {
+
+            expect(disk.tasks.map((task) => task.id).sort()).toEqual(['t-local', 't-remote']);
+            expect(disk.settings.pendingRemoteWriteAt).toBeTruthy();
+        }
+
+        const next = await bundle.run();
+        expect(next.success).toBe(true);
+        expect(next.skipped).toBeUndefined();
+        const after = await bundle.adapter.getData();
+        expect(after.tasks.map((task) => task.id).sort()).toEqual(['t-local', 't-remote']);
+        expect(after.settings.pendingRemoteWriteAt).toBeUndefined();
+    });
+
+    it.each([
+        ['a cycle that commits', undefined, 'none'],
+        ['a cycle whose first save is refused', 1, 'stale-db'],
+    ])('logs one native-sync-slices line at the end of %s, with its requeue reason (D9b diagnostics)', async (_name, refuseAtSave, requeue) => {
+        const many = Array.from({ length: 200 }, (_, index) => createTask(`t-${index}`, `Task ${index}`));
+        const bundle = await adapterHarness({ sliced: true, refuseAtSave, local: createData(many), remote: createData([...many, createTask('t-remote', 'Remote task')]) });
+        let clock = 0;
+        const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10));
+        try {
+            await bundle.run();
+        } finally {
+            now.mockRestore();
+        }
+        const lines = bundle.harness.infos.filter((line) => line.message === 'Sync cycle ran in slices');
+        expect(lines).toHaveLength(1);
+        expect(lines[0].extra).toMatchObject({ requeue, releaseCheck: 'v1.3.7/native-sync-slices' });
+        expect(Number(lines[0].extra?.slices)).toBeGreaterThan(0);
+        expect(Number(lines[0].extra?.longestSliceMs)).toBeGreaterThanOrEqual(10);
+        expect(lines[0].extra?.commitPublishMs).toMatch(requeue === 'none' ? /^\d+(,\d+)*$/ : /^-$/);
+
+        const unsliced = await adapterHarness({ sliced: false, remote: remoteWithNewTask() });
+        await unsliced.run();
+        expect(unsliced.harness.infos.some((line) => line.message === 'Sync cycle ran in slices')).toBe(false);
+    });
+
+    it('an unsliced cycle passes no token, so the same foreign write refuses nothing', async () => {
+        const bundle = await adapterHarness({ sliced: false, refuseAtSave: 1, remote: remoteWithNewTask() });
+
+        expect((await bundle.run()).success).toBe(true);
+        expect(vi.mocked(bundle.storage.readPersistedLocal).mock.calls.every((call) => call.length === 0)).toBe(true);
+        expect(vi.mocked(bundle.storage.persistLocal).mock.calls.every((call) => call.length === 1)).toBe(true);
+        expect((await bundle.adapter.getData()).tasks.map((task) => task.id).sort()).toEqual(['t-local', 't-remote']);
+    });
+
+    it('a sliced cycle flushes pending store saves right before its read, so the save gate\'s flush cannot void the token', async () => {
+        const bundle = await adapterHarness({ sliced: true, remote: remoteWithNewTask() });
+        const read = bundle.storage.readPersistedLocal;
+        bundle.storage.readPersistedLocal = vi.fn(async (options) => { bundle.harness.callOrder.push('read'); return read(options); });
+
+        const [row] = (await bundle.adapter.getData()).tasks;
+        let flushes = 0;
+        bundle.store.flushPendingSave = vi.fn(async () => {
+            bundle.harness.callOrder.push('flush');
+            flushes += 1;
+            if (flushes === 2) await bundle.adapter.saveTask(row);
+        });
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBeUndefined();
+
+        const order = bundle.harness.callOrder;
+        expect(order.slice(0, order.indexOf('read'))).toEqual(['flush', 'flush']);
+    });
+
+    it('a sliced cycle on a host without read tokens refuses its save as an error, never a requeue (fails closed)', async () => {
+
+        const bundle = await adapterHarness({ sliced: true, remote: remoteWithNewTask() });
+        bundle.storage.readTokenOf = undefined;
+        bundle.storage.persistLocal = vi.fn(async (data: AppData) => { await bundle.adapter.saveData(data); });
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no read token');
+        expect(bundle.storage.persistLocal).not.toHaveBeenCalled();
+        expect(bundle.hooks.requestFollowUp).not.toHaveBeenCalled();
+        expect((await bundle.adapter.getData()).tasks.map((task) => task.id)).toEqual(['t-local']);
+    });
+
+    it.each([true, false])('the offline hook\'s pre-sync save runs only on an unsliced cycle (sliced: %s)', async (sliced) => {
+        const bundle = await adapterHarness({
+            sliced,
+            remote: remoteWithNewTask(),
+            io: { ...preparedAttachments, readRemote: vi.fn(async () => { throw new Error(NETWORK_ERROR); }) },
+            hooks: {
+                handleRunErrorAfterRequeue: async (_error, context) => {
+                    await context.persistPreSyncedData();
+                    return { success: true, skipped: 'offline' };
+                },
+            },
+        });
+
+        expect(await bundle.run()).toMatchObject({ success: true, skipped: 'offline' });
+        expect(bundle.storage.persistLocal).toHaveBeenCalledTimes(sliced ? 0 : 1);
+    });
+
+    it('a refused retry-schedule save after a failed remote write keeps the network error, not a requeue', async () => {
+        const bundle = await adapterHarness({
+            sliced: true,
+            refuseAtSave: 2,
+            remote: remoteWithNewTask(),
+            io: { writeRemote: vi.fn(async () => { throw new Error(NETWORK_ERROR); }) },
+        });
+
+        const result = await bundle.run();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain(NETWORK_ERROR);
+        expect(bundle.hooks.finalizeErrorStatus).toHaveBeenCalledTimes(1);
+
+        const disk = await bundle.adapter.getData();
+        expect(disk.settings.pendingRemoteWriteAt).toBeTruthy();
+        expect(disk.settings.pendingRemoteWriteAttempts ?? 0).toBe(0);
+    });
+
+    it('an idle cycle carries its token to the next cycle, whose save then commits', async () => {
+        const bundle = await adapterHarness({ sliced: true, fastSyncScope: 'scope-sliced-idle', policy: { carryIdleCycleSnapshot: true } });
+        await bundle.run();
+        await bundle.run();
+        vi.mocked(bundle.storage.readPersistedLocal).mockClear();
+        bundle.harness.remote = remoteWithNewTask();
+
+        const third = await bundle.run({ manual: true });
+
+        expect(bundle.storage.readPersistedLocal).not.toHaveBeenCalled();
+        expect(third.success).toBe(true);
+        expect((await bundle.adapter.getData()).tasks.map((task) => task.id).sort()).toEqual(['t-local', 't-remote']);
+    });
+});
+
+describe('activation with attachment files that no device location can serve', () => {
+    const SCOPE = '["webdav","https://new.example/dav","me"]';
+    const OLD_KEY = 'attachments/attachment-old-only.pdf';
+    const HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const remoteOnlyTask = (overrides: Partial<NonNullable<Task['attachments']>[number]> = {}): Task => {
+        const task = createTask('t-old-file', 'Tax return');
+        task.attachments = [{
+            id: 'attachment-old-only',
+            kind: 'file',
+            title: 'scan.pdf',
+            uri: '',
+            cloudKey: OLD_KEY,
+            fileHash: HASH,
+            localStatus: 'missing',
+            createdAt: STAMP,
+            updatedAt: STAMP,
+            ...overrides,
+        }];
+        return task;
+    };
+
+
+    const emptyLocationAdapter = (requested: string[] = []) => vi.fn(async (data: AppData) => {
+        const next = cloneAppData(data);
+        for (const task of next.tasks) {
+            for (const attachment of task.attachments ?? []) {
+                if (attachment.kind !== 'file' || attachment.deletedAt) continue;
+                if (attachment.cloudKey && attachment.localStatus !== 'available') {
+                    requested.push(attachment.cloudKey);
+                    markAttachmentUnrecoverable(attachment);
+                }
+            }
+        }
+        return next;
+    });
+    const withRecord = (config: HarnessConfig) => {
+        const device = { record: null as string | null };
+        const harness = createHarness({
+            locationScope: SCOPE,
+            ...config,
+            storage: {
+                readUnreachableAttachments: vi.fn(async () => device.record),
+                writeUnreachableAttachments: vi.fn(async (raw: string) => { device.record = raw; }),
+                ...config.storage,
+            },
+        });
+        return { ...harness, device };
+    };
+
+    it('names the rows whose files are neither on this device nor at the new location', async () => {
+        const { io, storage, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            activationProbe: true,
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+
+        const result = await run();
+
+        expect(result).toMatchObject({
+            success: false,
+            error: expect.stringContaining('[cloud] Candidate attachment proof failed'),
+            activationMissingAttachments: [{
+                id: 'attachment-old-only',
+                ownerType: 'task',
+                ownerId: 't-old-file',
+                title: 'scan.pdf',
+                ownerTitle: 'Tax return',
+            }],
+        });
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(storage.writeUnreachableAttachments).not.toHaveBeenCalled();
+    });
+
+    it('keeps the plain refusal on a platform that keeps no record', async () => {
+        const { io, run } = createHarness({
+            local: createData([remoteOnlyTask()]),
+            locationScope: SCOPE,
+            activationProbe: true,
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+
+        const result = await run({ acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Candidate attachment proof failed for attachment-old-only');
+        expect(result.activationMissingAttachments).toBeUndefined();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('activates with the accepted rows live and keyed, and records them for this location', async () => {
+        const { harness, storage, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            activationProbe: true,
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+
+        const result = await run({ acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(result).toMatchObject({ success: true });
+        const published = harness.remote?.tasks[0]?.attachments?.[0];
+        expect(published).toMatchObject({ id: 'attachment-old-only', cloudKey: OLD_KEY, fileHash: HASH, updatedAt: STAMP });
+        expect(published?.deletedAt).toBeUndefined();
+        expect(storage.persistLocal).not.toHaveBeenCalled();
+        expect(JSON.parse(device.record!)).toEqual({ [SCOPE]: ['attachment-old-only'] });
+        const line = harness.infos.find((info) => info.extra?.releaseCheck === 'v1.3.8/activation-continue-without-files');
+        expect(line?.extra).toEqual({
+            releaseCheck: 'v1.3.8/activation-continue-without-files',
+            backend: 'cloud',
+            missing: '1',
+        });
+        expect(JSON.stringify(harness.infos)).not.toContain('scan.pdf');
+        expect(JSON.stringify(harness.infos)).not.toContain('Tax return');
+    });
+
+    it('keeps the row live when the new location lists its key but answers 404', async () => {
+        const deadKey = 'attachments/dead-on-candidate.pdf';
+        const { harness, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask({ cloudKey: deadKey })]),
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+
+        expect(await run({ activationProbe: true })).toMatchObject({
+            success: false,
+            activationMissingAttachments: [expect.objectContaining({ id: 'attachment-old-only' })],
+        });
+        const accepted = await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(accepted).toMatchObject({ success: true });
+        const published = harness.remote?.tasks[0]?.attachments?.[0];
+        expect(published?.deletedAt).toBeUndefined();
+        expect(published?.cloudKey).toBeTruthy();
+        expect(published?.fileHash).toBe(HASH);
+        expect(JSON.parse(device.record!)).toEqual({ [SCOPE]: ['attachment-old-only'] });
+    });
+
+    it('publishes the key of the location that holds the file, so a return there downloads it', async () => {
+
+
+        const deadKey = 'attachments/dead-on-candidate.pdf';
+        const OLD_SCOPE = '["webdav","https://old.example/dav","me"]';
+        const requested: string[] = [];
+        let atOldLocation = false;
+        const adapter = vi.fn(async (data: AppData) => {
+            const next = cloneAppData(data);
+            for (const attachment of next.tasks.flatMap((task) => task.attachments ?? [])) {
+                if (attachment.kind !== 'file' || attachment.deletedAt) continue;
+                if (!attachment.cloudKey || attachment.localStatus === 'available') continue;
+                requested.push(attachment.cloudKey);
+                if (atOldLocation && attachment.cloudKey === OLD_KEY) {
+                    attachment.uri = '/local/scan.pdf';
+                    attachment.localStatus = 'available';
+                } else {
+                    markAttachmentUnrecoverable(attachment);
+                }
+            }
+            return next;
+        });
+        const { harness, hooks, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask({ cloudKey: deadKey })]),
+            io: { syncAttachments: adapter },
+        });
+
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] }))
+            .toMatchObject({ success: true });
+        expect(harness.remote?.tasks[0]?.attachments?.[0]).toMatchObject({ cloudKey: OLD_KEY, fileHash: HASH });
+        expect(await run({ manual: true, ignorePendingRemoteWriteBackoff: true })).toMatchObject({ success: true });
+
+        const newLocationSetup = vi.mocked(hooks.setupCycle).getMockImplementation()!;
+        vi.mocked(hooks.setupCycle).mockImplementation(async (...args) => ({
+            ...(await newLocationSetup(...args)),
+            locationScope: OLD_SCOPE,
+        }) as Awaited<ReturnType<typeof newLocationSetup>>);
+        atOldLocation = true;
+        harness.remote = createData([remoteOnlyTask()]);
+        requested.length = 0;
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+
+        expect(requested).toEqual([OLD_KEY]);
+        for (const data of [harness.persisted, harness.remote!]) {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.deletedAt).toBeUndefined();
+            expect(attachment?.cloudKey).toBe(OLD_KEY);
+        }
+        expect(harness.persisted.tasks[0]?.attachments?.[0]?.localStatus).toBe('available');
+
+        expect(JSON.parse(device.record!)).toEqual({ [SCOPE]: ['attachment-old-only'] });
+    });
+
+    it('refuses again when a row the user did not accept is also missing', async () => {
+        const task = remoteOnlyTask();
+        task.attachments!.push({ ...task.attachments![0]!, id: 'attachment-second', title: 'second.pdf', cloudKey: 'attachments/second.pdf' });
+        const { io, storage, run } = withRecord({
+            local: createData([task]),
+            activationProbe: true,
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+
+        const result = await run({ acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(result.success).toBe(false);
+        expect(result.activationMissingAttachments?.map((item) => item.id).sort())
+            .toEqual(['attachment-old-only', 'attachment-second']);
+        expect(io.writeRemote).not.toHaveBeenCalled();
+        expect(storage.writeUnreachableAttachments).not.toHaveBeenCalled();
+    });
+
+    it('keeps the plain refusal for a local file that did not upload', async () => {
+        const { io, run } = withRecord({
+            local: createData([remoteOnlyTask({ uri: '/local/scan.pdf', localStatus: 'available' })]),
+            activationProbe: true,
+            io: { syncAttachments: vi.fn(async (data: AppData) => data) },
+        });
+
+        const result = await run({ acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Candidate attachment proof failed for attachment-old-only');
+        expect(result.activationMissingAttachments).toBeUndefined();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('keeps the plain refusal when the new location holds a key whose download failed', async () => {
+        const { io, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask({ cloudKey: 'attachments/on-candidate.pdf' })]),
+            activationProbe: true,
+
+            io: { syncAttachments: vi.fn(async () => false) },
+        });
+
+        const result = await run({ acceptMissingAttachmentIds: ['attachment-old-only'] });
+
+        expect(result.success).toBe(false);
+        expect(result.activationMissingAttachments).toBeUndefined();
+        expect(io.writeRemote).not.toHaveBeenCalled();
+    });
+
+    it('asks the location again, and its not-found never turns the row into a tombstone', async () => {
+        const requested: string[] = [];
+        const { harness, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            io: { syncAttachments: emptyLocationAdapter(requested) },
+        });
+
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] }))
+            .toMatchObject({ success: true });
+        requested.length = 0;
+
+        expect(await run({ manual: true, ignorePendingRemoteWriteBackoff: true })).toMatchObject({ success: true });
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+
+        expect(requested.length).toBeGreaterThan(0);
+        expect(new Set(requested)).toEqual(new Set([OLD_KEY]));
+        for (const data of [harness.persisted, harness.remote!]) {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.deletedAt).toBeUndefined();
+            expect(attachment?.cloudKey).toBe(OLD_KEY);
+            expect(attachment?.fileHash).toBe(HASH);
+        }
+        expect(JSON.parse(device.record!)).toEqual({ [SCOPE]: ['attachment-old-only'] });
+        const restoredLines = harness.infos.filter((info) => info.extra?.releaseCheck === 'v1.3.8/kept-attachment-not-found');
+        expect(restoredLines.length).toBeGreaterThan(0);
+        expect(restoredLines[0]!.extra).toEqual({ releaseCheck: 'v1.3.8/kept-attachment-not-found', backend: 'cloud', restored: '1' });
+        expect(JSON.stringify(harness.infos)).not.toContain('scan.pdf');
+    });
+
+    it('merges without the kept ids when the record cannot be read', async () => {
+        const { harness, run } = createHarness({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask()]),
+            locationScope: SCOPE,
+            storage: {
+                readUnreachableAttachments: vi.fn(async () => { throw new Error('storage unavailable'); }),
+                writeUnreachableAttachments: vi.fn(async () => {}),
+            },
+        });
+
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+        expect(harness.warnings.map((warning) => warning.message)).toContain('Kept attachment record could not be read before the merge');
+    });
+
+    it('keeps the active location through a refused probe of another one', async () => {
+        const OTHER_SCOPE = '["webdav","https://other.example/dav","me"]';
+        const { hooks, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask()]),
+            io: { syncAttachments: emptyLocationAdapter() },
+        });
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] })).toMatchObject({ success: true });
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+        expect(isAttachmentKeptWithoutFile({ id: 'attachment-old-only' })).toBe(true);
+
+        const activeSetup = vi.mocked(hooks.setupCycle).getMockImplementation()!;
+        vi.mocked(hooks.setupCycle).mockImplementation(async (...args) => ({
+            ...(await activeSetup(...args)),
+            locationScope: OTHER_SCOPE,
+        }) as Awaited<ReturnType<typeof activeSetup>>);
+
+        expect(await run({ activationProbe: true })).toMatchObject({ success: false });
+
+        expect(isAttachmentKeptWithoutFile({ id: 'attachment-old-only' })).toBe(true);
+    });
+
+    it('leaves an idle library on the fast path while a kept row answers not-found', async () => {
+        const { io, storage, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            remote: createData([remoteOnlyTask()]),
+            fastSyncScope: 'fast-scope',
+            policy: { preSyncAttachmentsBeforeFastCheck: true },
+            io: {
+                syncAttachments: vi.fn(async (data: AppData) => {
+                    const next = cloneAppData(data);
+                    let changed = false;
+                    for (const attachment of next.tasks.flatMap((task) => task.attachments ?? [])) {
+                        if (attachment.kind === 'file' && !attachment.deletedAt && attachment.cloudKey && attachment.localStatus !== 'available') {
+                            markAttachmentUnrecoverable(attachment);
+                            changed = true;
+                        }
+                    }
+                    return changed ? next : false;
+                }),
+            },
+        });
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] })).toMatchObject({ success: true });
+        vi.mocked(io.readRemote).mockClear();
+
+        for (let cycle = 0; cycle < 4; cycle += 1) expect(await run()).toMatchObject({ success: true });
+
+        expect(storage.writeFastSyncState).toHaveBeenCalled();
+        expect(io.readRemote).toHaveBeenCalledTimes(1);
+    });
+
+    it('takes the key another device uploaded here even when it sorts before the kept key', async () => {
+        const uploadedKey = `attachments/attachment-old-only.${'f'.repeat(64)}.pdf`;
+        const { harness, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            io: {
+                syncAttachments: vi.fn(async (data: AppData) => {
+                    const next = cloneAppData(data);
+                    for (const attachment of next.tasks.flatMap((task) => task.attachments ?? [])) {
+                        if (attachment.kind !== 'file' || attachment.deletedAt || attachment.localStatus === 'available') continue;
+                        if (attachment.cloudKey === uploadedKey) {
+                            attachment.uri = '/local/scan.pdf';
+                            attachment.localStatus = 'available';
+                        } else if (attachment.cloudKey) {
+                            markAttachmentUnrecoverable(attachment);
+                        }
+                    }
+                    return next;
+                }),
+            },
+        });
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] })).toMatchObject({ success: true });
+
+        harness.remote = createData([remoteOnlyTask({ cloudKey: uploadedKey })]);
+
+
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toMatchObject({ cloudKey: uploadedKey, localStatus: 'available' });
+        expect(JSON.parse(device.record!)).toEqual({});
+    });
+
+    it('downloads the file once another device uploads it there, and drops the row from the record', async () => {
+        const blobs = new Set<string>();
+        const requested: string[] = [];
+        const { harness, device, run } = withRecord({
+            local: createData([remoteOnlyTask()]),
+            io: {
+                syncAttachments: vi.fn(async (data: AppData) => {
+                    const next = cloneAppData(data);
+                    for (const attachment of next.tasks.flatMap((task) => task.attachments ?? [])) {
+                        if (attachment.kind !== 'file' || attachment.deletedAt || !attachment.cloudKey) continue;
+                        if (attachment.localStatus === 'available') continue;
+                        requested.push(attachment.cloudKey);
+                        if (blobs.has(attachment.cloudKey)) {
+                            attachment.uri = '/local/scan.pdf';
+                            attachment.localStatus = 'available';
+                        } else {
+                            markAttachmentUnrecoverable(attachment);
+                        }
+                    }
+                    return next;
+                }),
+            },
+        });
+
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] }))
+            .toMatchObject({ success: true });
+        expect(await run({ manual: true, ignorePendingRemoteWriteBackoff: true })).toMatchObject({ success: true });
+        expect(JSON.parse(device.record!)).toEqual({ [SCOPE]: ['attachment-old-only'] });
+
+        blobs.add(OLD_KEY);
+        requested.length = 0;
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+
+        expect(requested).toEqual([OLD_KEY]);
+        expect(harness.persisted.tasks[0]?.attachments?.[0]).toMatchObject({ cloudKey: OLD_KEY, localStatus: 'available' });
+        expect(JSON.parse(device.record!)).toEqual({});
+    });
+
+    it('uploads a kept file that comes back on this device with other bytes, and never deletes the row', async () => {
+
+        const H1 = '1111111111111111111111111111111111111111111111111111111111111111';
+        const URI = '/managed/attachment-old-only.pdf';
+        const disk = new Map<string, { hash: string; mtimeMs: number; size: number }>();
+        const blobs = new Map<string, string>();
+        const log: string[] = [];
+        const adapter = vi.fn(async (data: AppData, helpers?: { phase?: 'prepare' | 'post-merge' }) => {
+            const attachmentsById = new Map<string, Attachment>();
+            for (const owner of [...data.tasks, ...data.projects]) {
+                if (owner.deletedAt) continue;
+                for (const attachment of owner.attachments ?? []) attachmentsById.set(attachment.id, attachment);
+            }
+            const { patches } = await runAttachmentTransferLifecycle({
+                attachmentsById,
+                getLocalFilePresence: async (path) => (disk.has(path) ? 'present' : 'confirmed-not-found'),
+                getLocalFileStat: async (path) => {
+                    const stat = disk.get(path);
+                    return stat ? { mtimeMs: stat.mtimeMs, size: stat.size } : null;
+                },
+                computeLocalFileHash: async (path) => disk.get(path)?.hash ?? null,
+                createUploadSnapshot: async (path) => {
+                    const stat = disk.get(path);
+                    return stat
+                        ? { sourcePath: path, fileHash: stat.hash, stat: { mtimeMs: stat.mtimeMs, size: stat.size }, dispose: async () => {} }
+                        : null;
+                },
+                deferUploads: helpers?.phase === 'prepare',
+                contentChangePhase: helpers?.phase,
+                onUpload: async (attachment, _path, snapshot) => {
+                    const key = buildCloudKey(attachment);
+                    blobs.set(key, snapshot!.fileHash);
+                    attachment.cloudKey = key;
+                    log.push(`PUT ${key}`);
+                    return true;
+                },
+                onDownload: async (attachment) => {
+                    if (!attachment.cloudKey) return false;
+                    log.push(`GET ${attachment.cloudKey}`);
+                    const hash = blobs.get(attachment.cloudKey);
+                    if (!hash) return markAttachmentUnrecoverable(attachment);
+                    disk.set(URI, { hash, mtimeMs: 99, size: 99 });
+                    attachment.uri = URI;
+                    attachment.localStatus = 'available';
+                    return true;
+                },
+                onUploadError: () => {},
+                onDownloadError: () => {},
+            });
+            const next = applyAttachmentPatches(data, patches);
+            return next !== data ? next : false;
+        });
+        const { harness, device, run } = withRecord({
+            local: createData([remoteOnlyTask({ uri: URI, contentMtimeMs: 1, contentSize: 10 })]),
+            io: { syncAttachments: adapter },
+        });
+
+        expect(await run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] }))
+            .toMatchObject({ success: true });
+        expect(await run({ manual: true, ignorePendingRemoteWriteBackoff: true })).toMatchObject({ success: true });
+
+        disk.set(URI, { hash: H1, mtimeMs: 2, size: 11 });
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+        expect(await run({ manual: true })).toMatchObject({ success: true });
+
+        for (const data of [harness.persisted, harness.remote!]) {
+            const attachment = data.tasks[0]?.attachments?.[0];
+            expect(attachment?.deletedAt).toBeUndefined();
+            expect(attachment?.cloudKey).toBeTruthy();
+            expect(attachment?.fileHash).toBe(H1);
+            expect(attachment?.contentRev).toBe(1);
+        }
+        expect(log).toContain(`PUT ${harness.persisted.tasks[0]!.attachments![0]!.cloudKey}`);
+        expect(blobs.get(harness.persisted.tasks[0]!.attachments![0]!.cloudKey!)).toBe(H1);
+        expect(JSON.parse(device.record!)).toEqual({});
+    });
+
+    it('lets a second device holding the file join a File Sync folder this device continued at', async () => {
+        const FOLDER_SCOPE = '["file","/b/data.json"]';
+        const folder = new Set<string>();
+
+
+        const folderAdapter = (localFiles: Set<string>) => vi.fn(async (data: AppData) => {
+            const next = cloneAppData(data);
+            for (const attachment of next.tasks.flatMap((task) => task.attachments ?? [])) {
+                if (attachment.kind !== 'file' || attachment.deletedAt) continue;
+                if (!attachment.cloudKey) {
+                    if (attachment.uri && localFiles.has(attachment.uri)) {
+                        attachment.cloudKey = `attachments/${attachment.id}.${HASH}.pdf`;
+                        folder.add(attachment.cloudKey);
+                        attachment.localStatus = 'available';
+                        attachment.pendingContentUpload = undefined;
+                    }
+                    continue;
+                }
+                if (attachment.localStatus === 'available') continue;
+                if (folder.has(attachment.cloudKey)) {
+                    attachment.uri = '/downloaded/scan.pdf';
+                    attachment.localStatus = 'available';
+                }
+            }
+            return next;
+        });
+        const first = withRecord({
+            backend: 'file',
+            locationScope: FOLDER_SCOPE,
+            local: createData([remoteOnlyTask()]),
+            io: { syncAttachments: folderAdapter(new Set()) },
+        });
+        expect(await first.run({ activationProbe: true, acceptMissingAttachmentIds: ['attachment-old-only'] }))
+            .toMatchObject({ success: true });
+
+        const second = createHarness({
+            backend: 'file',
+            local: createData([remoteOnlyTask({ uri: '/second/scan.pdf', localStatus: 'available' })]),
+            remote: cloneAppData(first.harness.remote!),
+            io: { syncAttachments: folderAdapter(new Set(['/second/scan.pdf'])) },
+        });
+        const joined = await second.run({ activationProbe: true });
+
+        expect(joined).toMatchObject({ success: true });
+        const published = second.harness.remote?.tasks[0]?.attachments?.[0];
+        expect(published?.deletedAt).toBeUndefined();
+        expect(folder.has(published!.cloudKey!)).toBe(true);
+    });
+});

@@ -1,0 +1,4 @@
+- Archive ajoute recherche, filtres, tri, groupes et en-têtes repliables.
+- Calendrier affiche les tâches finies, garde les couleurs et sépare les catégories.
+- Fusionner la sauvegarde combine sauvegarde et données locales; l’archivage auto s’exécute au démarrage.
+- SQLite garde ses données temporaires en mémoire et évite les erreurs d’écriture Android.

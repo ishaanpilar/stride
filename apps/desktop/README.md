@@ -1,0 +1,146 @@
+# Stride Desktop
+
+Tauri v2 desktop app for the Stride productivity system.
+
+## Features
+
+### GTD Workflow
+
+- **Inbox Processing** - Guided clarify workflow with 2-minute rule
+- **Context Filtering** - Slash-delimited contexts with parent matching (@work/meetings)
+- **Weekly Review** - Step-by-step GTD review wizard
+- **Board View** - Kanban-style drag-and-drop
+- **Calendar View** - Time-based task planning
+- **AI Assistant (Optional)** - Clarify, break down, and review with BYOK AI
+
+### Productivity
+
+- **Global Search** - Search operators (status:, context:, due:<=7d)
+- **Saved Searches** - Save and reuse search filters
+- **Bulk Actions** - Multi-select, batch move/tag/delete
+- **Sequential Projects** - Only the first unfinished task is offered as the next action
+- **Markdown Notes** - Rich text descriptions with preview
+- **Attachments** - Files and links on tasks
+- **Reusable Lists** - Duplicate tasks or reset checklists
+- **Keyboard Shortcuts** - Vim and Emacs presets
+- **Global Hotkey** - Capture from anywhere
+- **Tray Icon** - Quick access and capture
+
+### Notifications
+
+- **Due Date Reminders** - Desktop notifications
+- **Daily Digest** - Morning briefing + evening review prompts
+
+### Views
+
+| View                | Description                                            |
+| ------------------- | ------------------------------------------------------ |
+| Inbox               | Capture and process incoming items                     |
+| Next Actions        | Context-filtered actionable tasks                      |
+| Projects            | Multi-step outcomes with areas                         |
+| Contexts            | Slash-delimited context filtering with parent matching |
+| Waiting For         | Delegated items                                        |
+| Someday/Maybe       | Deferred ideas                                         |
+| Reference           | Non-actionable material kept for lookup                |
+| Calendar            | Time-based view                                        |
+| Board               | Kanban drag-and-drop                                   |
+| Timeline (optional) | Tasks and projects as bars from start to due date      |
+| Review              | Weekly review wizard                                   |
+| Done                | Completed tasks                                        |
+| Trash               | Deleted items, recoverable before permanent purge      |
+| Settings            | Theme, sync, and preferences                           |
+
+## Tech Stack
+
+- **Frontend**: React + TypeScript + Vite
+- **Styling**: Tailwind CSS
+- **State**: Zustand (shared with mobile)
+- **Platform**: Tauri v2 (Rust backend, WebKitGTK)
+- **Drag & Drop**: @dnd-kit
+
+### Why Tauri?
+
+- 🚀 **Small binary** (~5MB vs ~150MB for Electron)
+- 💾 **Low memory** (~50MB vs ~300MB for Electron)
+- 🦀 **Rust backend** for fast file operations
+- 🖥️ **Native dialogs** via system webview
+
+### Security Note
+
+- Tauri (`src-tauri/tauri.conf.json`) and static PWA builds (`public/_headers`) ship a restrictive CSP. Avoid loading untrusted remote content in the webview.
+
+## Prerequisites
+
+- [Rust](https://rustup.rs/) (for building Tauri)
+- [Bun](https://bun.sh/) (package manager)
+
+### Arch Linux
+
+```bash
+sudo pacman -S rust webkit2gtk-4.1 base-devel
+```
+
+## Getting Started
+
+```bash
+# From monorepo root
+bun install
+
+# Run desktop app (dev mode)
+cd apps/desktop
+bun dev
+
+# Or from root
+bun desktop:dev
+```
+
+## Building
+
+```bash
+# Build for distribution
+bun run build
+
+# Output in src-tauri/target/release/
+```
+
+Windows release builds also publish `stride_<version>_windows_x64_portable.zip`.
+Extract it to a writable folder and keep `portable.txt` next to `stride.exe`.
+
+## Data Storage
+
+Tasks are saved to:
+
+- **Linux data**: `~/.local/share/stride/stride.db` (the working database), plus `~/.local/share/stride/data.json` (the sync and backup snapshot)
+- **Linux config**: `~/.config/stride/config.toml`
+
+For the paths on macOS and Windows, see [Data Storage](https://github.com/ishaanpilar/stride/tree/main/docs) in the user docs. If you used very early builds, data may exist under legacy Tauri directories like `~/.config/com.ishaanpilar.stride/` and `~/.local/share/com.ishaanpilar.stride/` and will be migrated automatically.
+
+Portable Windows builds store local state beside the executable:
+
+- **Portable data**: `profile/data/stride.db`, `profile/data/data.json`, logs, snapshots, and audio captures
+- **Portable config**: `profile/config/config.toml` and `profile/config/secrets.toml`
+
+Portable mode stores secrets in the local `profile/config/secrets.toml` file instead of the OS keychain/keyring. Windows WebView2 is still required.
+
+## Sync
+
+Configure sync in Settings:
+
+- **File Sync** - iCloud Drive, Dropbox folders, Google Drive, Syncthing, network shares, etc.
+- **WebDAV** - Nextcloud, ownCloud, self-hosted servers
+- **Dropbox** - Direct Dropbox App Folder sync in supported builds
+- **Cloud** - Self-hosted cloud backend (see https://github.com/ishaanpilar/stride/tree/main/docs and https://github.com/ishaanpilar/stride/tree/main/docs)
+- **External Calendars (ICS)** - View-only calendar overlay
+
+Sync recommendation:
+
+- Prefer **WebDAV** for frequent multi-device edits.
+- If using **Syncthing**, use `Send & Receive` + `Watch for Changes`, keep scan intervals short, and tap **Sync now** before switching devices.
+
+## Testing
+
+```bash
+bun run test
+```
+
+Includes unit tests, component tests, and accessibility tests.

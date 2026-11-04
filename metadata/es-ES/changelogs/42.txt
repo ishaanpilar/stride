@@ -1,0 +1,4 @@
+- El widget de Android ahora adapta la cantidad de tareas al tamano del widget y mantiene filas legibles.
+- Mejoramos la transicion de inicio en Android para eliminar el parpadeo breve al abrir.
+- Añadimos mejoras de fiabilidad de sincronizacion (reintento de escritura pendiente y validacion de adjuntos).
+- Reforzamos el manejo de autenticacion cloud y el limite de intentos fallidos.

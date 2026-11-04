@@ -1,0 +1,10258 @@
+import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import vm from 'node:vm';
+import { build } from 'esbuild';
+import ts from 'typescript';
+
+const app = resolve(import.meta.dirname, '..');
+const consoleState = {
+    console: { info() { throw new Error('QuickJS stdout missing'); } },
+    __strideNative: { log() { throw new Error('logcat unavailable'); } },
+};
+vm.runInNewContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), consoleState);
+assert.doesNotThrow(() => consoleState.console.info('saved'));
+
+{
+    let sequence = 0, body = 0;
+    const answers = [];
+    const state = { __strideNative: {
+            nowMs: () => 0,
+            log: () => { throw new Error('Body refusals must not log private exceptions'); },
+            cryptoCall: () => { const id = String(++sequence); answers.push(JSON.stringify({ id, body: true })); return id; },
+            ioNext: () => answers.shift() ?? '',
+            ioBody: () => {
+                if (++body === 1) throw new Error('private body exception');
+                if (body === 2) return '!StrideNativeError:private body status';
+                return 'AQ==';
+            },
+        },
+    };
+    vm.runInNewContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), state);
+    const first = assert.rejects(state.__strideCryptoCall({ op: 'aesGcmSeal' }), /^Error: I\/O response body is unavailable$/);
+    const second = assert.rejects(state.__strideCryptoCall({ op: 'aesGcmSeal' }), /^Error: I\/O response body is unavailable$/);
+    const third = state.__strideCryptoCall({ op: 'aesGcmSeal' });
+    assert.equal(state.__pumpTimers(), 3);
+    await Promise.all([first, second]);
+    assert.deepEqual(Array.from(await third), [1]);
+    assert.equal(state.__pumpTimers(), 0);
+}
+
+for (const text of ['mailto:alex@example.com', 'tel:+1-555-0100', 'MAILTO:bea@example.com?subject=Hi', 'javascript:alert(1)', 'obsidian://people/alex', 'https://bea.example/fail']) {
+    const parts = (url) => [url.protocol, url.pathname, url.search, url.hash, url.host, String(url)];
+    assert.deepEqual(parts(new consoleState.URL(text)), parts(new URL(text)), text);
+}
+
+
+const queryPairs = (params) => { const pairs = []; params.forEach((value, key) => pairs.push([key, value])); return pairs; };
+for (const text of ['stride:///capture?title=a=b&note=Buy+milk+%2B+eggs&empty=&flag&x%20y=1+2', 'https://host/dav/?dir=a+b']) {
+    assert.deepEqual(queryPairs(new consoleState.URL(text).searchParams), queryPairs(new URL(text).searchParams), text);
+}
+assert.equal(String(new consoleState.URL('https://host/dav/?dir=a+b')), 'https://host/dav/?dir=a+b');
+
+
+{
+    const polyfills = readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8');
+    const calls = [];
+
+    const fold = (text) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const bridge = { log() {}, collationKey(text, options) { calls.push(`${options}|${text}`); return fold(text) + (options.startsWith('base:') ? '' : `\u0001${text}`); } };
+    const withKeys = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: bridge });
+    vm.runInContext(polyfills, withKeys);
+    assert.deepEqual([...vm.runInContext("['Zoo', 'éclair', 'apple'].sort(new Intl.Collator().compare)", withKeys)], ['apple', 'éclair', 'Zoo']);
+    assert.equal(vm.runInContext("'éclair'.localeCompare('Zoo')", withKeys), -1, 'localeCompare uses the ICU keys');
+    assert.equal(vm.runInContext("'ÉCLAIR'.localeCompare('eclair', undefined, { sensitivity: 'base' })", withKeys), 0);
+    assert.equal(new Set(calls).size, calls.length, 'one key per text and options');
+    assert.equal(vm.runInContext("Object.keys(String.prototype).includes('localeCompare')", withKeys), false);
+    const noKeys = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: { log() {} } });
+    vm.runInContext(polyfills, noKeys);
+    assert.deepEqual([...vm.runInContext("['b', 'a', 'C'].sort(new Intl.Collator().compare)", noKeys)], ['C', 'a', 'b'], 'the fallback without the bridge');
+}
+
+
+{
+    const polyfills = readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8');
+    const specs = [];
+    const bridge = {
+        log() {},
+        dateTimeFormat(spec, op, time) {
+            specs.push(spec);
+            const { locales, options } = JSON.parse(spec);
+            try {
+                const dtf = new Intl.DateTimeFormat(locales, options);
+                return op === 'format' ? dtf.format(time) : JSON.stringify(op === 'formatToParts' ? dtf.formatToParts(time) : dtf.resolvedOptions());
+            } catch (error) {
+                return `!StrideNativeError:${error.message}`;
+            }
+        },
+    };
+    const dates = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: bridge });
+    vm.runInContext(polyfills, dates);
+    const run = (code) => vm.runInContext(code, dates);
+
+    const optionSets = vm.runInNewContext(/const INTL_CHECK_OPTIONS = (\[[\s\S]*?\]);\n/.exec(readFileSync(resolve(app, 'bundle/host-entry.ts'), 'utf8'))[1]);
+    assert(optionSets.length >= 20);
+    const times = [Date.UTC(2026, 8, 6, 8, 5, 9), Date.UTC(2026, 0, 1, 0, 30, 0), Date.UTC(1999, 11, 31, 23, 59, 59, 999)];
+    for (const locale of ['en-US', 'de-DE', 'zh-CN', 'ja-JP']) {
+        for (const options of optionSets) {
+            const args = `${JSON.stringify(locale)}, ${JSON.stringify(options)}`;
+            const node = new Intl.DateTimeFormat(locale, options);
+            assert.deepEqual(JSON.parse(run(`JSON.stringify(new Intl.DateTimeFormat(${args}).resolvedOptions())`)), node.resolvedOptions(), args);
+            for (const time of times) {
+                const at = `${args} at ${new Date(time).toISOString()}`;
+                assert.equal(run(`new Intl.DateTimeFormat(${args}).format(${time})`), node.format(time), `format ${at}`);
+                assert.equal(run(`JSON.stringify(new Intl.DateTimeFormat(${args}).formatToParts(new Date(${time})))`), JSON.stringify(node.formatToParts(time)), `formatToParts ${at}`);
+                for (const method of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) {
+
+                    const expected = (() => { try { return new Date(time)[method](locale, options); } catch (error) { return error.name; } })();
+                    assert.equal(run(`(() => { try { return new Date(${time}).${method}(${args}); } catch (error) { return error.name; } })()`), expected, `${method} ${at}`);
+                }
+            }
+        }
+    }
+
+    for (const method of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) assert.equal(run(`new Date(${times[0]}).${method}()`), new Date(times[0])[method]());
+    assert.deepEqual(JSON.parse(run('JSON.stringify(Intl.DateTimeFormat().resolvedOptions())')), Intl.DateTimeFormat().resolvedOptions(), 'callable without new');
+
+    assert.equal(run(`(() => { const dtf = new Intl.DateTimeFormat('de-DE', { weekday: 'long' }); const format = dtf.format; return format(${times[0]}) + (dtf.format === format); })()`), 'Sonntagtrue');
+    assert.equal(run("new Intl.DateTimeFormat('en-US', { year: 'numeric' }).formatToParts()[0].value"), String(new Date().getFullYear()));
+
+
+    for (const [code, name] of [["new Intl.DateTimeFormat('en', { timeZone: 'Mars/Base' })", 'RangeError'], ["new Intl.DateTimeFormat('en', { weekday: 'tiny' })", 'RangeError'],
+        ["new Intl.DateTimeFormat('en', { dateStyle: 'short', day: 'numeric' })", 'TypeError'], ["new Date(0).toLocaleDateString('en', { timeStyle: 'short' })", 'TypeError'],
+        ["new Intl.DateTimeFormat('en').format(NaN)", 'RangeError'], ["new Intl.DateTimeFormat('en', null)", 'TypeError']]) {
+        assert.equal(run(`(() => { try { ${code}; return 'none'; } catch (error) { return error.name; } })()`), name, code);
+    }
+    assert.equal(run("new Date(NaN).toLocaleString('de-DE')"), 'Invalid Date');
+    assert.equal(run("Object.keys(Date.prototype).length + Object.keys(new Intl.DateTimeFormat()).length"), 0, 'nothing enumerable added');
+    assert(specs.length > 0 && specs.every((spec) => typeof JSON.parse(spec).options === 'object'), 'every call sends its locales and options');
+
+    const noDates = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: { log() {} } });
+    vm.runInContext(polyfills, noDates);
+    assert.equal(vm.runInContext("new Intl.DateTimeFormat('de-DE', { weekday: 'long' }).format(new Date(2026, 8, 6))", noDates), 'Sunday');
+
+
+    const kotlin = (name) => readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core', name), 'utf8');
+    const host = kotlin('CoreHost.kt');
+    const icu = kotlin('IcuDateTimeFormat.kt');
+    assert.match(host, /private fun install\(engine: QuickJSContext, database: \(\) -> SqliteBridge\) \{[\s\S]*?val dates = IcuDateTimeFormat\(\)\s+bridge\.setProperty\("dateTimeFormat", guarded \{ args -> dates\.reply\(args\[0\] as String, args\[1\] as String, \(args\[2\] as Number\)\.toDouble\(\)\) \}\)/);
+    assert.equal(host.match(/IcuDateTimeFormat\(\)|dates\./g).length, 2, 'made once, used only by the bridge callback');
+    assert.doesNotMatch(icu, /java\.io|java\.nio|\bFile\b|Thread|Executor|\bLog\.|debugProperty|synchronized|Volatile|quickjs|getprop/, 'pure: no IO, no threads');
+    assert.match(host, /if \(debugFault\("intl_check"\) == "1"\) engine\.globalObject\.setProperty\("__strideIntlCheck", true\)/);
+}
+
+assert.equal(new consoleState.URL('stride://contexts?token=home+office&contextAction=activate').searchParams.get('token'), 'home office');
+assert.equal(new consoleState.URL('stride://activate-context?name=%40home+office%2Bgym').searchParams.get('name'), '@home office+gym');
+
+for (const init of ['?task=%', '?task=%A', '?task=%GG', '?task=%E0%A4%A', '?task=%E0%A4', '?task=%80',
+    '?task=%C0%AF', '?task=%ED%A0%80', '?task=%F4%90%80%80', '?task=%F0%9F%98%80',
+    '?task=home+office%2Bgym', '?task=漢😀', '?task=%EF%BB%BFtask', '?task=\uD800',
+    '?task=%E0%A4%A&task=valid&project=p', '?ta%73k=first&task=second']) {
+    const expected = JSON.stringify([...new URLSearchParams(init)]);
+    assert.equal(JSON.stringify([...new consoleState.URLSearchParams(init)]), expected, `query decode ${JSON.stringify(init)}`);
+    assert.equal(JSON.stringify([...new consoleState.URL('stride://open' + init).searchParams]), expected, `URL query decode ${JSON.stringify(init)}`);
+}
+
+
+for (const init of ['?a=1&b=x+y', 'a=1', '', { grant_type: 'refresh_token', refresh_token: 'r t+s' }, { a: 'x y', b: '1+1' }]) {
+    assert.equal(new consoleState.URLSearchParams(init).toString(), new URLSearchParams(init).toString(), JSON.stringify(init));
+}
+for (const text of ['https://host/dav/?dir=a+b&_=1', 'https://host/dav/', 'stride:///capture?title=a', 'mailto:alex@example.com?subject=Hi']) {
+    assert.equal(String(new consoleState.URL(text)), String(new URL(text)), text);
+}
+
+for (const init of ['?token=1&a=2&token=3', '']) {
+    const mine = new consoleState.URLSearchParams(init);
+    const theirs = new URLSearchParams(init);
+    assert.deepEqual([...mine.keys()], [...theirs.keys()], `keys() of ${init}`);
+    assert.deepEqual([...mine.values()], [...theirs.values()], `values() of ${init}`);
+
+    assert.equal(JSON.stringify([...mine.entries()]), JSON.stringify([...theirs.entries()]), `entries() of ${init}`);
+    assert.equal(JSON.stringify([...mine]), JSON.stringify([...theirs]), `iterating ${init}`);
+}
+
+
+for (const text of ['https://alice:p@ss@nas.local/dav', 'https://alice:a:b@nas.local:8443/dav?x=1', 'https://bob@nas.local/', 'https://nas.local/a@b']) {
+
+    const parts = (url) => [decodeURIComponent(url.username), decodeURIComponent(url.password), url.host, url.pathname, url.search];
+    assert.deepEqual(parts(new consoleState.URL(text)), parts(new URL(text)), text);
+}
+for (const [init, key] of [['?token=first&a=1&token=second', 'token'], ['?a=1', 'token'], ['?a=1&a=2&a=3', 'a']]) {
+    const mine = new consoleState.URLSearchParams(init);
+    const theirs = new URLSearchParams(init);
+    mine.set(key, 'redacted');
+    theirs.set(key, 'redacted');
+    assert.equal(mine.toString(), theirs.toString(), `set(${key}) on ${init}`);
+}
+
+
+{
+    const sent = [];
+
+    const answers = [];
+    let taken = '';
+    const aborted = [];
+    const store = new Map();
+    const secretRequests = [];
+    let clock = 0;
+    let ids = 0;
+    let nextCalls = 0;
+    let bodyCalls = 0;
+    const bridge = {
+        log() {},
+        nowMs: () => clock,
+        netFetch(json) {
+            const request = JSON.parse(json);
+            if (request.url.startsWith('ftp:')) return '!StrideNativeError:Expected URL scheme \'http\' or \'https\'';
+            sent.push(request);
+            return String(++ids);
+        },
+        netAbort(id) { aborted.push(id); return null; },
+        secretCall(json) {
+            const request = JSON.parse(json);
+            secretRequests.push(request);
+            const { op, key, value } = request;
+            if (!/^[\w.-]+$/.test(key)) return '!StrideNativeError:Invalid secret key';
+            const id = String(++ids);
+            if (op === 'set') store.set(key, value);
+            if (op === 'delete') store.delete(key);
+            answers.push({ json: JSON.stringify({ id, value: op === 'get' ? store.get(key) ?? null : null }) });
+            return id;
+        },
+        ioNext() {
+            nextCalls += 1;
+            const next = answers.shift();
+            taken = next?.body ?? '';
+            return next?.json ?? '';
+        },
+        ioBody() { bodyCalls += 1; return taken; },
+    };
+    const net = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: bridge });
+    vm.runInContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), net);
+    const run = (code) => vm.runInContext(code, net);
+    const answer = ({ base64, ...fields }) => answers.push(base64 === undefined
+        ? { json: JSON.stringify(fields) } : { json: JSON.stringify({ ...fields, body: true }), body: base64 });
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    const failure = async (promise) => promise.then(() => assert.fail('expected a rejection'), (error) => ({ name: error.name, message: error.message }));
+    const text = 'Grüße ✓ 😀';
+
+    let settled = false;
+    const get = run("fetch('https://dav.example/data.json', { headers: { 'Accept-Encoding': 'identity', Depth: '0' } })").then((res) => { settled = true; return res; });
+    assert.deepEqual(sent.at(-1), { url: 'https://dav.example/data.json', method: 'GET', redirect: 'follow', headers: [['accept-encoding', 'identity'], ['depth', '0']] });
+    answer({ id: '1', status: 207, statusText: 'Multi-Status', url: 'https://dav.example/data.json', redirected: false,
+        headers: [['ETag', '"v1"'], ['X-A', '1'], ['x-a', '2']], base64: Buffer.from(JSON.stringify({ text })).toString('base64') });
+    await new Promise((done) => setImmediate(done));
+    assert.equal(settled, false, 'an answer settles only in the pump');
+    assert.equal(net.__pumpTimers(), 1);
+    const res = await get;
+    assert.deepEqual([res.status, res.statusText, res.ok, res.body, res.headers.get('etag'), res.headers.get('X-A')], [207, 'Multi-Status', true, null, '"v1"', '1, 2']);
+    assert.deepEqual(plain(await res.clone().json()), { text });
+    assert.equal(await res.text(), JSON.stringify({ text }));
+    assert.equal(res.bodyUsed, true);
+
+
+    const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
+    net.bytes = bytes;
+    const bodies = run("[fetch('https://dav.example/a', { method: 'put', body: 'Grüße' }),"
+        + " fetch('https://dav.example/b', { method: 'PUT', body: new Uint8Array(bytes), redirect: 'error', headers: [['Content-Type', 'application/octet-stream']] }),"
+        + " fetch('https://dav.example/c', { method: 'POST', body: new URLSearchParams('?a=1&b=%C3%BC') }),"
+        + " fetch('https://dav.example/d', { method: 'PROPFIND', body: new Uint8Array(bytes).buffer })]");
+    assert.deepEqual(sent.slice(-4).map(({ method, text: body, base64, headers, redirect }) => [method, body ?? base64, headers, redirect]), [
+        ['PUT', 'Grüße', [['content-type', 'text/plain;charset=UTF-8']], 'follow'],
+        ['PUT', Buffer.from(bytes).toString('base64'), [['content-type', 'application/octet-stream']], 'error'],
+        ['POST', 'a=1&b=%C3%BC', [['content-type', 'application/x-www-form-urlencoded;charset=UTF-8']], 'follow'],
+        ['PROPFIND', Buffer.from(bytes).toString('base64'), [], 'follow'],
+    ]);
+
+    answer({ id: '3', status: 200, statusText: 'OK', url: 'https://dav.example/final', redirected: true, headers: [], base64: Buffer.from(bytes).toString('base64') });
+    answer({ id: '2', error: 'Network request failed: Failed to connect to dav.example/10.0.0.1:443' });
+    answer({ id: '4', error: 'fetch failed: unexpected redirect' });
+    answer({ id: '5', status: 404, statusText: '', url: 'https://dav.example/d', redirected: false, headers: [], base64: '' });
+    assert.equal(net.__pumpTimers(), 4);
+    const [a, b, c, d] = await Promise.allSettled(bodies);
+    assert.deepEqual([a.status, a.reason.name, a.reason.message], ['rejected', 'TypeError', 'Network request failed: Failed to connect to dav.example/10.0.0.1:443']);
+    assert.deepEqual([b.value.url, b.value.redirected, Buffer.from(await b.value.arrayBuffer()).equals(Buffer.from(bytes))], ['https://dav.example/final', true, true]);
+    assert.deepEqual([c.reason.name, c.reason.message], ['TypeError', 'fetch failed: unexpected redirect']);
+    assert.deepEqual([d.value.status, d.value.ok, await d.value.text()], [404, false, '']);
+
+
+    const whole = (base64) => ({ status: 200, statusText: 'OK', url: 'https://dav.example/data.json', redirected: false, headers: [], base64 });
+    const cases = [
+        ...['Network request failed: unexpected end of stream on http://127.0.0.1:18765/...', 'Network request failed: Connection reset',
+            'Response exceeds the 104857600 byte download limit', 'Network request failed: gzip finished without exhausting source'].map((error) => [{ error }, error]),
+        ...[undefined, 'eyJ0ZXh0Ijo', 'ey*0', 'e=J0', 'eyJ0ZX\u00e90', 'eyJ0\n'].map((base64) => [whole(base64), 'Network request failed: the host sent an unreadable body']),
+    ];
+    const cut = run(`[${cases.map((_, i) => `fetch('https://dav.example/cut/${i}')`).join(', ')}]`);
+    cases.forEach(([fields], i) => answer({ id: String(ids - cases.length + i + 1), ...fields }));
+    assert.equal(net.__pumpTimers(), cases.length);
+    const outcomes = await Promise.allSettled(cut);
+    outcomes.forEach((outcome, i) => {
+        assert.equal(outcome.status, 'rejected', `case ${i} rejects`);
+        assert.deepEqual([outcome.reason.name, outcome.reason.message], ['TypeError', cases[i][1]], `case ${i}`);
+    });
+
+
+    const capBeforeBody = bodyCalls;
+    const capReply = run("fetch('https://dav.example/capped')");
+    answer({ id: String(ids), error: 'Native cap fixture', errorCode: 'response-too-large', limitBytes: 4 });
+    net.__pumpTimers();
+    const capError = await capReply.then(() => assert.fail('native cap must reject'), (error) => error);
+    assert.deepEqual([capError.name, capError.message, capError.code, capError.limitBytes],
+        ['TypeError', 'Response exceeds the 4 byte download limit', 'response-too-large', 4]);
+    assert.equal(bodyCalls, capBeforeBody, 'a coded refusal has no native body');
+    for (const fields of [
+        {}, { errorCode: 'response-too-large' }, { errorCode: 'response-too-large', limitBytes: '4' },
+        { errorCode: 'response-too-large', limitBytes: 0 }, { errorCode: 'response-too-large', limitBytes: -1 },
+        { errorCode: 'response-too-large', limitBytes: 1.5 }, { errorCode: 'response-too-large', limitBytes: Number.MAX_SAFE_INTEGER + 1 },
+        { errorCode: 'other', limitBytes: 4 },
+    ]) {
+        const pending = run("fetch('https://dav.example/unmarked')");
+        answer({ id: String(ids), error: 'Response exceeds the 4 byte download limit', ...fields });
+        net.__pumpTimers();
+        const error = await pending.then(() => assert.fail('malformed cap reply must reject'), (value) => value);
+        assert.deepEqual([error.name, error.message, error.code ?? null, error.limitBytes ?? null],
+            ['TypeError', 'Response exceeds the 4 byte download limit', null, null]);
+    }
+    const remoteMarker = run("fetch('https://dav.example/remote-marker')");
+    answer({ id: String(ids), ...whole('eyJlcnJvckNvZGUiOiJyZXNwb25zZS10b28tbGFyZ2UiLCJsaW1pdEJ5dGVzIjo0fQ==') });
+    net.__pumpTimers();
+    const remoteResponse = await remoteMarker;
+    assert.equal(remoteResponse.code, undefined);
+    assert.deepEqual(plain(await remoteResponse.json()), { errorCode: 'response-too-large', limitBytes: 4 });
+
+    const padded = run("['', 'QQ==', 'QUI=', 'QUJD'].map((_, i) => fetch('https://dav.example/pad/' + i))");
+    ['', 'QQ==', 'QUI=', 'QUJD'].forEach((base64, i) => answer({ id: String(ids - 3 + i), ...whole(base64) }));
+    net.__pumpTimers();
+    assert.deepEqual(await Promise.all((await Promise.all(padded)).map((res) => res.text())), ['', 'A', 'AB', 'ABC']);
+
+    const before = sent.length;
+    for (const [code, message] of [
+        ["fetch('https://dav.example', { body: 'x' })", /GET\/HEAD method cannot have body/], ["fetch('https://dav.example', { method: 'TRACE' })", /Unsupported method: TRACE/],
+        ["fetch('https://dav.example', { headers: { 'Bad Name': 'x' } })", /Invalid header name/], ["fetch('ftp://dav.example')", /Expected URL scheme/],
+    ]) {
+        const error = await failure(run(code));
+        assert.equal(error.name, 'TypeError', code);
+        assert.match(error.message, message);
+    }
+    assert.equal(sent.length, before, 'a refused request never reaches the host');
+
+
+    const aborting = run("const controller = new AbortController(); globalThis.aborting = fetch('https://dav.example/slow', { signal: controller.signal }); controller.abort(); aborting");
+    assert.deepEqual(await failure(aborting), { name: 'AbortError', message: 'This operation was aborted' });
+    assert.deepEqual(aborted, [String(ids)]);
+    const reasoned = run("const withReason = new AbortController(); const call = fetch('https://dav.example/slow', { signal: withReason.signal }); withReason.abort(new Error('Sync cancelled')); call");
+    assert.equal((await failure(reasoned)).message, 'Sync cancelled');
+    assert.deepEqual(await failure(run("fetch('https://dav.example', { signal: AbortSignal.abort() })")), { name: 'AbortError', message: 'This operation was aborted' });
+
+    const timed = run("fetch('https://dav.example/slow', { signal: AbortSignal.timeout(1000) })");
+    clock = 999;
+    net.__pumpTimers();
+    clock = 1000;
+    net.__pumpTimers();
+    assert.deepEqual(await failure(timed), { name: 'TimeoutError', message: 'The operation timed out.' });
+    assert.equal(aborted.length, 3);
+    for (const id of aborted) answer({ id, error: 'Request cancelled', errorCode: 'response-too-large', limitBytes: 4 });
+    assert.equal(net.__pumpTimers(), 0, 'a cancelled call\'s late answer settles nothing');
+    const asked = nextCalls;
+    net.__pumpTimers();
+    assert.equal(nextCalls, asked, 'the pump asks the host only while a call is open');
+
+
+    const secrets = net.__strideSecrets;
+    const saved = secrets.setSecret('stride_webdav_password', text);
+    net.__pumpTimers();
+    assert.equal(await saved, undefined);
+    const read = secrets.getSecret('stride_webdav_password');
+    net.__pumpTimers();
+    assert.equal(await read, text);
+    const removed = secrets.deleteSecret('stride_webdav_password');
+    net.__pumpTimers();
+    await removed;
+    const gone = secrets.getSecret('stride_webdav_password');
+    net.__pumpTimers();
+    assert.equal(await gone, null);
+    assert.deepEqual(await failure(secrets.getSecret('@stride_webdav_password')), { name: 'TypeError', message: 'Invalid secret key' });
+    assert.deepEqual(await failure(secrets.setSecret('stride_cloud_token', 42)), { name: 'TypeError', message: 'A secret value must be a string' });
+    assert.equal(answers.length, 0);
+
+
+    const malformed = [[0xe2], [0x20, 0xc0, 0xa0, 0x20], [0x80], [0xc1, 0xbf], [0xe0, 0x80, 0x80], [0xed, 0xa0, 0x80], [0xf0, 0x80, 0x80, 0x80],
+        [0xf4, 0x90, 0x80, 0x80], [0xf5, 0x80], [0xff], [0xe2, 0x82], [0x61, 0xe2, 0x28, 0xa1], [0xf0, 0x9f, 0x98]];
+    net.cases = malformed.map((bytes) => new Uint8Array(bytes));
+    for (const [i, bytes] of malformed.entries()) {
+        assert.throws(() => run(`new TextDecoder().decode(cases[${i}])`), (error) => error.name === 'TypeError' && error.message === 'The encoded data was not valid for encoding utf-8', `fatal ${bytes}`);
+        assert.equal(run(`new TextDecoder('utf-8', { fatal: false }).decode(cases[${i}])`), new TextDecoder().decode(Uint8Array.from(bytes)), `replacement ${bytes}`);
+    }
+
+    const random = Array.from({ length: 300 }, (_, i) => Uint8Array.from({ length: 1 + (i % 40) }, (_, j) => (i * 131 + j * 89 + ((i * j) % 7) * 37) & 0xff));
+    net.random = random.map((bytes) => new Uint8Array(bytes));
+    random.forEach((bytes, i) => assert.equal(run(`new TextDecoder('utf-8', { fatal: false }).decode(random[${i}])`), new TextDecoder().decode(bytes), `random ${i}`));
+    const wellFormed = ['', 'plain', text, '\u0000\u007f\u0080\u07ff\u0800\uffff', '\u{10000}\u{10ffff}', 'a\u00e9\u4e2d\u{1f600}z'];
+    net.wellFormed = wellFormed.map((value) => new TextEncoder().encode(value));
+    wellFormed.forEach((value, i) => assert.equal(run(`new TextDecoder().decode(wellFormed[${i}])`), value));
+    assert.equal(run('new TextDecoder().decode(new Uint8Array([0x78, 0x61, 0x62, 0x63, 0x78]).subarray(1, 4))'), 'abc', 'a view decodes from its offset');
+
+    for (const value of ['\ud800', 'a\udc00b', '\ud83d', '\udfff\ud800', '\ud83d\ude00']) {
+        net.value = value;
+        assert.deepEqual([...run('new TextEncoder().encode(value)')], [...new TextEncoder().encode(value)], JSON.stringify(value));
+        assert.equal(run('new TextDecoder().decode(new TextEncoder().encode(value))'), new TextDecoder().decode(new TextEncoder().encode(value)));
+    }
+
+    const loose = run("fetch('https://dav.example/utf8')");
+    answer({ id: String(ids), status: 200, statusText: 'OK', url: 'https://dav.example/utf8', redirected: false, headers: [], base64: Buffer.from([0x20, 0xe2, 0x20]).toString('base64') });
+    net.__pumpTimers();
+    const looseResponse = await loose;
+    assert.deepEqual([...new Uint8Array(await looseResponse.clone().arrayBuffer())], [0x20, 0xe2, 0x20]);
+    assert.deepEqual(await failure(looseResponse.clone().text()), { name: 'TypeError', message: 'The encoded data was not valid for encoding utf-8' });
+    assert.deepEqual(await failure(looseResponse.json()), { name: 'TypeError', message: 'The encoded data was not valid for encoding utf-8' });
+
+
+    const decodedValue = '\ufeff{"t":"Grüße ✓ 😀\u0000"}';
+    const decodedBytes = Buffer.from(decodedValue, 'utf8');
+    const decoded = run("fetch('https://dav.example/decoded')");
+    answer({ id: String(ids), status: 200, statusText: 'OK', url: 'https://dav.example/decoded', redirected: false, headers: [], utf8: true, bytes: decodedBytes.length, base64: `T${decodedValue}` });
+    net.__pumpTimers();
+    const decodedResponse = await decoded;
+    assert.equal(decodedResponse.strideDecodedTextBytes, decodedBytes.length);
+    assert.equal(await decodedResponse.clone().text(), decodedValue);
+    assert.ok(Buffer.from(await decodedResponse.clone().arrayBuffer()).equals(decodedBytes), 'bytes from decoded text are exact');
+    assert.equal(await decodedResponse.text(), decodedValue);
+    assert.equal(decodedResponse.bodyUsed, true);
+    assert.equal(looseResponse.strideDecodedTextBytes, undefined, 'a base64 body is not marked decoded');
+
+
+    const markerText = '!StrideNativeError:not an error';
+    const marker = run("fetch('https://dav.example/marker')");
+    answer({ id: String(ids), status: 200, statusText: 'OK', url: 'https://dav.example/marker', redirected: false, headers: [], utf8: true, bytes: markerText.length, base64: `T${markerText}` });
+    net.__pumpTimers();
+    assert.equal(await (await marker).text(), markerText);
+    const broken = run("fetch('https://dav.example/broken')");
+    answer({ id: String(ids), status: 200, statusText: 'OK', url: 'https://dav.example/broken', redirected: false, headers: [], body: true, base64: '!StrideNativeError:Answers closed' });
+    net.__pumpTimers();
+    assert.deepEqual(await failure(broken), { name: 'TypeError', message: 'I/O response body is unavailable' });
+
+
+    const parity = JSON.parse(readFileSync(resolve(app, 'scripts/utf8-parity-cases.json'), 'utf8'));
+    net.parity = parity.map(({ hex }) => new Uint8Array(Buffer.from(hex, 'hex')));
+    parity.forEach(({ hex, text: expected }, i) => {
+        let reference = null;
+        try { reference = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex, 'hex')); } catch {                 }
+        assert.equal(expected, reference, `utf8-parity-cases.json is Node's answer for ${hex}`);
+        let polyfill = null;
+        try { polyfill = run(`new TextDecoder().decode(parity[${i}])`); } catch {                 }
+        assert.equal(polyfill, expected, `the polyfill decodes ${hex} as the file says`);
+    });
+
+
+    const open = run("fetch('https://dav.example/slow')");
+    const openId = String(ids);
+    net.__cancelHostCalls('The host operation timed out');
+    assert.deepEqual(await failure(open), { name: 'AbortError', message: 'The host operation timed out' });
+    assert.equal(aborted.at(-1), openId);
+    const refusedFrom = sent.length;
+    assert.deepEqual(await failure(run("fetch('https://dav.example/after', { method: 'PUT', body: '{}' })")), { name: 'AbortError', message: 'The host operation timed out' });
+    assert.deepEqual(await failure(secrets.setSecret('stride_cloud_token', 'x')), { name: 'AbortError', message: 'The host operation timed out' });
+    assert.equal(sent.length, refusedFrom, 'no call reaches the host while the operation drains');
+
+
+    const syncSaved = net.__strideSyncSecrets.setSecret('stride_cloud_token', 'drained');
+    net.__pumpTimers();
+    assert.equal(await syncSaved, undefined);
+    assert.equal(store.get('stride_cloud_token'), 'drained', 'a sync secret write reaches the host while another call drains');
+    net.__strideHostPlatform = 'ios';
+    const iosClass = net.__strideSyncSecrets.setSecret('fixture', 'synthetic', 'after-first-unlock');
+    net.__pumpTimers(); await iosClass;
+    assert.deepEqual(secretRequests.at(-1), { op: 'set', key: 'fixture', value: 'synthetic', accessibility: 'after-first-unlock' });
+    const iosDefault = net.__strideSyncSecrets.setSecret('fixture', 'synthetic');
+    net.__pumpTimers(); await iosDefault;
+    assert.equal(Object.hasOwn(secretRequests.at(-1), 'accessibility'), false, 'Old iOS two-argument payload is unchanged');
+    net.__strideHostPlatform = 'android';
+    const androidClass = net.__strideSyncSecrets.setSecret('fixture', 'synthetic', 'after-first-unlock');
+    net.__pumpTimers(); await androidClass;
+    assert.equal(Object.hasOwn(secretRequests.at(-1), 'accessibility'), false, 'Android wire keeps its single existing class');
+    net.__resumeHostCalls();
+    run("fetch('https://dav.example/later')");
+    assert.equal(sent.at(-1).url, 'https://dav.example/later', 'calls reach the host again once it resumes them');
+
+
+    net.__pumpTimers();
+    bridge.tick = (ms) => { clock += ms; };
+    run('globalThis.continued = 0; for (let i = 0; i < 50; i += 1) setTimeout(() => { Promise.resolve().then(() => { globalThis.continued += 1; __strideNative.tick(10); }); }, 0)');
+    const turn = async () => {
+        const start = clock;
+        let ran = 0;
+        let taken = 0;
+        do {
+            ran = net.__pumpOne();
+            await new Promise((done) => setImmediate(done));
+            taken += ran;
+        } while (ran > 0 && clock - start < 8);
+        return taken;
+    };
+    assert.equal(await turn(), 1, 'one 10 ms continuation spends an 8 ms turn');
+    assert.equal(run('continued'), 1);
+    assert.equal(net.__nextTimerDelay(), 0, 'the other timers are still due, for the next turns');
+    let turns = 1;
+    while (net.__nextTimerDelay() === 0) { await turn(); turns += 1; }
+    assert.equal(run('continued'), 50);
+    assert.equal(turns, 50);
+
+    const slow = run("[fetch('https://dav.example/s1'), fetch('https://dav.example/s2')]");
+    for (const id of [String(ids - 1), String(ids)]) answer({ id, status: 200, statusText: 'OK', url: 'https://dav.example/s', redirected: false, headers: [], base64: '' });
+    assert.equal(net.__pumpOne(), 1);
+    assert.equal(net.__pumpOne(), 1);
+    assert.equal(net.__pumpOne(), 0, 'nothing left');
+    assert.equal((await Promise.all(slow)).length, 2);
+}
+
+
+{
+    const { argon2id } = await import('@noble/hashes/argon2.js');
+    const nodeCrypto = await import('node:crypto');
+    const vectors = JSON.parse(readFileSync(resolve(app, '../../packages/core/src/__fixtures__/sync-crypto/vectors.json'), 'utf8'));
+    const answers = [];
+    const requests = [];
+    let taken = '';
+    let ids = 0;
+    const b = (text) => Buffer.from(text, 'base64');
+    const bridge = {
+        log() {},
+        nowMs: () => performance.now(),
+        randomBytes: (length) => JSON.stringify([...nodeCrypto.randomBytes(length)]),
+        cryptoCall(json) {
+            const request = JSON.parse(json);
+            requests.push(request);
+            const id = String(++ids);
+            try {
+                let out;
+                if (request.op === 'argon2id') out = argon2id(b(request.pass), b(request.salt), { m: request.m, t: request.t, p: request.p, dkLen: request.dkLen });
+                else if (request.op === 'aesGcmSeal') {
+                    const cipher = nodeCrypto.createCipheriv('aes-256-gcm', b(request.key), b(request.nonce)).setAAD(b(request.aad));
+                    out = Buffer.concat([cipher.update(b(request.data)), cipher.final(), cipher.getAuthTag()]);
+                } else {
+                    const data = b(request.data);
+                    if (data.length < 16) throw Object.assign(new Error('wrong passphrase or corrupted data'), { auth: true });
+                    const decipher = nodeCrypto.createDecipheriv('aes-256-gcm', b(request.key), b(request.nonce)).setAAD(b(request.aad));
+                    decipher.setAuthTag(data.subarray(data.length - 16));
+                    try { out = Buffer.concat([decipher.update(data.subarray(0, data.length - 16)), decipher.final()]); }
+                    catch { throw Object.assign(new Error('wrong passphrase or corrupted data'), { auth: true }); }
+                }
+                answers.push({ json: JSON.stringify({ id, body: true }), body: Buffer.from(out).toString('base64') });
+            } catch (error) {
+                answers.push({ json: JSON.stringify({ id, error: error.message, ...(error.auth ? { auth: true } : {}) }) });
+            }
+            return id;
+        },
+        ioNext() { const next = answers.shift(); taken = next?.body ?? ''; return next?.json ?? ''; },
+        ioBody() { return taken; },
+    };
+    const entry = `import { createHostSyncCrypto } from './host-sync';
+// Core's own file, not its index: esbuild never runs a lazily initialized module that an entry reaches only through the index.
+import { SyncCryptoAuthError, SyncCryptoUnsupportedError, decryptSyncArtifact, deriveSyncKeyMaterial, encryptSyncArtifact } from '../../../packages/core/src/sync-crypto';
+globalThis.cryptoGate = { prims: createHostSyncCrypto(globalThis.__strideCryptoCall), refusing: createHostSyncCrypto(undefined),
+    SyncCryptoAuthError, SyncCryptoUnsupportedError, decryptSyncArtifact, deriveSyncKeyMaterial, encryptSyncArtifact };`;
+    const gateBundle = await build({ stdin: { contents: entry, loader: 'ts', resolveDir: resolve(app, 'bundle') }, bundle: true, write: false, format: 'iife', logLevel: 'silent' });
+    const context = vm.createContext({ console: { info() {}, warn() {}, error() {}, log() {} }, Intl: undefined, __strideNative: bridge });
+    vm.runInContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), context);
+    vm.runInContext(gateBundle.outputFiles[0].text, context);
+    const gate = context.cryptoGate;
+
+    const pumped = async (promise) => {
+        let done = false;
+        const settled = promise.finally(() => { done = true; });
+        settled.catch(() => {});
+        await new Promise((tick) => setImmediate(tick));
+        assert.equal(done, false, 'a crypto call settles only in the pump');
+        while (!done) { context.__pumpTimers(); await new Promise((tick) => setImmediate(tick)); }
+        return settled;
+    };
+    const ContextBytes = vm.runInContext('Uint8Array', context);
+    const u8 = (bytes) => new ContextBytes(bytes);
+    for (const vector of vectors) {
+        const material = await pumped(gate.deriveSyncKeyMaterial(vector.passphrase, u8(b(vector.saltB64)), vector.params, gate.prims));
+        const encrypted = u8(b(vector.encryptedB64));
+        const opened = await pumped(gate.decryptSyncArtifact(encrypted, material.key, gate.prims));
+        assert(Buffer.from(opened).equals(b(vector.plaintextB64)), `${vector.name} opens through the host's calls`);
+
+        const nonce = encrypted.slice(34, 46);
+        const sealed = await pumped(gate.encryptSyncArtifact(u8(b(vector.plaintextB64)), material, { ...gate.prims, randomBytes: () => nonce }));
+        assert(Buffer.from(sealed).equals(b(vector.encryptedB64)), `${vector.name} seals byte for byte`);
+    }
+    const argonRequest = requests.find((request) => request.op === 'argon2id' && request.m === 19456);
+    assert.deepEqual([argonRequest.t, argonRequest.p, argonRequest.dkLen, b(argonRequest.pass).toString()], [2, 1, 32, 'hunter2'], 'Argon2id\'s cost reaches the host as core asked it');
+
+    const first = vectors[0];
+    const material = await pumped(gate.deriveSyncKeyMaterial(first.passphrase, u8(b(first.saltB64)), first.params, gate.prims));
+    const tampered = u8(b(first.encryptedB64));
+    tampered[tampered.length - 1] ^= 1;
+    const authError = await pumped(gate.decryptSyncArtifact(tampered, material.key, gate.prims)).then(() => null, (error) => error);
+    assert(authError instanceof gate.SyncCryptoAuthError, 'a tag mismatch is core\'s SyncCryptoAuthError');
+    const short = await pumped(gate.prims.aesGcmOpen(material.key, u8(new Uint8Array(12)), u8(new Uint8Array(15)), u8(new Uint8Array(0)))).then(() => null, (error) => error);
+    assert(short instanceof gate.SyncCryptoAuthError, 'a body too short for a tag is an auth failure too');
+
+    const badParams = await pumped(gate.deriveSyncKeyMaterial('x', u8(new Uint8Array(16)), { mKib: 8, t: 1, p: 2 }, gate.prims)).then(() => null, (error) => error);
+    assert(badParams instanceof gate.SyncCryptoUnsupportedError, 'an Argon2id refusal is core\'s SyncCryptoUnsupportedError');
+    assert.equal(gate.prims.randomBytes(12).length, 12, 'random bytes come from the host at the asked length');
+
+    await assert.rejects(gate.refusing.argon2id(u8([1]), u8(new Uint8Array(16)), { mKib: 64, t: 1, p: 1 }, 32), /Sync encryption is not available/);
+    await assert.rejects(gate.refusing.aesGcmSeal(u8(new Uint8Array(32)), u8(new Uint8Array(12)), u8([1]), u8([])), /Sync encryption is not available/);
+    assert.throws(() => gate.refusing.randomBytes(12), /Sync encryption is not available/);
+
+    const kotlinCore = (name) => readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core', name), 'utf8');
+    const coreHostSource = kotlinCore('CoreHost.kt');
+    const hostIoSource = kotlinCore('HostIo.kt');
+    assert.match(coreHostSource, /bridge\.setProperty\("cryptoCall", guarded \{ args -> io\.crypto\(args\[0\] as String\) \}\)/);
+    assert.match(hostIoSource, /private val cryptoThread = Executors\.newSingleThreadExecutor/);
+    assert.match(hostIoSource, /cryptoThread\.execute \{\s+val reply = runCatching \{ cryptoReply\(id, json\) \}\.getOrElse/, 'a crypto failure, an OutOfMemoryError included, is an answer, never a crash');
+
+
+    const hostAnswersSource = kotlinCore('HostAnswers.kt');
+    assert.match(hostIoSource, /private val answers = HostAnswers\(\)/);
+    assert.doesNotMatch(hostIoSource, /LinkedBlockingQueue|private var held|private var taken/);
+    assert.match(hostIoSource, /answers\.close\(\)\s+cryptoThread\.shutdownNow\(\)/);
+    assert.match(hostIoSource, /return HostCrypto\.answer\(\{ answers\.closed \}, compute\)/);
+    assert.match(hostIoSource, /fun next\(\): String \{\s+val answer = answers\.next\(\) \?: return ""/);
+    assert.match(hostIoSource, /fun body\(\): String = answers\.body\(\)/);
+    assert.match(hostAnswersSource, /fun add\(answer: Answer\): Boolean = synchronized\(lock\) \{ if \(closed\) false else queue\.add\(answer\) \}/);
+    assert.match(hostAnswersSource, /fun next\(\): Answer\? = synchronized\(lock\) \{\s+if \(closed\) return null/);
+    assert.match(hostAnswersSource, /fun close\(\) = synchronized\(lock\) \{\s+closed = true\s+queue\.clear\(\)\s+held = null\s+taken = null\s+\}/);
+
+    assert.match(hostIoSource, /val \(m, t, p, dkLen\) = HostCrypto\.argon2Params\(request\)/);
+    assert.doesNotMatch(hostIoSource, /getInt\("(m|t|p|dkLen)"\)/);
+    const polyfillSource = readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8');
+    assert.doesNotMatch(polyfillSource.slice(polyfillSource.indexOf('// --- sync crypto'), polyfillSource.indexOf('// --- localStorage')), /refuseIfCancelled/);
+}
+const coreHost = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/CoreHost.kt'), 'utf8');
+const sqliteBridge = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/SqliteBridge.kt'), 'utf8');
+const hostEntry = readFileSync(resolve(app, 'bundle/host-entry.ts'), 'utf8');
+assert.match(hostEntry, /new ValidatedSqliteAdapter\(sqlite, \{ rejectConcurrentWrites: true \}\)/);
+
+assert.equal(/const nativeSyncBindings: NativeSyncBindings = \{[\s\S]*?localData:/.exec(hostEntry)?.[0].match(/__strideSyncSecrets/g)?.length, 3, 'sync binds the unrefused secrets');
+assert.match(hostEntry, /createNativeSync\(nativeSyncBindings\)/);
+
+
+{
+    assert.match(hostEntry, /class ValidatedSqliteAdapter extends NativeReceiptSqliteAdapter \{/);
+    const bootBody = hostEntry.slice(hostEntry.indexOf('const boot = '), hostEntry.indexOf('globalThis.StrideHost ='));
+    const bootOrder = ['setStorageAdapter(adapter)', 'if (journaled) await adapter.withConnection(() => loadNativeRequestReceipts(sqlite), { write: true })', "else await adapter.withConnection(() => loadNativeRequestReceipts(sqlite, { durableCommands: ['appLock', 'notificationSetting', 'aiRequestTimeout', 'aiReasoningEffort', 'aiGeminiThinkingBudget', 'deviceCalendarSetting', 'calendarSubscriptionSetting', 'calendarSubscriptionAdd', 'reminderComplete', 'reminderSnooze', 'taskCompletion', 'taskCompletionUndo', 'boardTaskCompletion', 'boardTaskCompletionUndo', 'boardTaskReactivate', 'boardTaskOrder', 'archivedTaskRestore', 'archivedTasksRestore', 'trashItemsRestore', 'trashItemsPurge', 'doneTasksMove', 'doneTasksAddTag', 'doneTasksRemoveTag', 'archivedTasksDelete', 'archivedTasksDeleteUndo', 'doneTasksDelete', 'doneTasksDeleteUndo', 'referenceTasksDelete', 'referenceTasksDeleteUndo', 'inboxTasksDelete', 'inboxTasksDeleteUndo', 'referenceTasksMove', 'inboxTasksMove', 'inboxTasksAddTag', 'inboxTasksRemoveTag', 'inboxTasksOrganize', 'inboxOrganizeDestinationCreate', 'inboxPreparedCommit', 'inboxUndo', 'referenceTasksAddTag', 'referenceTasksRemoveTag', 'preparedProjectLifecycle', 'preparedTaskDelete', 'preparedProjectDelete', 'preparedTaskDeleteUndo', 'doneTaskStatus', 'referenceTaskNext', 'referenceTaskStatus', 'referenceTaskCompletion', 'referenceTaskCompletionUndo', 'referenceTaskBackdate', 'referenceTaskDestination', 'referenceProjectNextAction', 'doneTaskCompletedAt', 'archiveTaskCompletedAt', 'data', 'backupDocument', 'pomodoroTransition', 'appleReminderImportItem'] }), { write: true })", 'await adapter.getData()', 'await activateAndVerify(adapter'].map((text) => bootBody.indexOf(text));
+    assert(bootOrder.every((index, i) => index > (i ? bootOrder[i - 1] : -1)), `receipts boot order ${bootOrder}`);
+    assert.match(hostEntry, /pruneReceipts\(\): string \{\s*return submit\(async \(\) => \(\{ pruned: await withHostConnection\(\(\) => pruneNativeRequestReceipts\(sqlite\)\) \}\)\);/);
+
+
+    const validatedAdapter = hostEntry.slice(hostEntry.indexOf('class ValidatedSqliteAdapter'), hostEntry.indexOf('type Pending = '));
+    assert.match(validatedAdapter, /protected override afterReadNow\(loaded: \(table: EntityTable\) => number, settings: LoadedData\['settings'\]\): Promise<void> \{\s*return this\.validate\(loaded, settings\);/);
+    assert.doesNotMatch(validatedAdapter, /override async (getData|readRowBaseline|saveData|saveTask)\(/);
+    assert.equal(validatedAdapter.match(/this\.validate\(/g)?.length, 1, 'validation only through afterReadNow');
+    const rawSql = hostEntry.replace(validatedAdapter, '').split('\n')
+        .filter((line) => /\(sqlite\b|\bsqlite\.(get|all|run|exec)\b/.test(line) && !line.includes('new ValidatedSqliteAdapter(sqlite'));
+    assert(rawSql.length >= 6 && rawSql.every((line) => /withConnection\(|withHostConnection\(/.test(line)), `host SQL outside the adapter lock: ${rawSql.filter((line) => !/withConnection\(|withHostConnection\(/.test(line)).join(' | ')}`);
+    assert.match(hostEntry, /const withHostConnection = <T,>\(work: \(\) => Promise<T>\): Promise<T> => \(bootAdapter \? bootAdapter\.withConnection\(work, \{ write: true \}\) : work\(\)\);/);
+    const coreAdapter = readFileSync(resolve(app, '../../packages/core/src/sqlite-adapter.ts'), 'utf8');
+    assert.match(coreAdapter, /await this\.beforeCommit\(\{ data \}\);\s*saveStep = 'commit';\s*const commitStartedAt = Date\.now\(\);\s*await runTimed\('COMMIT'\);/);
+    assert.match(coreAdapter, /await this\.beforeCommit\(\{ task \}\);\s*await this\.client\.run\('COMMIT'\);/);
+    const coreReceipts = readFileSync(resolve(app, '../../packages/core/src/native-request-receipts.ts'), 'utf8');
+    assert.match(coreReceipts, /CREATE TABLE IF NOT EXISTS native_request_receipts \(/);
+    assert.match(coreReceipts, /class NativeReceiptSqliteAdapter extends SqliteAdapter \{[\s\S]*?protected override async beforeCommit\([\s\S]*?INSERT INTO native_request_receipts/);
+}
+assert.match(sqliteBridge, /PRAGMA synchronous = FULL/);
+
+
+const bridgeOpen = sqliteBridge.slice(sqliteBridge.indexOf('private val connection'), sqliteBridge.indexOf('private val statements'));
+assert.deepEqual(bridgeOpen.match(/PRAGMA [^"]*/g), ['PRAGMA foreign_keys = ON']);
+const bridgeCheckpoint = sqliteBridge.slice(sqliteBridge.indexOf('fun ensureRecoveryCheckpoint'), sqliteBridge.indexOf('private fun syncCheckpoint'));
+const pragmaOrder = ['checkIntegrity(connection)', 'syncCheckpoint(checkpointFile)', 'exec("VACUUM INTO', 'syncDirectory(checkpointFile.parentFile!!)',
+    'exec("PRAGMA journal_mode = WAL")', 'exec("PRAGMA synchronous = FULL")'].map((text) => bridgeCheckpoint.indexOf(text));
+assert(pragmaOrder.every((index, i) => index > (i ? pragmaOrder[i - 1] : -1)), `SQLite pragma order ${pragmaOrder}`);
+assert.equal(sqliteBridge.match(/journal_mode|synchronous =/g).length, 2);
+assert.doesNotMatch(bridgeCheckpoint, /\breturn\b/);
+assert.match(sqliteBridge, /syncFile\(partial\)[\s\S]*?renameTo\(checkpointFile\)[\s\S]*?syncDirectory/);
+
+
+{
+    const start = coreHost.slice(coreHost.indexOf('fun start(bundle: CoreBundle'), coreHost.indexOf('/** Where the bundle came from'));
+    const order = ['val opened = FutureTask {', 'database.ensureRecoveryCheckpoint()', 'val database = { opened.get() }', 'executor.submit(Callable {',
+        'install(engine, database)', 'load(engine, database, bundle)', 'opened.run()', 'return onEngine {', '                loading.get()\n                sqlite = database()',
+        'activationOwed = pendingBackupIds().isNotEmpty()',
+        '(if (activationOwed) callAsync("bootRecovery", legacyState, legacyBackup, "journaled", storageBudget(), deadlineMs = bootDeadline)\n                else callAsync("boot", legacyState, legacyBackup, "journaled", storageBudget(), deadlineMs = bootDeadline))'].map((text) => start.indexOf(text));
+    assert(order.every((index, i) => index > (i ? order[i - 1] : -1)), `start order ${order}`);
+
+
+    assert.match(coreHost, /if \(index == lastBackup && activationOwed\) resumeActivation\(\)/);
+    assert.match(coreHost, /if \(owed == null && activationOwed\) resumeActivation\(\)/);
+    assert.match(hostEntry, /bootRecovery\(legacyState: string, legacyBackup: string, writeJournal = '', budgetJSON = ''\): string \{\s*return boot\(legacyState, legacyBackup, true, writeJournal === 'journaled', budgetJSON\);/);
+
+
+    const preflight = ['load(engine, database, bundle)', 'if (preflight) {', '                    loading.get()\n', 'answer("legacyCheck", arrayOf(legacyState, legacyBackup)',
+        'check(checked.getBoolean("ok"))', 'onEngine { closeOnEngine() }', 'opened.run()'].map((text) => start.indexOf(text));
+    assert(preflight.every((index, i) => index > (i ? preflight[i - 1] : -1)), `preflight order ${preflight}`);
+    assert.equal(coreHost.match(/"legacyCheck"/g).length, 1);
+    assert.match(start, /catch \(failure: Throwable\) \{\s+if \(sqlite == null\) runCatching \{ database\(\)\.close\(\) \}\s+closeOnEngine\(\)/, 'a failed start closes an open database it never handed over');
+    assert.match(start, /catch \(error: Throwable\) \{\s+runCatching \{ database\.close\(\) \}\s+throw error/, 'a failed checkpoint closes its database');
+    assert.equal(coreHost.match(/database\(\)\.(run|all|exec)\(/g).length, 3, 'the SQL calls take the database from the open\'s future');
+    assert.equal(coreHost.match(/\bsqlite = (?!null)/g).length, 1, 'the engine takes the database once, at start');
+}
+const source = (name) => readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot', name), 'utf8');
+const activity = source('MainActivity.kt');
+const model = source('InboxViewModel.kt');
+const owner = source('ProcessCoreHost.kt');
+const editorUi = source('TaskEditor.kt');
+const focusUi = source('FocusScreen.kt');
+const projectsUi = source('ProjectsScreen.kt');
+const labelsKt = source('Labels.kt');
+const rowUi = source('TaskRowView.kt');
+const areaUi = source('AreaSwitcher.kt');
+const viewStateKt = source('ViewState.kt');
+const searchUi = source('SearchScreen.kt');
+const processUi = source('ProcessInbox.kt');
+
+
+assert.match(processUi, /val scroll = rememberScrollState\(\)[\s\S]{0,300}LaunchedEffect\(flow\.taskId, flow\.step\) \{\s+when \(stepScroll\(shownTask, shownStep, flow\.taskId, flow\.step\)\) \{\s+StepScroll\.Animate -> scroll\.animateScrollTo\(0\)\s+StepScroll\.Jump -> scroll\.scrollTo\(0\)/);
+assert.match(processUi, /var shownTask by rememberSaveable \{ mutableStateOf<String\?>\(null\) \}/);
+
+assert.match(activity, /LaunchedEffect\(c\.bg, theme\.isDark\) \{ window\.applySystemBars\(c\.bg\.toArgb\(\), theme\.isDark\) \}/);
+assert.match(source('AppLock.kt'), /LaunchedEffect\(c\.bg, theme\.isDark\) \{ activity\?\.window\?\.applySystemBars\(c\.bg\.toArgb\(\), theme\.isDark\) \}/);
+
+
+{
+    const res = resolve(app, 'android/app/src/main/res');
+    assert.match(readFileSync(resolve(res, 'values/themes.xml'), 'utf8'), /<style name="Theme\.NativeDev" parent="android:Theme\.Material\.Light\.NoActionBar"/);
+    assert.match(readFileSync(resolve(res, 'values-night/themes.xml'), 'utf8'), /<style name="Theme\.NativeDev" parent="android:Theme\.Material\.NoActionBar"/);
+}
+assert.match(processUi, /\.verticalScroll\(scroll\)/);
+const captureUi = source('CaptureScreen.kt');
+
+assert.match(captureUi, /private fun InboxViewModel\.TitleField\([\s\S]{0,1200}keyboardOptions = KeyboardOptions\(capitalization = KeyboardCapitalization\.Sentences, imeAction = ImeAction\.Done\)/);
+assert.match(captureUi, /private fun NoteField\([\s\S]{0,1200}keyboardOptions = KeyboardOptions\(capitalization = KeyboardCapitalization\.Sentences\)/);
+const captureModalUi = source('CaptureModal.kt');
+const captureModalModel = source('CaptureModalModel.kt');
+
+
+assert.match(captureModalUi, /private fun ModalField\([\s\S]{0,1200}keyboardOptions = KeyboardOptions\(capitalization = KeyboardCapitalization\.Sentences\)/);
+
+const menuModel = source('MenuModel.kt');
+const moreUi = source('MoreSheet.kt');
+
+assert.match(moreUi, /Box\(Modifier\.align\(Alignment\.TopEnd\)\.offset\(x = 7\.dp, y = \(-2\)\.dp\)\.size\(7\.dp\)\.fade\(0\.85f\)\.clip\(CircleShape\)\.background\(dot\)/);
+const menuUi = source('MenuWidgets.kt');
+const waitingUi = source('WaitingScreen.kt');
+const somedayUi = source('SomedayScreen.kt');
+const statusListUi = source('StatusListScreen.kt');
+const archiveUi = source('ArchiveScreen.kt');
+
+const contextsUi = source('ContextsScreen.kt');
+const trashUi = source('TrashScreen.kt');
+const reviewUi = source('ReviewScreen.kt');
+const weeklyUi = source('WeeklyReviewScreen.kt');
+const dailyUi = source('DailyReviewScreen.kt');
+const listActionsKt = source('ListActions.kt');
+const reviewScreens = { contextsUi, trashUi, reviewUi, weeklyUi, dailyUi, listActionsKt };
+
+const inboxUi = source('InboxScreen.kt');
+const bulkUi = source('BulkBar.kt');
+const focusControlsUi = source('FocusControls.kt');
+const focusModelKt = source('FocusModel.kt');
+
+const savedSearchUi = source('SavedSearchScreen.kt');
+const menuScreens = { moreUi, menuUi, waitingUi, somedayUi, statusListUi, archiveUi, ...reviewScreens, inboxUi, bulkUi, focusControlsUi, savedSearchUi };
+const snapshotsKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/RecoverySnapshots.kt'), 'utf8');
+
+const code = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+assert.match(activity, /if \(failedAction == null\) RetryButton\(\{ refresh\(\) \}, !busy, "read-retry"\)/);
+
+
+assert.match(activity, /fun OwedRetry\(model: InboxViewModel\) \{\s+if \(model\.failedAction != null\) RetryButton\(model::retryOwed, !model\.busy, "owed-retry"\)/);
+
+assert.match(activity, /\} else OwedRetry\(model\)|else OwedRetry\(model\)/);
+for (const [name, text] of Object.entries({ activity, editorUi, searchUi, processUi, menuUi, weeklyUi, dailyUi })) {
+    assert.match(text, /FailureBanner\(message\) \{[\s\S]{0,320}?OwedRetry\(model\)/, `${name}: the failure banner offers the owed retry`);
+}
+{
+    const retry = code(model.slice(model.indexOf('fun retryOwed()'), model.indexOf('\n    }\n', model.indexOf('fun retryOwed()'))));
+    const kinds = new Set([...code(model + activity + editorUi + searchUi + processUi + rowUi).matchAll(/FailedAction\("(\w+)"/g)].map(([, kind]) => kind));
+    for (const kind of [...kinds, 'inboxCommit', 'inboxSkip']) assert.match(retry, new RegExp(`"${kind}"`), `retryOwed re-sends a failed ${kind}`);
+    assert.match(retry, /"update" -> sendUpdate\(action\)/);
+    assert.match(retry, /"saveDraft" -> sendDraft\(action\)/);
+    assert.match(retry, /"inboxCommit", "inboxSkip" -> sendAnswer\(action,/);
+}
+assert.match(rowUi, /failedAction == null \|\| failedAction == completeAction\(task\.id, task\.taskRevision\)/);
+
+assert.match(model, /text\("revealLabel"\), getBoolean\("laterToday"\), optString\("taskRevision"\), text\("focusBlockedLabel"\)\)/);
+assert.match(model, /fun completeAction\(id: String, taskRevision: String\) = FailedAction\("complete", id, patch = mapOf\("taskRevision" to taskRevision\)\)/);
+
+
+assert.match(rowUi, /val target = meta\.swipe\.target\s+val swipeLabel = meta\.swipe\.label/);
+assert.match(model, /meta\.getJSONObject\("swipe"\)\.let \{ RowSwipe\(it\.getString\("target"\), it\.getString\("label"\), it\.getString\("icon"\)\) \}/);
+
+const STATUS = '"(?:inbox|next|waiting|someday|reference|done)"';
+for (const [name, text] of Object.entries({ rowUi, model, focusUi, projectsUi, activity })) {
+    assert.doesNotMatch(code(text), new RegExp(`${STATUS}(?:\\s*,\\s*${STATUS})*\\s*->\\s*${STATUS}`), `${name}: no status-to-swipe map in Kotlin`);
+}
+assert.doesNotMatch(code(rowUi), /swipeTarget|archived\.restoreToInbox/);
+assert.match(rowUi, /when \(swipe\.icon\) \{ "restore" -> Lucide\.RotateCcw; "done" -> Lucide\.Circle; else -> Lucide\.ArrowRight \}/);
+
+
+assert.match(rowUi, /val listed = actions\?\.status\s+val swipeOn = !selecting && if \(target == "done"\) completable && canComplete else if \(listed != null\) canEdit else completable && canMove/);
+assert.match(rowUi, /val canMove = writable && !busy && \(failedAction == null \|\| failedAction == statusAction\(task, target\)\)/);
+assert.match(rowUi, /val onSwipe = if \(target == "done"\) \{ \{ complete\(task\.id, task\.taskRevision, askNext = true\) \} \} else listed\?\.let \{ status -> \{ status\(target\) \} \} \?: \{ changeStatus\(task, target\) \}/);
+assert.match(rowUi, /SwipeAction\(enabled = swipeOn, swipe = meta\.swipe, shape = shape, onSwipe = onSwipe, onMenu = \{ showStatusMenu\(task\) \}, onDelete = onDelete, onLongDone = onLongDone\)/);
+assert.match(rowUi, /if \(swipeOn\) customActions = listOf\(CustomAccessibilityAction\(swipeLabel\) \{ onSwipe\(\); true \},\s*CustomAccessibilityAction\(t\("taskStatus\.changeStatus"\)\) \{ showStatusMenu\(task\); true \}\)/);
+
+assert.match(rowUi, /StatusMenuAction\(t\("task\.moveToProjectOrArea"\), idle\) \{ openDestination\(task\) \}/);
+
+
+assert.match(source('MenuModel.kt'), /staleMoveLine\(action\.kind, failure\.message\)\?\.let \{ line -> shell\.ui \{/);
+assert.match(source('TaskEditor.kt'), /detectTapGestures \{ dismiss\(\) \} \}\.imePadding\(\)\.padding\(20\.dp\)/);
+assert.match(rowUi, /Text\(label, style = rnText\(14, 500\), color = c\.text, textAlign = TextAlign\.Center\)/);
+assert.doesNotMatch(rowUi, /split\(' '\)\.joinToString/, 'no capitalized words in the status menu rows');
+
+assert.match(source('MenuWidgets.kt'), /onLongClick = moveLabel\?\.let \{ \{ if \(enabled\) menu\.openProjectMove\(id, revision\) \} \}/);
+assert.match(source('SomedayScreen.kt'), /ParkedProject\(model, item\.json\.getJSONObject\("project"\), item\.json\.getString\("activateLabel"\), view\.getJSONObject\("text"\)\.getString\("moveToSection"\)\)/);
+assert.doesNotMatch(code(rowUi + activity), /IconButton\(onClick = \{ complete\(/, 'no visible Done button: RN has none');
+
+assert.match(rowUi, /\.combinedClickable\(enabled = enabled, role = Role\.Button, onLongClick = \{ settle\(0f\); \(onLongDone \?: onMenu\)\(\) \}\) \{ settle\(0f\); onSwipe\(\) \}/);
+assert.match(rowUi, /onDragStopped = \{ settle\(if \(offset\.value > open \/ 2\) open else if \(offset\.value < left \/ 2\) left else 0f\) \}/, 'a drag only opens or closes the row');
+
+assert.match(rowUi, /val left = if \(onDelete != null\) -open else 0f/);
+assert.match(rowUi, /val onDelete = actions\?\.delete\?\.takeIf \{ canEdit && !selecting \}/);
+assert.doesNotMatch(code(rowUi), /SwipeToDismissBox|combinedClickable\([^)]*\)[^\n]*openEditor/, 'no one-gesture swipe; the row\'s own long-press stays free');
+
+assert.match(model, /internal val UPDATE_REFUSALS = listOf\("STALE_REVISION", "INVALID_INPUT", "TASK_NOT_FOUND"\)/);
+assert.match(model, /private val REFUSABLE = setOf\("complete", "completeUndo", "inboxDecisionUndo", "update", "saveDraft", "resetChecklist", "saveSearch", "inboxCommit", "inboxSkip", "capture", "captureLines", "capturePicker"\) \+ MENU_KINDS \+ CAPTURE_MODAL_KINDS \+ ATTACHMENT_KINDS/);
+assert.match(model, /message\.startsWith\("STALE_REVISION"\) \|\| \(kind in REFUSABLE && UPDATE_REFUSALS\.any \{ message\.startsWith\(it\) \}\)\s+\|\| \(kind in setOf\("completeUndo", "inboxDecisionUndo"\) && message\.startsWith\("ACTION_FAILED"\)\)/);
+assert.match(model, /val refused = refusedUnwritten\(action\?\.kind, message\)/);
+
+
+assert.match(model, /stale = action != null && action\.kind !in STALE_SHOWN && message\.startsWith\("STALE_REVISION"\)/);
+assert.match(model, /private val STALE_SHOWN = setOf\("saveDraft", "update", "calendarCreate", "manageEditor", "completeUndo", "inboxDecisionUndo", "taskCompletedAt"\)/);
+
+
+assert.match(model, /internal fun askNextAction\(runtime: CoreHost, taskId: String\) \{\s+val prompt = runCatching \{ runtime\.menuRead\("projectNextActionPrompt", JSONObject\(\)\.put\("taskId", taskId\)\.toString\(\)\)\.optJSONObject\("prompt"\) \}/);
+assert.match(model, /if \(askNext\) askNextAction\(runtime, id\)/);
+assert.match(menuModel, /if \(action\.kind == "taskCompletedAt" && reply\.optBoolean\("completed"\)\) shell\.askNextAction\(runtime, JSONObject\(action\.title\)\.getString\("taskId"\)\)/);
+assert.match(model, /if \(stale\) acknowledged\(action!!\)\s+else ui \{/);
+assert.match(model, /\(action != null && !refused\) \|\| message\.startsWith\("SAVE_FAILED"\)/);
+
+
+assert.match(model, /if \(busy \|\| runtime == null \|\| \(failedAction != null && failedAction != action\)\) return false\s+busy = true\s+if \(action != null\) commandAt = \+\+issued\s+if \(failedAction == null\) error = null/);
+assert.equal(code(model).match(/\berror = null\b/g).length, 4, 'perform and a read\'s success (no retry owed), closeEditor, and an accepted edit clearing only a refused edit\'s message');
+assert.match(model, /if \(error != null && error == editRefusal\) error = null/);
+assert.match(model, /if \(failedAction == null\) error = null\s+\}/, 'a read\'s success never clears an owed retry\'s failure');
+assert.match(model, /val owed = failedAction\?\.takeIf \{ action == null && it\.kind != "storage" \}\s+if \(owed == null\) \{\s+error = message[\s\S]{0,120}?if \(failed != null\) failedAction = failed/);
+assert.match(owner, /if \(pending\.action\.kind == "storage" && failure\?\.action\?\.kind\.let \{ it != null && it != "storage" \}\) return/);
+
+assert.equal(code(model).match(/\bperform\(action\)/g).length, 17, 'complete, its Undo, a Process Inbox decision\'s Undo, editor save, Reset checklist, task star, project star, status, project create, area filter, saved search, Process Inbox answer, the storage retry, the journal replay\'s retry, and the capture popup\'s capture, lines and picker create');
+assert.equal(code(model).match(/\bperform\s*\{/g).length, 11, 'editor, reload, Try again, two More (Focus, a project), open project, open Process Inbox, open the capture popup, a project\'s capture screen, a Focus control\'s edit, Import .txt');
+
+
+const backgroundFn = code(model.slice(model.indexOf('internal fun <T> background('), model.indexOf('internal fun perform(')));
+assert.match(backgroundFn, /if \(runtime == null \|\| busy \|\| failedAction != null\) return run \{ always\?\.invoke\(\) \}\s+val mine = \+\+issued/);
+
+
+assert.match(backgroundFn, /try \{ show\(parts, mine, result, apply\) \} finally \{ always\?\.invoke\(\) \}/);
+assert.match(model, /AfterCommandReads\.run\(AfterCommandReads\.order\(screen, menu\.screen != null, search != null\)\)/);
+assert.doesNotMatch(backgroundFn, /busy = /);
+assert.equal(code(model).match(/\bbusy = true\b/g).length, 1, 'only a user action takes busy');
+
+assert.match(model, /fun refreshFocus\(\) \{\s+if \(focus == null && busy\) return menu\.whenIdle\(::refreshFocus\)\s+val depth = focus\.depth\(\)\s+val controls = menu\.focusControls\.state\.toString\(\)\s+background\(/);
+
+
+assert.match(model, /fun refreshProjects\(\) \{\s+if \(busy\) return menu\.whenIdle\(::refreshProjects\)\s+val at = depth\(\)\s+background\(/);
+assert.match(model, /private fun refreshAll\(synced: Boolean = false\) \{\s+val at = depth\(\)\s+if \(synced\) \{\s+background\(Part\.entries, \{ runtime -> applySyncedChoices\(runtime, prefs\); read\(runtime, at\) \}, apply = ::showLists\)/);
+
+assert.match(model, /AfterCommandReads\.Read\.AllLists -> background\(Part\.entries, \{ runtime -> read\(runtime, at\) \}, done, ::showLists\)/);
+
+assert.match(model, /try \{\s+debugProperty\("delay_action_ms"\)\.toLongOrNull\(\)\?\.let\(Thread::sleep\)\s+work\(runtime\); done = true\s+\}/);
+assert.match(model, /ui \{\s+busy = false\s+if \(\(done \|\| stale\) && action != null\) refreshAll\(\)\s+finished\?\.invoke\(\)\s+\}/);
+assert.doesNotMatch(code(model.slice(model.indexOf('fun add()'), model.indexOf('fun openEditor('))), /read\(runtime/);
+
+
+assert.match(model, /internal fun fresh\(mine: Long, part: Part\) = \(mine > commandAt && mine > \(shownAt\[part\] \?: 0L\)\)\.also \{ if \(it\) shownAt\[part\] = mine \}/);
+assert.match(model, /internal enum class Part \{ Focus, Projects, Project, ProjectDetails, Areas, Editor, TaskView, Search, Menu, More, MenuDialog, Pomodoro \}/);
+{
+    const show = code(model.slice(model.indexOf('private fun showLists('), model.indexOf('internal fun readSucceeded(')));
+    for (const part of ['Focus', 'Projects', 'Project', 'Areas']) assert.match(show, new RegExp(`if \\(fresh\\(mine, Part\\.${part}\\)\\)`), `a full read applies ${part} on its own`);
+    assert.doesNotMatch(code(model), /\bfresh\(mine\)/, 'every freshness check names its list');
+}
+assert.match(backgroundFn, /if \(result\.isFailure && parts\.map \{ fresh\(mine, it\) \}.none \{ it \}\) return\s+result\.onSuccess \{ apply\(it, mine\) \}\.onFailure/);
+assert.match(backgroundFn, /if \(busy \|\| failedAction != null\) return@onFailure/, 'a background failure never replaces an owed retry or a running action');
+for (const read of ['fun refresh()', 'fun loadMoreFocus(', 'fun openProject(', 'fun loadMoreProject(']) {
+    const body = code(model.slice(model.indexOf(read), model.indexOf('\n    }\n', model.indexOf(read))));
+    assert.match(body, /val mine = \+\+issued[\s\S]*ui \{ (if \(fresh\(mine, Part\.\w+\)\)|showLists\(lists, mine\))/, `${read} shows its result only if nothing newer came first`);
+}
+assert.equal(code(model).match(/(?<!var )\bcommandAt = /g).length, 1, 'only a command\'s start outdates reads');
+
+assert.match(rowUi, /val canComplete = writable && !busy &&\s*\(failedAction == null \|\| failedAction == completeAction\(task\.id, task\.taskRevision\)\)/);
+
+
+assert.match(model, /private var editorKey: String\? = saved\.get<String>\("editorKey"\)/);
+assert.doesNotMatch(code(model), /saved\["editor(?!Key)/, 'no editor model or draft in the Bundle');
+assert.match(model, /EditorDrafts\(File\(app\.noBackupFilesDir, "editor"\)\)/);
+assert.match(model, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(state\.toString\(\)\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\(key\)\)\)/);
+assert.match(model, /TaskEditor\.restore\(readEditor\(runtime, draft\.getString\("id"\)\), draft\)/);
+assert.match(editorUi, /put\("bases", JSONObject\(edited\.keys\.associateWith \{ base\(it\) \}\)\)/);
+
+assert.match(model, /val action = saveDraftAction\(current\)\s+pendingSave = action\s+keepEditor\(current\)\s+sendDraft\(action\)/);
+
+assert.match(model, /pendingSave\?\.let \{\s+state\.put\("pending", JSONObject\(\)\.put\("base", JSONObject\(it\.base\)\)\.put\("patch", JSONObject\(it\.patch\)\)\.put\("checklist", it\.title\)\.put\("requestId", it\.requestId\)\s+\.put\("attachments", it\.attachments\)\)\s+\}\s+drafts\.write\(key, state\)/);
+assert.match(model, /val action = FailedAction\("saveDraft", restored\.id, pending\.optString\("checklist"\), base = map\("base"\), patch = map\("patch"\),\s+requestId = pending\.optString\("requestId"\), attachments = pending\.optString\("attachments"\)\)\s+failedAction = action\s+sendDraft\(action\)/);
+
+assert.match(editorUi, /val dirty get\(\) = patch\.isNotEmpty\(\) \|\| waiting \|\| checklistChanged \|\| attachmentsChanged/);
+
+assert.match(editorUi, /listOf\(it\.getString\("id"\), it\.optString\("uri"\), it\.optString\("title"\), it\.optString\("deletedAt"\)\)/);
+assert.match(readFileSync(resolve(app, '../../packages/core/src/task-draft.ts'), 'utf8'), /`\$\{attachment\.id\}\\0\$\{attachment\.uri \?\? ''\}\\0\$\{attachment\.title \?\? ''\}\\0\$\{attachment\.deletedAt \?\? ''\}`/);
+assert.match(editorUi, /val leave = \{ if \(editor\.readOnly \|\| \(!editor\.dirty && !editsPending\)\) closeEditor\(\) else confirmLeave = true \}/);
+assert.match(model, /if \(current\.waiting \|\| editsPending\) \{ saveQueued = true; return \}/);
+assert.match(model, /if \(saveQueued && !resolved\.waiting && !editsPending\) \{ saveQueued = false; saveEditor\(\) \}/);
+
+assert.match(editorUi, /if \(field\.text != value\) field = TextFieldValue\(value, TextRange\(value\.length\)\)\s+BasicTextField\(field, \{ typed -> field = typed;/);
+
+
+assert.match(editorUi, /LaunchedEffect\(focused, viewport\) \{\s+if \(focused && viewport > 0\) reveal\.bringIntoView\(Rect\(0f, 0f, size\.width\.toFloat\(\), focusRevealBottom\(size\.height, viewport\)\)\)/);
+assert.match(editorUi, /modifier = Modifier\.bringIntoViewRequester\(reveal\)\.onSizeChanged \{ size = it \}\.onFocusChanged \{ if \(focused && !it\.isFocused\) commit\?\.invoke\(\); focused = it\.isFocused \}/);
+assert.match(editorUi, /val checklistFormScroll = rememberScrollState\(\)/);
+assert.match(editorUi, /\.imePadding\(\)\.onSizeChanged \{ formViewport = it\.height \}\s+\.onGloballyPositioned \{ checklistFormBounds = it\.boundsInWindow\(\) \}\s+\.verticalScroll\(checklistFormScroll, enabled = !checklistDragging\)/);
+
+
+assert.match(editorUi, /keyboardOptions = KeyboardOptions\(keyboardType = if \(number\) KeyboardType\.Number else KeyboardType\.Unspecified,\s+imeAction = if \(commit != null\) ImeAction\.Done else ImeAction\.Unspecified\),\s+keyboardActions = KeyboardActions\(onDone = \{ focusManager\.clearFocus\(\) \}\)/);
+assert.match(editorUi, /\.onFocusChanged \{ if \(focused && !it\.isFocused\) commit\?\.invoke\(\); focused = it\.isFocused \}/);
+assert.match(editorUi, /!locked, singleLine = true, description = label, tag = "editor-\$id",\s+commit = \{ committedTokens\(editor\.input\(id\), suggestions\[id\]\)\?\.let \{ editInput\(id, it\) \} \}\)/);
+
+
+assert.match(processUi, /val edit = t\("common\.edit"\)\s+Box\(Modifier\.size\(44\.dp\)\.clickable\(enabled = !locked, role = Role\.Button\) \{ openEditor\(flow\.taskId, "task"\) \}\s+\.semantics \{ contentDescription = edit \}, contentAlignment = Alignment\.Center\) \{\s+Icon\(Lucide\.Pencil, null, tint = c\.tint, modifier = Modifier\.size\(20\.dp\)\)/);
+assert.match(processUi, /\.heightIn\(min = headerMinHeight\(statusTop\)\.dp\)[^\n]*\s+\.padding\(start = 20\.dp, end = 20\.dp, top = headerTopPadding\(statusTop\)\.dp, bottom = 10\.dp\)/);
+assert.match(model, /if \(processing\?\.takeUnless \{ it\.hidden \}\?\.taskId == closed\?\.id\) editStep\(JSONObject\(\)\.put\("reload", true\)\)/);
+
+assert.match(editorUi, /FieldHeading\(Lucide\.Folder, t\("task\.destination"\)\)\s+DateButton\(value, t\("task\.destination"\), !locked, Modifier\.fillMaxWidth\(\)\) \{ openPicker\("destination"\) \}/);
+
+
+assert.match(editorUi, /\.semantics \{ contentDescription = description \}\s+\.then\(if \(toggle\) Modifier\.toggleable\(value = active, enabled = enabled, role = Role\.Button, onValueChange = \{ onClick\(\) \}\)\s+else if \(longPress != null\) Modifier\.semantics \{ selected = active \}\.combinedClickable\(enabled = enabled, role = Role\.Tab,\s+onLongClickLabel = longPress\.first, onLongClick = longPress\.second, onClick = onClick\)\s+else Modifier\.selectable\(selected = active, enabled = enabled, role = Role\.Tab, onClick = onClick\)\)/);
+
+assert.match(editorUi, /val backdate = if \(status == "done"\) t\("task\.completeBackdateHintMobile"\) to \{ completedAt\.openEditor\(\) \} else null/);
+assert.match(source('TaskView.kt'), /StatusPill\(status, row\.getString\("value"\), editable, pickStatus,\s+if \(status == "done"\) \{ \{ completedAt\.openEditor\(\) \} \} else null\)/);
+assert.match(source('TaskView.kt'), /if \(enabled && backdate != null\) onLongClick\(t\("task\.completeBackdateHintMobile"\)\) \{ backdate\(\); true \}/);
+assert.equal(code(editorUi).match(/toggle = true/g).length, 2, 'only the quick token chips and "Repeat after completion" toggle');
+
+assert.match(editorUi, /if \(status == "waiting" && !active\) openWaitingPrompt\(\) else editFields\(mapOf\("status" to status\)\)/);
+assert.match(model, /keepEditor\(current\.assignWaiting\(person\)\)\s+editFields\(mapOf\("status" to "waiting", "assignedTo" to person\)\)/);
+
+
+const listenerOnly = /\n    override fun onCleared\(\) \{\n        ProcessCoreHost\.unlistenSync\(syncListener\)\n        entries\.close\(\)\n        routeWrites\.shutdown\(\)\n        prompts\.shutdown\(\)\n        super\.onCleared\(\)\n    \}\n/;
+assert.match(model, listenerOnly);
+for (const file of [activity, model.replace(listenerOnly, '\n'), editorUi, focusUi, projectsUi, labelsKt, rowUi, areaUi, viewStateKt, searchUi, processUi, captureUi, captureModalUi, captureModalModel, menuModel, ...Object.values(menuScreens)]) {
+    assert.doesNotMatch(file, /close\(|onDestroy|onCleared|CoreHost\(/);
+}
+const guard = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/LegacyRnStoreGuard.kt'), 'utf8');
+const themeKt = source('Theme.kt');
+const iconsKt = source('Icons.kt');
+const logFileKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/DiagnosticsLogFile.kt'), 'utf8');
+const kotlinFiles = [activity, model, owner, editorUi, focusUi, projectsUi, labelsKt, themeKt, iconsKt, rowUi, areaUi, viewStateKt, searchUi, processUi, captureUi, captureModalUi, captureModalModel, snapshotsKt, coreHost, sqliteBridge, guard,
+    menuModel, logFileKt, ...Object.values(menuScreens)];
+assert.equal(kotlinFiles.join('\n').match(/(?<!class )CoreHost\(/g).length, 1);
+
+
+assert.match(owner, /val legacy = if \(BuildConfig\.RN_STORAGE\) \{\s*LegacyRnStoreGuard\.requireClear\(app\.dataDir, File\(app\.cacheDir, "legacy-rn-guard"\)\)\s*\} else \{\s*null\s*\}\s*val installer = HostInstaller\(app\.filesDir, app\.cacheDir\)\s*val keyValue = RnKeyValue\(app\.getDatabasePath\("RKStorage"\)\)\s*val runtime = CoreHost\(legacy\?\.database \?: File\(app\.filesDir, "stride-native-dev\.db"\), legacy\?\.let \{ app\.dataDir \}, HostIo\(app\),\s*File\(app\.filesDir, "journal"\), deviceStore\(app, keyValue\),\s*File\(app\.filesDir, DiagnosticsLogFile\.RELATIVE_PATH\),\s*keyValue, HostFiles\(app\.filesDir, app\.cacheDir, content = AndroidContentSource\(app\)\), installer,\s*ReminderAlarms\(app, keyValue, checkpointRnState = \{ if \(legacy != null\) LegacyRnStoreGuard\.checkpointRnState\(app\.dataDir\) \}\),\s*HostWidgets\(app\) \{ appState \},\s*scheduleBackgroundSync = \{ on -> CoreWork\.scheduleSyncStored\(app, on\) \}, appInfo = aboutAppInfo\(\),\s*backups = BackupOperations\(File\(app\.noBackupFilesDir, \"backup-operations\"\), File\(app\.filesDir, \"snapshots\"\), maxPlanBytes = DataTransferLimits\.MAX_PLAN_BYTES\),\s*calendars = HostCalendars\(app\), documents = HostDocuments\(app\), syncLock = HostSyncLock\(app\),\s*appSearch = HostAppSearch\(app, app\.getString\(R\.string\.stride_link_scheme\)\),\s*gmail = \(gmail \?: GmailAuthorization\(app\)\.also \{ gmail = it \}\)::call, gmailReceipts = HostGmailReceipts\(File\(app\.filesDir, "GmailCapture"\)\),\s*voice = HostVoice\.forApp\(app\)::call\)\s*try \{\s*runtime\.start\([^\n]*, legacy\?\.bootState \?: "", legacy\?\.backup \?: "", legacy\?\.preflight == true\)/);
+
+
+assert.match(guard, /check\(blocked == null\)[^\n]*\n(?:(?!return Opened\()[\s\S])*?\n\s*checkpointRnState\(dataDir\)\n(?:(?!fun )[\s\S])*?return Opened\(/);
+
+
+{
+    const about = source('AboutSettings.kt');
+    assert.equal(about.match(/PlayServices\.updateInfo\(/g)?.length, 1);
+    assert.match(about, /val due = runtime\.aboutRequest\("isAboutUpdateCheckDue", [^\n]*\)\.getBoolean\("due"\)\n\s*val play = aboutPlayAnswer\(source, due, stubbed\) \{ PlayServices\.updateInfo\(app\) \}/);
+    assert.equal(about.match(/PlayServices\.installReferrer\(/g)?.length, 1);
+    assert.match(about, /if \(stubbed\) debugProperty\("about_referrer"\) else PlayServices\.installReferrer\(app\)/);
+}
+
+
+assert.match(owner, /loadTheme\(runtime, legacy\?\.theme\)\s*recoverInstalls\(installer\)\s*if \(replay\(runtime\)\) recovered\(app, runtime, deferSync = true\)/);
+assert.match(readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8'), /include\(listOf\("AttachmentFileInstallerCore", "AndroidAttachmentInstallerFileOps"\)\.map \{ "main\/java\/\$installer\/\$it\.kt" \}\)/);
+
+assert.match(readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8'), /include\(listOf\("AttachmentFileInstallerCoreTest", "AndroidAttachmentInstallerFileOpsTest"\)\.map \{ "test\/java\/\$installer\/\$it\.kt" \}\)/);
+
+
+assert.match(coreHost, /\(if \(activationOwed\) callAsync\("bootRecovery", legacyState, legacyBackup, "journaled", storageBudget\(\), deadlineMs = bootDeadline\)\s+else callAsync\("boot", legacyState, legacyBackup, "journaled", storageBudget\(\), deadlineMs = bootDeadline\)\)/);
+assert.equal(coreHost.match(/"journaled"/g).length, 2);
+assert.match(hostEntry, /setNativeReplayTokens\(journaled \? 'required' : 'optional'\)/);
+assert.match(hostEntry, /bootRecovery\(legacyState: string, legacyBackup: string, writeJournal = '', budgetJSON = ''\): string \{\s*return boot\(legacyState, legacyBackup, true, writeJournal === 'journaled', budgetJSON\);/);
+assert.equal(hostEntry.match(/setNativeReplayTokens\(/g).length, 1);
+assert.equal(kotlinFiles.join('\n').match(/LegacyRnStoreGuard\.requireClear\(/g).length, 1);
+assert.match(guard, /private const val DATABASE = "files\/SQLite\/stride\.db"/);
+assert.match(guard, /val database = File\(dataDir, DATABASE\)/);
+
+
+const decision = guard.slice(guard.indexOf('fun requireClear'), guard.indexOf('private fun readState'));
+const order = ['"async-storage-unreadable"', '"json-too-large"', '"database-missing"', 'queryCopy(database, scratch)', '"database-unreadable"']
+    .map((text) => decision.indexOf(text));
+assert(order.every((index, i) => index > (i ? order[i - 1] : -1)), `guard order ${order}`);
+assert.match(decision, /state\.backup == null && hasRnState\(dataDir, asyncStorage\)\) "database-missing"/);
+assert.doesNotMatch(guard, /"json-ahead"/);
+assert(guard.indexOf('check(blocked == null)') < guard.indexOf('database.parentFile!!.mkdirs()'));
+
+assert(guard.indexOf('check(blocked == null)') < guard.indexOf('val preflight = preflightNeeded(state.jsonAhead, state.reconciled, state.backup != null, database.exists())')
+    && guard.indexOf('val preflight = preflightNeeded(') < guard.indexOf('database.parentFile!!.mkdirs()'));
+assert.match(guard, /jsonAhead \|\| \(backupPresent && \(!reconciled \|\| !databaseExists\)\)/);
+
+
+assert.match(hostEntry, /contract\.saveTaskDraft\(\{ \.\.\.JSON\.parse\(json\), mergeSyncedChanges: globalThis\.__strideHostPlatform !== 'ios' \}\)/);
+assert.match(hostEntry, /contract\.startInboxProcessing\(\{ mode: mode as 'guided' \| 'quick', mergeSyncedChanges: globalThis\.__strideHostPlatform !== 'ios' \}\)/);
+assert.match(hostEntry, /legacyCheck\(legacyState: string, legacyBackup: string\): string \{\s*return submit\(async \(\) => \{\s*const state = JSON\.parse\(legacyState\) as LegacyState;\s*assertNativeLegacyBackupSafe\(\{ jsonAhead: state\.jsonAhead, backupJson: state\.backupPresent \? legacyBackup : null \}\);/);
+
+
+const originalUses = [...guard.matchAll(/\b(asyncStorage|database|file|source)\.(\w+)/g)].map(([, name, member]) => `${name}.${member}`);
+assert.deepEqual([...new Set(originalUses)].sort(), ['asyncStorage.exists', 'asyncStorage.path', 'database.exists', 'database.parentFile',
+    'file.name', 'file.path', 'source.copyTo', 'source.exists', 'source.name']);
+assert.equal(guard.match(/BundledSQLiteDriver\(\)\.open\(/g).length, 2);
+assert.match(guard, /BundledSQLiteDriver\(\)\.open\(File\(scratch, file\.name\)\.path\)/);
+
+
+const commit = guard.slice(guard.indexOf('fun commitRnState'), guard.indexOf('private fun ensureRnStateCheckpoint'));
+assert(commit.indexOf('ensureRnStateCheckpoint(asyncStorage') > 0
+    && commit.indexOf('ensureRnStateCheckpoint(asyncStorage') < commit.indexOf('BundledSQLiteDriver().open(asyncStorage.path)'));
+assert.equal(guard.match(/asyncStorage\.path\)/g).length, 1);
+assert.deepEqual(commit.match(/"(BEGIN IMMEDIATE|COMMIT|ROLLBACK|DELETE FROM[^"]*|INSERT[^"]*|PRAGMA[^"]*)"/g), [
+    '"PRAGMA synchronous = FULL"', '"BEGIN IMMEDIATE"', '"DELETE FROM catalystLocalStorage WHERE key = ?"',
+    '"INSERT OR REPLACE INTO catalystLocalStorage VALUES (?, ?)"', '"COMMIT"', '"ROLLBACK"']);
+assert.match(commit, /bindText\(1, JSON_AHEAD\)[\s\S]*bindText\(1, RECONCILED\)\s*it\.bindText\(2, "1"\)/);
+
+const rnCheckpoint = guard.slice(guard.indexOf('private fun ensureRnStateCheckpoint'), guard.indexOf('private fun hasRnState'));
+assert.match(rnCheckpoint, /if \(!checkpoint\.exists\(\)\)[\s\S]*listOf\("", "-wal", "-journal", "-shm"\)[\s\S]*syncFile\(source\.copyTo[\s\S]*syncDirectory\(partial\)[\s\S]*renameTo\(checkpoint\)[\s\S]*syncDirectory\(checkpoint\.parentFile!!\)/);
+assert.match(guard, /RN_STATE_CHECKPOINT = "files\/SQLite\/RKStorage\.prewrite"/);
+
+assert.doesNotMatch(code(kotlinFiles.join('\n')), /merge|JSONObject\((state\.)?backup|JSONArray\((state\.)?backup/i);
+assert.match(guard, /return Opened\(database, bootState\.toString\(\), state\.backup \?: "", state\.language, state\.theme, preflight\)/);
+
+assert.match(guard, /private const val LANGUAGE = "stride-language"/);
+assert.match(guard, /listOf\(JSON_AHEAD, RECONCILED, BACKUP_VERSION, LANGUAGE, THEME\)/);
+assert.match(guard, /language = if \(LANGUAGE in sizes\) value\(LANGUAGE\) else null/);
+
+assert.match(guard, /private const val THEME = "@stride_theme"/);
+assert.match(guard, /theme = if \(THEME in sizes\) value\(THEME\) else null/);
+assert.match(coreHost, /LegacyRnStoreGuard\.commitRnState\(checkNotNull\(rnDataDir\)/);
+assert.equal(kotlinFiles.join('\n').match(/commitRnState\(/g).length, 2, 'defined once, called once from the guarded bridge callback');
+assert.match(guard, /queryCopy\(asyncStorage, scratch\)/);
+assert.match(guard, /for \(suffix in listOf\("", "-wal", "-journal"\)\)/);
+assert.match(guard, /PRAGMA quick_check/);
+const guardLog = /Log\.i\(CoreHost\.TAG, ("[\s\S]*?")\)\n/.exec(guard)?.[1] ?? '';
+assert.match(guardLog, /releaseCheck=v1\.3\.3\/native-android-legacy-json-ahead-guard/);
+assert.match(guardLog, /outcome=\$\{if \(blocked == null\) "clear" else "blocked"\}/);
+for (const [, name] of guardLog.matchAll(/(\w+)=/g)) assert.doesNotMatch(name, /key|pass|user/i);
+assert.equal(owner.match(/close\(\)/g).length, 1);
+assert.match(owner, /catch \(failure: Throwable\) \{\s*runCatching \{ runtime\.close\(\) \}/);
+assert.match(activity, /model\.attach\(\)/);
+
+assert.match(model, /val failed = if \(\(action != null[\s\S]*?ProcessCoreHost\.recordFailure\([\s\S]*?ui \{/);
+
+assert.match(model, /PendingFailure\(failed, message, menu\.page, editor, screen, focus, projects, project, areaFilter\)/);
+assert.match(model, /pending\.menuPage\?\.let\(menu::restorePage\)/, 'a new screen shows the failed command\'s list page again');
+assert.match(model, /pending\.editor\?\.let\(::keepEditor\)/);
+
+assert.match(model, /focus = pending\.focus\s+focusRevision = pending\.focus\?\.revision\.orEmpty\(\)\s+projects = pending\.projects\s+keepProject\(pending\.project\?\.projectId\)\s+project = pending\.project\s+show\(pending\.screen\)/);
+
+assert.equal(model.match(/ProcessCoreHost\.failure\?\.let \{ pending -> ui \{ host = runtime; restore\(pending, storedProcessing, storedCapture\); keepRoutes\(\) \}/g).length, 2);
+assert.match(model, /runtime\.completeTask\(id, taskRevision\)\s+acknowledged\(action\)/);
+assert.match(model, /runtime\.saveTaskDraft\(action\.id, draftJson\(action\.base\), draftJson\(action\.patch\), action\.title, action\.attachments, action\.requestId\)\s+\} catch \(failure: Exception\) \{[\s\S]{0,300}?throw failure\s+\}\s+acknowledged\(action\)\s+if \(action\.attachments\.isNotEmpty\(\)\) attachments\.settleSaved\(runtime, action\.id, JSONObject\(action\.attachments\)\)\s+ui \{ editorMenu\.saved\(action\.id\); closeEditor\(settle = false\) \}/);
+
+for (const [call, fn] of [
+    ['runtime\\.setTaskFocus\\(id, focused, taskRevision\\)', 'fun setTaskFocus('], ['runtime\\.setProjectFocus\\(id, focused, projectRevision\\)', 'fun setProjectFocus('],
+    ['runtime\\.updateTask\\(action\\.id, json\\(action\\.base\\), json\\(action\\.patch\\), action\\.requestId\\)', 'private fun sendUpdate('],
+    ['runtime\\.createProject\\(action\\.title, areaId, action\\.id\\)', 'fun createProject('], ['runtime\\.setAreaFilter\\(action\\.id\\)', 'private fun sendAreaFilter('],
+]) {
+    const body = model.slice(model.indexOf(fn), model.indexOf('\n    }\n', model.indexOf(fn)));
+    assert.match(body, new RegExp(`perform\\(action\\) \\{ runtime ->\\s+(val reply = )?${call}\\s+acknowledged\\(action\\)`), `${fn} runs through perform(action) with its exact retry`);
+}
+
+assert.match(model, /FailedAction\("taskFocus", id, patch = mapOf\("focused" to "\$focused", "taskRevision" to taskRevision\)\)/);
+assert.match(model, /FailedAction\("projectFocus", id, patch = mapOf\("focused" to "\$focused", "projectRevision" to projectRevision\)\)/);
+
+assert.match(coreHost, /fun completeTask\(id: String, taskRevision: String\): JSONObject = callAsync\("complete", id, taskRevision\)/);
+assert.match(coreHost, /fun setTaskFocus\(id: String, focused: Boolean, taskRevision: String\): JSONObject = callAsync\("taskFocus", id, focused, taskRevision\)/);
+assert.match(coreHost, /fun setProjectFocus\(id: String, focused: Boolean, projectRevision: String\): JSONObject = callAsync\("projectFocus", id, focused, projectRevision\)/);
+assert.match(projectsUi, /it\.getBoolean\("focusedWithoutNextAction"\), it\.optString\("projectRevision"\)\)/);
+assert.match(model, /FailedAction\("createProject", projectRequestId, projectDraft, base = mapOf\("areaId" to areaId\)\)/);
+for (const field of ['projectDraft', 'projectRequestId']) assert.match(model, new RegExp(`saved\\.get<String>\\("${field}"\\)`));
+assert.match(model, /if \(action\.kind == "createProject"\) setProjectDraft\(action\.title, action\.base\["areaId"\], action\.id\)/, 'a new screen restores the owed create, never re-sends it');
+
+assert.match(model, /val blocked = reply\.optString\("blocked"\)\s+if \(blocked\.isNotEmpty\(\)\) ui \{ showToast\(reply\.getString\("blockedTitle"\), blocked\) \}/);
+
+assert.match(model, /readOpen\(runtime, at\) else null,\s+AreaFilter\.parse\(runtime\.areaFilter\(\)\),\s+\)/);
+
+
+assert.match(model, /private fun read\(runtime: CoreHost, at: Depth, shown: Screen\? = null\) = Lists\(\s+if \(shown == null \|\| shown == Screen\.Focus\) readFocus\(runtime, null, at\.focus, at\.controls\) else null,\s+if \(shown == null \|\| shown == Screen\.Projects\) ProjectsView\.parse\(runtime\.projects\(\)\) else null,\s+at\.project,\s+if \(shown == null \|\| shown == Screen\.Projects\) readOpen\(runtime, at\) else null,/);
+assert.equal(code(model).match(/\bread\(runtime, at\b[^)]*\)/g).join(' | '), 'read(runtime, at, screen) | read(runtime, at) | read(runtime, at) | read(runtime, at, Screen.Focus) | read(runtime, at, Screen.Projects) | read(runtime, at)',
+    'the boot reads the tab on screen; a read\'s Try again and a sync\'s refreshAll read all; a command\'s refreshAll reads the tab on screen, then all (AfterCommandReads)');
+assert.match(model, /fun contentShown\(\) \{\s+if \(focus == null\) refreshFocus\(\)\s+if \(projects == null\) refreshProjects\(\)\s+ProcessCoreHost\.contentShown\(\)\s+\}/);
+assert.match(model, /loading = false\s+if \(screen == Screen\.Focus && lists\.focus == null\) refreshFocus\(\)\s+if \(screen == Screen\.Projects && lists\.projects == null\) refreshProjects\(\)/);
+
+assert.match(model, /lists\.projects\?\.let \{ read ->\s+if \(fresh\(mine, Part\.Projects\)\) projects = read\s+if \(fresh\(mine, Part\.Project\)\) showProject\(lists\.projectId, lists\.project\)\s+\}/);
+for (const [fn, js] of [['setTaskFocus', 'taskFocus'], ['setProjectFocus', 'projectFocus'], ['createProject', 'createProject'], ['areaFilter', 'areaFilter'], ['setAreaFilter', 'setAreaFilter']]) {
+    assert.match(coreHost, new RegExp(`fun ${fn}\\([^)]*\\): JSONObject =\\s*callAsync\\("${js}"`), `CoreHost.${fn} reaches host method ${js}`);
+}
+assert.equal([activity, owner, editorUi, focusUi, projectsUi, rowUi, areaUi].join('\n').match(/\.setTaskFocus\(|\.setProjectFocus\(|\.createProject\(|\.setAreaFilter\(|\.areaFilter\(\)/g), null);
+assert.equal(model.match(/clearFailure/g).length, 1);
+
+
+assert.doesNotMatch(owner, /SharedPreferences|SavedStateHandle|File\(app\.filesDir, "(?!stride-native-dev\.db"|SQLite\/stride\.db"|journal"|snapshots"|GmailCapture")/);
+assert.match(model, /ProcessCoreHost\.get\(/);
+
+assert.equal(coreHost.match(/JSCallFunction \{/g).length, 1, 'the only JS callback constructor is guarded');
+const bridgeCallbacks = coreHost.match(/bridge\.setProperty\([^\n]*/g);
+assert.equal(bridgeCallbacks.length, 55, 'the SQL calls, trace, nowMs, randomBytes, rnStateCommit, collationKey, dateTimeFormat, log, the fetch, secret and sync crypto calls, logFile, the key-value calls, hostEvent, the queue\'s file calls, Settings › Data\'s three channel calls, its debug property and memory probe (D1c), the attachment file, delete, abort and installer calls and the reminder alarms\' calls: and the widgets\' three calls, the background sync\'s schedule, the device calendar call, system search\'s info and call (O2d), and File Sync\'s document and lock calls (S5), Gmail\'s authorization call, receipts file call and receipts SQL (G2), and voice capture\'s microphone call (V3): each guarded');
+
+
+assert(bridgeCallbacks.includes('bridge.setProperty("gmailCall", guarded { args -> io.gmail(args[0] as String, authorization) }) }'));
+assert(bridgeCallbacks.includes('bridge.setProperty("gmailFile", guarded { args -> receipts.file(args[0] as String, args[1] as String, args[2] as String) })'));
+assert(bridgeCallbacks.includes('bridge.setProperty("gmailSql", guarded { args -> receipts.sql(args[0] as String, args[1] as String, args[2] as String) })'));
+
+assert(bridgeCallbacks.includes('bridge.setProperty("appSearchCall", guarded { args -> io.calendar(args[0] as String, search::call) })'));
+
+assert(bridgeCallbacks.includes('bridge.setProperty("documentCall", guarded { args -> io.file(args[0] as String, folder::call) }) }'));
+assert(bridgeCallbacks.includes('bridge.setProperty("syncLockCall", guarded { args -> io.file(args[0] as String, lock::call) }) }'));
+
+assert(bridgeCallbacks.includes('bridge.setProperty("calendarCall", guarded { args -> io.calendar(args[0] as String, device::call) }) }'));
+assert(bridgeCallbacks.includes('bridge.setProperty("fileAbort", guarded { args -> io.fileAbort(args[0] as String); null })'));
+assert(bridgeCallbacks.includes('bridge.setProperty("fileDeleteNow", guarded { args -> files.deleteNow(args[0] as String); null })'));
+
+assert(bridgeCallbacks.includes('bridge.setProperty("fileCall", guarded { args -> io.file(args[0] as String, files::call) })'));
+assert(bridgeCallbacks.includes('bridge.setProperty("installerCall", guarded { args -> io.file(args[0] as String, installer::call) })'));
+
+assert(bridgeCallbacks.includes('bridge.setProperty("hostEvent", guarded { args -> runCatching { onEvent?.invoke(args[0] as String) }; null })'));
+for (const line of bridgeCallbacks) assert.match(line, /^bridge\.setProperty\("\w+", guarded \{/);
+
+
+{
+    const kv = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/RnKeyValue.kt'), 'utf8');
+    const rnSupplier = readFileSync(resolve(app, '../../node_modules/@react-native-async-storage/async-storage/android/src/main/java/com/reactnativecommunity/asyncstorage/ReactDatabaseSupplier.java'), 'utf8');
+    for (const pin of ['DATABASE_NAME = "RKStorage"', 'DATABASE_VERSION = 1', 'TABLE_CATALYST = "catalystLocalStorage"', 'KEY_COLUMN + " TEXT PRIMARY KEY, "', 'VALUE_COLUMN + " TEXT NOT NULL"']) {
+        assert(rnSupplier.includes(pin), `AsyncStorage still has ${pin}`);
+    }
+    assert.match(kv, /"CREATE TABLE IF NOT EXISTS catalystLocalStorage \(key TEXT PRIMARY KEY, value TEXT NOT NULL\)"/);
+    assert.match(kv, /"INSERT OR REPLACE INTO catalystLocalStorage VALUES \(\?, \?\)"/);
+    assert.match(kv, /PRAGMA user_version"\)\.use \{ it\.step\(\); it\.getLong\(0\) \} == 0L\) \{[\s\S]*?connection\.exec\(CREATE\)\s+connection\.exec\("PRAGMA user_version = 1"\)/);
+    assert.match(kv, /connection\.exec\("PRAGMA synchronous = FULL"\)/);
+    assert.match(kv, /private fun write\(work: \(SQLiteConnection\) -> Unit\) = open<Unit> \{ connection ->\s+connection\.exec\("BEGIN IMMEDIATE"\)/);
+    assert.match(owner, /RnKeyValue\(app\.getDatabasePath\("RKStorage"\)\)/, 'the key-value store is RN\'s own RKStorage');
+    for (const name of ['kvGet', 'kvSet', 'kvRemove', 'kvMultiGet', 'kvMultiSet', 'kvMultiRemove']) {
+        assert(bridgeCallbacks.some((line) => line.startsWith(`bridge.setProperty("${name}", guarded { args -> `)), `${name} is guarded`);
+    }
+}
+
+
+for (const [name, call] of [['fileList', 'args -> files.list(args[0] as String)'], ['fileRead', 'args -> files.readText(args[0] as String)'],
+    ['fileDelete', 'args -> queueStop(); files.delete(args[0] as String); null'], ['kvGet', 'args -> JSONArray().put(keyValue.get(args[0] as String) ?: JSONObject.NULL).toString()'],
+    ['kvSet', 'args -> kvFault(); keyValue.set(args[0] as String, args[1] as String); null']]) {
+    assert(bridgeCallbacks.includes(`bridge.setProperty("${name}", guarded { ${call} })`), `${name} reaches the queue's port and nothing else`);
+}
+assert.match(coreHost, /private fun queueStop\(\) \{\s+if \(debugFault\("queue_stop"\) != "delete"\) return/, 'the queue stop is debug-only');
+assert.match(coreHost, /private fun kvFault\(\) = check\(debugFault\("fail_kv_set"\) != "1"\)/, 'the injected RKStorage failure is debug-only');
+
+{
+    const core = (name) => readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core', name), 'utf8');
+    const hostIo = core('HostIo.kt');
+    const secretStore = core('SecretStore.kt');
+    for (const [name, call] of [['netFetch', 'args -> io.fetch(args[0] as String)'], ['netAbort', 'args -> io.abort(args[0] as String); null'],
+        ['secretCall', 'args -> io.secret(args[0] as String)'], ['ioNext', '_ -> io.next()'], ['ioBody', '_ -> io.body()']]) {
+        assert(bridgeCallbacks.includes(`bridge.setProperty("${name}", guarded { ${call} })`), `${name} starts or takes a call and nothing else`);
+    }
+    assert.doesNotMatch(hostIo + secretStore, /quickjs|JSFunction|JSObject|JSCallFunction/i, 'no host call touches the engine');
+    assert.match(hostIo, /calls\[id\] = call\s+call\.enqueue\(object : Callback \{/, 'a request runs on OkHttp\'s dispatcher');
+
+    assert.doesNotMatch(hostIo.replace('if (argon2DelayMs > 0) Thread.sleep(argon2DelayMs).also { started = System.nanoTime() }', ''), /\.execute\(\)|runBlocking|Thread\.sleep/);
+    assert.match(hostIo, /private val argon2DelayMs = debugProperty\("crypto_delay_ms"\)/);
+
+
+    assert.match(hostIo, /override fun onResponse\(call: Call, response: Response\) \{[^{}]*?try \{\s*answers\.add\(runCatching \{ response\.use \{ read\(id, it, redirect\) \} \}\.getOrElse \{ failure\(id, call, it\) \}\)\s*\} finally \{\s*calls\.remove\(id\)\s*\}/);
+    assert.equal(hostIo.match(/calls\.remove\(id\)/g).length, 3);
+    assert.match(hostIo, /fun close\(\) \{\s*calls\.values\.forEach \{ it\.cancel\(\) \}/);
+    assert.match(hostIo, /secretThread\.execute \{\s*if \(op == "get" && answers\.closed\) return@execute\s*answers\.add\(runCatching \{/, 'a secret call runs on the secrets thread');
+
+
+    assert.match(hostIo, /fileJobs\.start\(id, FileJobs\.readsPickedDocument\(json\), \{\s*val request = JSONObject\(json\)/, 'a file call runs off the engine');
+    const fileJobs = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/FileJobs.kt'), 'utf8');
+    assert.match(fileJobs, /if \(aborted\.remove\(id\)\) throw IOException\("Request cancelled"\)/);
+    assert.match(fileJobs, /if \(readsDocument\) Thread\(job, "stride-document-\$id"\)\.apply \{ isDaemon = true \}\.start\(\) else queue\.execute\(job\)/);
+
+    assert.match(hostIo, /calendarThread\.execute \{ runCatching \{ run\(json, reply\) \}\.onFailure \{ reply\(Result\.failure\(it\)\) \} \}/, 'a calendar call runs off the engine');
+    assert.match(hostIo, /if \(replied\.compareAndSet\(false, true\)\) \{\s*answers\.add\(/, 'a calendar call answers once');
+    assert.equal(hostIo.match(/answers\.add\(/g).length, 6, 'the answer queue is the only way back');
+
+    const hostAnswers = core('HostAnswers.kt');
+    assert.match(hostAnswers, /held = null\s+taken = answer\.body\s+answer\s+\}/);
+    assert.match(hostAnswers, /fun body\(\): String = synchronized\(lock\) \{ if \(closed\) "" else \(taken \?: ""\)\.also \{ taken = null \} \}/);
+
+
+    const read = hostIo.slice(hostIo.indexOf('private fun read('), hostIo.indexOf('private fun failure('));
+    assert.match(read, /if \(body\.contentLength\(\) > maxResponseBytes\) throw Refused\(tooLarge\)/);
+    assert.match(read, /while \(source\.read\(bytes, 64 \* 1024L\) != -1L\) \{\s*if \(bytes\.size > maxResponseBytes\) throw Refused\(tooLarge\)\s*\}/);
+    assert.doesNotMatch(read, /catch|runCatching|getOrNull|getOrDefault|getOrElse|\?: ""|orEmpty/, 'HostIo.read swallows no IOException');
+
+    assert.doesNotMatch(hostIo, /catch \(|getOrNull|getOrDefault/);
+    assert.deepEqual(hostIo.match(/runCatching \{[\s\S]*?\}\.getOrElse \{ [^\n]*/g).map((line) => /getOrElse \{ (failure\(id, call, it\)|(Answer\()?JSONObject\(\)\.put\("id", id\)\.put\("error")/.test(line)), [true, true, false]);
+
+    assert.match(hostIo, /runCatching \{ cryptoReply\(id, json\) \}\.getOrElse \{ failure ->\s+val answer = JSONObject\(\)\.put\("id", id\)[\s\S]{0,400}?Answer\(answer\.toString\(\)\)\s+\}\s+if \(reply != null\) answers\.add\(reply\)\s+wake\(\)/);
+
+    assert.match(fileJobs, /val result = runCatching \{[\s\S]*?compute\(\)\s*\}[\s\S]*?deliver\(result\)/);
+    assert.match(hostIo, /\}\) \{ Answer\(JSONObject\(\)\.put\("id", id\)\.put\("error", it\.message \?: it\.javaClass\.simpleName\)\.toString\(\)\) \}\)/);
+
+
+    const coreHttp = readFileSync(resolve(app, '../../packages/core/src/http-utils.ts'), 'utf8');
+    const product = (text) => text.replace(/[L_]/g, '').split('*').reduce((total, part) => total * Number(part.trim()), 1);
+    assert.equal(product(/const val MAX_SYNC_DOCUMENT_BYTES = ([^\n]+)/.exec(hostIo)[1]), product(/export const MAX_SYNC_DOCUMENT_BYTES = ([^;]+);/.exec(coreHttp)[1]));
+    assert.match(hostIo, /private val ceiling = minOf\(MAX_SYNC_DOCUMENT_BYTES, Runtime\.getRuntime\(\)\.maxMemory\(\) \/ 5\)/);
+    assert.match(hostIo, /private val maxResponseBytes = debugProperty\("net_max_bytes"\)\.toLongOrNull\(\)\?\.takeIf \{ it > 0 \}\?\.let \{ minOf\(it, ceiling\) \} \?: ceiling/);
+    assert.match(hostIo, /Log\.i\(CoreHost\.TAG, "Native Android fetch limit bytes=\$maxResponseBytes ceiling=\$ceiling heap=/);
+
+    assert.match(read, /val bodiless = response\.request\.method == "HEAD" \|\| response\.code == 204 \|\| response\.code == 304 \|\| body\.contentLength\(\) == 0L/);
+    assert.match(read, /val gzip = !bodiless && response\.header\("Content-Encoding"\)\.equals\("gzip", ignoreCase = true\)\s+val source = if \(gzip\) GzipSource/);
+
+
+    const coreRetry = readFileSync(resolve(app, '../../packages/core/src/retry-utils.ts'), 'utf8');
+    const corePhrases = [...coreRetry.slice(coreRetry.indexOf('export const isWebdavInvalidJsonError'), coreRetry.indexOf('export const isRetryableWebdavReadError')).matchAll(/normalized\.includes\('([^']+)'\)/g)].map((m) => m[1]);
+    assert.deepEqual([.../INVALID_JSON_PHRASES = listOf\(([\s\S]*?)\)\n/.exec(hostIo)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]), corePhrases);
+    assert.match(hostIo, /detail\.isNotEmpty\(\) && INVALID_JSON_PHRASES\.none \{ detail\.lowercase\(\)\.contains\(it\) \}\s*\} \?: error\.javaClass\.simpleName/);
+
+
+    const coreStorage = readFileSync(resolve(app, '../../packages/core/src/store-settings.ts'), 'utf8');
+    const deadline = product(/const val OPERATION_DEADLINE_MS = ([^\n]+)/.exec(coreHost)[1]);
+    assert(deadline >= product(/export const DEFAULT_TIMEOUT_MS = ([^;]+);/.exec(coreHttp)[1]) && deadline >= product(/const STORAGE_TIMEOUT_MS = ([^;]+);/.exec(coreStorage)[1]));
+    assert.match(coreHost, /const val NETWORK_DEADLINE_MS = HostIo\.CALL_TIMEOUT_MS \+ OPERATION_DEADLINE_MS/);
+    assert.match(coreHost, /private fun callAsync\(method: String, vararg args: Any\?, deadlineMs: Long = deadline\(method, args\.toList\(\)\)\): JSONObject \{/);
+
+    assert.match(coreHost, /private fun deadline\(method: String, args: List<Any\?>\): Long =\s+if \(method == BackupOperations\.METHOD\) frozenBudget\(args\[0\] as String\) else deadlineOf\(method, args\)/);
+    assert.match(coreHost, /else backups\?\.budgetMs\(reference, budget\) \?: BACKUP_DEADLINE_MS/);
+
+
+    assert.match(coreHost, /if \(Thread\.currentThread\(\) === engineThread\) \{\s+stopped\?\.let \{ throw IllegalStateException\(it\) \}\s+finish\(begin\(method, args, deadlineMs, done\), answerChecked\(method, args, deadlineMs\)\)/);
+
+
+    assert.match(coreHost, /onEngineQueued \{\s+stopped\?\.let \{ throw IllegalStateException\(it\) \}[^}]*?begin\(method, args, deadlineMs, done\)\.let \{ if \(writeQueue\.admit\(it\)\) start\(it\) \}\s+\}/);
+    assert.match(coreHost, /private val writeQueue = WriteQueue<Call> \{ it\.entry != null \}/);
+    assert.match(coreHost, /call\.done\.completeExceptionally\(failure\)\s+\}\s+startNextWrite\(call\)\s+\}/, 'an answered write starts the next');
+    assert.match(coreHost, /timed out"\)\)\s+startNextWrite\(call\)\s+\}/, 'a timed-out write starts the next');
+    assert.match(coreHost, /writeQueue\.close\(\)\.forEach \{ it\.done\.completeExceptionally/);
+    assert.match(coreHost, /private fun expire\(call: Call\) \{\s+call\.deadlineCheck\?\.cancel\(false\)\s+call\("cancel", call\.id\)\s+if \(pumpUntil\(call\.id, DRAIN_MS\) == null\) \{[\s\S]{0,300}?stopped = reason[\s\S]{0,300}?closeOnEngine\(\)\s+return\s+\}\s+checkNotNull\(context\)\.globalObject\.getJSFunction\("__resumeHostCalls"\)\.call\(\)\s+schedulePump\(\)\s+call\.done\.completeExceptionally\(IllegalStateException\("Core \$\{call\.method\} timed out"\)\)/);
+    assert.match(coreHost, /calls \+= call\s+runCatching \{\s+call\.deadlineCheck = executor\.schedule\(\{ pollCalls\(\) \}, call\.deadlineMs, TimeUnit\.MILLISECONDS\)/, 'a waiting call is checked at its deadline even with no pump due');
+    assert.match(coreHost, /private fun finish\(call: Call, result: JSONObject\) \{\s+call\.deadlineCheck\?\.cancel\(false\)/, 'an answered call\'s deadline check is cancelled');
+    assert.match(coreHost, /val answer = pumpUntil\(id, deadlineMs\) \?: run \{[^}]*?call\("cancel", id\)\s*if \(pumpUntil\(id, DRAIN_MS\) == null\) \{[^}]*?stopped = reason[^}]*?closeOnEngine\(\)\s*throw IllegalStateException\(reason\)\s*\}\s*checkNotNull\(context\)\.globalObject\.getJSFunction\("__resumeHostCalls"\)\.call\(\)\s*schedulePump\(\)\s*throw IllegalStateException\("Core \$method timed out"\)/);
+    assert.equal(coreHost.match(/pumpUntil\(/g).length, 4, 'a call pumps itself only through pumpUntil: a nested one, and a drain');
+    assert.match(coreHost, /callAsync\("netCheck", port, deadlineMs = NETWORK_DEADLINE_MS\)/);
+    assert.match(hostIo, /response\.use \{ read\(id, it, redirect\) \}/);
+
+    const rnClient = readFileSync(resolve(app, '../mobile/modules/sync-file-lock/android/src/main/java/com/ishaanpilar/stride/syncfilelock/SyncHttpClientPackage.kt'), 'utf8');
+    assert.equal(/CONNECT_TIMEOUT_MS = ([\d_]+L)/.exec(hostIo)[1], /CONNECT_TIMEOUT_MS = ([\d_]+L)/.exec(rnClient)[1]);
+    assert.match(hostIo, /\.connectTimeout\(CONNECT_TIMEOUT_MS, TimeUnit\.MILLISECONDS\)/);
+    assert.match(coreHost, /if \(io\.busy\(\)\) io\.await\(if \(delay < 0\) 25L else minOf\(delay, 25L\)\)\s+else if \(delay > 0\) Thread\.sleep\(minOf\(delay, 25L\)\)/);
+    assert.match(coreHost, /\(if \(activationOwed\) callAsync\("bootRecovery", legacyState, legacyBackup, "journaled", storageBudget\(\), deadlineMs = bootDeadline\)\s+else callAsync\("boot", legacyState, legacyBackup, "journaled", storageBudget\(\), deadlineMs = bootDeadline\)\)\.also \{ netCheck\(\) \}/);
+    assert.match(coreHost, /val port = debugFault\("net_check"\)\.ifEmpty \{ return \}/, 'the net check is debug-only');
+
+    const rnConfig = /NETWORK_SECURITY_CONFIG_XML = `([\s\S]*?)`;/.exec(readFileSync(resolve(app, '../mobile/plugins/android-network-security-config.js'), 'utf8'))[1];
+    assert.equal(readFileSync(resolve(app, 'android/app/src/main/res/xml/network_security_config.xml'), 'utf8'), rnConfig);
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+    assert.match(manifest, /<uses-permission android:name="android\.permission\.INTERNET" \/>/);
+    assert.match(manifest, /<application\s+android:networkSecurityConfig="@xml\/network_security_config"/);
+
+    const expo = (name) => readFileSync(resolve(app, '../../node_modules/expo-secure-store/android/src/main/java/expo/modules/securestore', name), 'utf8');
+    const expoSource = expo('SecureStoreModule.kt') + expo('encryptors/AESEncryptor.kt') + expo('AuthenticationHelper.kt');
+    for (const pin of ['SHARED_PREFERENCES_NAME = "SecureStore"', 'DEFAULT_KEYSTORE_ALIAS = "key_v1"', 'return "$keychainService-$key"',
+        'UNAUTHENTICATED_KEYSTORE_SUFFIX = "keystoreUnauthenticated"', 'AES_CIPHER = "AES/GCM/NoPadding"', 'return "$AES_CIPHER:$baseAlias"',
+        'return "${getKeyStoreAlias(options)}:$suffix"', 'AES_KEY_SIZE_BITS = 256', 'NAME = "aes"', 'CIPHERTEXT_PROPERTY = "ct"', 'IV_PROPERTY = "iv"',
+        'GCM_AUTHENTICATION_TAG_LENGTH_PROPERTY = "tlen"', 'SCHEME_PROPERTY = "scheme"', 'USES_KEYSTORE_SUFFIX_PROPERTY = "usesKeystoreSuffix"',
+        'KEYSTORE_ALIAS_PROPERTY = "keystoreAlias"', 'REQUIRE_AUTHENTICATION_PROPERTY = "requireAuthentication"', 'MIN_GCM_AUTHENTICATION_TAG_LENGTH = 96']) {
+        assert(expoSource.includes(pin), `expo-secure-store still has ${pin}`);
+    }
+    for (const pin of ['getSharedPreferences("SecureStore", Context.MODE_PRIVATE)', 'SERVICE = "key_v1"', 'entry(key: String) = "$SERVICE-$key"',
+        'ALIAS = "$CIPHER:$SERVICE:keystoreUnauthenticated"', 'LEGACY_ALIAS = "$CIPHER:$SERVICE"', 'CIPHER = "AES/GCM/NoPadding"', '.setKeySize(256)',
+        '.put("ct", ', '.put("iv", ', '.put("tlen", spec.tLen)', '.put("scheme", "aes")', '.put("usesKeystoreSuffix", true)', '.put("keystoreAlias", SERVICE)',
+        '.put("requireAuthentication", false)', 'check(tagBits >= 96)', 'Regex("^[\\\\w.-]+$")']) {
+        assert(secretStore.includes(pin), `SecretStore has RN's ${pin}`);
+    }
+}
+assert.match(coreHost, /setProperty\("log", guarded \{ args -> runCatching \{/);
+assert.match(coreHost, /try \{ work\(args\) \} catch \(error: Throwable\) \{ NATIVE_ERROR \+/);
+
+assert.equal(coreHost.match(/getprop/g).length, 1);
+assert.match(coreHost, /private fun debugFault\(name: String\): String = debugProperty\(name\)/);
+assert.match(coreHost, /fun debugProperty\(name: String\): String \{\s*if \(!BuildConfig\.DEBUG\) return ""/);
+
+
+assert.equal([activity, model, owner, editorUi, focusUi, projectsUi, labelsKt, captureUi].join('\n').match(/debugProperty\(/g).length, 6);
+assert.match(model, /private val harnessStart = debugProperty\("start_tab"\)/);
+assert.match(model, /if \(BuildConfig\.DEBUG\) debugProperty\("session_age_ms"\)\.toLongOrNull\(\) \?: 0L else 0L/);
+assert.match(owner, /if \(BuildConfig\.DEBUG && runtime != null && debugProperty\("appsearch_dump"\) == "1"\)/);
+
+assert.match(readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/SettingsModel.kt'), 'utf8'), /\}, keyValue\)/);
+assert.match(readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/DeviceWrites.kt'), 'utf8'), /if \(rk\.isNotEmpty\(\)\) rkStorage\.apply\(rk\)/);
+assert.match(model, /debugProperty\("boot_delay_ms"\)\.toLongOrNull\(\)\?\.let\(Thread::sleep\)\s+val runtime = ProcessCoreHost\.get\(/);
+assert.match(captureUi, /withContext\(Dispatchers\.IO\) \{ debugProperty\("clipboard"\) \}\.takeIf \{ it\.isNotEmpty\(\) \}\?\.let \{ clipboard\.setText\(/);
+
+assert.equal(coreHost.match(/failCommits =/g).length, 2);
+assert.match(coreHost, /failCommits = debugFault\("fail_commit"\) == "1"/);
+assert.equal([activity, model, owner, editorUi, focusUi, projectsUi, labelsKt].join('\n').match(/failCommits|debugFault|getprop/g), null);
+
+assert.match(coreHost, /fun language\(stored: String, system: String\): JSONObject =\s*callAsync\("language", debugFault\("language"\)\.ifEmpty \{ stored \}, system\)/);
+assert.equal(coreHost.match(/debugFault\("language"\)/g).length, 1);
+
+
+{
+    const journalKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/WriteJournal.kt'), 'utf8');
+    const shapes = Object.fromEntries([.../val SHAPES = mapOf\(([\s\S]*?)\n        \)\n/.exec(journalKt)[1].matchAll(/"(\w+)" to listOf\(([^)]*)\)/g)]
+        .map(([, name, kinds]) => [name, [...kinds.matchAll(/"([^"]+)"/g)].map((m) => m[1])]));
+    assert.match(journalKt, /val WRITES = SHAPES\.keys/);
+    const writes = Object.keys(shapes).sort();
+    const host = hostEntry.slice(hostEntry.indexOf('globalThis.StrideHost = {'));
+    const methods = [...host.matchAll(/\n    (\w+)\([^)]*\): [^{\n]+\{([\s\S]*?)\n    \},/g)].map(([, name, body]) => ({ name, body }));
+    assert(methods.length > 40 && methods.some((m) => m.name === 'menuCommand'), 'host-entry\'s methods parsed');
+
+
+    const iosPreparedCommits = ['captureCommit', 'captureLinesCommit', 'draftCommit'];
+
+
+    const iosOnlyWrites = ['commitPreparedInboxTasksOrganize', 'commitPreparedInboxOrganizeDestinationCreate', 'commitPreparedNotificationSetting', 'commitReminderCompletion', 'retryReminderCompletion', 'commitReminderSnooze', 'retryReminderSnooze', 'setCalendarPreference', 'setFocusGroupChecked', 'commitPreparedSomedaySectionTask', 'submitAttachmentLinks', 'removeAttachment'];
+
+
+    const unwiredWrites = [];
+    assert.equal(coreHost.match(new RegExp(`"(${iosPreparedCommits.join('|')})"`, 'g')), null, 'Kotlin never calls the iOS prepared commits');
+
+
+    const backupCommit = 'backupDocumentCommit';
+    assert.deepEqual(shapes[backupCommit], ['{id,sha256}', 'id'], 'the backup commit journals its reference and snapshot name');
+    assert.match(host, /\n    backupDocumentCommit\(referenceJSON: string, planJSON: string, snapshotName: string, budgetMs\?: number\): string \{/);
+
+    assert.match(coreHost, /val \(plan, sha256\) = checkNotNull\(backups\)\.plan\(args\[0\] as String, args\[1\] as String\)\s+return arrayOf\(args\[0\], data\.openRead\(plan, expectedSha256 = sha256\), args\[1\], deadline\(method, args\.toList\(\)\)\)/);
+
+
+    const pomodoroCommit = 'pomodoroTransitionCommit';
+    assert.deepEqual(shapes[pomodoroCommit], ['text', 'bool'], 'the Pomodoro commit journals its plan');
+    assert.match(host, /\n    pomodoroTransitionCommit\(planJSON: string, replayOnly: boolean\): string \{/);
+    assert.deepEqual(methods.filter((m) => m.body.includes('taskResult(') && !iosPreparedCommits.includes(m.name)).map((m) => m.name).sort(), writes.filter((name) => name !== backupCommit && name !== pomodoroCommit), 'the journal\'s write list is host-entry\'s task commands');
+    const table = (name) => hostEntry.slice(hostEntry.indexOf(`const ${name}`), hostEntry.indexOf('\n};', hostEntry.indexOf(`const ${name}`)));
+    const called = (text) => [...text.matchAll(/contract\.(\w+)\(/g)].map((m) => m[1]);
+    assert.deepEqual(called(hostEntry).filter((name) => unwiredWrites.includes(name)), [], 'no host method calls an unwired core write');
+    const pushSetting = methods.find((method) => method.name === 'iosCalendarPushSetting');
+    assert(pushSetting && pushSetting.body.includes('iosCalendarPushOwned('), 'Calendar push settings require the private iOS owner');
+    assert.deepEqual(called(pushSetting.body), ['setCalendarSetting'], 'the private push facade delegates only its shared setting');
+
+    const iosOnlyMethods = [...methods.filter((m) => called(m.body).some((name) => iosOnlyWrites.includes(name))).map((m) => m.name), 'iosCalendarPushSetting'];
+    {
+        assert.equal(iosOnlyMethods.length, iosOnlyWrites.length + 1, 'each iOS-only write has its host method');
+        const java = resolve(app, 'android/app/src/main/java');
+        const kotlin = readdirSync(java, { recursive: true }).filter((file) => file.endsWith('.kt')).map((file) => readFileSync(resolve(java, file), 'utf8')).join('\n');
+        assert.equal(kotlin.match(new RegExp(`"(${iosOnlyMethods.join('|')})"`, 'g')), null, 'Kotlin never calls the iOS-only writes');
+    }
+
+    const coreWrites = ['setTaskFocus', 'completeTask', 'undoTaskCompletion', 'undoInboxDecision', 'setProjectFocus', 'createProject', 'saveSearch', 'updateTask', 'saveTaskDraft', 'resetTaskChecklist',
+        'submitQuickCapture', 'submitQuickCaptureLines', 'submitQuickCapturePickerQuery', 'commitInboxProcessingStep', 'skipInboxProcessingTask', 'setAreaFilter',
+        'activateProject', 'moveSomedayTasksToSection', 'moveSomedayProjectToSection', 'moveTaskToDestination', 'undoSomedaySectionMove', 'addSomedaySectionTask', 'createSomedaySection', 'setTaskListSort',
+        'runArchiveAction', 'runContextsAction', 'runTrashAction', 'runReviewAction', 'runCalendarAction', 'runBoardAction', 'runBulkAction', 'setFocusGroupBy',
+        'saveFocusFilter', 'removeFocusFilterCriterion', 'deleteFocusFilter', 'reorderFocus', 'createBulkOrganizeDestination', 'addMindSweepItem', 'deleteSavedSearch', 'setSavedSearchSort',
+        'setGeneralSetting', 'setGtdSetting', 'setDataSetting', 'saveManageEditor', 'deleteManageItem', 'renameSomedaySection', 'reorderSomedaySections', 'deleteSomedaySection',
+        'submitCaptureModal', 'submitCaptureModalLines',
+
+        'setSyncPreference', 'openSyncSettings', 'closeSyncSettings', 'selectSyncBackend', 'saveSyncBackend', 'syncNow', 'testSyncConnection',
+        'pickSyncFolder', 'connectDropbox', 'disconnectDropbox', 'runSyncEncryptionAction', 'answerSyncMissingFiles',
+
+        'setAISetting', 'openAISettings', 'setAIKey', 'setAIEndpoint', 'ingestPendingCaptures',
+
+        'addAttachmentFile', 'submitAttachmentLinks', 'removeAttachment',
+
+        'completeReminderTask', 'snoozeReminder',
+
+        'runProjectEdit',
+
+        'runAreaOrder', 'runAreaColor',
+
+        'setNotificationsSetting',
+
+        'setCalendarSetting', 'addCalendarFeed',
+
+        'seedGettingStarted',
+
+        'supportPromptShown',
+
+        'runTaskEditorAction',
+
+        'runProjectNextAction',
+
+        'setTaskCompletedAt'];
+    const contractFiles = readdirSync(resolve(app, '../../packages/core/src')).filter((name) => /^native-host-contract[\w-]*\.ts$/.test(name) && !name.endsWith('.test.ts'))
+        .map((name) => readFileSync(resolve(app, '../../packages/core/src', name), 'utf8'));
+    const contractSource = contractFiles.join('\n');
+
+    for (const name of coreWrites) assert.match(contractSource, new RegExp(`\\b(async )?${name}\\((input|\\))`), `core defines the write ${name}`);
+    const writeCalls = [...methods.filter((m) => writes.includes(m.name)).flatMap((m) => called(m.body)), ...called(table('MENU_COMMANDS'))];
+    assert.deepEqual([...new Set(writeCalls)].sort(), [...coreWrites].sort(), 'the journaled methods call exactly core\'s write commands');
+
+
+    const readCalls = [...methods.filter((m) => !writes.includes(m.name) && !iosOnlyMethods.includes(m.name)).flatMap((m) => called(m.body)),
+        ...called(table('MENU_READS'))];
+    assert.deepEqual(readCalls.filter((name) => coreWrites.includes(name)), [], 'no unjournaled host method calls a core write');
+
+    assert.deepEqual(called(table('AI_REQUESTS')).filter((name) => coreWrites.includes(name) || unwiredWrites.includes(name)), [], 'no AI request calls a core write');
+
+
+    const draftCommands = ['addAttachmentFile', 'submitAttachmentLinks', 'removeAttachment'];
+    assert.deepEqual(called(table('ATTACHMENT_REQUESTS')).sort(), ['addAttachmentFile', 'downloadAttachment', 'openAttachment', 'prepareSharedFiles', 'removeAttachment',
+        'settleTaskDraftAttachments', 'submitAttachmentLinks'], 'ATTACHMENT_REQUESTS are core\'s attachment downloads, opens, draft settlement, task draft commands and a file share\'s copies');
+    assert.deepEqual(called(table('ATTACHMENT_REQUESTS')).filter((name) => !draftCommands.includes(name) && (coreWrites.includes(name) || unwiredWrites.includes(name))), [],
+        'no attachment request calls a core write but a task draft\'s');
+    for (const name of draftCommands) {
+        assert.match(table('ATTACHMENT_REQUESTS'), new RegExp(`\\n    \\w+: \\(input\\) => draftOnly\\(input, \\(\\) => contract\\.${name}\\(input\\)\\),`), `${name} runs unjournaled only for a task draft`);
+    }
+    assert.match(hostEntry, /const draftOnly = \(input: never, command: \(\) => Promise<Reply>\): Promise<Reply> => \(\(input as \{ owner\?: \{ kind\?: unknown \} \} \| null\)\?\.owner\?\.kind === 'task'\s*\? command\(\)\s*: Promise\.resolve\(\{ ok: false, error: \{ code: 'INVALID_INPUT', message: 'Only a task draft attachment command runs here' \} \}\)\);/);
+    assert.match(source('Attachments.kt'), /if \(owner\.kind == "task"\) \{\s*sendDraft\(owner, kind,/, 'a task draft\'s commands take the draft path');
+    assert.match(source('Attachments.kt'), /private fun sendDraft\([\s\S]{0,500}?runtime\.attachmentRequest\(DRAFT_REQUESTS\.getValue\(kind\)/, 'a task draft\'s commands are sent unjournaled');
+    const attachmentEntry = /attachmentRequest\(name: string, json: string\): string \{([\s\S]*?)\n    \},/.exec(host)[1];
+    assert.match(attachmentEntry, /return submit\(async \(\) => \{\s*requireSaved\(\);/);
+    assert.match(attachmentEntry, /const request = ATTACHMENT_REQUESTS\[name\];/);
+    assert(attachmentEntry.indexOf('requireSaved();') < attachmentEntry.indexOf('const request ='), 'attachment readiness precedes dispatch');
+    assert.deepEqual(called(table('AI_REQUESTS')).sort(), ['loadAIModels', 'requestAICopilot', 'requestInboxClarify', 'requestTaskEditorBreakdown',
+        'requestTaskEditorClarify', 'requestTaskEditorCopilot', 'requestWeeklyReviewAnalysis'], 'AI_REQUESTS are core\'s AI requests');
+    assert.match(host, /aiRequest\(name: string, json: string\): string \{\s*return submit\(async \(signal\) => \{\s*requireSaved\(\);\s*const request = AI_REQUESTS\[name\];[\s\S]{0,120}?const answer = await request\(JSON\.parse\(json\) as never, signal\);\s*if \(signal\.aborted\) throw new Error\('The AI request was cancelled'\);\s*return unwrap\(answer\);/);
+
+    assert.equal(table('AI_REQUESTS').match(/\{ signal \}/g).length, 7, 'every AI request passes its signal');
+
+
+    {
+        const aiScreen = code(source('AISettings.kt'));
+        assert.doesNotMatch(aiScreen, /saved\[|SavedStateHandle|rememberSaveable|keepDialog/, 'Settings › AI keeps nothing in saved state');
+        assert.doesNotMatch(aiScreen, /Log\.\w\([^\n]*(typed|keys|text|next|value)\b/, 'Settings › AI logs no typed value');
+        assert.match(aiScreen, /screenWrite\("setAIKey", /);
+        assert.match(aiScreen, /screenWrite\("setAIEndpoint", /);
+        assert.match(aiScreen, /fun set\(change: JSONObject, agreed: Boolean = false\) =\s+menu\.command\("setAISetting", /);
+        const aiActions = code(source('AIActions.kt'));
+        assert.doesNotMatch(aiActions, /menuCommand\(|rememberSaveable|saved\[/, 'the AI actions write nothing themselves and keep no saved state');
+        assert.match(coreHost, /if \(debugFault\("ai_consent_reset"\) == "1"\) keyValue\.remove\("stride-ai-provider-consent-v1"\)/);
+    }
+
+    assert.match(hostEntry, /const nativeAI = nativeSync \? createNativeAI\(keyValue, \(\) => globalThis\.__strideSecrets as HostSecrets, isFossBuild\) : null;/);
+    assert.match(hostEntry, /const localAttachments = nativeSync \? null : createNativeLocalAttachmentsForHost\(\);/);
+    assert.match(hostEntry, /const attachmentsHost = nativeSync\?\.attachmentsHost \?\? localAttachments\?\.contractHost;/);
+    assert.match(hostEntry, /createNativeHostContract\(\{ reminderPlatform: globalThis\.__strideHostPlatform === 'ios' \? 'ios' : 'android', get syncSettings\(\) \{ return nativeSync\?\.settingsHost \?\? iosManualSync\?\.settingsHost; \}, \.\.\.\(nativeAI \? \{ ai: nativeAI \} : \{\}\),\s*calendar: iosCalendar \?\? nativeCalendar \?\? undefined,\s*get attachments\(\) \{\s*const selected = iosProjectAttachmentDownload \? iosSelfHostedProjectAttachments\?\.contractHost \?\? iosManualSync\?\.attachmentsHost : attachmentsHost;\s*if \(!iosRelocatedProjectAvailability \|\| !selected\) return selected \?\? undefined;/);
+    assert.match(hostEntry, /const result = await \(iosSelfHostedProjectAttachments \?\? iosManualSync\)\?\.prepareAttachmentAvailableDetailed\?\.\(attachment\);/);
+    assert.match(hostEntry, /\.\.\.\(persistentCapture \? \{ persistentCapture \} : \{\}\) \}\);/);
+
+    assert.match(hostEntry, /const persistentCapture = nativeSync \? \{\s+read: \(\) => \(JSON\.parse\(checked\(native\(\)\.kvGet\(PERSISTENT_CAPTURE_STORAGE_KEY\)\)\) as \[string \| null\]\)\[0\] === 'true',/);
+    assert.match(hostEntry, /const nativeCalendar = nativeSync && typeof globalThis\.__strideCalendarCall === 'function'\s*\? createNativeCalendar\(keyValue, \(\) => globalThis\.__strideCalendarCall as never, \(\) => globalThis\.__strideFileCall as never, \(\) => \{\s*if \(!bootAdapter \|\| getStorageAdapter\(\) !== bootAdapter\) throw new Error\('Native storage is not loaded yet'\);\s*return bootAdapter;\s*\}\)\s*: null;/);
+    assert.match(readFileSync(resolve(app, 'bundle/host-calendar.ts'), 'utf8'), /upsert: \(entry: CalendarSyncEntry\) => sync\(\)\.upsertCalendarSyncEntry\(entry\),\s*delete: \(taskId: string, platform: string\) => sync\(\)\.deleteCalendarSyncEntry\(taskId, platform\),/);
+    assert.match(hostEntry, /syncStart\(appState: string\): string \{\s*return submit\(async \(\) => \{\s*const state = requireSync\(\)\.start\(appState\);[^}]*?void nativeCalendar\?\.startPush\(\);\s*return state;/);
+    assert.match(host, /menuCommand\(name: string, json: string\): string \{\s*return submit\(async \(\) => \{\s*const command = MENU_COMMANDS\[name as MenuCommand\];/);
+
+
+    for (const [name, kinds] of Object.entries(shapes)) {
+        if (name === backupCommit) continue;
+        const params = new RegExp(`\\n    ${name}\\(([^)]*)\\): string \\{`).exec(host)[1].split(',').map((param) => param.trim());
+        assert.equal(kinds.length, params.length, `${name} takes ${params.length} arguments`);
+        params.forEach((param, index) => {
+            const kind = kinds[index];
+            const fits = param.startsWith('json:') ? kind.startsWith('{') : /: boolean$/.test(param) ? kind === 'bool'
+                : param.startsWith('name:') ? kind === 'menu' : ['id', 'text'].includes(kind);
+            assert(fits, `${name}'s ${param} is journaled as ${kind}`);
+        });
+    }
+    {
+        const [pairs, shared] = /val MENU = mapOf\(([\s\S]*?)\) \+ listOf\(([\s\S]*?)\)\.associateWith/.exec(journalKt).slice(1);
+        const menuNames = [...[...pairs.matchAll(/"(\w+)" to /g)].map((m) => m[1]), ...[...shared.matchAll(/"(\w+)"/g)].map((m) => m[1])].sort();
+        assert.deepEqual(menuNames, [...table('MENU_COMMANDS').matchAll(/\n    (\w+): /g)].map((m) => m[1]).sort(), 'WriteJournal.MENU is host-entry\'s MENU_COMMANDS');
+    }
+    assert.match(journalKt, /if \(!fits\(method, args\) \|\| key\(method, args\) in UNJOURNALED\) return null/);
+    assert.match(journalKt, /val moved = file\.renameTo\(target\)\s+log\(if \(moved\) "Native Android journal entry set aside \$\{file\.name\}" else "Native Android journal entry not moved aside \$\{file\.name\}"\)/);
+
+
+    assert.match(journalKt, /fun malformed\(error: String\?\): Boolean = error\?\.startsWith\("INVALID_INPUT"\) == true/);
+    assert.match(journalKt, /if \(replay && malformed\(error\)\) \{\s+if \(!moveAside\(entry\.file\)\) return false\s+\} else if \(!entry\.file\.delete\(\) && entry\.file\.exists\(\)\) \{/);
+
+
+    {
+        const receiptsTs = readFileSync(resolve(app, '../../packages/core/src/native-request-receipts.ts'), 'utf8');
+        const set = /export const NATIVE_UNJOURNALED_COMMANDS: ReadonlySet<string> = new Set<string>\(([^)]*)\);/.exec(receiptsTs);
+        assert(set, 'core\'s NATIVE_UNJOURNALED_COMMANDS parsed');
+        const unjournaledCore = [...set[1].matchAll(/'(\w+)'/g)].map((m) => m[1]);
+        const receiptNames = new Map([...coreWrites, ...iosOnlyWrites, ...unwiredWrites].map((name) => [name, []]));
+        let sites = 0;
+        for (const file of contractFiles) {
+            const defs = [...file.matchAll(new RegExp(`\\n {8}(?:async )?(${[...coreWrites, ...iosOnlyWrites, ...unwiredWrites].join('|')})\\(input`, 'g'))];
+            for (const site of file.matchAll(/JSON\.stringify\(\['(\w+)'/g)) {
+
+
+                if (site[1] === 'appLock' && file.includes('const payload = (request: AppLockRequest)')) {
+                    assert.match(file, /const payload = \(request: AppLockRequest\): string => JSON\.stringify\(\['appLock', request\.value,/);
+                    assert.match(file, /receipts\.run<AppLockResult>\(request\.requestId, key,/);
+                    continue;
+                }
+                if (site[1] === 'notificationSetting' && file.includes('const payload = (request: NotificationSettingRequest)')) {
+                    assert.match(file, /const payload = \(request: NotificationSettingRequest\) => JSON\.stringify\(\['notificationSetting', request\.edit\.type,/);
+                    assert.match(file, /receipts\.run<NotificationSettingResult>\(request\.requestId, key,/);
+                    assert.match(file, /async commitPreparedNotificationSetting\(input:/);
+                    continue;
+                }
+                const completionHelper = 'const completionPayload = (request: ReminderCompletionRequest) => ';
+                if (site[1] === 'reminderComplete' && file.includes(completionHelper)
+                    && site.index === file.indexOf(completionHelper) + completionHelper.length) {
+                    assert.match(file, /const completionPayload = \(request: ReminderCompletionRequest\) => JSON\.stringify\(\['reminderComplete', request\.taskId\]\);/);
+                    assert.match(file, /methods\.completeReminderTask\(request\)/);
+                    assert.match(file, /receipts\.saved<unknown>\(request\.requestId, completionPayload\(request\)\)/);
+
+                    continue;
+                }
+                const snoozeHelper = 'const snoozePayload = (request: ReminderSnoozeRequest) => ';
+                if (site[1] === 'reminderSnooze' && file.includes(snoozeHelper)
+                    && site.index === file.indexOf(snoozeHelper) + snoozeHelper.length) {
+                    assert.match(file, /const snoozePayload = \(request: ReminderSnoozeRequest\) => JSON\.stringify\(\['reminderSnooze', request\.requestedAt, request\.details\]\);/);
+                    assert.match(file, /methods\.snoozeReminder\(request\)/);
+                    assert.match(file, /receipts\.saved<unknown>\(request\.requestId, snoozePayload\(request\)\)/);
+
+                    continue;
+                }
+                const owner = defs.filter((def) => def.index < site.index).at(-1);
+                const sharedInboxPayload = {
+                    inboxTasksOrganize: ['NativeInboxTasksOrganizeEnvelope', 'commitPreparedInboxTasksOrganize'],
+                    inboxOrganizeDestinationCreate: ['Envelope', 'commitPreparedInboxOrganizeDestinationCreate'],
+                }[site[1]];
+                if (sharedInboxPayload) {
+                    const [type, command] = sharedInboxPayload;
+                    const helper = `const payload = (envelope: ${type}): string => `;
+                    if (site.index === file.indexOf(helper) + helper.length) {
+                        const writer = defs.find((def) => def[1] === command);
+                        assert(writer, `${site[1]}'s shared payload has its core writer`);
+                        const body = file.slice(writer.index, defs.find((def) => def.index > writer.index)?.index);
+                        assert.match(body, /const boundPayload = payload\(envelope\);/);
+                        assert.match(body, /receipts\.run\(envelope\.request\.requestId, boundPayload, async \(\) =>/);
+                        receiptNames.get(command).push(site[1]);
+                        if (coreWrites.includes(command)) sites += 1;
+                        continue;
+                    }
+                }
+                assert(owner, `core's receipt payload '${site[1]}' sits inside a core write`);
+                receiptNames.get(owner[1]).push(site[1]);
+                if (coreWrites.includes(owner[1])) sites += 1;
+            }
+        }
+        assert(sites >= 26, 'core\'s receipt payloads parsed');
+
+        for (const name of unjournaledCore) assert([...receiptNames.values()].flat().includes(name) || receiptNames.get(name)?.length === 0, `core's unjournaled ${name} is a core write's receipt payload, or a payload-less core write`);
+        const menuKeys = [...table('MENU_COMMANDS').matchAll(/\n    (\w+): \((input)?\) => contract\.(\w+)\((?:withCalendar\(\2\)|\2)\),/g)].map(([, key, , write]) => ({ key, writes: [write] }));
+        assert.equal(menuKeys.length, table('MENU_COMMANDS').match(/\n    \w+: /g).length, 'every Menu command parsed');
+        const keys = [...methods.filter((m) => writes.includes(m.name) && m.name !== 'menuCommand').map((m) => ({ key: m.name, writes: called(m.body) })), ...menuKeys];
+        const expected = keys.filter((key) => key.writes.some((write) => unjournaledCore.includes(write) || receiptNames.get(write).some((name) => unjournaledCore.includes(name))))
+            .map((key) => key.key).sort();
+        const kotlin = /val UNJOURNALED = (?:emptySet<String>\(\)|setOf\(([^)]*)\))\n/.exec(journalKt);
+        assert(kotlin, 'WriteJournal.UNJOURNALED parsed');
+        assert.deepEqual([...(kotlin[1] ?? '').matchAll(/"(\w+)"/g)].map((m) => m[1]).sort(), expected, 'WriteJournal.UNJOURNALED is core\'s NATIVE_UNJOURNALED_COMMANDS by journal key');
+        assert.match(journalKt, /require\(method in WRITES\) \{ "\$method is not a write" \}\s+if \(key\(method, args\) in UNJOURNALED\) return null/);
+        assert.match(journalKt, /\n        fun key\(method: String, args: List<Any\?>\): Any\? = if \(method == "menuCommand"\) args\.firstOrNull\(\) else method/);
+
+
+        assert.match(journalKt, /fun unjournaled\(method: String, args: List<Any\?>\): Boolean = method in WRITES && key\(method, args\) in UNJOURNALED/);
+        assert.match(coreHost, /private fun callLong\(method: String, vararg args: Any\?, handle: LongCall = LongCall\(\)\): JSONObject \{\s+require\(method !in WriteJournal\.WRITES \|\| WriteJournal\.unjournaled\(method, args\.toList\(\)\)\)/);
+        assert.deepEqual([...coreHost.matchAll(/\bcallLong\("(\w+)"/g)].map((m) => m[1]), ['ingestAudio', 'backgroundSync', 'pullSync', 'menuCommand', 'aiRequest', 'aboutRequest', 'attachmentRequest', 'calendarRequest', 'gmailRequest', 'voiceRequest'],
+            'only CoreWork\'s background sync run, a list\'s pull down to sync, Settings › Sync\'s commands, the AI\'s and About\'s requests, the attachments\' downloads, the calendar\'s, Gmail\'s and voice capture\'s requests and the widget\'s recordings take the long path');
+
+        assert(!writes.includes('aboutRequest'), 'an About request is no journaled write');
+        assert.match(coreHost, /fun calendarRequest\(name: String, json: String\): JSONObject = callLong\("calendarRequest", name, json\)/);
+        assert(!writes.includes('calendarRequest'), 'a calendar request is no journaled write');
+        assert.deepEqual(called(table('CALENDAR_REQUESTS')).filter((name) => coreWrites.includes(name)), [], 'no calendar request calls a core write');
+
+        assert.match(coreHost, /fun backgroundSync\(trigger: String, stored: Int\): JSONObject =\s+callLong\("backgroundSync", trigger, stored, debugFault\("bgsync_deadline_ms"\)\.toIntOrNull\(\) \?: 0\)/);
+        assert(!writes.includes('backgroundSync'), 'a background sync run is no journaled write');
+        assert.match(coreHost, /fun pullSync\(\): JSONObject = callLong\("pullSync"\)/);
+        assert(!writes.includes('pullSync'), 'a pull down to sync is no journaled write');
+        assert.match(coreHost, /fun attachmentRequest\(name: String, json: String\): JSONObject = callLong\("attachmentRequest", name, json\)/);
+        assert(!writes.includes('attachmentRequest'), 'an attachment request is no journaled write');
+        assert.match(coreHost, /fun syncCommand\(name: String, json: String\): JSONObject = callLong\("menuCommand", name, json\)/);
+        assert.match(coreHost, /fun aiRequest\(name: String, json: String, handle: LongCall = LongCall\(\)\): JSONObject = callLong\("aiRequest", name, json, handle = handle\)/);
+
+        assert.match(coreHost, /fun cancel\(handle: LongCall\) \{[\s\S]{0,400}?abortLong\(handle\)/);
+        assert.match(coreHost, /private fun abortLong\(handle: LongCall\) \{[\s\S]{0,200}?call\("abort", id\)/);
+        assert(!writes.includes('aiRequest'), 'an AI request is no journaled write');
+
+        const syncCommands = [.../val SYNC_COMMANDS = setOf\(([^)]*)\)/.exec(source('SyncSettings.kt'))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+        const aiCommands = [.../val AI_COMMANDS = setOf\(([^)]*)\)/.exec(source('AISettings.kt'))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+        const calendarCommands = [.../val CALENDAR_COMMANDS = setOf\(([^)]*)\)/.exec(source('CalendarSettings.kt'))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+        assert.deepEqual([...syncCommands, ...aiCommands.filter((name) => name !== 'openAISettings'), ...calendarCommands].sort(), [...(kotlin[1] ?? '').matchAll(/"(\w+)"/g)].map((m) => m[1]).sort(),
+            'SYNC_COMMANDS, AI_COMMANDS (but its journaled open) and CALENDAR_COMMANDS are WriteJournal.UNJOURNALED');
+
+        assert.match(source('SyncSettings.kt'), /run\("selectSyncBackend", [^\n]*key = "selectSyncBackend:\$option", ordered = choices\)/);
+        assert.match(source('SyncSettings.kt'), /if \(!light && !inFlight\.add\(key\)\) return/);
+
+
+        assert.match(source('SyncSettings.kt'), /run\("runSyncEncryptionAction", input, light = !heavy, after = if \(heavy\) SyncSettingsModel\.light else null,\s+admit = if \(type == "submit"\) \(\{ passphrases\.admit\(action\) \}\) else null\)/);
+        assert.match(source('SyncSettings.kt'), /val result = runCatching \{\s+after\?\.submit \{\}\?\.get\(\)\s+admit\?\.let \{ check -> onMain\(check\)\?\.let \{ refusal -> throw IllegalStateException\("PASSPHRASE_REFUSED: \$refusal"\) \} \}\s+runtime\.syncCommand\(name, input\.toString\(\)\)/);
+
+
+        assert.match(source('SyncSettings.kt'), /passphrases\.admit\(action\)\?\.let \{ refusal -> shell\.showToast\(null, refusal, "error"\); return \}/);
+        assert.match(source('SyncSettings.kt'), /sync\.typePassphrase\(field, text, row\.getInt\("maxLength"\), row\.getString\("tooLong"\)\)/);
+        assert.match(source('SyncSettings.kt'), /val edit = passphrases\.type\(field, text, maxLength, tooLongText\) \?: return shell\.showToast\(null, tooLongText, "error"\)/);
+        assert.match(source('SyncSettings.kt'), /failed = \{ message -> passphrases\.settled\(field, edit, message\) \}\) \{ passphrases\.settled\(field, edit, null\) \}/);
+        assert.match(source('SyncSettings.kt'), /failed\(message\.substringAfter\(": "\)\)/);
+    }
+
+
+    assert.match(coreHost, /io\.wake = \{ runCatching \{ executor\.execute \{ idlePump\(\) \} \} \}/);
+    assert.match(coreHost, /private fun idlePump\(\) \{[\s\S]*?val engine = context \?: return\s+if \(stopped != null\) return/);
+    assert.match(coreHost, /pumpTask = executor\.schedule\(\{ idlePump\(\) \}, delay, TimeUnit\.MILLISECONDS\)/);
+    assert.match(coreHost, /executeExistingDelayedTasksAfterShutdownPolicy = false/);
+
+    {
+        const expoNetwork = readFileSync(resolve(app, '../../node_modules/expo-network/android/src/main/java/expo/modules/network/NetworkModule.kt'), 'utf8');
+        const hostNetwork = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/HostNetwork.kt'), 'utf8');
+        assert.match(expoNetwork, /val isInternetReachable = network != null/);
+        assert.match(hostNetwork, /put\("isInternetReachable", network != null\)/);
+        const transports = (text) => [...new Set([...text.matchAll(/TRANSPORT_(\w+)/g)].map((m) => m[1]))].sort();
+        assert.deepEqual(transports(hostNetwork), transports(expoNetwork), 'HostNetwork counts expo-network\'s transports as connected');
+        assert.match(hostNetwork, /override fun onAvailable\(network: Network\) = report\(\)\s+override fun onLost\(network: Network\) = report\(\)/);
+        assert.match(readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8'), /android\.permission\.ACCESS_NETWORK_STATE/);
+    }
+
+
+    const callAsyncFn = coreHost.slice(coreHost.indexOf('private fun callAsync('), coreHost.indexOf('private fun answer('));
+    assert.match(callAsyncFn, /private fun begin\([^)]*\): Call \{\s+val entry = if \(method in WriteJournal\.WRITES\) checkNotNull\(journal\)\.append\(method, args\.toList\(\)\) else null/);
+    assert.match(callAsyncFn, /private fun finish\(call: Call, result: JSONObject\) \{\s+call\.deadlineCheck\?\.cancel\(false\)\s+if \(call\.entry != null\) \{\s+debugDelay\("delay_after_ms"\)\s+journalStop\(call\.stop, "after", call\.entry\)\s+\}\s+try \{\s+if \(call\.method == BackupOperations\.METHOD\) backupFinish\(call\.entry, call\.args\.toList\(\), result, replay = false\)\s+else if \(call\.method in WriteJournal\.WRITES\) settle\(call\.entry, result, replay = false\)/);
+
+    assert.equal(callAsyncFn.match(/\bcall\(call\.method, \*sent\)/g).length, 1, 'start() starts a call\'s operation, after begin() journaled it');
+    assert.match(callAsyncFn, /val sent = try \{ sendArgs\(call\.method, call\.args\) \} catch \(mismatch: BackupOperations\.Mismatch\)/);
+
+    assert.match(callAsyncFn, /if \(entry != null\) \{\s+checkNotNull\(sqlite\)\.failCommits = debugFault\("fail_commit"\) == "1"\s+sqlite\?\.stopAfterCommit = debugFault\("commit_stop"\) == WriteJournal\.key\(method, args\.toList\(\)\)\s+debugDelay\("delay_before_ms"\)\s+journalStop\(stop, "before", entry\)\s+\}/);
+    assert.equal(coreHost.match(/\banswer\(/g).length, 4, 'answer(): its definition, answerChecked (a backup commit\'s plan put in, callAsync and replayJournal), resumeActivation and the legacy preflight');
+    assert.equal(coreHost.match(/\banswerChecked\(/g).length, 3, 'answerChecked(): its definition, callAsync and replayJournal');
+    assert.equal(coreHost.match(/\bcall\(method, \*args\)/g).length, 2, 'answer() and callLong (an unjournaled command only) start host methods');
+    assert.deepEqual([...new Set([...coreHost.matchAll(/\bcall\("(\w+)"/g)].map((m) => m[1]))].sort(), ['abort', 'cancel', 'poll'], 'the engine\'s own calls: abort (a long call no longer wanted), cancel and poll');
+    assert.equal(coreHost.match(/journalStop\((?:call\.)?stop, /g).length, 2, 'the stop hooks run for a first send only, never for a replay');
+    assert.match(coreHost, /val stop = if \(entry != null\) debugFault\("journal_stop"\) else ""/, 'the stop hook is debug-only');
+
+    assert.match(journalKt, /fun keeps\(error: String\?\): Boolean = error\?\.startsWith\("SAVE_FAILED"\) == true/);
+
+    assert.match(journalKt, /fun settle\(entry: Entry, error: String\?, replay: Boolean = false\): Boolean \{\s+if \(keeps\(error\)\) return false\s+if \(replay && malformed\(error\)\) \{[\s\S]*?\} else if \(!entry\.file\.delete\(\) && entry\.file\.exists\(\)\) \{\s+log\([^\n]*\)\s+return false\s+\}\s+try \{\s+syncDirectory\(dir\)\s+\} catch \(failure: Exception\) \{\s+log\([^\n]*\)\s+return false\s+\}\s+entries\.remove\(entry\)\s+return true/);
+    assert.match(journalKt, /entries\.firstOrNull \{ it\.text == text \}\?\.let \{ return it \}/, 'an owed retry reuses its entry');
+    assert.match(journalKt, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(text\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)[\s\S]*?syncDirectory\(dir\)\s+return Entry/);
+
+
+    const replayFn = coreHost.slice(coreHost.indexOf('fun replayJournal()'), coreHost.indexOf('private fun journalStop('));
+    assert.match(replayFn, /for \(\(index, entry\) in entries\.withIndex\(\)\) \{[\s\S]*?answerChecked\(entry\.method, entry\.args\.toTypedArray\(\), deadline\(entry\.method, entry\.args\)\)\.also \{\s+val left = if \(entry\.method == BackupOperations\.METHOD\) backupFinish\(entry, entry\.args, it, replay = true\) else settle\(entry, it, replay = true\)\s+if \(left\) dropped \+= 1\s+\}\.error\(\)\s+\} catch \(failure: Throwable\) \{\s+owed = [^\n]+\s+break\s+\}\s+if \(WriteJournal\.keeps\(error\)\) \{ owed = error; break \}/);
+    assert.match(replayFn, /val entries = journal\.pending\(\)/);
+    assert.match(replayFn, /Log\.i\(TAG, "Native Android journal replay sent=/);
+    assert(coreHost.indexOf('journal = WriteJournal(journalDir') < coreHost.indexOf('engine.evaluate(bundle'));
+    assert.match(owner, /private fun replay\(runtime: CoreHost\): Boolean \{\s+val replay = runtime\.replayJournal\(\)\s+replay\.owed\?\.let \{ recordFailure\(PendingFailure\(FailedAction\("journal", ""\), it, null\)\); return false \}\s+if \(replay\.left > 0\) return true\s+runCatching \{ runtime\.pruneReceipts\(\) \}[\s\S]*?return true\s+\}/);
+
+
+    assert.match(owner, /loadTheme\(runtime, legacy\?\.theme\)\s+recoverInstalls\(installer\)\s+if \(replay\(runtime\)\) recovered\(app, runtime, deferSync = true\)\s+deferredWidgets\.hold\(runtime\)\s+return runtime/);
+    assert.equal([activity, model, owner, menuModel].join('\n').match(/syncStart\(/g).length, 1, 'one start of the triggers, in startSync');
+    assert.equal([activity, model, owner, menuModel].join('\n').match(/startSync\(app, runtime\)/g).length, 3, 'startSync only in recovered, after the drain (held for the first screen\'s content, or CoreWork\'s through startSyncWithScreen)');
+
+
+    assert.match(owner, /startSync = \{\s+if \(deferSync\) deferredSync\.set \{\s+startSync\(app, runtime\)\s+startReminders\(runtime\)\s+startAppSearch\(runtime\)\s+\} else \{\s+startSyncWithScreen\(app, runtime\)\s+startReminders\(runtime\)\s+if \(screenShown\) startAppSearch\(runtime\)\s+\}\s+\},/);
+    assert.match(owner, /fun startDeferredSync\(trigger: String = "content"\) \{\s+synchronized\(deferredSync\) \{\s+screenShown = true\s+deferredSync\.getAndSet\(null\)\s+\}\?\.let \{ start -> syncThread\.execute \{ start\(\) \} \}\s+deferredWidgets\.take\(\)\?\.let \{ publishHeldWidgets\(it, trigger\) \}\s+\}/, 'the boot\'s widget publication waits with its sync start');
+
+
+    assert.match(owner, /private fun startSyncWithScreen\(app: Application, runtime: CoreHost\) \{\s+val now = synchronized\(deferredSync\) \{\s+if \(!screenShown\) deferredSync\.compareAndSet\(null\) \{ startSync\(app, runtime\) \}\s+screenShown\s+\}\s+if \(now\) startSync\(app, runtime\)\s+\}/);
+    assert.match(owner, /fun contentShown\(\) \{\s+startDeferredSync\(\)/);
+    assert.match(owner, /private fun startSync\(app: Application, runtime: CoreHost\): Unit = synchronized\(syncLock\) \{\s+if \(syncHost != null\) return/);
+    assert.match(model, /if \(screen != Screen\.Inbox\) ProcessCoreHost\.startDeferredSync\(\)\s+main\.postDelayed\(\{ ProcessCoreHost\.startDeferredSync\("boot-timeout"\) \}, SYNC_FALLBACK_MS\)/);
+    assert.equal([activity, model, owner, menuModel].join('\n').match(/recovered\(app, runtime(?:, deferSync = true)?\)|ProcessCoreHost\.recovered\(getApplication\(\), runtime\)/g).length, 2, 'recovered after the boot replay and the owed retry (CoreWork\'s is checked with the runner)');
+
+
+    assert.match(coreHost, /fun pruneReceipts\(\): JSONObject = callAsync\("pruneReceipts"\)/);
+    assert.equal([activity, model, owner, menuModel].join('\n').match(/pruneReceipts\(\)/g).length, 1, 'one prune call, after the boot replay');
+    assert.equal(owner.match(/replay\(runtime\)|replayJournal\(\)/g).length, 3, 'the boot\'s replay, and CoreWork\'s recovery');
+    assert.match(model, /"journal" -> perform\(action\) \{ runtime ->\s+runtime\.replayJournal\(\)\.owed\?\.let \{ throw IllegalStateException\(it\) \}\s+acknowledged\(action\)\s+if \(!ProcessCoreHost\.recovered\(getApplication\(\), runtime\)\) throw IllegalStateException\(ProcessCoreHost\.failure\?\.error \?: "SAVE_FAILED"\)\s+\}/);
+    assert.equal([activity, model, owner, menuModel].join('\n').match(/replayJournal\(\)/g).length, 3, 'the boot, the owed retry and CoreWork\'s recovery replay; nothing else');
+
+    const journalTest = readFileSync(resolve(app, 'android/app/src/test/java/com/ishaanpilar/stride/pilot/core/WriteJournalTest.kt'), 'utf8');
+    for (const name of ['entriesKeepTheirOrderAcrossAReopen', 'anEntryIsDurableBeforeAppendReturns', 'aWriteCutShortIsNeverAnEntry', 'anyFinalReplyDropsTheEntry',
+        'saveFailedKeepsTheEntryAndItsRetryReusesIt', 'damagedOrUnknownEntriesMoveAsideAndAreNeverReplayed', 'onlyWriteMethodsAreJournaled', 'onlySaveFailedKeeps',
+        'aJournalThatCannotBeListedRefusesToOpen', 'anAppendNeverReplacesAnEntryOnDisk', 'theSequenceResumesAfterTheHighestNameSeen',
+        'aDropIsDurableBeforeTheEntryLeaves', 'aDeleteThatFailsKeepsTheEntry', 'aDropWhoseFolderSyncFailsKeepsTheEntry', 'entriesThatNoLongerFitAWriteMoveAsideIntact',
+        'aReplayCoreRefusesAsMalformedMovesAsideIntact']) {
+        assert.match(journalTest, new RegExp(`@Test fun ${name}\\(\\)`));
+    }
+}
+
+
+assert.match(coreHost, /fun taskEditorModel\(id: String\): JSONObject = callAsync\("editorModel", id\)/);
+assert.match(coreHost, /fun taskView\(json: String\): JSONObject = callAsync\("taskView", json\)/);
+assert.match(coreHost, /fun editTaskChecklist\(id: String, draftJson: String, checklistJson: String, editJson: String\): JSONObject =\s*callAsync\("editChecklist"/);
+assert.match(coreHost, /fun resetTaskChecklist\(id: String, requestId: String, taskRevision: String\): JSONObject =\s*callAsync\("resetChecklist", JSONObject\(\)\.put\("id", id\)\.put\("requestId", requestId\)\.put\("taskRevision", taskRevision\)\.toString\(\)\)/);
+assert.match(coreHost, /fun editorSuggestions\(id: String, field: String, query: String, limit: Int\): JSONObject =\s*callAsync\("editorSuggestions", id, field, query, limit\)/);
+assert.match(coreHost, /fun saveTaskDraft\(id: String, baseJson: String, patchJson: String, checklistJson: String, attachmentsJson: String, requestId: String\): JSONObject =\s*callAsync\("saveDraft", JSONObject\(\)\.put\("id", id\)\.put\("base", JSONObject\(baseJson\)\)\.put\("patch", JSONObject\(patchJson\)\)\s*\.apply \{ if \(checklistJson\.isNotEmpty\(\)\) put\("checklist", JSONObject\(checklistJson\)\) \}\s*\.apply \{ if \(attachmentsJson\.isNotEmpty\(\)\) put\("attachments", JSONObject\(attachmentsJson\)\) \}\.put\("requestId", requestId\)\.toString\(\)\)/);
+assert.match(coreHost, /fun updateTask\(id: String, baseJson: String, patchJson: String, requestId: String\): JSONObject =\s*callAsync\("update", JSONObject\(\)\.put\("id", id\)\.put\("base", JSONObject\(baseJson\)\)\.put\("patch", JSONObject\(patchJson\)\)\s*\.put\("requestId", requestId\)\.toString\(\)\)/);
+assert.doesNotMatch(coreHost + hostEntry, /taskEditor\(|getTaskEditor\(/, 'the seven-field editor reply is gone');
+assert.match(hostEntry, /editorModel\(id: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getTaskEditorModel\(\{ id \}\)\);/);
+
+
+assert.match(hostEntry, /taskView\(json: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getTaskView\(editorJson\(json\) as Parameters<typeof contract\.getTaskView>\[0\]\)\);/);
+assert.match(hostEntry, /const editorJson = \(json: string\): unknown => \{\s*try \{ if \(json\.length <= 2_000_000\) return JSON\.parse\(json\); \}\s*catch \{\s*\}\s*throw new Error\('Invalid bounded editor request'\);\s*\};/);
+assert.match(hostEntry, /editChecklist\(json: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.editTaskChecklist\(JSON\.parse\(json\)\)\);/);
+assert.match(hostEntry, /resetChecklist\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('resetChecklist', await contract\.resetTaskChecklist\(JSON\.parse\(json\)\)\)\);/);
+assert.match(hostEntry, /editorSuggestions\(id: string, field: string, query: string, limit: number\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getTaskEditorSuggestions\(\{ id, field: [^,]*, query, limit \}\)\);/);
+assert.match(hostEntry, /saveDraft\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('saveTaskDraft', await contract\.saveTaskDraft\(\{ \.\.\.JSON\.parse\(json\), mergeSyncedChanges: globalThis\.__strideHostPlatform !== 'ios' \}\)\)\);/);
+assert.match(hostEntry, /update\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('update', await contract\.updateTask\(JSON\.parse\(json\)\)\)\);/);
+assert.equal(model.match(/runtime\.taskEditorModel\(id\)/g).length, 1, 'readEditor: open and Reload');
+assert.match(model, /val model = runtime\.taskEditorModel\(id\)\s+val view = runtime\.taskView\(JSONObject\(\)\.put\("id", id\)\.toString\(\)\)[\s\S]{0,300}?return EditorModel\.of\(model, view, field\)/);
+assert.equal(model.match(/readEditor\(runtime, id\)/g).length, 2, 'open and Reload');
+assert.equal(model.match(/runtime\.saveTaskDraft\(/g).length, 1, 'the editor save');
+assert.equal(model.match(/runtime\.updateTask\(/g).length, 1, 'the status menu and the Restore and Next swipes');
+assert.equal(model.match(/runtime\.editorSuggestions\(/g).length, 1);
+assert.equal([activity, owner, editorUi].join('\n').match(/taskEditorModel\(|taskView\(|editTaskChecklist\(|resetTaskChecklist\(|editorSuggestions\(|saveTaskDraft\(|updateTask\(/g), null);
+assert.equal([activity, editorUi, focusUi, projectsUi, rowUi, areaUi, viewStateKt, searchUi, processUi, captureUi, captureModalUi, ...Object.values(menuScreens)].join('\n').replace(/^import .*$/gm, '').match(/CoreHost|callAsync|\bruntime\b/g), null);
+
+assert.match(editorUi, /val patch: Map<String, String\?> get\(\) = edited\.filter \{ \(field, literal\) -> literal != base\(field\) \}/);
+assert.match(editorUi, /val base: Map<String, String\?> get\(\) = patch\.keys\.associateWith \{ base\(it\) \}/);
+assert.match(model, /fun saveDraftAction\(current: TaskEditor\) =\s+withRequestId\(FailedAction\("saveDraft", current\.id, current\.checklistSave, base = current\.base, patch = current\.patch,\s+attachments = current\.attachmentsSave\), failedAction\)/);
+
+
+assert.match(model, /private fun withRequestId\(action: FailedAction, owed: FailedAction\?\) =\s+owed\?\.takeIf \{ it\.copy\(requestId = ""\) == action \} \?: action\.copy\(requestId = UUID\.randomUUID\(\)\.toString\(\)\)/);
+assert.match(model, /fun statusAction\(task: TaskRow, status: String\) =\s+withRequestId\(FailedAction\("update", task\.id, base = mapOf\("status" to task\.status\), patch = mapOf\("status" to status\)\), failedAction\)/);
+assert.match(model, /val current = editor \?: return\s+if \(current\.waiting \|\| editsPending\) \{ saveQueued = true; return \}\s+if \(current\.patch\.isEmpty\(\) && !current\.checklistChanged && !current\.attachmentsChanged\) \{ closeEditor\(\); return \}/);
+
+assert.match(editorUi, /val attachmentsSave: String get\(\) = if \(!attachmentsChanged\) "" else\s+JSONObject\(\)\.put\("base", JSONArray\(attachmentsFrom \?: model\.attachmentsBase\)\)\.put\("value", JSONArray\(attachmentsNow\)\)\.toString\(\)/);
+assert.match(editorUi, /val attachmentsBase: String = content\.optJSONArray\("attachmentsBase"\)\?\.toString\(\) \?: "\[\]"/);
+
+
+assert.match(editorUi, /val checklistSave: String get\(\) = if \(!checklistChanged\) "" else\s+JSONObject\(\)\.put\("base", JSONArray\(checklistFrom \?: model\.checklistBase\)\)\.put\("value", JSONArray\(checklistNow\)\)\.toString\(\)/);
+assert.match(editorUi, /val checklistBase: String = content\.getJSONArray\("checklistBase"\)\.toString\(\)/);
+assert.match(model, /private fun sendDraft\(action: FailedAction\) = perform\(action\) \{ runtime ->\s+try \{\s+runtime\.saveTaskDraft\(action\.id, draftJson\(action\.base\), draftJson\(action\.patch\), action\.title, action\.attachments, action\.requestId\)/);
+
+assert.match(editorUi, /fun draftJson\(values: Map<String, String\?>\): String =\s*JSONObject\(\)\.apply \{ values\.forEach \{ \(field, literal\) -> put\(field, draftValue\(literal\)\) \} \}\.toString\(\)/);
+
+assert.match(editorUi, /if \(field !in inputs \|\| input\(field\) != text\) this\s+else withEdits\(mapOf\(field to draftLiteral\(draftValue\)\)\)\.copy\(resolved = resolved \+ \(field to text\)\)/);
+assert.match(model, /val resolved = current\.resolve\(field, text, found\.draftValue\)\s+keepEditor\(resolved\)/);
+assert.match(editorUi, /val saveEnabled = if \(editor\.readOnly\) true else writable && !busy &&\s*\(failedAction == null \|\| failedAction == saveDraftAction\(editor\)\)/);
+
+assert.match(model, /background\(listOf\(Part\.Editor\), \{ runtime -> EditorSuggestions\.parse\(text, runtime\.editorSuggestions\(id, coreField, text, SUGGESTIONS\)\) \}\)/);
+
+assert.match(editorUi, /val kept = \{ field: String -> \(fresh\.draft\[field\] \?: "null"\) == base\(field\) \}/);
+
+assert.match(editorUi, /for \(section in editor\.view\.sections\) \{/);
+
+assert.match(coreHost, /fun editTaskDraft\(id: String, draftJson: String, editJson: String, checklistJson: String = ""\): JSONObject =\s*callAsync\("editDraft"[\s\S]{0,300}?put\("checklist", JSONArray\(checklistJson\)\)/);
+
+assert.match(model, /if \(queued == null\) edit else "", list\)/);
+assert.match(hostEntry, /editDraft\(json: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.editTaskDraft\(JSON\.parse\(json\)\)\);/);
+assert.match(model, /background\(listOf\(Part\.Editor\), \{ engine -> runCatching \{ stepEditor\(engine, current, sent, next\.edit\) \} \}\)/);
+
+
+assert.match(model, /val checked = listEdit\?\.let \{ engine\.editTaskChecklist\(current\.id, draftJson\(sent\), current\.checklistNow, it\.toString\(\)\) \}/);
+assert.match(model, /val model = engine\.editTaskDraft\(current\.id, checked\?\.getJSONObject\("draft"\)\?\.toString\(\) \?: draftJson\(sent\), if \(queued == null\) edit else "", list\)/, 'a dropped checklist edit only reads the view');
+assert.match(model, /fun editChecklist\(edit: JSONObject, field: String\? = null\) = editDraft\(JSONObject\(\)\.put\("checklist", edit\), field\)/);
+assert.match(model, /if \(inFlight != null \|\| current == null \|\| runtime == null \|\| busy \|\| failedAction != null\) return/);
+
+
+assert.match(model, /val ticket = current\.session to next\.seq/);
+assert.match(model, /val now = editor\?\.takeIf \{ it\.session == ticket\.first && it\.pending\.firstOrNull\(\)\?\.seq == ticket\.second \}/);
+assert.match(editorUi, /val session: String = UUID\.randomUUID\(\)\.toString\(\)/);
+assert.match(model, /fun closeEditor\(settle: Boolean = true\) \{[\s\S]{0,600}?attachments\.closed\(\)\s+editorMenu\.closed\(\)\s+ai\.cancelEditor\(\)\s+inFlight = null/);
+
+
+assert.match(model, /attachments\.settle\(closing\.id, closing\.model\.taskRevision, from, closing\.attachmentsNow, from\)/);
+
+
+assert.match(model, /editor\?\.takeIf \{ discardSettles\(settle, pendingSave != null, it\.attachments != null, it\.readOnly\) \}\?\.let \{ closing ->/);
+
+
+assert.match(model, /keepEditor\(current\.queued\(edit\.toString\(\), field\)\)\s+pumpEdits\(\)/);
+assert.match(model, /keepEditor\(now\.viewed\(step\.view, sent\)\.copy\(pending = now\.pending\.drop\(1\)\)\.withChecklist\(step\.checklist \?: now\.checklist\)\)/);
+assert.match(editorUi, /\.put\("edits", JSONArray\(\)\.apply \{ pending\.forEach/);
+assert.match(editorUi, /val edits = saved\.optJSONArray\("edits"\)/);
+assert.match(model, /restored\?\.let \{ resumeEditor\(it, savedDraft\.optJSONObject\("pending"\)\) \}\s+pumpEdits\(\)/);
+
+assert.match(model, /error = editRefusal\s+saveQueued = false/);
+assert.match(editorUi, /LaunchedEffect\(coreValue\) \{ if \(!pending\) text = coreValue \}/);
+assert.match(editorUi, /RetryButton\(model::reloadEditor, !busy && !failed && !editsPending\)/);
+assert.match(model, /\.put\("amount", amount \?: latest\?\.get\("amount"\) \?: shown\.getInt\("amount"\)\)/);
+assert.match(model, /fun editFields\(values: Map<String, Any\?>\) =\s*editDraft\(JSONObject\(\)\.put\("type", "fields"\)/);
+assert.match(editorUi, /if \(\(current\[field\] \?: "null"\) != \(sent\[field\] \?: "null"\)\) current\[field\] \?: "null" else reply\.draft\[field\] \?: "null"/);
+
+assert.match(editorUi, /DateButton\(part\.label, label, !locked, Modifier\.weight\(1f\)\) \{ pickDate\(id\) \}/);
+assert.match(editorUi, /JSONObject\(\)\.put\("type", "pickDate"\)\.put\("field", target\)\.put\("date", day\)/);
+assert.match(editorUi, /ClockPickerDialog\(hour, minute, \{ pickTime = null \}\) \{ time -> editDraft\(JSONObject\(\)\.put\("type", "pickTime"\)\.put\("field", target\)\.put\("time", time\)\) \}/);
+assert.doesNotMatch(code(editorUi), /relativeStartOffset" to null\)(?!\))/, 'the relative start cascade is core\'s');
+assert.equal(code(editorUi).match(/"relativeStartOffset"/g).length, 1, 'only the Absolute chip names the relative start');
+assert.match(editorUi, /section\.fields\.forEach \{ field\(it\) \}/);
+assert.doesNotMatch(code(editorUi), /\.(sort\w*|sorted\w*|groupBy|reversed|shuffled|distinct\w*)\b/);
+
+
+const PICKER_START = /internal fun pickerStart\(coreDate: String\?\): Triple<Int, Int, Int>\? =\s*coreDate\?\.let \{ PICKER_DAY\.matchEntire\(it\) \}\?\.destructured\?\.let \{ \(year, month, day\) -> Triple\(year\.toInt\(\), month\.toInt\(\) - 1, day\.toInt\(\)\) \}/;
+assert.match(editorUi, PICKER_START);
+assert.equal(editorUi.match(/pickerStart\(/g).length, 2, 'defined once, used once: the date dialog\'s start');
+
+
+assert.match(editorUi, /val dialog = DatePickerDialog\(systemDialogContext\(context, dark\)\)\s+pickerStart\(start\)\?\.let \{ \(year, month, day\) -> dialog\.updateDate\(year, month, day\) \}\s+dialog\.setOnDateSetListener \{ _, year, month, day -> picked\(pickedDay\(year, month, day\)\) \}/);
+assert.match(editorUi, /TimePickerDialog\(systemDialogContext\(context, dark\), \{ _, hour, minute -> picked\(pickedTime\(hour, minute\)\) \}, hour, minute, DateFormat\.is24HourFormat\(context\)\)/);
+assert.match(editorUi, /^import android\.app\.DatePickerDialog$/m);
+{
+    const { readdirSync } = await import('node:fs');
+    const dir = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+    for (const name of readdirSync(dir).filter((file) => file.endsWith('.kt'))) {
+        assert.doesNotMatch(readFileSync(resolve(dir, name), 'utf8'), /material3\.(DatePicker|TimePicker|rememberDatePickerState|rememberTimePickerState)\b/, `${name} uses a Material 3 picker; RN shows the system dialog`);
+    }
+}
+
+
+assert.match(editorUi, /internal fun systemDialogContext\(context: Context, dark: Boolean\): Context =\s+ContextThemeWrapper\(context, if \(dark\) android\.R\.style\.Theme_Material_NoActionBar else android\.R\.style\.Theme_Material_Light_NoActionBar\)/);
+assert.match(source('NotificationsSettings.kt'), /TimePickerDialog\(systemDialogContext\(context, dark\), \{ _, hour, minute -> picked\(coreTime\(hour, minute\)\) \}/);
+assert.match(editorUi, /val \(hour, minute\) = pickerClock\(editor\.view\.fields\.dates\.getValue\(target\)\.pickerTime\)/);
+assert.doesNotMatch([editorUi.replace(PICKER_START, ''), model, activity, focusUi, projectsUi, rowUi, areaUi, viewStateKt, menuModel, ...Object.values(menuScreens)].join('\n'),
+    /java\.time|LocalDate|Instant|DateTimeFormatter|java\.util\.Calendar|GregorianCalendar|Calendar\.getInstance|(?<!InboxPage|FocusView|ProjectsView|ProjectDetail|AreaFilter|EditorSuggestions|SearchView)\.parse\(|DateFormat\.get|SimpleDateFormat\(\)/);
+assert.equal([model, activity, focusUi, projectsUi, rowUi, areaUi, viewStateKt, menuModel, ...Object.values(menuScreens)].join('\n').match(/SimpleDateFormat|\.format\(/g), null);
+
+
+{
+    const { readdirSync } = await import('node:fs');
+    const dir = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+    for (const name of readdirSync(dir).filter((file) => file.endsWith('.kt'))) {
+        assert.doesNotMatch(code(readFileSync(resolve(dir, name), 'utf8')), /\.alpha\(|ui\.draw\.alpha/, `${name} uses Modifier.alpha; use fade`);
+    }
+}
+assert.match(source('Theme.kt'), /fun Modifier\.fade\(alpha: Float\): Modifier = graphicsLayer \{ this\.alpha = alpha \}/);
+
+assert.match(captureUi, /toggleable\(on, enabled = enabled, role = Role\.Switch\)/);
+assert.doesNotMatch(code(captureUi), /material3\.Switch|SwitchDefaults/);
+
+{
+    const { readdirSync } = await import('node:fs');
+    const dir = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+
+    const composerTimeEdit = 'put("type", if (field == "start") "startTime" else "endTime")';
+    for (const name of readdirSync(dir).filter((file) => file.endsWith('.kt') && file !== 'TaskEditor.kt')) {
+        assert.doesNotMatch(code(readFileSync(resolve(dir, name), 'utf8')).replace(composerTimeEdit, ''), /SimpleDateFormat|DateTimeFormatter|LocalDate|java\.time|\bdueDate\b|\bstartTime\b/,
+            `${name} formats, parses, or colors a date; only core's meta text is shown`);
+    }
+}
+assert.equal(editorUi.match(/SimpleDateFormat|\.format\(/g), null);
+assert.match(editorUi, /internal fun pickedDay\(year: Int, month: Int, day: Int\): String =\s*"\$year-\$\{\(month \+ 1\)\.toString\(\)\.padStart\(2, '0'\)\}-\$\{day\.toString\(\)\.padStart\(2, '0'\)\}"/);
+assert.equal(editorUi.match(/pickedDay\(/g).length, 2);
+assert.match(editorUi, /internal fun pickedTime\(hour: Int, minute: Int\) = "\$\{hour\.toString\(\)\.padStart\(2, '0'\)\}:\$\{minute\.toString\(\)\.padStart\(2, '0'\)\}"/);
+assert.equal(editorUi.match(/pickedTime\(/g).length, 2, 'defined once; the shared ClockPickerDialog (the editor\'s, the capture popup\'s and Done\'s times)');
+
+assert.doesNotMatch(code(editorUi), /text\("(dueDate|startTime|reviewAt)"\)\.(substring|split|take|drop|contains|startsWith|endsWith|matches|replace)/);
+assert.doesNotMatch(code(editorUi), /\b(due|value)\.(substring|split|take|drop|contains|startsWith|endsWith|matches)\(/);
+
+assert.match(editorUi, /val locked = busy \|\| failed \|\| editor\.readOnly/);
+assert.match(editorUi, /BackHandler\(enabled = !failed\)/);
+assert.match(editorUi, /clickable\(enabled = !busy && !failed, role = Role\.Button, onClick = leave\)/);
+
+
+assert.match(coreHost, /fun focus\(limit: Int, controls: String = "", controlEdit: String = "", folds: String = ""\): JSONObject =\s*callAsync\("focus", limit, controls, controlEdit, folds\)/);
+assert.match(coreHost, /fun focusWindow\(key: String, offset: Int, limit: Int, revision: String, controls: String = "", folds: String = ""\): JSONObject =\s*callAsync\("focusWindow", key, offset, limit, revision, controls, folds\)/);
+assert.match(hostEntry, /focus\(limit: number, controls = '', controlEdit = '', folds = ''\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*const focus = unwrap\(contract\.getFocus\(\{ limit, \.\.\.\(controls \? \{ controls: JSON\.parse\(controls\) \} : \{\}\), \.\.\.\(controlEdit \? \{ controlEdit: JSON\.parse\(controlEdit\) \} : \{\}\),\s*\.\.\.\(folds \? \{ collapsedGroupIds: JSON\.parse\(folds\) \} : \{\}\) \}\)\);/);
+assert.match(hostEntry, /focusWindow\(key: string, offset: number, limit: number, revision: string, controls = '', folds = ''\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getFocusSectionWindow\(\{ key: key as FocusTaskSectionKey, offset, limit, revision, \.\.\.\(controls \? \{ controls: JSON\.parse\(controls\) \} : \{\}\),\s*\.\.\.\(folds \? \{ collapsedGroupIds: JSON\.parse\(folds\) \} : \{\}\) \}\)\);/);
+assert.equal(model.match(/runtime\.focus\(/g).length, 1);
+assert.equal(model.match(/runtime\.focusWindow\(/g).length, 1);
+assert.match(model, /FocusView\.parse\(runtime\.focus\(PAGE, controls, edit, folds\)\)/, 'every Focus read sends the control state and the folds');
+assert.match(model, /view\.append\(runtime\.focusWindow\(key, loaded\.rows\.size, PAGE, view\.revision, state, folds\)\)/, 'later windows go with the state core answered');
+assert.equal([activity, owner, editorUi, focusUi, projectsUi].join('\n').match(/\.focus\(|focusWindow\(/g), null);
+
+const focusCode = code(focusUi) + code(model.slice(model.indexOf('fun JSONObject.taskRows()'), model.indexOf('private const val PAGE')));
+assert.doesNotMatch(focusCode, /\.(sort\w*|sorted\w*|filter(?!Bg\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/);
+assert.match(focusUi, /return FocusView\(json\.getString\("revision"\), json\.getString\("dateLabel"\), List\(items\.length\(\)\) \{ index ->/);
+assert.match(model, /fun JSONObject\.taskRows\(\): List<TaskRow> = getJSONArray\("rows"\)\.let \{ items ->\s*List\(items\.length\(\)\) \{ index ->/);
+assert.match(focusUi, /for \(section in focus\?\.sections\.orEmpty\(\)\) \{/);
+assert.match(focusUi, /section\.rows\.forEachIndexed \{ index, task ->/);
+
+
+assert.match(focusUi, /while \(nextHeading < section\.groups\.size && section\.groups\[nextHeading\]\.getInt\("start"\) <= index\)/);
+assert.equal(code([focusUi, activity, model, rowUi].join('\n')).match(/(?<!"agenda)\.laterToday\b/g), null);
+assert.match(rowUi, /task\.revealLabel\?\.let \{ MetaText\(it, c\.secondaryText, 600, Modifier\.padding\(top = 4\.dp\)\) \}/);
+assert.equal(code([focusUi, activity, model, rowUi].join('\n')).match(/\.revealLabel\b/g).length, 1);
+assert.doesNotMatch(code([focusUi, activity, model, rowUi].join('\n')), /revealDate/);
+assert.match(focusUi, /star = RowStar\.Shown, starBlocked = task\.focusBlockedLabel/);
+assert.doesNotMatch(code(focusUi), /"upcoming"/, 'Focus never names a section to decide a control');
+assert.match(rowUi, /val label = blocked \?: t\(if \(task\.isFocusedToday\) "agenda\.removeFromFocus" else "agenda\.addToFocus"\)/);
+
+assert.match(model, /if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure[\s\S]{0,200}?readFocus\(runtime, null, depth, state\)/);
+
+assert.match(focusUi, /LaunchedEffect\(owner\) \{\s*owner\.repeatOnLifecycle\(Lifecycle\.State\.RESUMED\) \{\s*while \(true\) \{\s*model\.refreshFocus\(\)\s*delay\(60_000\)/);
+assert.equal(code([activity, model, focusUi].join('\n')).match(/(?<!fun )refreshFocus\(\)/g).length, 4, 'the lifecycle loop, the boot\'s deferred read (first content, or the tab chosen while the boot ran), and a group fold (#1444)');
+assert.match(activity, /Screen\.Focus -> FocusList\(model, Modifier\.fillMaxSize\(\)\)/);
+
+assert.match(rowUi, /fun TaskRowItem\(\s*model: InboxViewModel, task: TaskRow, status: RowStatus = RowStatus\.Hidden, star: RowStar = RowStar\.Hidden,/);
+
+assert.match(focusUi, /item\(key = "\$\{section\.key\}:\$\{group\}:\$\{task\.id\}"\) \{\s*Box\(Modifier\.padding\(bottom = 8\.dp\)\) \{ GroupedRow\(grouped\) \{\s*TaskRowItem\(model, task,/);
+
+assert.match(focusUi, /if \(section\.total == 0\) continue/);
+assert.match(focusUi, /if \(reviewCount > 0\) \{/);
+assert.match(focusUi, /if \(!open\) continue/);
+assert.match(focusUi, /view\.dateLabel\.uppercase\(\)/, 'the Focus date line is core\'s text');
+
+assert.match(viewStateKt, /const val FOCUS_VIEW_KEY = "stride:view:focus:v1"/);
+assert.match(viewStateKt, /const val PROJECTS_VIEW_KEY = "stride:view:projects:v1"/);
+assert.match(viewStateKt, /val FOCUS_SECTION_KEYS = listOf\("focus", "schedule", "next", "upcoming", "reviewDue", "reviewProjects"\)/);
+assert.match(focusUi, /onClick = \{ loadMoreFocus\(section\.key\) \}, enabled = writable && !busy && failedAction == null/);
+
+assert.match(model, /saved\.get<String>\("screen"\)/);
+assert.match(model, /screen = target\s+saved\["screen"\] = target\.name/);
+
+
+const enSource = readFileSync(resolve(app, '../../packages/core/src/i18n/locales/en.ts'), 'utf8');
+
+const enKeys = new Set([...enSource.matchAll(/^\s*(?:'([^']+)'|"([^"]+)"):/gm)].map(([, single, double]) => single ?? double));
+const labelBlock = labelsKt.slice(labelsKt.indexOf('val LABEL_KEYS = listOf('), labelsKt.indexOf('object Labels'));
+const labelKeys = [...code(labelBlock).matchAll(/"([^"]*)"/g)].map(([, name]) => name);
+assert(labelKeys.length > 0 && labelKeys.length <= 500 && new Set(labelKeys).size === labelKeys.length, 'LABEL_KEYS: unique, at most getStrings\' 500');
+for (const name of labelKeys) assert(enKeys.has(name), `LABEL_KEYS: ${name} is not a key in core's en.ts`);
+assert.match(labelsKt, /operator fun get\(name: String\): String = strings\[name\] \?: name\.also\(::missing\)/);
+assert.match(labelsKt, /strings = LABEL_KEYS\.filter\(values::has\)\.associateWith\(values::getString\)/);
+assert.match(labelsKt, /if \(logged\.add\(name\)\) Log\.w\(/, 'a missing key is logged once');
+assert.equal(kotlinFiles.join('\n').match(/Labels\.load\(/g).length, 1);
+assert.match(owner, /runtime\.language\(stored \?: "", Locale\.getDefault\(\)\.toLanguageTag\(\)\)\s+Labels\.load\(runtime\.strings\(LABEL_KEYS\)\)/);
+assert.match(owner, /runtime\.start\([^\n]*\)\s+if \(legacy != null\) \{\s+runtime\.logLine\([^}]*\}\s+setLanguage\(runtime, language \?: legacy\?\.language\)\s+loadTheme\(runtime, legacy\?\.theme\)\s+recoverInstalls\(installer\)\s+if \(replay\(runtime\)\) recovered\(app, runtime, deferSync = true\)\s+deferredWidgets\.hold\(runtime\)\s+return runtime/);
+
+
+assert.match(owner, /fun recovered\(app: Application, runtime: CoreHost, deferSync: Boolean = false\): Boolean = StartOrder\.afterReplay\(\s+drain = \{ drain\(runtime, queue\(app\), app\) \},\s+owe = \{ message -> recordFailure\(PendingFailure\(FailedAction\("journal", ""\), message, null\)\) \},\s+retryLater = \{ runCatching \{ CoreWork\.retryDrain\(app\) \}[^\n]*\},\s+startSync = \{\s+if \(deferSync\) deferredSync\.set \{\s+startSync\(app, runtime\)\s+startReminders\(runtime\)\s+startAppSearch\(runtime\)\s+\} else \{\s+startSyncWithScreen\(app, runtime\)\s+startReminders\(runtime\)\s+if \(screenShown\) startAppSearch\(runtime\)\s+\}\s+\},\s+refreshWidgets = \{ refreshWidgets\(runtime\) \},\s+\)/);
+assert.match(source('StartOrder.kt'), /Drain\.Done -> \{\s+startSync\(\)\s+return true\s+\}\s+Drain\.Unswept -> \{\s+startSync\(\)\s+refreshWidgets\(\)\s+retryLater\(\)\s+\}\s+Drain\.Waiting -> retryLater\(\)\s+is Drain\.Failed -> \{\s+owe\(result\.message\)\s+retryLater\(\)\s+\}/);
+assert.match(source('CoreWork.kt'), /fun retryDrain\(context: Context\) = enqueue\(context, CoreJob\.INGEST, emptyMap\(\), ExistingWorkPolicy\.KEEP\)/, 'a retry never cancels a running drain');
+
+
+{
+    const coreWork = source('CoreWork.kt');
+    const rnScheduler = readFileSync(resolve(app, '../../node_modules/expo-background-task/android/src/main/java/expo/modules/backgroundtask/BackgroundTaskScheduler.kt'), 'utf8');
+    const coreRunner = readFileSync(resolve(app, '../../packages/core/src/mobile-background-sync.ts'), 'utf8');
+    assert.equal(/const val RN_SYNC_WORK = "(\w+)"/.exec(coreWork)[1], /WORKER_IDENTIFIER = "(\w+)"/.exec(rnScheduler)[1], 'RN\'s worker name is Expo\'s');
+    assert.equal(/const val SYNC_INTERVAL_MINUTES = (\d+)L/.exec(coreWork)[1], /MOBILE_BACKGROUND_SYNC_MINIMUM_INTERVAL_MINUTES = (\d+);/.exec(coreRunner)[1], 'core\'s interval');
+    assert.match(rnScheduler, /setRequiredNetworkType\(NetworkType\.CONNECTED\)/);
+    assert.match(coreWork, /\.setInitialDelay\(SYNC_INTERVAL_MINUTES, TimeUnit\.MINUTES\)\s+\.setConstraints\(Constraints\.Builder\(\)\.setRequiredNetworkType\(NetworkType\.CONNECTED\)\.build\(\)\)/);
+    assert.match(coreWork, /if \(on\) work\.enqueueUniqueWork\(SYNC_WORK, ExistingWorkPolicy\.KEEP, syncRequest\(\)\) else work\.cancelUniqueWork\(SYNC_WORK\)/);
+    assert.match(coreWork, /enqueueUniqueWork\(SYNC_WORK, ExistingWorkPolicy\.APPEND_OR_REPLACE, syncRequest\(\)\)/);
+
+    assert.match(coreWork, /fun scheduleSyncStored\(context: Context, on: Boolean\) \{\s+scheduleSync\(context, on\)\.result\.get\(STORE_WAIT_SECONDS, TimeUnit\.SECONDS\)\s+\}/);
+    assert.equal(coreWork.match(/enqueueUniqueWork\(SYNC_WORK/g).length, 2, 'the sync job is queued only by core\'s decision and by its own run');
+    assert.match(coreWork, /syncAgain = \{ isStopped \|\| runCatching \{ syncAgain\(app\)\.result\.get\(STORE_WAIT_SECONDS, TimeUnit\.SECONDS\) \}/, 'a cancelled run queues no next one; a next run not stored retries this one (review S4a 3)');
+    assert.match(source('StrideApplication.kt'), /runCatching \{ CoreWork\.cancelRnSync\(this\) \}/);
+    assert.match(hostEntry, /scheduleBackgroundSync: \(on\) => \{ const bridge = native\(\); if \(bridge\.bgSyncSchedule\) checked\(bridge\.bgSyncSchedule\(on\)\); \},/);
+    const tested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-sync.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(tested.status, 0, `bundle/host-sync.test.ts: ${tested.stderr.slice(-1500)}`);
+
+    const fileSyncTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-file-sync.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(fileSyncTested.status, 0, `bundle/host-file-sync.test.ts: ${fileSyncTested.stderr.slice(-1500)}`);
+
+    for (const file of ['host-file-sync-inventory.test.ts', 'host-sync-lock-channel.test.ts']) {
+        const tested = spawnSync('bun', ['test', `apps/android-native/bundle/${file}`], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+        assert.equal(tested.status, 0, `bundle/${file}: ${tested.stderr.slice(-1500)}`);
+    }
+
+    const calendarTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-calendar.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(calendarTested.status, 0, `bundle/host-calendar.test.ts: ${calendarTested.stderr.slice(-1500)}`);
+
+    const widgetsTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-widgets.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(widgetsTested.status, 0, `bundle/host-widgets.test.ts: ${widgetsTested.stderr.slice(-1500)}`);
+
+    const memoryTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-backup-memory.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(memoryTested.status, 0, `bundle/host-backup-memory.test.ts: ${memoryTested.stderr.slice(-1500)}`);
+
+
+    const appSearchTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-app-search.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(appSearchTested.status, 0, `bundle/host-app-search.test.ts: ${appSearchTested.stderr.slice(-1500)}`);
+
+    const channelTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-data-channel.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(channelTested.status, 0, `bundle/host-data-channel.test.ts: ${channelTested.stderr.slice(-1500)}`);
+
+    const limitTested = spawnSync('bun', ['test', 'apps/android-native/scripts/data-transfer-limit.test.mjs'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(limitTested.status, 0, `scripts/data-transfer-limit.test.mjs: ${limitTested.stderr.slice(-1500)}`);
+
+    assert.match(readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8'), /create\("play"\) \{\s+dimension = "channel"\s+buildConfigField\("boolean", "FOSS", "false"\)[^}]*\}\s+create\("foss"\) \{\s+dimension = "channel"\s+buildConfigField\("boolean", "FOSS", "true"\)/);
+    assert.match(coreHost, /engine\.globalObject\.setProperty\("__strideFossBuild", BuildConfig\.FOSS\)/);
+    assert.match(hostEntry, /const isFossBuild = globalThis\.__strideFossBuild === true;/);
+    const bundleHosts = ['host-sync.ts', 'host-ai.ts'].map((name) => readFileSync(resolve(app, 'bundle', name), 'utf8')).join('\n');
+    assert.doesNotMatch(bundleHosts, /isFossBuild: false/, 'every host reads the flavor');
+}
+
+
+assert.match(owner, /fun queue\(app: Application\) = File\(app\.filesDir, PendingCaptureWriter\.DIRECTORY\)/, 'the queue is RN\'s writer\'s folder');
+assert.match(owner, /private fun drain\(runtime: CoreHost, queue: File, app: Application\): StartOrder\.Drain \{\s+if \(failure != null\) return StartOrder\.Drain\.Waiting\s+val unswept = runCatching \{ CheckoffStore\.sweep\(app\)\.failed > 0 \}[^\n]*\.getOrDefault\(true\)\s+if \(unswept\) runtime\.logLine\("Native Android queue drain", JSONObject\(\)\.put\("outcome", "unswept"\)\)\s+val drained = if \(unswept\) StartOrder\.Drain\.Unswept else StartOrder\.Drain\.Done\s+when \(StartOrder\.queueEmpty\(queue\.list\(\), queue\.exists\(\)\)\) \{\s+true -> return drained\s+null -> \{\s+runtime\.logLine\("Native Android queue drain", JSONObject\(\)\.put\("outcome", "unreadable"\)\)\s+return StartOrder\.Drain\.Unswept\s+\}\s+false -> Unit\s+\}\s+return try \{\s+val ingested = runtime\.ingestPendingCaptures\(UUID\.randomUUID\(\)\.toString\(\)\)/, 'a failed check-off sweep is retried, the queue still drained');
+assert.match(owner, /val ingested = [^\n]+\n\s+runCatching \{ CoreWork\.owedUploads\(app\)\.add\(ingested\) \}[^\n]+\n[^\n]+"drained"[^\n]+\n\s+drained\n/, 'what a drain stored is owed to CoreWork\'s next background run, across process death (S4a, review 2)');
+assert.match(source('CoreWork.kt'), /return host\.backgroundSync\(trigger, if \(ProcessCoreHost\.appActive\) 0 else stored\)\.also \{ owed\.settle\(stored\) \}/, 'an owed upload is settled only once its run settled');
+assert.match(owner, /\.put\("error", message\.substringBefore\(':'\)\)\)\s+StartOrder\.Drain\.Failed\(message\)/);
+
+assert.match(owner, /runtime\.logLine\("Native Android queue drain", JSONObject\(\)\.put\("outcome", "drained"\)\.put\("ingested", ingested\)\)/);
+assert.match(owner, /runtime\.logLine\("Native Android queue drain", JSONObject\(\)\.put\("outcome", "failed"\)\.put\("error", message\.substringBefore\(':'\)\)\)/);
+assert.match(coreHost, /fun logLine\(message: String, context: JSONObject\) \{\s+runCatching \{ callAsync\("logLine", message, context\.toString\(\)\) \}\.onFailure \{ Log\.i\(TAG, "\$message \$context"\) \}/);
+assert.match(hostEntry, /logLine\(message: string, contextJson: string\): string \{\s+return submit\(async \(\) => \{\s+try \{\s+logInfo\(message, \{ scope: globalThis\.__strideHostPlatform === 'ios' \? 'native-ios' : 'native-android', context: JSON\.parse\(contextJson\) as Record<string, unknown> \}\);/);
+assert.match(coreHost, /fun ingestPendingCaptures\(requestId: String\): JSONObject = callAsync\("ingest", requestId\)/);
+assert.equal(kotlinFiles.join('\n').match(/runtime\.language\(|runtime\.strings\(/g).length, 2);
+
+const contractSource = readFileSync(resolve(app, '../../packages/core/src/native-host-contract.ts'), 'utf8');
+for (const [list, prefix] of [['EDITOR_STATUSES', 'status'], ['EDITOR_PRIORITIES', 'priority']]) {
+    const values = [...new RegExp(`const ${list} = \\[([^\\]]*)\\]`).exec(contractSource)[1].matchAll(/'([^']+)'/g)].map(([, value]) => value);
+    for (const value of values) assert(labelKeys.includes(`${prefix}.${value}`), `LABEL_KEYS lacks ${prefix}.${value}`);
+}
+assert.match(editorUi, /for \(status in editor\.view\.statuses\)/);
+assert.match(editorUi, /ChoiceChips\(editor, "priority", editor\.view\.priorities, !locked, t\("taskEdit\.priorityLabel"\), \{ t\("priority\.\$it"\) \}\)/);
+assert.match(editorUi, /Chip\(custom, !locked, t\("recurrence\.custom"\), \{ openPicker\(MONTHLY_CUSTOM\) \}\)/);
+assert.match(editorUi, /MONTHLY_CUSTOM -> MonthlyCustomDialog\(model, editor, locked\) \{ picker = null \}/);
+assert.match(editorUi, /description = "\$\{t\("recurrence\.repeatEvery"\)\}, \$\{t\("recurrence\.monthUnit"\)\}", tag = "monthly-custom-interval"/);
+assert.match(editorUi, /rememberSaveable \{ mutableStateOf\(MonthlyCustom\.of\(recurrence\.getJSONObject\("monthlyCustom"\)\)\.save\(\)\) \}/);
+assert.match(editorUi, /val save = \{ editDraft\(recurrenceEdit\(state\.edit\(\)\)\); dismiss\(\) \}/);
+assert.doesNotMatch(editorUi, /Chip\(true, false, t\("recurrence\.custom"\)/, 'the read-only Custom chip is gone');
+
+{
+    const modelSource = readFileSync(resolve(app, '../../packages/core/src/task-editor-model.ts'), 'utf8');
+    for (const [, key] of modelSource.matchAll(/labelKey: '([^']+)'/g)) assert(labelKeys.includes(key), `LABEL_KEYS lacks ${key}`);
+    for (const value of [...modelSource.matchAll(/TASK_EDITOR_ENERGY_LEVEL_OPTIONS: TaskEnergyLevel\[\] = \[([^\]]*)\]/g)][0][1].matchAll(/'([^']+)'/g)) {
+        assert(labelKeys.includes(`energyLevel.${value[1]}`), `LABEL_KEYS lacks energyLevel.${value[1]}`);
+    }
+    for (const id of ['scheduling', 'organization', 'details']) assert(labelKeys.includes(`taskEdit.${id}`), `LABEL_KEYS lacks taskEdit.${id}`);
+}
+
+
+const pass8Sources = { calendarModel: source('CalendarModel.kt'), calendarUi: source('CalendarScreen.kt'), boardModel: source('BoardModel.kt'), boardUi: source('BoardScreen.kt') };
+for (const [name, text] of Object.entries({ activity, model, editorUi, focusUi, projectsUi, themeKt, iconsKt, rowUi, areaUi, viewStateKt, searchUi, processUi, captureUi, captureModalUi, captureModalModel, menuModel, ...menuScreens, ...pass8Sources })) {
+
+    const body = code(text).replace(/val bySymbol = mapOf\([\s\S]*?\n {4}\)/, '');
+    for (const [, key] of body.matchAll(/"([a-z][A-Za-z]*(?:\.[A-Za-z]+)+)"/g)) assert(labelKeys.includes(key), `${name}: ${key} is not in LABEL_KEYS`);
+    for (const [, rest] of body.matchAll(/(?:\bText\(|contentDescription = |onClickLabel = )([^\n]*)/g)) {
+
+
+        for (const [, literal] of rest.replace(/\b(t|testTag|getString|optString|text|getJSONObject|optJSONObject|getBoolean|optBoolean|getInt|menuText|menuObjects)\("[^"]*"\)/g, '').replace(/\btestTag = "[^"]*"/g, '').matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+            if (labelKeys.includes(literal)) continue;
+            assert.doesNotMatch(literal.replace(/\$\{[^}]*\}|\$\w+/g, ''), /\p{L}/u, `${name}: hard-coded UI text "${literal}"`);
+        }
+    }
+}
+assert.match(activity, /Text\(t\(label\), style = rnText\(10, if \(active\) 700 else 600, 12\)/);
+assert.match(activity, /private fun RowScope\.TabItem\(model: InboxViewModel, tab: Screen, icon: ImageVector, label: String = tab\.label\)/);
+assert.match(model, /enum class Screen\(val label: String\) \{ Inbox\("tab\.inbox"\), Focus\("tab\.next"\), Projects\("nav\.projects"\) \}/);
+
+assert.match(activity, /\} else if \(!writable\) \{[^}]*Text\(error\.orEmpty\(\), color = MaterialTheme\.colorScheme\.error, modifier = Modifier\.testTag\("boot-failure"\)\.padding\(24\.dp\)\)\s*\} else \{/);
+assert.match(activity, /if \(open != null && writable\) Box\(Modifier\.fillMaxSize\(\)\) \{\s+TaskEditorScreen\(model, open\)/);
+
+
+assert.match(inboxUi, /PullToSync\(model, Modifier\.weight\(1f\)\.fillMaxWidth\(\)\) \{\s*LazyColumn\(Modifier\.fillMaxSize\(\), contentPadding = PaddingValues\(bottom = 12\.dp\)\) \{\s*val view = shown\?\.view \?: return@LazyColumn\s*item\(key = "toolbar"\)[\s\S]*?item\(key = "header"\)[\s\S]*?items\(shown\.items, key = \{ it\.key \}\)/);
+assert.match(activity, /Screen\.Inbox -> InboxList\(model, Modifier\.fillMaxSize\(\)\)/);
+
+
+assert.match(activity, /CaptureButton\(model\)[\s\S]*?combinedClickable\(role = Role\.Button,\s*onLongClick = \{ model\.menu\.closeSheet\(\); model\.openCapture\(AutoRecord\.OPPOSITE\) \}\) \{ model\.menu\.closeSheet\(\); model\.openCapture\(AutoRecord\.DEFAULT\) \}/);
+assert.match(activity, /capture\?\.let \{ CapturePopup\(model, it\) \}/);
+assert.doesNotMatch(code(activity + model), /CaptureSheet|createInboxTask|showCapture/, 'the pass-1 capture sheet is gone');
+
+const tabBar = activity.slice(activity.indexOf('private fun TabBar('), activity.indexOf('private fun RowScope.TabItem('));
+assert.deepEqual([...tabBar.matchAll(/TabItem\(model, Screen\.(\w+)|CaptureButton\(model\)|MenuTab\(model\)/g)]
+    .map(([whole, tab]) => tab ?? (whole.startsWith('Capture') ? 'capture' : 'menu')), ['Focus', 'Inbox', 'capture', 'Projects', 'menu']);
+
+
+const banner = activity.slice(activity.indexOf('class FailureBannerSlot'), activity.indexOf('private fun TabBar('));
+assert.match(banner, /fun FailureBanner\(message: String, action: @Composable RowScope\.\(\) -> Unit\) \{\s*val slot = LocalFailureBanners\.current \?: return FailureBannerCard\(message, action\)[\s\S]{0,400}DisposableEffect\(slot, content\) \{ val remove = slot\.put\(content\); onDispose\(remove\) \}/);
+assert.match(banner, /fun FailureBannerHost\(slot: FailureBannerSlot<FailureBannerContent>\) \{\s*val shown = slot\.shown \?: return\s*Box\(Modifier\.fillMaxWidth\(\)\.zIndex\(100f\)\.windowInsetsPadding\(WindowInsets\.safeDrawing\.only\(WindowInsetsSides\.Top\)\)\s*\.semantics \{ testTagsAsResourceId = true; isTraversalGroup = true; traversalIndex = -1f \}/);
+assert.match(banner, /Text\(message,[\s\S]*?liveRegion = LiveRegionMode\.Assertive/);
+{
+    const root = activity.slice(activity.indexOf('setContent {'), activity.indexOf('override fun onResume()'));
+    assert.match(root, /CompositionLocalProvider\(LocalFailureBanners provides banners\)/);
+    const order = ['MenuScreenHost(model, listed)', 'Screen.Inbox -> InboxList(', 'FailureBannerHost(banners)', 'PomodoroPicker(model)', 'StartupPromptOverlays(model)'].map((text) => root.indexOf(text));
+    assert(order.every((index, i) => index > (i ? order[i - 1] : -1)), `the banner floats over every screen and under RN's modals ${order}`);
+}
+assert.match(activity, /Box\(Modifier\.weight\(1f\)\.fillMaxWidth\(\)\.background\(c\.bg\)\.clipToBounds\(\)\)/);
+
+assert.match(activity, /clearAndSetSemantics \{ text = AnnotatedString\(spoken\); heading\(\) \}/);
+assert.match(activity, /val spoken = listOfNotNull\(title, note, count\?\.toString\(\)\)\.joinToString\(" · "\)/);
+
+
+const mobile = resolve(app, '../mobile');
+const hexes = (text) => [...text.matchAll(/"(#[0-9A-Fa-f]{6})"/g)].map(([, hex]) => hex.toUpperCase());
+const kotlinPalette = (name) => hexes(new RegExp(`${name} palette\\(([^)]*)\\)`).exec(themeKt)?.[1] ?? '');
+const FIELDS = ['bg', 'cardBg', 'taskItemBg', 'text', 'secondaryText', 'icon', 'border', 'tint', 'onTint', 'tabIconDefault',
+    'tabIconSelected', 'inputBg', 'danger', 'success', 'warning', 'filterBg'];
+assert.match(themeKt, new RegExp(`data class ThemeColors\\(\\s*${FIELDS.map((field) => `val ${field}: Color,`).join('\\s*')}\\s*\\)`), 'ThemeColors has RN\'s fields in order');
+
+const presetSource = readFileSync(resolve(app, '../../packages/core/src/theme-presets.ts'), 'utf8');
+const presetBlocks = [...presetSource.matchAll(/^ {4}'?([\w-]+)'?: \{\n([\s\S]*?)\n {4}\},/gm)];
+
+const statusPresetUnion = /export type ThemeStatusPreset = ([^;]+);/.exec(readFileSync(resolve(app, '../../packages/core/src/theme-scheme.ts'), 'utf8'))[1];
+assert.deepEqual(presetBlocks.map(([, preset]) => preset).sort(), [...statusPresetUnion.matchAll(/'([\w-]+)'/g)].map(([, preset]) => preset).sort(),
+    'every bespoke theme preset is read');
+for (const [, preset, body] of presetBlocks) {
+    const values = Object.fromEntries([...body.matchAll(/(\w+): '(#[0-9A-Fa-f]{6})'/g)].map(([, field, hex]) => [field, hex.toUpperCase()]));
+    assert.deepEqual(kotlinPalette(`"${preset}" to`), FIELDS.map((field) => values[field]), `preset ${preset} matches RN`);
+}
+const m3Source = readFileSync(resolve(mobile, 'constants/material3/m3-color.ts'), 'utf8');
+const m3Role = (scheme, role) => new RegExp(`${scheme}: \\{[\\s\\S]*?\\b${role}: '(#[0-9A-Fa-f]{6})'`).exec(m3Source)[1].toUpperCase();
+const m3Map = { bg: 'background', cardBg: 'surfaceContainer', taskItemBg: 'surfaceContainerHigh', text: 'text', secondaryText: 'secondaryText',
+    icon: 'secondaryText', border: 'outline', tint: 'primary', onTint: 'onPrimary', tabIconDefault: 'secondaryText', tabIconSelected: 'primary',
+    inputBg: 'surfaceVariant', danger: 'error', success: 'success', warning: 'warning', filterBg: 'surfaceVariant' };
+for (const scheme of ['light', 'dark']) {
+    assert.deepEqual(kotlinPalette(`M3_${scheme.toUpperCase()} =`), FIELDS.map((field) => m3Role(scheme, m3Map[field])), `Material 3 ${scheme} matches RN`);
+}
+const tokenSource = readFileSync(resolve(mobile, 'hooks/use-theme-tokens.ts'), 'utf8');
+const generic = tokenSource.slice(tokenSource.indexOf('const isDark = theme.isDark;'), tokenSource.indexOf('const FALLBACK: ThemeTokens'));
+const baseSource = readFileSync(resolve(mobile, 'constants/theme.ts'), 'utf8');
+const baseColor = (scheme, name) => {
+    const block = new RegExp(`${scheme}: \\{([\\s\\S]*?)\\}`).exec(baseSource)[1];
+    const value = new RegExp(`\\b${name}: ([^,]+),`).exec(block)[1].trim();
+    return (value.startsWith("'") ? value.slice(1, -1) : new RegExp(`const ${value} = '([^']+)'`).exec(baseSource)[1]).toUpperCase();
+};
+const genericValue = (scheme, field) => {
+    const expression = new RegExp(`\\b${field}: ([^,\\n]+)`).exec(generic)[1];
+    const choice = expression.includes('?') ? expression.split('?')[1].split(':')[scheme === 'dark' ? 0 : 1].trim() : expression.trim();
+    const colors = /^Colors\.(light|dark)\.(\w+)$/.exec(choice);
+    return colors ? baseColor(colors[1], colors[2]) : choice.replace(/'/g, '').toUpperCase();
+};
+for (const scheme of ['light', 'dark']) {
+    assert.deepEqual(kotlinPalette(`${scheme.toUpperCase()} =`), FIELDS.map((field) => genericValue(scheme, field)), `RN default ${scheme} matches`);
+}
+
+for (const [name, text] of Object.entries({ activity, model, editorUi, focusUi, projectsUi, labelsKt, iconsKt, owner, rowUi, areaUi, viewStateKt, searchUi, processUi, captureUi, captureModalUi, captureModalModel, menuModel, ...menuScreens })) {
+    assert.doesNotMatch(code(text), /\bColor\(|Color\.(Black|White|Red|Green|Blue|Gray|Yellow|Cyan|Magenta|DarkGray|LightGray|Transparent)\b|parseColor|"#[0-9A-Fa-f]{3,8}"|0x[0-9A-Fa-f]{8}/,
+        `${name} writes a color; colors live only in Theme.kt`);
+}
+assert.equal([activity, focusUi, projectsUi, rowUi, areaUi, searchUi, processUi, captureUi, captureModalUi, ...Object.values(menuScreens)].join('\n').match(/MaterialTheme\.typography/g), null, 'the lists use RN\'s type (rnText), not Material\'s');
+assert.equal(code(activity).match(/StrideTheme\(/g).length, 1, 'one theme wraps the whole app');
+
+assert.doesNotMatch(code(themeKt + owner), /"(system|material3-light|material3-dark)"/);
+assert.match(themeKt, /json\.getString\("preset"\), json\.getBoolean\("material"\), if \(json\.isNull\("scheme"\)\) null else json\.getString\("scheme"\)/);
+assert.match(coreHost, /fun theme\(stored: String\): JSONObject = callAsync\("theme", stored\)/);
+assert.equal(owner.match(/runtime\.theme\(/g).length, 1);
+assert.match(owner, /runCatching \{ ThemeChoice\.load\(runtime\.theme\(stored \?: ""\)\) \}/, 'a failed theme read keeps RN\'s default look');
+const themeCall = hostEntry.slice(hostEntry.indexOf('theme(stored: string): string {'), hostEntry.indexOf('    projects(): string {'));
+assert.match(themeCall, /const mode = typeof synced === 'string' && synced \? synced : \(stored \|\| 'system'\);/, 'RN: the synced setting wins over the device-local choice');
+assert.match(themeCall, /themeDescriptor\(mode\)/);
+assert.doesNotMatch(themeCall, /requireSaved/);
+
+
+assert.match(model, /fun JSONObject\.taskRow\(\) = getJSONObject\("meta"\)\.let \{ meta ->/);
+assert.match(model, /meta\.getJSONArray\("parts"\)\.let \{ parts -> List\(parts\.length\(\)\) \{ parts\.getJSONObject\(it\)\.metaPart\(\) \} \}/);
+assert.match(rowUi, /val parts = if \(details\) meta\.parts else meta\.parts\.filter \{ !it\.detail \}/, 'detail parts show only where RN\'s list shows them');
+assert.match(rowUi, /for \(part in parts\) MetaPartView\(part, if \(part\.kind == "completed"\) editCompleted else null\)/);
+assert.match(rowUi, /"due" -> MetaText\(part\.text, when \(part\.tone\) \{ "overdue" -> c\.danger; "dueSoon" -> c\.warning; else -> c\.secondaryText \}, 600\)/);
+assert.match(rowUi, /val strip = theme\.priority\(meta\.priority\)/);
+assert.match(rowUi, /contentDescription = meta\.accessibilityLabel/);
+assert.match(rowUi, /coreColorOrNull\(part\.dotColor\) \?: c\.tint/, 'a null dot color is the tint, as RN');
+assert.doesNotMatch(code(model), /"dueDate"|"startTime"|"projectTitle"/, 'no row reads core\'s raw dates');
+
+assert.match(iconsKt, /Lucide is ISC licensed/);
+assert.match(iconsKt, /val Target = lucide\("Target", circle\(12, 12, 10\), circle\(12, 12, 6\), circle\(12, 12, 2\)\)/);
+
+
+assert.match(coreHost, /fun projects\(\): JSONObject = callAsync\("projectList"\)/);
+assert.match(coreHost, /fun projectDetail\(id: String, offset: Int, limit: Int, revision: String\): JSONObject =\s*callAsync\("projectDetail", id, offset, limit, revision\)/);
+assert.match(coreHost, /fun strings\(keys: List<String>\): JSONObject = callAsync\("strings", JSONArray\(keys\)\.toString\(\)\)/);
+assert.match(hostEntry, /projects\(\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getProjects\(\)\);/);
+assert.match(hostEntry, /projectDetail\(id: string, offset: number, limit: number, revision: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getProjectDetail\(\{ projectId: id, offset, limit, revision: revision \|\| undefined \}\)\);/);
+
+const labelCalls = hostEntry.slice(hostEntry.indexOf('language(stored: string, system: string): string {'), hostEntry.indexOf('    projects(): string {'));
+assert.match(labelCalls, /contract\.setLanguage\(\{ storedLanguage: stored \|\| null, systemLocale: system \|\| null \}\)/);
+assert.match(labelCalls, /contract\.getStrings\(\{ keys: JSON\.parse\(keysJson\) as string\[\] \}\)/);
+assert.doesNotMatch(labelCalls, /requireSaved/);
+assert.equal(model.match(/runtime\.projects\(\)/g).length, 2, 'read() after boot and commands, and the resume refresh');
+
+
+assert.equal(model.match(/projectWindow\(runtime, /g).length, 3, 'the first window, the next, and a filter edit\'s first window');
+assert.match(model, /runtime\.menuRead\("projectDetailFilterView", JSONObject\(\)\.put\("projectId", id\)[\s\S]{0,200}\.put\("showCompleted", projectShowCompleted\)\.put\("completedCollapsed", projectCompletedCollapsed\)\s+\.put\("filters", projectDetails\.listFilterState\)\.put\("filterSheetOpen", projectDetails\.listFilterSheet != null\)/);
+assert.match(source('ViewState.kt'), /const val PROJECT_SHOW_COMPLETED_KEY = "stride:view:project-detail:show-completed:v1"/);
+assert.match(model, /prefs\.edit\(\)\.putString\(PROJECT_SHOW_COMPLETED_KEY, on\.toString\(\)\)\.apply\(\)/);
+assert.equal([activity, owner, editorUi, focusUi, projectsUi].join('\n').match(/\.projects\(\)|projectDetail\(/g), null);
+
+assert.doesNotMatch(code(projectsUi) + code(model), /\.(sort\w*|sorted\w*|filter(?!Bg\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/);
+assert.match(projectsUi, /val PROJECT_BUCKETS = listOf\("active" to "projects\.activeSection", "deferred" to "projects\.deferredSection", "archived" to "projects\.closed"\)/);
+for (const walk of [/List\(groups\.length\(\)\) \{ index ->/, /List\(rows\.length\(\)\) \{ row ->/, /List\(items\.length\(\)\) \{ index ->/,
+    /for \(\(bucket, heading\) in PROJECT_BUCKETS\) \{/, /for \(group in groups\) \{/, /for \(row in group\.projects\) item/,
+    /for \(entry in detail\?\.items\.orEmpty\(\)\) when \(entry\)/]) assert.match(projectsUi, walk);
+assert.match(projectsUi, /group\.areaName \?: t\("projects\.noArea"\)/);
+
+assert.match(projectsUi, /Text\(row\.statusLabel, style = rnText\(12, 400\), color = color\)/);
+assert.doesNotMatch(code(projectsUi), /"list\.done"/);
+assert.match(projectsUi, /val open = !collapsible \|\| \(if \(bucket == "deferred"\) projectsView\.showDeferred else projectsView\.showArchived\)/, 'Deferred and Archived start closed (RN\'s default)');
+assert.match(projectsUi, /val areaKey = group\.areaId \?: "no-area"/);
+
+assert.match(projectsUi, /val completable = detail\?\.readOnly == false/);
+assert.match(projectsUi, /TaskRowItem\(model, entry\.row, status = RowStatus\.Badge, completable = completable,\s*note = entry\.sequenceCue\?\.let\(CUE_KEYS::get\)\?\.let\(::t\), available = entry\.sequenceCue == "available"\)/);
+
+assert.match(model, /if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure\s+return if \(start == null\) view else readProject\(runtime, id, null, depth\)/);
+assert.match(model, /if \(id != openProjectId\) return\s+if \(detail == null\) keepProject\(null\)\s+project = detail/,
+    'a reply for a closed project is dropped; a project core no longer has closes');
+assert.match(model, /if \(failure\.message\?\.startsWith\("TASK_NOT_FOUND"\) != true\) throw failure\s+null/);
+
+assert.match(projectsUi, /LaunchedEffect\(owner\) \{\s*owner\.repeatOnLifecycle\(Lifecycle\.State\.RESUMED\) \{ model\.refreshProjects\(\) \}/);
+assert.equal(code([activity, model, projectsUi].join('\n')).match(/(?<!fun )refreshProjects\(\)/g).length, 6, 'the lifecycle loop, the boot\'s deferred read (first content, or the tab chosen while the boot ran), RN\'s Show completed and Completed pile (b4a), and a row the clock changes (#1360)');
+assert.match(model, /ProjectsView\.parse\(runtime\.projects\(\)\) else null,\s*at\.project,\s*if \(shown == null \|\| shown == Screen\.Projects\) readOpen\(runtime, at\) else null,/);
+
+assert.match(model, /var openProjectId by mutableStateOf\(saved\.get<String>\("project"\)\)/);
+assert.match(model, /openProjectId = id\s+saved\["project"\] = id/);
+assert.match(projectsUi, /BackHandler\(enabled = failedAction == null\) \{ closeProject\(\) \}/);
+
+
+assert.match(coreHost, /fun searchTasks\(json: String\): JSONObject = callAsync\("search", json\)/);
+assert.match(coreHost, /fun saveSearch\(json: String\): JSONObject = callAsync\("saveSearch", json\)/);
+assert.match(hostEntry, /search\(json: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*const input = JSON\.parse\(json\);\s*return unwrap\(await contract\.searchTasks\(\{ \.\.\.input, filters: input\.filters \?\? DEFAULT_GLOBAL_SEARCH_FILTERS \}\)\);/);
+
+
+assert.doesNotMatch(code(searchUi), /defaultSearchFilters|fun JSONObject\.(cleared|removed)\(|"cancelled"\)? *\}|getString\("kind"\) == "cancelled"|"(includeReference|hideFutureTasks|duePreset|scope|selectedArea)", *(true|false|"all"|"any")\)/,
+    'no Kotlin copy of core\'s search defaults, chip clearing, or cancelled detection');
+assert.match(searchUi, /row\.getBoolean\("cancelled"\)/);
+assert.match(searchUi, /\{ focusManager\.clearFocus\(\); showSearchFilters\(true\) \}/, 'RN blurs the search field before its filter sheet opens');
+assert.match(searchUi, /it\.getString\("label"\) to it\.getJSONObject\("clearedFilters"\)/);
+assert.match(searchUi, /json\.getJSONObject\("defaultFilters"\)/);
+assert.doesNotMatch(code(processUi), /"setDate"|"toggleAdvancedOptions"|take\(200\)|\.trim\(\)\.take/, 'no Kotlin copy of core\'s picked-day edit, More-options edit, or note preview');
+assert.match(processUi, /send\(JSONObject\(it\.getJSONObject\("pick"\)\.toString\(\)\)\.put\("day", day\)\)/);
+assert.match(processUi, /send\(more\.getJSONObject\("edit"\)\)/);
+assert.match(processUi, /capture\.getString\("notePreview"\)/);
+assert.doesNotMatch(code(searchUi + processUi), /Pending core field/);
+assert.doesNotMatch(searchUi + processUi, /Pending core field/, 'the pending-core comments are gone with the copies');
+assert.match(hostEntry, /saveSearch\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('saveSearch', await contract\.saveSearch\(JSON\.parse\(json\)\)\)\);/);
+assert.match(model, /background\(listOf\(Part\.Search\), \{ runtime -> SearchView\.parse\(runtime\.searchTasks\(request\)\) \}, done\) \{ view, mine ->\s+if \(fresh\(mine, Part\.Search\) && view\.query == search\?\.query\?\.trim\(\)\) searchView = view/);
+assert.equal(model.match(/runtime\.searchTasks\(/g).length, 1);
+assert.match(model, /FailedAction\("saveSearch", current\.saveRequestId, current\.query\.trim\(\), patch = mapOf\("name" to name\.trim\(\)\)\)/);
+assert.match(model, /private fun sendSaveSearch\(action: FailedAction\) = perform\(action\) \{ runtime ->\s+try \{\s+runtime\.saveSearch\([^\n]*\.put\("requestId", action\.id\)\.toString\(\)\)[\s\S]{0,400}?acknowledged\(action\)/);
+
+assert.match(model, /keepSearch\(current\.copy\(submitted = action\.patch\["name"\]\)\)\s+sendSaveSearch\(action\)/);
+assert.match(model, /current\.submitted\?\.let \{ name -> if \(failedAction == null\) saveSearchAction\(current, name\)\.let \{ failedAction = it; sendSaveSearch\(it\) \} \}/);
+assert.match(searchUi, /val owed = failedAction != null \|\| state\.submitted != null/);
+assert.match(model, /if \(action\.kind == "saveSearch"\) keepSearch\(SearchState\(action\.title, saveName = action\.patch\["name"\], saveRequestId = action\.id, submitted = action\.patch\["name"\]\)\)/,
+    'a new screen reopens the save dialog on an owed save, never re-sends it');
+assert.match(searchUi, /failedAction == null \|\| failedAction == saveSearchAction\(state, sent\)/);
+assert.match(searchUi, /failedAction == null \|\| failedAction == completeAction\(task\.id, task\.taskRevision\)/, 'Mark Done from search is the lists\' Done with its exact retry');
+assert.match(model, /private fun refreshAll\(synced: Boolean = false\) \{[\s\S]*?if \(search != null\) readSearch\(\)\s+return\s+\}/, 'search is read again after every sync');
+assert.match(model, /AfterCommandReads\.Read\.Search -> readSearch\(done\)/, 'search is read again after every command, first when open');
+
+assert.doesNotMatch(code(searchUi), /\.(sort\w*|sorted\w*|groupBy|reversed|shuffled|distinct\w*)\b/);
+assert.match(searchUi, /row\.getJSONArray\("titleSegments"\)\.segments\(\)/);
+assert.match(searchUi, /private val SEARCH_ROUTES = mapOf\("\/inbox" to Screen\.Inbox, "\/focus" to Screen\.Focus, "\/projects-screen" to Screen\.Projects\)/);
+
+
+for (const [fn, js] of [['startInboxProcessing', 'inboxStart'], ['inboxProcessingStep', 'inboxStep'], ['commitInboxProcessingStep', 'inboxCommit'],
+    ['skipInboxProcessingTask', 'inboxSkip'], ['endInboxProcessing', 'inboxEnd']]) {
+    assert.match(coreHost, new RegExp(`fun ${fn}\\([^)]*\\): JSONObject = callAsync\\("${js}"`), `CoreHost.${fn} reaches host method ${js}`);
+}
+assert.match(hostEntry, /inboxStart\(mode: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);/);
+assert.match(hostEntry, /inboxStep\(json: string\): string \{\s*return submit\(async \(\) => \{\s*requireSaved\(\);\s*return unwrap\(contract\.getInboxProcessingStep\(JSON\.parse\(json\)\)\);/);
+assert.match(hostEntry, /inboxCommit\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('inboxCommit', await contract\.commitInboxProcessingStep\(JSON\.parse\(json\)\)\)\);/);
+assert.match(hostEntry, /inboxSkip\(json: string\): string \{\s*return submit\(async \(\) => taskResult\('inboxSkip', await contract\.skipInboxProcessingTask\(JSON\.parse\(json\)\)\)\);/);
+assert.match(model, /private fun sendAnswer\(action: FailedAction, reopen: Boolean = true\) = perform\(action\) \{ runtime ->/);
+assert.match(model, /val action = stepAction\(current, kind, choice\)\s+if \(busy \|\| \(failedAction != null && failedAction != action\)\) return\s+keepProcessing\(current\.copy\(pending = action, queued = null\)\)\s+sendAnswer\(action\)/,
+    'the exact request is on disk before the call');
+assert.match(model, /current\.pending\?\.takeIf \{ it\.kind == kind && it\.title == choice \}\s+\?: FailedAction\(kind, UUID\.randomUUID\(\)\.toString\(\), choice,/, 'a retry keeps its requestId');
+assert.match(model, /keepProcessing\(restored\.copy\(hidden = true\)\)\s+failedAction = action\s+sendAnswer\(action, reopen = false\)/,
+    'after process death the app lands on the Inbox; the record and its request stay on disk while they are sent again');
+
+assert.match(model, /if \(current\.hidden\) \{ keepProcessing\(null\); return \}/);
+assert.match(model, /keepProcessing\(if \(it\.hidden\) null else it\.copy\(pending = null\)\)/);
+assert.match(model, /val started = if \(reopen\) InboxProcessing\.started\([^\n]*\) else null\s+acknowledged\(action\)\s+ui \{ keepProcessing\(started\)/);
+assert.match(activity, /val flow = processing\?\.takeUnless \{ it\.hidden \}/);
+assert.match(processUi, /\.put\("hidden", hidden\)/);
+
+assert.match(searchUi, /for \(\(label, cleared\) in view\.chips\) FilterChip\(label, label, true, true\) \{ setSearchFilters\(cleared\) \}/);
+assert.match(model, /acknowledged\(action\)\s+ui \{ finishAnswer\(reply\) \}/);
+assert.equal(code(model).match(/runtime\.(commitInboxProcessingStep|skipInboxProcessingTask)\(/g).length, 2);
+assert.match(model, /if \(UPDATE_REFUSALS\.any \{ message\.startsWith\(it\) \}\) ui \{ failedAction = null; processing\?\.let \{ keepProcessing\(if \(it\.hidden\) null else it\.copy\(pending = null\)\) \} \}/,
+    'a refused answer wrote nothing, so no request is owed');
+assert.match(model, /saved\["processing"\] = value != null/);
+assert.doesNotMatch(code(model), /saved\["processing"\] = (?!value != null)/, 'the Bundle holds only whether Process Inbox is open');
+assert.match(model, /ProcessingStore\(File\(app\.noBackupFilesDir, "process-inbox"\)\)/);
+assert.match(processUi, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(state\.toString\(\)\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+
+assert.match(model, /val now = processing\?\.takeIf \{ it\.sessionId == current\.sessionId && it\.edits\.firstOrNull\(\) === next \}/);
+assert.match(processUi, /LaunchedEffect\(key, coreValue, typing, pending\) \{ if \(!typing && !pending && field\.text != coreValue\)/);
+assert.match(processUi, /\.onFocusChanged \{ typing = it\.isFocused \}/, 'a focused draft input keeps its typing over core replies');
+
+assert.match(processUi, /DayPickerDialog\(row\?\.text\("date"\)/, 'the picker starts on core\'s date and hands core only the picked day');
+assert.doesNotMatch(code(processUi), /"(inbox|next|waiting|someday|reference|done)"\s*->/, 'no status decides a Process Inbox control');
+assert.match(processUi, /const val PROCESSING_MODE_KEY = "stride:view:inboxProcessingMode:v1"/);
+
+
+assert.match(inboxUi, /view\.optJSONObject\("process"\)\?\.let \{ ProcessButton\(model, it\) \}\s+\?: view\.getJSONObject\("mindSweep"\)\.let \{ sweep ->\s+ActionButton\(Lucide\.Brain, sweep\.getString\("label"\), idle, sweep\.getString\("accessibilityLabel"\)\) \{ openMindSweep\(\) \}/);
+assert.match(inboxUi, /ActionButton\(Lucide\.ListChecks, process\.getString\("label"\), writable && !busy && failedAction == null, process\.getString\("accessibilityLabel"\)\) \{ openProcessing\(\) \}/);
+assert.doesNotMatch(code(activity), /"\$inbox · \$total"/, 'the "Inbox · N" count line is gone, as in RN');
+
+
+for (const [fn, js] of [['openQuickCapture', 'captureOpen'], ['quickCaptureView', 'captureView'], ['editQuickCapture', 'captureEdit'],
+    ['submitQuickCapture', 'captureSubmit'], ['submitQuickCaptureLines', 'captureLines'],
+    ['submitQuickCapturePickerQuery', 'capturePicker']]) {
+    assert.match(coreHost, new RegExp(`fun ${fn}\\([^)]*\\): JSONObject = callAsync\\("${js}"`), `CoreHost.${fn} reaches host method ${js}`);
+}
+
+
+assert.match(coreHost, /val handle = data\.openRecoveryWrite\(written\)/);
+assert.match(coreHost, /val recoveryHandle = recovery\?\.let\(data::openRecoveryWrite\)/);
+assert.match(coreHost, /fun createQuickCaptureSnapshot\(snapshots: File, protect: \(\) -> Set<String>\): String\? \{[\s\S]{0,400}?callAsync\("captureSnapshotFile", handle, deadlineMs = sized\(OPERATION_DEADLINE_MS, libraryFileBytes\(\)\)\)/);
+for (const read of ['captureOpen(): string', 'captureView(json: string): string', 'captureEdit(json: string): string']) {
+    assert.match(hostEntry, new RegExp(`${read.replace(/[()]/g, '\\$&')} \\{\\s*return submit\\(async \\(\\) => \\{\\s*requireSaved\\(\\);`), `${read} waits for an owed save`);
+}
+for (const [method, operation, call] of [['captureSubmit', 'quickCapture', 'submitQuickCapture'], ['captureLines', 'quickCaptureLines', 'submitQuickCaptureLines'],
+    ['capturePicker', 'quickCapturePicker', 'submitQuickCapturePickerQuery']]) {
+    assert.match(hostEntry, new RegExp(`${method}\\(json: string\\): string \\{\\s*return submit\\(async \\(\\) => taskResult\\('${operation}', await contract\\.${call}\\(JSON\\.parse\\(json\\)\\)\\)\\);`));
+}
+for (const [fn, call] of [['sendCapture', 'submitQuickCapture'], ['sendLines', 'submitQuickCaptureLines'], ['sendPicker', 'submitQuickCapturePickerQuery']]) {
+    assert.match(model, new RegExp(`private fun ${fn}\\(action: FailedAction\\) = perform\\(action\\) \\{ runtime ->`), `${fn} is a perform(action)`);
+    const body = model.slice(model.indexOf(`private fun ${fn}(`), model.indexOf('\n    }\n', model.indexOf(`private fun ${fn}(`)));
+    assert.match(body, new RegExp(`runtime\\.${call}\\(`));
+    assert.match(body, /acknowledged\(action\)/);
+    assert.match(body, /if \(UPDATE_REFUSALS\.any \{ failure\.message\?\.startsWith\(it\) == true \}\)[^\n]*freeCapture\(action\)/, `${fn}: a refusal frees the ID and unlocks`);
+}
+assert.equal(code(model).match(/runtime\.(submitQuickCapture|submitQuickCapturePickerQuery)\(/g).length, 2);
+assert.equal(code(model).match(/runtime\.submitQuickCaptureLines\(/g).length, 1);
+
+for (const [kind, fn] of [['capture', 'sendCapture'], ['captureLines', 'sendLines'], ['capturePicker', 'sendPicker']]) {
+    assert.match(model, new RegExp(`current\\.pending\\?\\.takeIf \\{ it\\.kind == "${kind}" \\}`), `${kind}: a retry reuses the pending request`);
+    assert.match(model, new RegExp(`keepCapture\\(current\\.copy\\(pending = action[^)]*\\)\\)\\s+${fn}\\(action\\)`), `${kind}: the request is persisted before the call`);
+}
+
+assert.match(model, /FailedAction\("capture", current\.captureId, current\.text, patch = mapOf\("options" to current\.options\.toString\(\), "openAfterSave" to "\$openAfterSave"\)\)/);
+assert.match(model, /FailedAction\("captureLines", current\.lineIds\.first\(\), current\.linesText \?: current\.text,\s*patch = mapOf\("options" to current\.options\.toString\(\), "captureIds" to current\.lineIds\.joinToString\(","\)\)\)/);
+assert.match(model, /failedAction = action\s+when \(action\.kind\) \{ "capture" -> sendCapture\(action\); "captureLines" -> sendLines\(action\); else -> sendPicker\(action\) \}/,
+    'after process death an uncertain capture is sent again with the same IDs');
+assert.match(model, /if \(action\.kind in CAPTURE_KINDS\) storedCapture\?\.let \{ keepCapture\(it\.copy\(pending = action\)\) \}/, 'a new screen reopens the popup on an owed capture, never re-sends it');
+assert.match(model, /saved\["capturing"\] = value != null/);
+assert.doesNotMatch(code(model), /saved\["capturing"\] = (?!value != null)|saved\["(draft|captureId|submittedTitle)"\]/, 'the Bundle holds only whether the popup is open');
+assert.match(model, /CaptureStore\(File\(app\.noBackupFilesDir, "capture"\)\)/);
+assert.match(captureUi, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(state\.toString\(\)\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+
+
+assert.match(model, /runtime\.createQuickCaptureSnapshot\(snapshots, menu\.settings\.transfer\.operations::protectedNames\)/);
+assert.match(coreHost, /return RecoverySnapshots\.publishCapture\(snapshots, written, snapshot\.getString\("fileName"\), protect\)/);
+assert.match(model, /private val snapshots = File\(app\.filesDir, "snapshots"\)/);
+assert.match(snapshotsKt, /private const val MAX_SNAPSHOTS = 5/);
+assert.match(snapshotsKt, /name = fileName\.removeSuffix\(SUFFIX\) \+ "\.\$clash\$SUFFIX"/);
+
+assert.match(snapshotsKt, /FileOutputStream\(pending\)\.use \{ out -> out\.write\(contents\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+beforePublish\(\)\s+check\(pending\.renameTo\(File\(dir, name\)\)\)/);
+assert.match(snapshotsKt, /beforePublish: \(\) -> Unit = \{\}\): String = synchronized\(this\) \{/);
+
+assert.deepEqual([...new Set([...code(captureUi).matchAll(/put\("type", "(\w+)"\)/g)].map(([, type]) => type))].sort(), ['setDueDay', 'setDueTime', 'setNote']);
+
+assert.match(captureUi, /DayPickerDialog\(due\.getJSONObject\("custom"\)\.getString\("startDay"\), \{ pickDay = false \}\) \{ day ->\s+editCapture\(JSONObject\(\)\.put\("type", "setDueDay"\)\.put\("day", day\)\)\s+\}/);
+assert.match(captureUi, /due\.child\("time"\)\?\.getString\("start"\)/);
+
+assert.match(captureUi, /if \(landscape\) Modifier\.weight\(1f, fill = false\)\.verticalScroll\(rememberScrollState\(\)\)\.testTag\("capture-scroll"\)/);
+assert.match(captureUi, /if \(landscape\) footer\(\)\s+\}\s+if \(!landscape\) footer\(\)/);
+
+
+assert.match(model, /storedCapture\?\.takeIf \{ saved\.get<Boolean>\("capturing"\) == true \|\| it\.pending != null \}/);
+assert.match(model, /keepCapture\(current\.copy\(requests = current\.requests \+ JSONObject\(\)\.put\("edit", edit\)\)\)\n/, 'an edit is persisted before it is sent');
+assert.match(captureUi, /\.put\("edits", /);
+assert.match(model, /val written = runtime\.createQuickCaptureSnapshot\(snapshots, menu\.settings\.transfer\.operations::protectedNames\)\s+onMain \{ capture\?\.let \{ keepCapture\(it\.copy\(snapshot = written, snapshotTaken = true\)\) \} \}\s+submit\(written\)/);
+assert.equal(code(model).match(/snapshotFileName/g).length, 1);
+assert.match(model, /\.put\("snapshotFileName", name \?: JSONObject\.NULL\)/);
+assert.match(model, /if \(!taken\) fresh\(\) else try \{ submit\(name\) \} catch \(failure: Exception\) \{\s+if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure\s+fresh\(\)/,
+    'a replay sends the persisted snapshot name first; a stale one takes, persists and sends a new one with the same IDs');
+
+assert.match(captureUi, /LaunchedEffect\(draft\.session, locked\) \{ if \(!draft\.expanded && !locked\) \{ delay\(120\); runCatching \{ titleFocus\.requestFocus\(\) \} \} \}/);
+assert.match(captureUi, /const val ADD_ANOTHER_KEY = "stride:quickCapture:addAnother"/);
+
+
+assert.match(coreHost, /fun menuRead\(name: String, json: String\): JSONObject = callAsync\("menuRead", name, json\)/);
+assert.match(coreHost, /fun menuCommand\(name: String, json: String\): JSONObject = callAsync\("menuCommand", name, json\)/);
+
+
+assert.match(coreHost, /fun deadlineOf\(method: String, args: List<Any\?>\): Long = when \{\s*method == "menuCommand" && args\.firstOrNull\(\) in ATTACHMENT_COMMANDS -> NETWORK_DEADLINE_MS\s*method == BackupOperations\.METHOD -> BACKUP_DEADLINE_MS\s*else -> OPERATION_DEADLINE_MS\s*\}/);
+assert.match(coreHost, /answerChecked\(entry\.method, entry\.args\.toTypedArray\(\), deadline\(entry\.method, entry\.args\)\)/);
+assert.deepEqual([.../val ATTACHMENT_COMMANDS = setOf\(([^)]*)\)/.exec(coreHost)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]),
+    [.../val ATTACHMENT_KINDS = setOf\(([^)]*)\)/.exec(source('Attachments.kt'))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]), 'CoreHost\'s long-deadline commands are the attachment commands');
+{
+
+
+    assert.match(menuModel, /"savedSearchDelete", "savedSearchSort"\) \+ SETTINGS_KINDS/);
+    const kinds = [...[...new RegExp('val MENU_KINDS = setOf\\(([^)]*)\\)').exec(menuModel)[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind),
+        ...[...new RegExp('val SETTINGS_KINDS = setOf\\(([^)]*)\\)').exec(source('SettingsModel.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind)];
+    const hostKinds = [...hostEntry.slice(hostEntry.indexOf('const MENU_COMMANDS'), hostEntry.indexOf('};', hostEntry.indexOf('const MENU_COMMANDS'))).matchAll(/^\s+(\w+): \((input)?\) => contract\.\w+\((?:withCalendar\(\2\)|\2)\),$/gm)].map(([, kind]) => kind);
+
+    const syncKinds = [.../val SYNC_COMMANDS = setOf\(([^)]*)\)/.exec(source('SyncSettings.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const aiKinds = [.../val AI_COMMANDS = setOf\(([^)]*)\)/.exec(source('AISettings.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const attachmentKinds = [.../val ATTACHMENT_KINDS = setOf\(([^)]*)\)/.exec(source('Attachments.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const projectDetailKinds = [.../val PROJECT_DETAIL_KINDS = setOf\(([^)]*)\)/.exec(source('ProjectDetails.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const editorMenuKinds = [.../val EDITOR_MENU_KINDS = setOf\(([^)]*)\)/.exec(source('EditorMenu.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const calendarKinds = [.../val CALENDAR_COMMANDS = setOf\(([^)]*)\)/.exec(source('CalendarSettings.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    {
+        const transferSource = source('DataTransfer.kt');
+        assert.match(transferSource, /val busy get\(\) = dataRowsBusy\(action, shell\.syncActive\)/);
+        for (const entry of ['export', 'pickBackup', 'pickImport', 'askSnapshot', 'gettingStarted']) {
+            assert.match(transferSource, new RegExp(`fun ${entry}\\([^)]*\\) \\{\\s+if \\(busy\\) return`), `${entry} waits while a Data action or a sync runs`);
+        }
+        const settingsScreenSource = source('SettingsScreen.kt');
+        assert.match(settingsScreenSource, /val enabled = !transfer\.busy/);
+        assert.match(settingsScreenSource, /c\.tint, !transfer\.busy, running == "import:\$key"/);
+        assert.match(readFileSync(resolve(app, 'bundle/host-sync.ts'), 'utf8'), /active: service\.getMobileSyncActivityState\(\) === 'syncing'/);
+        assert.match(source('InboxViewModel.kt'), /syncActive = event\.optBoolean\("active"\)/);
+    }
+
+    const dataKinds = [.../val DATA_COMMANDS = setOf\(([^)]*)\)/.exec(source('DataTransfer.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+
+    const promptKinds = [.../val STARTUP_PROMPT_COMMANDS = setOf\(([^)]*)\)/.exec(source('StartupPrompts.kt'))[1].matchAll(/"(\w+)"/g)].map(([, kind]) => kind);
+    assert.deepEqual(hostKinds.sort(), [...kinds, ...syncKinds, ...aiKinds, ...calendarKinds, ...attachmentKinds, ...projectDetailKinds, ...dataKinds, ...promptKinds, ...editorMenuKinds].sort(), 'every menu command kind is one host command, logged as its operation');
+    assert.match(hostEntry, new RegExp(`type MenuCommand = ${kinds.map((kind) => `'${kind}'`).join('\\s*\\| ')}\\s*\\| SyncScreenCommand \\| AIScreenCommand \\| CalendarScreenCommand \\| AttachmentCommand \\| ProjectDetailCommand \\| TaskEditorCommand \\| DataCommand \\| StartupPromptCommand;`));
+    assert.match(hostEntry, new RegExp(`type DataCommand = ${dataKinds.map((kind) => `'${kind}'`).join(' \\| ')};`));
+    assert.match(hostEntry, new RegExp(`type TaskEditorCommand = ${editorMenuKinds.map((kind) => `'${kind}'`).join(' \\| ')};`));
+    assert.match(hostEntry, new RegExp(`type StartupPromptCommand = ${promptKinds.map((kind) => `'${kind}'`).join(' \\| ')};`));
+    assert.match(hostEntry, new RegExp(`type ProjectDetailCommand = ${projectDetailKinds.map((kind) => `'${kind}'`).join('\\s*\\| ')};`));
+    assert.doesNotMatch(menuModel, new RegExp(`"(${projectDetailKinds.join('|')})"`), 'the Menu tab never sends a Project details command itself');
+
+
+    {
+        const details = code(source('ProjectDetails.kt'));
+        assert.match(details, /private fun edit\(projectId: String\?, kind: String, [^{]*fields: JSONObject\.\(\) -> Unit = \{\}\): String\? \{[\s\S]*?journalAhead\("projectEdit", json\)[\s\S]*?writes\.add\(FailedAction\("projectEdit", requestId, json\)\)/, 'an edit is journaled before it is queued');
+        assert.doesNotMatch(details, /menuRead\("[^"]*Prepare"|commitPrepared/, 'Kotlin never prepares or commits an edit itself');
+        assert.match(coreHost, /fun journalAhead\(name: String, json: String\) \{\s*require\(name == "projectEdit"\)[\s\S]{0,160}?\.append\("menuCommand", listOf\(name, json\)\)/);
+        const journalKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/WriteJournal.kt'), 'utf8');
+        for (const fn of ['pending', 'append', 'settle']) assert.match(journalKt, new RegExp(`@Synchronized fun ${fn}\\(`), `the journal's ${fn} is synchronized`);
+    }
+
+
+    {
+        const details = code(source('ProjectDetails.kt'));
+
+
+        assert.equal((details.match(/replies\.ticket\(/g) ?? []).length, 8, 'every Details read takes a ticket');
+        assert.equal((details.match(/replies\.current\(ticket\)/g) ?? []).length, 8, 'every Details reply checks its ticket');
+        assert.match(details, /shell\.fresh\(mine, InboxViewModel\.Part\.ProjectDetails\)/);
+        assert.match(details, /fun closeOverlays\(\) \{\s*replies\.close\(\)/);
+    }
+
+
+    assert.match(model, /fun closeProject\(\) \{[\s\S]{0,300}?projectDetails\.follow\(null\)/, 'Back stores the typed edits');
+    assert.match(code(source('ProjectDetails.kt')), /fun follow\(id: String\?\) \{\s*if \(id == projectId\) return\s*projectId\?\.let \{ old ->\s*for \(\(kind, text\) in editsOnLeave\(/, 'leaving a project stores its edits before anything resets');
+
+    const tagField = code(source('ProjectDetails.kt')).split('BasicTextField(tagDraft')[1].split('testTag("project-tag-input")')[0];
+    assert.doesNotMatch(tagField, /onDone = \{[^}]*Tag\(/, 'the tag field\'s Done changes no tag');
+
+    const detailsKt = code(source('ProjectDetails.kt'));
+    assert.match(detailsKt, /fun addTag\(tag: String\) \{\s*setTag\(tag, present = true\)\s*\}/, 'the picker\'s + only adds');
+    assert.match(detailsKt, /edit\(projectId, "tag"\) \{ put\("tag", tag\)\.put\("present", present\) \}/);
+    assert.match(detailsKt, /testTag\("project-tag-add"\)/);
+    assert.match(detailsKt, /\.clickable\(role = Role\.Button\) \{ addTag\(tagDraft\); tagDraft = "" \}/, '+ adds the typed tag');
+
+
+    assert.match(detailsKt, /menuRead\("projectNotesPreview", /, 'the preview reads core\'s blocks for the draft');
+    assert.doesNotMatch(detailsKt, /projectNotesView/, 'the preview never reads the stored notes in place of the draft');
+    const previewToggles = detailsKt.match(/\{ [^{}]*(notesPreview = !notesPreview|editing = !editing)[^{}]*\}/g) ?? [];
+    assert.equal(previewToggles.length, 2, 'the inline and the full-screen Preview switches parsed');
+    for (const toggle of previewToggles) {
+        assert.doesNotMatch(toggle, /commitNotes/, 'switching to Preview stores nothing');
+    }
+
+    assert.match(tagField, /KeyboardOptions\(capitalization = KeyboardCapitalization\.None, autoCorrectEnabled = false,/, 'the tag field neither corrects nor capitalizes');
+    assert.match(hostEntry, new RegExp(`type AttachmentCommand = ${attachmentKinds.map((kind) => `'${kind}'`).join('\\s*\\| ')};`));
+    assert.doesNotMatch(menuModel, new RegExp(`"(${attachmentKinds.join('|')})"`), 'the Menu tab never sends an attachment command itself');
+    assert.match(hostEntry, new RegExp(`type SyncScreenCommand = ${syncKinds.map((kind) => `'${kind}'`).join('\\s*\\| ')};`));
+    assert.match(hostEntry, new RegExp(`type AIScreenCommand = ${aiKinds.map((kind) => `'${kind}'`).join('\\s*\\| ')};`));
+    assert.doesNotMatch(menuModel, new RegExp(`"(${[...syncKinds, ...aiKinds].join('|')})"`), 'the Menu tab never sends a Sync or AI screen command itself');
+    assert.match(hostEntry, /menuCommand\(name: string, json: string\): string \{\s*return submit\(async \(\) => \{\s*const command = MENU_COMMANDS\[name as MenuCommand\];[\s\S]{0,120}?return taskResult\(name as MenuCommand, await command\(JSON\.parse\(json\) as never\)\);/);
+    assert.match(hostEntry, /menuRead\(name: string, json: string\): string \{\s*return submit\(async \(\) => \{[\s\S]{0,300}?if \(name !== 'more'\) requireSaved\(\);\s*const read = MENU_READS\[name\];[\s\S]{0,100}?return unwrap\(read\(JSON\.parse\(json\) as never\)\);/);
+    const input = code(menuModel.slice(menuModel.indexOf('private fun input(action: FailedAction)'), menuModel.indexOf('}.toString()', menuModel.indexOf('private fun input('))));
+
+    const LIST_KINDS = ['archiveAction', 'contextsAction', 'trashAction', 'reviewAction', 'reviewTask'];
+    for (const kind of kinds.filter((kind) => !LIST_KINDS.includes(kind))) assert.match(input, new RegExp(`"${kind}"(, "\\w+")* ->`), `input() builds the ${kind} request`);
+    for (const kind of LIST_KINDS) assert(kinds.includes(kind), `MENU_KINDS has ${kind}`);
+    assert.doesNotMatch(input, new RegExp(`"(${LIST_KINDS.join('|')})" ->`), 'no list action has a request of its own shape');
+    assert.match(input, /else -> JSONObject\(\)\.put\("requestId", action\.id\)\.put\("action", JSONObject\(action\.title\)\)/, 'a list action is core\'s action with its request UUID');
+}
+assert.match(menuModel, /private fun send\(action: FailedAction\) = shell\.perform\(action\) \{ runtime ->\s+val reply = try \{\s+runtime\.menuCommand\(action\.kind, input\(action\)\)[\s\S]{0,2000}?shell\.acknowledged\(action\)/, 'menu writes run through perform with their exact FailedAction');
+assert.match(menuModel, /if \(refused && action\.kind == "focusSave"\) shell\.ui \{\s+if \(JSONObject\(action\.title\)\.optString\("view"\) == "contexts"\) \{[\s\S]{0,350}put\("requestId", UUID\.randomUUID\(\)\.toString\(\)\)[\s\S]{0,50}else focusControls\.refused\(action\)/, 'a refused Context or Focus saved filter frees its request UUID');
+assert.match(menuModel, /if \(refused && action\.kind == "calendarCreate"\) shell\.ui \{ calendar\.refused\(action\) \}/, 'a refused composer Save frees its request UUID');
+assert.equal(code(menuModel).match(/runtime\.menuCommand\(/g).length, 1, 'send is the one menu write');
+assert.equal(code(menuModel).match(/shell\.perform\(action\)/g).length, 1);
+assert.match(menuModel, /fun retry\(action: FailedAction\) = send\(action\)/);
+assert.match(model, /else -> menu\.retry\(action\)\s+\}\s+\}/, 'retryOwed hands every menu kind to its exact re-send');
+for (const [name, text] of Object.entries(menuScreens)) {
+    assert.doesNotMatch(code(text).replace(/^import .*$/gm, ''), /runtime\.|menuCommand\(|menuRead\(/, `${name}: screens reach core only through MenuModel`);
+}
+
+
+assert.match(menuModel, /fun saveCreate\(\) \{\s+val action = createAction\(\) \?: return\s+if \(shell\.busy \|\| \(shell\.failedAction != null && shell\.failedAction != action\)\) return\s+store\.write\(action\)\s+send\(action\)/);
+assert.match(menuModel, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(state\.toString\(\)\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+assert.match(model, /val menu = MenuModel\(this, saved, prefs, File\(app\.noBackupFilesDir, "menu"\)\)/);
+assert.match(menuModel, /store\.read\(\)\?\.let \{ pending ->\s+if \(shell\.failedAction == null\) \{\s+shell\.owe\(pending\)\s+send\(pending\)/);
+assert.match(model, /if \(reopenCapture != null\) resumeCapture\(reopenCapture\) else captureStore\.delete\(\)\s+menu\.start\(sheet\)/);
+assert.match(menuModel, /if \(refused && action\.kind in CREATES\) shell\.ui \{ store\.delete\(\) \}/, 'a refused create wrote nothing: its record goes');
+assert.match(menuModel, /shell\.acknowledged\(action\)\s+shell\.ui \{\s+if \(action\.kind in CREATES\) store\.delete\(\)/, 'an acknowledged create\'s record goes');
+assert.equal(code(menuModel).match(/store\.delete\(\)/g).length, 2, 'only an answer from core removes a pending create');
+assert.match(menuModel, /"addTask" -> FailedAction\("somedayTask", open\.getString\("captureId"\), text,/, 'Add task sends its capture UUID, kept with its dialog');
+
+
+assert.match(menuModel, /shell\.background\(listOf\(Part\.Menu\), \{ runtime -> read\(runtime, list, params, depth, deep, bulk = bulk\) \}, done\) \{ next, mine ->\s+if \(shell\.fresh\(mine, Part\.Menu\)\) show\(list, next\)/);
+assert.match(menuModel, /shell\.ui \{ if \(shell\.fresh\(mine, Part\.Menu\)\) show\(list, next\) \}/);
+assert.match(menuModel, /\.put\("offset", page\.items\.size\)\.put\("limit", PAGE\)\.put\("revision", page\.revision\)/, 'later windows carry the view\'s revision');
+assert.match(menuModel, /runtime\.menuRead\("collection", JSONObject\(\)\.put\("view", list\)\.put\("collection", name\)\.put\("params", page\.params\)/, 'collections page through getMenuViewCollection with the accepted params');
+
+
+assert.match(menuModel, /"inbox", "archive" -> runtime\.menuRead\(if \(list == "inbox"\) "inboxTokens" else "archiveTokens", JSONObject\(\)\.put\("params", page\.params\)\s+\.put\("offset", offset\)\.put\("limit", WINDOW\)\.put\("revision", page\.revision\)\.apply \{ query\?\.let \{ put\("query", it\) \} \}/);
+assert.equal(code(menuModel).match(/if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure/g).length, 5,
+    'read, More, a collection\'s More, the move dialog\'s choices and a picker search treat a stale window as a reread, never an error');
+assert.match(menuModel, /private fun readMoveChoices\(depth: Int = WINDOW\) \{[\s\S]*?fun query\(offset: Int\) = JSONObject\(target\.toString\(\)\)\.put\("offset", offset\)\.put\("limit", WINDOW\)[\s\S]*?runtime\.menuRead\("moveDialog", query\(0\)\.toString\(\)\)[\s\S]*?query\(items\.length\(\)\)\.put\("revision", first\.getString\("revision"\)\)[\s\S]*?if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure/,
+    'the move dialog pages its choices under the first window\'s revision and rereads from the first window');
+assert.match(menuModel, /fun moreMoveChoices\(\) \{ moveChoices\?\.getJSONObject\("choices"\)\?\.getJSONArray\("items"\)\?\.length\(\)\?\.let \{ readMoveChoices\(it \+ WINDOW\) \} \}/);
+assert.match(model, /if \(synced\) \{\s+background\(Part\.entries, \{ runtime -> applySyncedChoices\(runtime, prefs\); read\(runtime, at\) \}, apply = ::showLists\)\s+menu\.refresh\(\)/, 'the open Menu list is read again after every sync');
+assert.match(model, /AfterCommandReads\.Read\.Menu -> menu\.refresh\(done\)/, 'the open Menu list is read again after every command, first when on screen');
+
+{
+
+
+    const bulkSource = readFileSync(resolve(app, '../../packages/core/src/native-host-contract-bulk-actions.ts'), 'utf8');
+    const unionOf = (text, type) => [...(new RegExp(`export type ${type} =([\\s\\S]*?);\\n`).exec(text)?.[1] ?? '').matchAll(/type: '(\w+)'/g)].map(([, name]) => name);
+    const allowed = new Set([...unionOf(contractSource, 'NativeArchiveAction'), ...unionOf(bulkSource, 'NativeBulkAction'), 'setSearch', 'setText', 'type']);
+    assert(allowed.has('setCompletedAt') && allowed.has('organize') && allowed.has('restoreTasks'), 'core\'s action unions were read');
+    const used = new Set([...code(menuModel + menuUi + archiveUi + bulkUi).matchAll(/put\("type", "?(\w+)/g)].map(([, type]) => type));
+    for (const type of used) assert(allowed.has(type), `${type} is one of core's Archive or bulk actions, or typed text's edit`);
+    assert(['setCompletedAt', 'moveTasks', 'editTaskTokens', 'organize', 'trashTasks'].every((type) => used.has(type)));
+}
+assert.match(menuModel, /reload\(JSONObject\(\)\.put\("type", type\)\.put\("value", text\)\)/);
+assert.match(menuUi, /filterEdit\(option\.getJSONObject\("edit"\)\)/);
+assert.match(menuUi, /filterEdit\(filters\.getJSONObject\("clearEdit"\)\)/);
+assert.match(menuUi, /removeChip\(chip\.getJSONObject\("action"\)\)/);
+
+for (const [name, text] of Object.entries({ menuModel, ...menuScreens })) {
+    assert.doesNotMatch(code(text), /\.(sort\w*|sorted\w*|filter(?!Bg\b|Edit\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/, `${name}: no Kotlin sorting, filtering, or grouping (filterEdit sends core's edit)`);
+
+    assert.doesNotMatch(code(text), /SimpleDateFormat|DateTimeFormatter|LocalDate|java\.time|java\.util\.Calendar|Calendar\.getInstance|GregorianCalendar|Instant\b|\.format\(|toLocal/, `${name}: no Kotlin date formatting or parsing`);
+    assert.doesNotMatch(code(text), new RegExp(`${STATUS}(?:\\s*,\\s*${STATUS})*\\s*->\\s*${STATUS}`), `${name}: no status-to-status map`);
+}
+
+
+assert.equal(moreUi.match(/\.clearAndSetSemantics \{\s+contentDescription = label; role = Role\.Button\s+if \(enabled\) onClick \{ model\.menu\.openTile\(id\); true \} else disabled\(\)\s+\}\s+\.clickable\(enabled = enabled\) \{ model\.menu\.openTile\(id\) \}/g)?.length, 2, "an unbuilt tile is disabled and dimmed on its labelled node; a built one is dimmed only while a command runs or a retry is owed");
+assert.equal(moreUi.match(/\.fade\(if \(enabled\) 1f else 0\.45f\)/g)?.length, 2, 'both tile kinds dim at 45% while disabled');
+assert.match(menuModel, /fun opens\(id: String\) = id in setOf\("waiting", "someday", "reference", "history", "projects", "review", "contexts", "trash", "calendar", "board", "settings"\)/);
+assert.match(activity, /if \(menu\.sheet\) MoreSheet\(model\)/);
+assert.match(activity, /else if \(listed != null && writable\) MenuScreenHost\(model, listed\)/);
+
+for (const key of ['menuSheet', 'menuScreen', 'historyTab', 'menuState', 'menuDialog', 'quickAccess', 'reviewFrom']) assert.match(menuModel, new RegExp(`saved(\\.get<\\w+>\\("${key}"\\)|\\["${key}"\\])`), `${key} rides the Bundle`);
+assert.match(menuUi, /BackHandler\(enabled = failedAction == null\) \{ if \(menu\.dialog != null\) menu\.backInDialog\(\) else if \(menu\.page\?\.bulk != null\) menu\.list\?\.let\(menu::endBulk\) else menu\.closeScreen\(\) \}/);
+
+
+for (const [file, handler] of [
+    ['InboxScreen.kt', /BackHandler\(enabled = model\.failedAction == null && \(dialog != null \|\| page\?\.bulk != null\)\) \{ if \(dialog != null\) backInDialog\(\) else endBulk\("inbox"\) \}/],
+    ['ContextsScreen.kt', /BackHandler\(enabled = bulk != null && dialog == null && model\.failedAction == null\) \{ endSelection\(\); reload\(\) \}/],
+    ['ReviewScreen.kt', /BackHandler\(enabled = bulk != null && dialog == null && model\.failedAction == null\) \{ endSelection\(\); reload\(\) \}/],
+    ['TrashScreen.kt', /BackHandler\(enabled = selecting && dialog == null && model\.failedAction == null\) \{ endSelection\(\); reload\(\) \}/],
+    ['ArchiveScreen.kt', /BackHandler\(enabled = selecting && dialog == null && model\.failedAction == null\) \{ selecting\(false\) \}/],
+    ['FocusScreen.kt', /BackHandler\(enabled = failedAction == null && reorder != null && menu\.focusControls\.dialog == null\) \{ menu\.focusControls\.reorder\(false\) \}/],
+    ['CaptureScreen.kt', /draft\.confirm != null -> cancelCaptureLines\(\)/],
+    ['CaptureModal.kt', /if \(modal\.confirm != null\) cancelLines\(\) else cancel\(leave = false\)/],
+]) assert.match(source(file), handler, `${file}: Back leaves its mode before the screen`);
+
+assert.match(searchUi, /listed != null -> \{ closeSearch\(\); menu\.openRoute\(listed\); highlight\(task\.id\) \}/);
+assert.match(menuModel, /"\/waiting" to \(MenuScreen\.Waiting to null\), "\/someday" to \(MenuScreen\.Someday to null\),\s+"\/reference" to \(MenuScreen\.Reference to null\), "\/done" to \(MenuScreen\.History to "done"\), "\/archived" to \(MenuScreen\.History to "archived"\)/);
+
+assert.match(viewStateKt, /const val DONE_VIEW_KEY = "stride:view:done:v1"/);
+assert.match(viewStateKt, /const val ARCHIVED_VIEW_KEY = "stride:view:archived:v1"/);
+assert.match(viewStateKt, /private fun key\(list: String\) = "stride:view:group-collapse:\$list:v1"/);
+
+
+for (const [name, method] of [['contexts', 'getContextsView'], ['trash', 'getTrashView'], ['review', 'getReviewOverview']]) {
+    assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+}
+
+for (const [name, method, slot] of [['weekly', 'getWeeklyReview', 'weeklyReview'], ['weeklyList', 'getWeeklyReviewList', 'weeklyReview'], ['daily', 'getDailyReview', 'dailyReview']]) {
+    assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(withReview\\('${slot}', input\\)\\),$`, 'm'), `menuRead ${name} is core's ${method} with its calendar`);
+}
+for (const [name, method] of [['contextsAction', 'runContextsAction'], ['trashAction', 'runTrashAction'], ['reviewAction', 'runReviewAction'], ['reviewTask', 'runReviewAction']]) {
+    assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+}
+assert.match(menuModel, /internal fun act\(kind: String, action: JSONObject\) = send\(FailedAction\(kind, UUID\.randomUUID\(\)\.toString\(\), action\.toString\(\)\)\)/,
+    'a list action is one command with a new request UUID; the action itself is its exact retry');
+for (const [name, text] of Object.entries(reviewScreens)) {
+    assert.doesNotMatch(code(text), /\bsend\(|shell\.perform|FailedAction\(/, `${name}: writes go through MenuModel.act or saveCreate, never around perform`);
+}
+
+{
+    const reviewSource = readFileSync(resolve(app, '../../packages/core/src/native-host-contract-review-views.ts'), 'utf8');
+    const union = (text, type) => [...(new RegExp(`export type ${type} =([\\s\\S]*?);\\n`).exec(text)?.[1] ?? '').matchAll(/type: '(\w+)'/g)].map(([, name]) => name);
+    const allowed = new Set([...union(contractSource, 'NativeContextsAction'), ...union(contractSource, 'NativeTrashAction'),
+        ...union(reviewSource, 'NativeReviewAction'), ...union(reviewSource, 'NativeReviewExpansionEdit')]);
+    assert(allowed.has('emptyTrash') && allowed.has('addProjectTask') && allowed.has('toggleArea'), 'core\'s action unions were read');
+    const used = new Set([...code(Object.values(reviewScreens).join('\n')).matchAll(/put\("type", "(\w+)"\)/g)].map(([, type]) => type));
+    assert(used.size > 0);
+    for (const type of used) assert(allowed.has(type), `${type} is one of core's list actions or expansion edits`);
+    assert.doesNotMatch(code(Object.values(reviewScreens).join('\n')), /put\("type", [^"]/, 'no action type is built from a variable');
+}
+
+
+for (const call of ['purgeItem(kind, id, revision)', 'purgeItems(view.getJSONObject("selected"))', 'emptyTrash(clear.getString("revision"))']) {
+    const at = trashUi.indexOf(call);
+    assert(at > 0 && trashUi.slice(Math.max(0, at - 160), at).includes('confirm('), `Trash sends ${call} only from core's confirmation`);
+}
+assert.equal(code(trashUi).match(/\b(purgeItem|purgeItems|emptyTrash)\(/g).length, 3, 'Trash builds each destructive action once, inside its confirmation');
+assert.match(menuUi, /confirmButton = \{ TextButton\(onClick = \{ keepDialog\(null\); act\(open\.optString\("command", "archiveAction"\), open\.getJSONObject\("action"\)\) \}, enabled = idle\)/);
+
+assert.match(contextsUi, /confirm\(bulk\.getJSONObject\("deleteConfirmation"\), trashTasks\(selected, revisions\), "contextsAction"\)/);
+assert.match(reviewUi, /"delete" -> confirm\(bulk\.getJSONObject\("deleteConfirmation"\), trashTasks\(selected, bulk\.getJSONObject\("taskRevisions"\)\), "reviewAction"\)/);
+
+
+for (const [helper, revision] of [['setTaskStatus', 'taskRevision'], ['trashTask', 'taskRevision'], ['trashTasks', 'taskRevisions'], ['moveTasks', 'taskRevisions'],
+    ['editTaskTokens', 'taskRevisions'], ['restoreItem', 'revision'], ['purgeItem', 'revision'], ['addTag', 'taskRevisions'], ['removeTags', 'taskRevisions'],
+    ['markReviewedTasks', 'taskRevisions'], ['organizeTasks', 'taskRevisions'], ['followUpToday', 'taskRevision']]) {
+    const at = listActionsKt.indexOf(`internal fun ${helper}(`);
+    const body = listActionsKt.slice(at, listActionsKt.slice(at + 1).search(/\n(internal|private) fun |\n\/\*\*/) + at + 1);
+    assert.match(body, new RegExp(`\\.put\\("${revision}", ${revision}\\)`), `${helper} sends its ${revision}`);
+}
+assert.match(listActionsKt, /\.put\("taskRevisions", selected\.getJSONObject\("taskRevisions"\)\)\.put\("projectRevisions", selected\.getJSONObject\("projectRevisions"\)\)/);
+for (const text of [contextsUi, reviewUi, weeklyUi, dailyUi]) {
+    assert.doesNotMatch(code(text), /setTaskStatus\(row\.id, status\)|trashTask\(row\.id\)/, 'a row action sends the row\'s taskRevision');
+}
+
+
+assert.match(rowUi, /\.combinedClickable\(enabled = enabled, role = Role\.Button, onLongClickLabel = backdate\?\.let \{ t\("task\.completeBackdateHintMobile"\) \},\s+onLongClick = backdate\) \{ chooseStatus\(task, status\) \}/);
+assert.match(rowUi, /val backdate = if \(status == "done" && task\.status != "done" && failedAction == null\) \{ \{ showStatusMenu\(null\); completedAt\.open\(task, "complete"\) \} \} else null/);
+assert.match(model, /if \(status == "done" && task\.status != "done"\) \{ statusMenu = null; complete\(task\.id, task\.taskRevision, askNext = true\) \}\s+else if \(!menu\.rowStatus\(task, status\)\) changeStatus\(task, status\)/);
+
+
+assert.deepEqual(readdirSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot')).filter((name) => name.endsWith('.kt'))
+    .flatMap((name) => (source(name).match(/askNext = true/g) ?? []).map(() => name)).sort(), ['InboxViewModel.kt', 'TaskRowView.kt']);
+assert.match(searchUi, /\{ complete\(task\.id, task\.taskRevision\) \}/);
+assert.match(source('CalendarModel.kt'), /"done" -> complete\(taskId, revision\)\n/);
+assert.match(source('Pomodoro.kt'), /shell\.complete\(id, taskRevision\)\n/);
+assert.match(model, /"complete" -> complete\(action\.id, action\.patch\["taskRevision"\]\.orEmpty\(\)\)\n/);
+assert.match(rowUi, /failedAction == if \(status == "done"\) completeAction\(task\.id, task\.taskRevision\) else statusAction\(task, status\)\)/);
+assert.match(menuModel, /private val ROW_KINDS = mapOf\("contexts" to "contextsAction", "review" to "reviewAction", "weekly" to "reviewAction", "daily" to "reviewAction"\)/);
+
+assert.match(menuModel, /private val CREATES = setOf\("somedayTask", "somedaySection", "reviewTask", "calendarCreate", "boardCreate", "focusSave", "manageEditor", "bulkCreate", "mindSweepAdd"\)/);
+assert.match(menuModel, /"projectTask" -> FailedAction\("reviewTask", open\.getString\("requestId"\), addProjectTask\(open\.getString\("projectId"\), open\.optString\("text"\)\)\.toString\(\)\)/);
+
+
+assert.match(menuModel, /"activateProject" -> JSONObject\(\)\.put\("projectId", action\.id\)\.put\("projectRevision", action\.patch\["projectRevision"\]\)/);
+assert.match(menuModel, /\.put\("sectionId", action\.patch\["sectionId"\] \?: JSONObject\.NULL\)\.put\("taskRevisions", JSONObject\(action\.patch\["taskRevisions"\] \?: "\{\}"\)\)/);
+assert.match(menuModel, /"somedaySection" -> JSONObject\(\)\.put\("title", action\.title\)\.put\("requestId", action\.id\)/);
+assert.match(menuUi, /val revision = project\.optString\("projectRevision"\)[\s\S]*?menu\.activate\(id, revision\)/);
+assert.match(rowUi, /menu\.openMove\(listOf\(task\.id\), JSONObject\(\)\.put\(task\.id, task\.taskRevision\)\)/);
+assert.match(bulkUi, /openMove\(it\.getJSONArray\("taskIds"\)\.ids\(\), it\.getJSONObject\("taskRevisions"\)\)/);
+assert.match(rowUi, /setTaskFocus\(task\.id, target, task\.taskRevision\)/);
+assert.match(searchUi, /complete\(task\.id, task\.taskRevision\)/);
+assert.equal(code(weeklyUi).match(/saveCreate\(\)/g).length, 3, 'Return, Save & edit and Add all send the one persisted request');
+
+{
+    const reviewModelSource = readFileSync(resolve(app, '../../packages/core/src/review-views-model.ts'), 'utf8');
+    for (const [kotlin, core] of [['WEEKLY_REVIEW_KEY', 'WEEKLY_REVIEW_SESSION_STORAGE_KEY'], ['DAILY_REVIEW_KEY', 'DAILY_REVIEW_SESSION_STORAGE_KEY']]) {
+        const value = new RegExp(`export const ${core} = '([^']+)'`).exec(reviewModelSource)[1];
+        assert.match(viewStateKt, new RegExp(`const val ${kotlin} = "${value}"`), `${kotlin} is core's ${core}`);
+    }
+}
+assert.match(menuModel, /if \(list == "weekly" \|\| list == "daily"\) prefs\.edit\(\)\.putString\(next\.view\.getString\("storageKey"\), next\.view\.getString\("checkpoint"\)\)\.apply\(\)/);
+assert.match(weeklyUi, /prefs\.edit\(\)\.remove\(view\.getString\("storageKey"\)\)\.apply\(\)/);
+
+assert.match(menuModel, /runtime\.menuRead\("weeklyList", JSONObject\(page\.params\.toString\(\)\)\.put\("list", name\.substringBefore\(':'\)\)[\s\S]{0,160}?\.put\("revision", page\.revision\)/);
+
+assert.match(menuModel, /val quickView: String get\(\) = quickAccess\?\.takeIf \{ it == "review" \|\| it == "contexts" \|\| it == "calendar" \} \?: "projects"/);
+assert.match(activity, /TabItem\(model, Screen\.Projects, when \(quick\) \{ "review" -> Lucide\.ClipboardCheck; "contexts" -> Lucide\.Circle; "calendar" -> Lucide\.Calendar; else -> Lucide\.Folder \}, model\.menu\.quickLabel\)/);
+assert.match(model, /val sheet = runCatching \{ menu\.readSheet\(runtime\) \}\.getOrNull\(\)/, 'the quick-access view is read on the boot thread, before the first frame');
+
+
+{
+    const calendarModel = source('CalendarModel.kt');
+    const calendarUi = source('CalendarScreen.kt');
+    const boardModel = source('BoardModel.kt');
+    const boardUi = source('BoardScreen.kt');
+    const pass8 = { calendarModel, calendarUi, boardModel, boardUi };
+
+
+    for (const [name, method] of [['calendarSheet', 'getCalendarItemSheet'], ['calendarComposer', 'openCalendarComposer'], ['calendarEdit', 'editCalendarComposer']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(withCalendar\\(input\\)\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+    }
+    assert.match(hostEntry, /^\s+calendar: \(input\) => \(calendarFeeds \? calendarFeeds\.calendarView\(input, \(read\) => contract\.getCalendarView\(read\)\) : contract\.getCalendarView\(input\)\),$/m, 'menuRead calendar is core\'s getCalendarView');
+    for (const [name, method] of [['board', 'getBoardView'], ['boardList', 'getBoardList']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+    }
+    for (const [name, method] of [['calendarAction', 'runCalendarAction'], ['calendarCreate', 'runCalendarAction']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(withCalendar\\(input\\)\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+    }
+    for (const [name, method] of [['boardAction', 'runBoardAction'], ['boardCreate', 'runBoardAction']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+    }
+
+
+    assert.match(menuModel, /internal fun command\(kind: String, input: JSONObject\) = send\(FailedAction\(kind, UUID\.randomUUID\(\)\.toString\(\), input\.toString\(\)\)\)/);
+    assert.match(menuModel, /internal fun create\(action: FailedAction\) \{\s+if \(shell\.busy \|\| \(shell\.failedAction != null && shell\.failedAction != action\)\) return\s+store\.write\(action\)\s+send\(action\)/);
+    assert.match(menuModel, /"calendarAction", "calendarCreate", "boardAction", "boardCreate" -> JSONObject\(action\.title\)\.put\("requestId", action\.id\)/);
+    assert.match(menuModel, /"calendarAction", "calendarCreate" -> calendar\.done\(action, reply\)\s+"boardAction", "boardCreate" -> board\.done\(action, reply\)/);
+    assert.match(calendarModel, /private fun act\(action: JSONObject\) = menu\.command\("calendarAction", JSONObject\(\)\.put\("action", action\)/);
+    assert.match(calendarModel, /private fun saveAction\(draft: ComposerDraft\) = FailedAction\("calendarCreate", draft\.requestId, /, 'a composer Save keeps its request UUID (core makes it the new task\'s id)');
+    assert.match(calendarModel, /owed\(draft\)\?\.let \{ return menu\.create\(it\) \}[\s\S]{0,200}?menu\.create\(saveAction\(draft\)\)/, 'Save re-sends the owed request, else the composer\'s own');
+    assert.match(boardModel, /fun duplicate\(taskId: String\) = menu\.create\(FailedAction\("boardCreate", UUID\.randomUUID\(\)\.toString\(\),/, 'Duplicate\'s request UUID is the copy\'s id, on disk first');
+    assert.equal(code(calendarModel).match(/menu\.command\(/g).length, 1, 'the Calendar writes through act');
+    assert.equal(code(boardModel).match(/menu\.command\(/g).length, 2, 'the Board writes moveCard and trashTask through command');
+    for (const [name, text] of Object.entries({ calendarUi, boardUi })) {
+        assert.doesNotMatch(code(text).replace(/^import .*$/gm, ''), /runtime\.|menuCommand\(|menuRead\(|\bsend\(|shell\.perform|FailedAction\(|menu\.command|menu\.create/, `${name}: the screen reaches core only through its model`);
+    }
+    for (const [name, text] of Object.entries({ calendarModel, boardModel })) {
+        assert.doesNotMatch(code(text), /menuCommand\(|\bsend\(|shell\.perform\(action|\.perform\([A-Za-z]/, `${name}: writes only through MenuModel.command or create`);
+    }
+
+    const calendarSource = readFileSync(resolve(app, '../../packages/core/src/native-host-contract-calendar.ts'), 'utf8');
+    const boardSource = readFileSync(resolve(app, '../../packages/core/src/native-host-contract-board.ts'), 'utf8');
+    const boardViewSource = readFileSync(resolve(app, '../../packages/core/src/board-view-model.ts'), 'utf8');
+    const union = (text, type) => [...(new RegExp(`export type ${type} =([\\s\\S]*?);\\n`).exec(text)?.[1] ?? '').matchAll(/'(\w+)'/g)].map(([, name]) => name);
+    const allowed = new Set([...union(calendarSource, 'NativeCalendarAction'), ...union(calendarSource, 'NativeCalendarComposerEdit'),
+        ...union(boardSource, 'NativeBoardAction'), ...union(boardViewSource, 'BoardFilterEdit')]);
+    for (const name of ['moveTask', 'saveComposer', 'selectTask', 'startTime', 'moveCard', 'duplicateTask', 'toggleDuePreset', 'setMatchMode']) assert(allowed.has(name), `core's unions were read (${name})`);
+    const typed = [...code(Object.values(pass8).join('\n')).matchAll(/put\("type", (?:if \([^)]*\) )?"(\w+)"(?: else "(\w+)")?\)/g)].flatMap(([, a, b]) => [a, b].filter(Boolean));
+    assert(typed.length > 10);
+    for (const type of typed) assert(allowed.has(type), `${type} is one of core's calendar or Board actions or edits`);
+    assert.doesNotMatch(code(Object.values(pass8).join('\n')), /put\("type", (?!if \()[^"]/, 'no action or edit type is built from a variable');
+
+    assert.match(calendarModel, /\.put\("offset", items\.length\(\)\)\.put\("limit", WINDOW\)\s*\.put\("revision", first\.getString\("revision"\)\)/);
+    assert.match(calendarModel, /if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure\s+if \(again\) return read\(runtime, sent, sentQuery, again = false\)/);
+    assert.match(boardModel, /\.put\("revision", shown\.revision\)/);
+    assert.match(boardModel, /if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure\s+if \(again\) return read\(runtime, view\.getJSONObject\("filters"\), null, depth, again = false\)/);
+
+    assert.match(calendarUi, /owner\.repeatOnLifecycle\(Lifecycle\.State\.RESUMED\) \{ while \(true\) \{ delay\(60_000\); refresh\(\) \} \}/);
+    assert.match(menuModel, /if \(list == "calendar"\) return calendar\.refresh\(\)\.also \{ done\(\) \}\s+if \(list == "board"\) return board\.refresh\(\)\.also \{ done\(\) \}/);
+
+    for (const key of ['calendarState', 'calendarQuery', 'calendarSheet', 'calendarComposer']) assert.match(calendarModel, new RegExp(`saved(\\.get<\\w+>\\("${key}"\\)|\\["${key}"\\])`), `${key} rides the Bundle`);
+    for (const key of ['boardFilters', 'boardSearch', 'boardSheet']) assert.match(boardModel, new RegExp(`saved(\\.get<\\w+>\\("${key}"\\)|\\["${key}"\\])`), `${key} rides the Bundle`);
+
+    for (const [name, text] of Object.entries(pass8)) {
+
+
+        let policyCode = code(text);
+        if (name === 'calendarUi') {
+            for (const renderingPartition of [
+                'markers.filter { it.getJSONObject("deadline").getInt("groupIndex") == 0 }',
+                'markers.filter { it.getJSONObject("deadline").getString("groupId") == geometry.getString("groupId") }',
+            ]) {
+                assert.equal(policyCode.split(renderingPartition).length - 1, 1, 'one exact core-owned deadline rendering partition');
+                policyCode = policyCode.replace(renderingPartition, 'coreProvidedDeadlineRows');
+            }
+        }
+
+        assert.doesNotMatch(policyCode, /\.(sort\w*|sorted\w*|filter(?!Bg\b|Edit\b|s\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/, `${name}: no Kotlin sorting, filtering, or grouping`);
+        assert.doesNotMatch(code(text), /SimpleDateFormat|DateTimeFormatter|LocalDate|LocalTime|java\.time|java\.util\.Calendar|Calendar\.getInstance|GregorianCalendar|Instant\b|\.format\(|toLocal|currentTimeMillis|\bDate\(|TimeZone/, `${name}: no Kotlin date math, formatting or parsing`);
+        assert.doesNotMatch(code(text), new RegExp(`${STATUS}(?:\\s*,\\s*${STATUS})*\\s*->\\s*${STATUS}`), `${name}: no status-to-status map`);
+    }
+
+    const calendarModelSource = readFileSync(resolve(app, '../../packages/core/src/calendar-view-model.ts'), 'utf8');
+    for (const [kotlin, core] of [['SNAP_MINUTES', 'CALENDAR_SNAP_MINUTES'], ['TAP_MINUTES', 'CALENDAR_TAP_DURATION_MINUTES']]) {
+        const value = new RegExp(`export const ${core} = (\\d+);`).exec(calendarModelSource)[1];
+        assert.match(calendarUi, new RegExp(`internal const val ${kotlin} = ${value}\\n`), `${kotlin} is core's ${core}`);
+    }
+    assert.match(calendarUi, /private fun JSONObject\.extentMinutes\(\): Int = \(getJSONArray\("hourLabels"\)\.length\(\) - 1\) \* 60/, 'the grid\'s extent is core\'s hour labels');
+
+    assert.equal(code(calendarUi).match(/calendar\.move\(/g).length, 1);
+    assert.match(calendarModel, /if \(startMinutes == timed\.getInt\("startMinutes"\)\) return/, 'a block let go where it was sends nothing');
+    assert.equal(code(boardUi).match(/board\.move\(/g).length, 3, 'a drop into another column, a drop inside its own, and TalkBack\'s Move to');
+    assert.match(boardUi, /if \(after != before\) board\.move\(id, revision, status, after, sameColumn = true\)/, 'a drop that changes nothing sends nothing');
+
+
+    assert.match(boardUi, /val revision = row\.optString\("taskRevision"\)/);
+    assert.match(boardModel, /\.put\("type", "moveCard"\)[^\n]*\.put\("taskRevision", taskRevision\)/);
+    assert.match(boardModel, /\.put\("type", "trashTask"\)\.put\("taskId", taskId\)\.put\("taskRevision", taskRevision\)/);
+    for (const type of ['completeTask', 'moveTask', 'unscheduleTask', 'deleteTask']) {
+        const at = calendarModel.indexOf(`.put("type", "${type}")`);
+        assert(at > 0 && /\.put\("taskRevision", /.test(calendarModel.slice(at, calendarModel.indexOf('\n', calendarModel.indexOf('\n', at) + 1))), `the Calendar's ${type} sends the task's revision`);
+    }
+    assert.match(calendarModel, /val revision = sheet\?\.optString\("taskRevision"\)\.orEmpty\(\)/);
+    assert.match(calendarModel, /internal fun JSONObject\.rowRevision\(\): String = optJSONObject\("row"\)\?\.optString\("taskRevision"\)\.orEmpty\(\)/);
+    assert.match(boardModel, /if \(sameColumn\) action\.put\("afterId", afterId \?: JSONObject\.NULL\)/);
+
+
+    assert.match(boardUi, /if \(canEdit\) \{\s+onClick\(t\("common\.edit"\)\) \{ model\.openEditor\(id\); true \}\s+customActions = swipeActions\.map \{ \(side, label\) -> CustomAccessibilityAction\(label\)[^\n]*\+ moveActions\s+\} else disabled\(\)/);
+
+
+    assert.match(calendarUi, /Row\(Modifier\.offset\(y = \(index \* 60 \* PPM\)\.dp - 9\.dp\)\.fillMaxWidth\(\)\.height\(18\.dp\)/);
+    assert.match(calendarUi, /Box\(Modifier\.fillMaxWidth\(\)\.padding\(vertical = 9\.dp\)\.height\(\(extent \* PPM\)\.dp\)/);
+    assert.match(calendarUi, /Row\(Modifier\.offset\(y = \(minutes \* PPM\)\.dp - 5\.dp\)\.then\(modifier\)\.height\(10\.dp\)/);
+    assert.match(calendarUi, /Box\(Modifier\.offset\(y = \(index \* 60 \* PPM\)\.dp\)\.fillMaxWidth\(\)\.height\(1\.dp\)/, 'a week hour rule lies at its minute');
+    assert.match(calendarUi, /\.verticalScroll\(down\)\.padding\(top = 7\.dp, bottom = 24\.dp\)/, 'the week\'s first hour label shows whole');
+
+    assert.match(menuUi, /"calendar" -> CalendarList\(model\)\s+"board" -> BoardList\(model\)/);
+    assert.match(menuUi, /"review" -> ReviewList\(model\)\s+"calendar" -> CalendarList\(model\)\s+\}/);
+}
+
+
+{
+
+    for (const [name, method] of [['inbox', 'getInboxView'], ['inboxTokens', 'getInboxFilterTokens'], ['archiveTokens', 'getArchiveFilterTokens'],
+        ['bulk', 'getBulkActions'], ['focusList', 'getFocusControlsList']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+    }
+    for (const [name, method] of [['bulkAction', 'runBulkAction'], ['focusGroup', 'setFocusGroupBy'], ['focusSave', 'saveFocusFilter'],
+        ['focusCriterion', 'removeFocusFilterCriterion'], ['focusDelete', 'deleteFocusFilter'], ['focusReorder', 'reorderFocus']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+    }
+
+    assert.match(menuModel, /"bulkAction", "focusGroup", "focusSave", "focusCriterion", "focusDelete", "focusReorder" -> JSONObject\(action\.title\)\.put\("requestId", action\.id\)/);
+    assert.match(menuModel, /"bulkAction" -> bulkDone\(action, reply\)\s+"focusGroup", "focusSave", "focusCriterion", "focusDelete", "focusReorder" -> \{\s+if \(action\.kind == "focusSave" && JSONObject\(action\.title\)\.optString\("view"\) == "contexts"\) \{[\s\S]{0,600}else focusControls\.done\(action, reply\)/);
+    assert.match(menuModel, /fun bulkAction\(action: JSONObject, busy: String\) \{\s+bulkBusy = busy\s+act\("bulkAction", bulkPayload\(action\) \?: return\)/);
+    assert.match(menuModel, /confirm\(bulk\.getJSONObject\("deleteConfirmation"\), bulkPayload\(JSONObject\(\)\.put\("type", "trashTasks"\)\) \?: return, "bulkAction"\)/, 'a bulk delete asks core\'s question first');
+    assert.match(menuModel, /undo\?\.let \{ whenIdle \{ bulkBusy = "undo"; act\("bulkAction", JSONObject\(\)\.put\("list", list\)\.put\("action", it\.getJSONObject\("action"\)\)\) \} \}/, 'Undo is core\'s restoreTasks, a new request UUID');
+    assert.match(menuModel, /if \(reply\.optBoolean\("changed"\)\) endBulk\(list\)/, 'an action that changed something leaves selection mode');
+    assert.match(focusModelKt, /private fun command\(kind: String, input: JSONObject\) = menu\.command\(kind, JSONObject\(input\.toString\(\)\)\.put\("controls", state\)\)/);
+    assert.match(focusModelKt, /menu\.create\(FailedAction\("focusSave", open\.getString\("requestId"\), JSONObject\(\)\.put\("controls", state\)\.put\("name", name\)\.toString\(\)\)\)/,
+        'a saved Focus filter is a create: its request UUID (the filter\'s id) and its input on disk before the call');
+    assert.doesNotMatch(code(focusModelKt), /menuCommand\(|\bsend\(|shell\.perform\(action|FailedAction\((?!"focusSave")/, 'FocusModel writes only through MenuModel.command or create');
+    for (const [name, text] of Object.entries({ inboxUi, bulkUi, focusControlsUi })) {
+        assert.doesNotMatch(code(text).replace(/^import .*$/gm, ''), /runtime\.|menuCommand\(|menuRead\(|\bsend\(|shell\.perform|FailedAction\(|menu\.command|menu\.create/, `${name}: the screen reaches core only through its model`);
+    }
+
+
+    assert.match(menuModel, /shell\.screen == Screen\.Inbox -> "inbox"/);
+
+    assert.doesNotMatch(code(kotlinFiles.join('\n') + inboxUi + bulkUi + focusControlsUi + focusModelKt), /inboxWindow|callAsync\("window"|InboxPage|Part\.Inbox/, 'no getInboxWindow read is left in Kotlin');
+    assert.match(model, /private class Lists\(val focus: FocusView\?, val projects: ProjectsView\?, val projectId: String\?, val project: ProjectDetail\?, val areas: AreaFilter\)/);
+    assert.match(menuModel, /if \(list != this\.list\) return\s+shell\.readSucceeded\(\)/, 'the Inbox view\'s (or a Menu list\'s) success clears a read\'s failure');
+    assert.match(menuModel, /"reference", "inbox", "contexts" -> send\(FailedAction\("taskListSort", value\)\)/);
+    assert.match(menuModel, /"inbox" -> kept\(listOf\("groupBy", "filters"\)\)\.put\("collapsedGroupIds", GroupCollapse\.axis\(prefs, "inbox", own\.optString\("groupBy", "none"\), 200\)\)/);
+    assert.match(menuModel, /if \(list == "inbox" && collapse != null\) GroupCollapse\.keep\(prefs, list, axis, collapse\.getJSONArray\("collapsedGroupIds"\)\)/);
+    assert.match(menuUi, /Choice\(option\.getString\("label"\), option\.getBoolean\("selected"\)\) \{ sort\(option\.optJSONObject\("edit"\)\?\.getString\("sortBy"\) \?: option\.getString\("value"\)\) \}/);
+    assert.match(activity, /if \(quick \|\| screen == Screen\.Inbox\) MenuDialogs\(model\)\s+if \(screen == Screen\.Focus\) FocusDialogs\(model\)/);
+    assert.match(inboxUi, /action\.optJSONObject\("filterEdit"\)\?\.let\(::filterEdit\)\s*\?: model\.openCapture\(if \(action\.optJSONObject\("capture"\)\?\.optBoolean\("autoRecord"\) == true\) AutoRecord\.ON else AutoRecord\.OFF\)/, 'the empty state runs core\'s action');
+
+    assert.match(menuModel, /val page: MenuPage\? get\(\) = loaded\?\.takeIf \{ it\.list == list \}/);
+
+
+    assert.match(menuModel, /bulk\?\.let \{ input -> page = page\.withBulk\(runtime\.menuRead\("bulk", JSONObject\(input\.toString\(\)\)\.put\("params", sent\)\.toString\(\)\)\) \}/);
+    assert.match(menuModel, /bulk\.optJSONArray\("except"\)\?\.let \{ put\("selectAll", JSONObject\(\)\.put\("except", it\)\) \} \?: put\("taskIds", bulk\.optJSONArray\("selected"\) \?: JSONArray\(\)\)/);
+    assert.match(menuModel, /bulk\.optJSONObject\("selectAll"\)\?\.let \{ put\("selectAll", it\) \}\s+\?: put\("taskIds", bulk\.getJSONArray\("selectedIds"\)\)\.put\("taskRevisions", bulk\.getJSONObject\("taskRevisions"\)\)/,
+        'an action takes core\'s own Select all object, or the explicit selection with the revisions core\'s bar showed');
+    assert.match(menuModel, /reload\(bulkEdit = JSONObject\(\)\.put\("selectionEdit", JSONObject\(\)\.put\("taskId", taskId\)\.put\("range", range\)\)\)/);
+    assert.match(menuModel, /if \(list !in BULK_LISTS \|\| readOnly\) return null/);
+    for (const [name, text] of Object.entries({ inboxUi, statusListUi, waitingUi, somedayUi })) assert.match(text, /actions = bulkRow\(/, `${name}: rows start and show selection mode`);
+    assert.match(menuModel, /val BULK_LISTS = setOf\("inbox", "waiting", "someday", "reference", "done"\)/);
+
+
+    assert.doesNotMatch(code(kotlinFiles.join('\n') + inboxUi + bulkUi + focusControlsUi + focusModelKt), /"tokenOptions"|"timeEstimateOptions"/, 'Kotlin never reads the deprecated Archive fields');
+    assert.doesNotMatch(code(archiveUi + menuUi), /getJSONObject\("filters"\)\.menuObjects\("chips"\)/, 'chips come from the view\'s own `chips`, not the deprecated filters.chips');
+    assert.match(menuModel, /if \(dialog\?\.optString\("kind"\) == "filters"\) put\("filterSheetOpen", true\)/);
+    assert.match(menuModel, /own\.optJSONArray\("except"\)\?\.let \{ put\("selectAll", JSONObject\(\)\.put\("except", it\)\) \} \?: put\("selectedIds", own\.optJSONArray\("selected"\) \?: JSONArray\(\)\)/);
+    assert.match(menuModel, /view\?\.optJSONObject\("selectAll"\)\?\.let \{ put\("selectAll", it\) \}\s+\?: put\("taskIds", view\?\.optJSONArray\("selectedIds"\) \?: JSONArray\(\)\)\.put\("taskRevisions", view\?\.optJSONObject\("taskRevisions"\) \?: JSONObject\(\)\)/);
+    assert.match(menuModel, /archive\(JSONObject\(\)\.put\("type", "setCompletedAt"\)\.put\("taskId", open\.getString\("taskId"\)\)\.put\("day", open\.getString\("day"\)\)\.put\("time", time\)\s+\.put\("taskRevision", open\.optString\("taskRevision"\)\)\)/);
+
+    for (const type of ['moveToInbox', 'trashTask']) assert.match(archiveUi, new RegExp(`\\.put\\("type", "${type}"\\)\\.put\\("taskId", row\\.id\\)\\.put\\("taskRevision", row\\.taskRevision\\)`));
+    for (const type of ['reactivateProject', 'trashProject']) assert.match(archiveUi, new RegExp(`\\.put\\("type", "${type}"\\)\\.put\\("projectId", id\\)\\.put\\("projectRevision", revision\\)`));
+    assert.match(menuModel, /\.put\("taskRevision", row\.taskRevision\)\.put\("day", start\.getString\("day"\)\)/, 'the completion time picker keeps the row\'s revision');
+    assert.match(archiveUi, /DayPickerDialog\(open\.getString\("day"\), [^\n]*\) \{ pickCompletedDay\(it\) \}/, 'the date dialog starts on core\'s day');
+    assert.match(archiveUi, /val \(hour, minute\) = pickerClock\(open\.getString\("time"\)\)/, 'the time dialog starts on core\'s time');
+
+
+    assert.match(menuUi, /LaunchedEffect\(revision, name\) \{ if \(query\.isNotBlank\(\)\) searchPicker\(name, query,/);
+    assert.match(menuUi, /for \(mode in filters\.menuObjects\("matchModes"\)\) MatchModeRow\(mode\.getString\("label"\), mode\.menuObjects\("options"\), idle\) \{ filterEdit\(it\) \}/);
+
+
+    for (const key of ['focusControls', 'focusDialog', 'focusReorder']) assert.match(focusModelKt, new RegExp(`saved(\\.get<\\w+>\\("${key}"\\)|\\["${key}"\\])`), `${key} rides the Bundle`);
+    assert.match(focusModelKt, /keepState\(controls\.getJSONObject\("state"\)\)\s+if \(reordering && controls\.isNull\("reorder"\)\) keepReordering\(false\)/);
+    assert.match(model, /private fun showFocus\(view: FocusView\?\) \{[\s\S]{0,400}?\n\s+focus = view\s+view\?\.let\(menu\.focusControls::adopt\)/);
+    assert.match(focusControlsUi, /if \(to != index\) reorderTo\(ids\.toMutableList\(\)\.apply \{ add\(to, removeAt\(index\)\) \}, revisions\)/, 'a drop that moves nothing sends nothing; a move sends one reorderFocus');
+
+    assert.match(focusControlsUi, /val revisions = JSONObject\(\)\.apply \{ rows\.forEach \{ put\(it\.getString\("id"\), it\.optString\("taskRevision"\)\) \} \}/);
+    assert.match(focusModelKt, /command\("focusReorder", JSONObject\(\)\.put\("ids", JSONArray\(ids\)\)\.put\("taskRevisions", taskRevisions\)\)/);
+    assert.match(focusControlsUi, /row\.optJSONArray\("moveUp"\)\?\.let \{ order -> CustomAccessibilityAction/, 'TalkBack moves a row by core\'s own order');
+
+
+    for (const [name, text] of Object.entries({ inboxUi, bulkUi, focusControlsUi })) {
+        assert.doesNotMatch(code(text), /\.clickable\(enabled = [^\n]*\.semantics \{ contentDescription|\.semantics \{ contentDescription[^\n]*\}\s*\.clickable\(enabled/,
+            `${name}: no control with a clickable and a separate semantics block`);
+        assert(code(text).match(/clearAndSetSemantics \{/g).length >= 3, `${name}: its controls set label, role and state in one block`);
+    }
+
+    for (const [name, text] of Object.entries({ focusModelKt, focusControlsUi, inboxUi, bulkUi })) {
+        assert.doesNotMatch(code(text), /\.(sort\w*|sorted\w*|filter(?!Bg\b|Edit\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/, `${name}: no Kotlin sorting, filtering, or grouping`);
+        assert.doesNotMatch(code(text), /SimpleDateFormat|DateTimeFormatter|LocalDate|java\.time|java\.util\.Calendar|Calendar\.getInstance|GregorianCalendar|Instant\b|\.format\(|toLocal/, `${name}: no Kotlin date formatting or parsing`);
+    }
+}
+
+
+{
+    const organizeKt = source('ReviewOrganize.kt');
+    const boardModelKt = source('BoardModel.kt');
+    const boardUiKt = source('BoardScreen.kt');
+
+
+    assert.match(reviewUi, /item\.json\.optJSONObject\("review"\)\?\.let \{ review ->[\s\S]{0,700}?act\("reviewAction", link\.getJSONObject\("action"\)\)/);
+    assert.match(reviewUi, /\.clearAndSetSemantics \{ contentDescription = description; role = Role\.Button; testTag = tag; if \(enabled\) onClick \{ action\(\); true \} else disabled\(\) \}/);
+    assert.doesNotMatch(code(reviewUi), /\.testTag\(tag\)/, 'the link\'s tag sits inside its semantics block');
+    assert.doesNotMatch(code(Object.values(reviewScreens).join('\n') + organizeKt + menuModel), /put\("type", "markTaskReviewed"\)/, 'Kotlin never builds a row\'s Mark reviewed');
+
+    assert.match(listActionsKt, /internal fun markReviewedTasks\(taskIds: List<String>, taskRevisions: JSONObject\): JSONObject =\s+JSONObject\(\)\.put\("type", "markReviewedTasks"\)\.put\("taskIds", JSONArray\(taskIds\)\)\.put\("taskRevisions", taskRevisions\)/);
+    assert.match(listActionsKt, /internal fun organizeTasks\(taskIds: List<String>, draft: JSONObject, taskRevisions: JSONObject\): JSONObject =\s+JSONObject\(\)\.put\("type", "organizeTasks"\)\.put\("taskIds", JSONArray\(taskIds\)\)\.put\("draft", draft\)\.put\("taskRevisions", taskRevisions\)/);
+    assert.match(reviewUi, /"markReviewed" -> act\("reviewAction", markReviewedTasks\(selected, bulk\.getJSONObject\("taskRevisions"\)\)\)/);
+    assert.match(menuModel, /else if \(review != null\) \{ bulkBusy = "organize"; act\("reviewAction", organizeTasks\(review\.getJSONArray\("selectedIds"\)\.ids\(\), organize\.getJSONObject\("draft"\), review\.getJSONObject\("taskRevisions"\)\)\) \}/);
+
+    assert.match(menuModel, /if \(refused && action\.kind == "reviewAction" && failure\.message\?\.startsWith\("STALE_REVISION"\) == true\) shell\.ui \{ bulkBusy = null; whenIdle \{ reload\(\) \} \}/);
+
+
+    assert.match(menuModel, /first\.optJSONObject\("bulk"\)\?\.takeIf \{ list == "review" \}/);
+    assert.match(menuModel, /JSONObject\(params\.toString\(\)\)\.apply \{\s+remove\("organize"\); remove\("picker"\)/, 'later windows go without the dialog\'s inputs');
+    for (const list of ['review']) assert.match(menuModel, new RegExp(`"${list}" -> kept\\([\\s\\S]{0,240}?\\.also \\{ dialogInputs\\(list, it\\) \\}`), `${list}'s read carries its open dialog`);
+    assert.match(menuModel, /"contexts" -> kept\(listOf\("tokens", "matchMode", "searchQuery", "filters", "preservedCriteria", "savedFilterId"\)\)[\s\S]{0,120}\.also \{\s+if \(dialog\?\.optString\("kind"\) == "filters"\) it\.put\("filterSheetOpen", true\)\s+dialogInputs\(list, it\)\s+\}/, 'Contexts carries the filter sheet and its open dialog');
+    assert.match(menuModel, /if \(list == "review"\) bulkEdit\?\.optJSONObject\("organizeEdit"\)\?\.let \{ params\.optJSONObject\("organize"\)\?\.put\("edit", it\) \}/);
+    assert.match(organizeKt, /into\.put\("organize", JSONObject\(\)\.put\("draft", open\.optJSONObject\("draft"\) \?: JSONObject\(\)\)\)/);
+    assert.match(bulkUi, /val bulk = page\?\.bulk\?\.takeIf \{ list in BULK_LISTS \} \?: return/, 'the lists\' bar never draws Review\'s');
+    assert.match(menuModel, /if \(type == "organizeTasks"\) \{ bulkBusy = null; closeDialog\("organize"\) \}/);
+
+    assert.match(menuModel, /if \(list == "review" && next\.bulk == null\) closeSelectionDialogs\(list\)/);
+
+
+    assert.match(organizeKt, /into\.put\("picker", \(if \(list == "review"\) JSONObject\(\)\.put\("kind", "removeTag"\) else JSONObject\(\)\.put\("field", open\.getString\("field"\)\)\.put\("mode", open\.getString\("mode"\)\)\)\s+\.put\("query", query\)\)/);
+    assert.match(menuModel, /put\("picker", JSONObject\(\)\.put\("kind", "removeTag"\)\.apply \{ tokenQuery\(open\)\?\.let \{ put\("query", it\) \} \}\)/);
+    assert.match(contextsUi, /BasicTextField\(text, \{ typed -> typeToken\(/);
+
+    assert.match(boardModelKt, /runtime\.menuRead\("boardList", JSONObject\(\)\.put\("filters", shown\.filters\)\.put\("list", name\)\.put\("query", query\)\s+\.put\("offset", items\.length\(\)\)\.put\("limit", WINDOW\)\.put\("revision", shown\.revision\)\.toString\(\)\)/);
+    assert.match(boardUiKt, /LaunchedEffect\(shown\.revision, picker\) \{ if \(query\.isNotBlank\(\)\) board\.searchPicker\(picker, query,/);
+
+
+    assert.match(searchUi, /task\.editor -> \{ highlight\(task\.id\); openEditor\(task\.id\) \}\s+route != null -> \{ openFromSearch\(route, task\.projectId\); highlight\(task\.id, task\.projectId\) \}\s+listed != null -> \{ closeSearch\(\); menu\.openRoute\(listed\); highlight\(task\.id\) \}/);
+    assert.match(model, /private fun listKey\(project: String\? = openProjectId\) = listOf\(menu\.screen\?\.name, menu\.list, screen\.name, project\)\.joinToString\("\|"\)/);
+    assert.match(model, /fun isHighlighted\(taskId: String\) = taskId == highlightTaskId && highlightList == listKey\(\)/);
+    assert.match(model, /withTimeoutOrNull\(3_500\) \{ snapshotFlow \{ listKey\(\) \}\.dropWhile \{ it != where \}\.first \{ it != where \} \}\s+highlightTaskId = null\s+highlightList = null/);
+    assert.match(rowUi, /listed == null && isHighlighted\(task\.id\)/);
+    assert.doesNotMatch(code(rowUi), /== highlightTaskId/, 'a row asks the model, which knows the list the highlight belongs to');
+
+    assert.doesNotMatch(code(organizeKt), /\.(sort\w*|sorted\w*|filter\w*|groupBy|distinct\w*)\b|SimpleDateFormat|LocalDate|java\.time|\bText\(|contentDescription|\bsend\(|shell\.perform|FailedAction\(|runtime\./,
+        'ReviewOrganize.kt: dialog inputs only');
+
+
+    const check12 = readFileSync(resolve(app, 'scripts/check-review-organize-device.mjs'), 'utf8');
+    const restore12 = check12.slice(check12.indexOf('const restore = async () => {'));
+    assert(restore12.indexOf('await settleOwed();') > 0 && restore12.indexOf('await settleOwed();') < restore12.indexOf('await removeFixtures();'), 'cleanup settles an owed failure before removing the fixtures');
+    assert.match(check12, /const removeFixtures = async \(\) => \{\s+if \(!injected\) return;\s+if \(owed\) \{/);
+    assert.match(check12, /done\(await store\(\)\.batchDeleteTasks\(tasks\)\); done\(await store\(\)\.purgeTasks\(tasks\)\);/);
+    assert.match(check12, /setProp\('language', 'en'\);/);
+    assert.match(check12, /const originalLanguage = sh\('getprop debug\.stride\.native\.language'\);[\s\S]*setProp\('language', originalLanguage\)/);
+    assert.doesNotMatch(check12, /setProp\('language', ''\)|for \(const name of PROPS\)/, 'the run never clears the language property to the app\'s own');
+    assert.match(check12, /task\.projectId === injected\.project && task\.areaId === null && task\.dueDate === today\.value/);
+    assert.match(readFileSync(resolve(app, 'scripts/check-projects-device.mjs'), 'utf8'), /\/\^76\[0-9\]\{12\}\[1-6\]\$\/[\s\S]{0,900}?\/\^76\[0-9\]\{12\}9\$\/[\s\S]{0,500}?\/\^76\[0-9\]\{12\}\[07\]\$\//,
+        '--prune-old removes the Review organize check\'s tasks, project and areas');
+
+    const reviewContract = readFileSync(resolve(app, '../../packages/core/src/native-host-contract-review-views.ts'), 'utf8');
+    assert.match(reviewContract, /actions: \[\s+\.\.\.\(scope === 'due' \? \[\{ id: 'markReviewed' as const, label: text\.markReviewed, enabled: true \}\] : \[\]\),\s+\{ id: 'organize'/);
+}
+
+
+{
+    const settingsModel = source('SettingsModel.kt');
+    const settingsUi = source('SettingsScreen.kt');
+    const taskViewUi = source('TaskView.kt');
+    const settingsIcons = source('SettingsIcons.kt');
+    const pass10 = { settingsModel, settingsUi, taskViewUi, settingsIcons };
+    const coreFile = (name) => readFileSync(resolve(app, '../../packages/core/src', name), 'utf8');
+
+    for (const [name, method] of [['settingsMenu', 'getSettingsMenu'], ['gtdSettings', 'getGtdSettings'],
+        ['manageSettings', 'getManageSettings'], ['manageList', 'getManageSettingsList'], ['somedaySections', 'getSomedaySections']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+    }
+
+    assert.match(hostEntry, /^\s+generalSettings: \(input\) => contract\.getGeneralSettings\(nativeAppSearch\n\s+\? \{ \.\.\.\(input as Parameters<typeof contract\.getGeneralSettings>\[0\]\), appSearch: nativeAppSearch\.device\(\) \} : input\),$/m);
+    for (const [name, method] of [['generalSetting', 'setGeneralSetting'], ['gtdSetting', 'setGtdSetting'], ['manageEditor', 'saveManageEditor'],
+        ['manageDelete', 'deleteManageItem'], ['somedayRename', 'renameSomedaySection'], ['somedayReorder', 'reorderSomedaySections'], ['somedayDelete', 'deleteSomedaySection']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+    }
+
+
+    assert.match(settingsModel, /fun general\(edit: JSONObject\) = menu\.command\("generalSetting", JSONObject\(\)\.put\("edit", edit\)\)/);
+    assert.match(settingsModel, /fun gtd\(edit: JSONObject\) = menu\.command\("gtdSetting", JSONObject\(\)\.put\("edit", edit\)\)/);
+    assert.match(settingsModel, /fun saveEditor\(action: FailedAction\) = menu\.create\(action\)/);
+    assert.match(settingsModel, /return FailedAction\("manageEditor", open\.getString\("requestId"\), input\.toString\(\)\)/, 'the editor\'s request UUID stays with its dialog');
+    assert.match(menuModel, /"generalSetting", "gtdSetting", "manageEditor", "manageDelete", "dataSetting", "syncPreference", "setAISetting", "calendarSetting" -> JSONObject\(action\.title\)\.put\("requestId", action\.id\)/);
+    assert.match(menuModel, /"somedayRename", "somedayReorder", "somedayDelete" -> JSONObject\(action\.title\)/);
+    for (const call of ['"manageDelete")', '"somedayDelete")']) {
+        const at = settingsUi.indexOf(call);
+        assert(at > 0 && settingsUi.slice(Math.max(0, at - 200), at).includes('confirm('), `Settings deletes only after core's question (${call})`);
+    }
+    assert.doesNotMatch(code(settingsUi).replace(/^import .*$/gm, ''), /runtime\.|menuCommand\(|menuRead\(|\bsend\(|shell\.perform|FailedAction\(|menu\.command|menu\.create/, 'SettingsScreen reaches core only through SettingsModel');
+    assert.doesNotMatch(code(settingsModel), /menuCommand\(|\bsend\(|shell\.perform\(action|\.perform\([A-Za-z]/, 'SettingsModel writes only through MenuModel.command or create');
+
+    assert.match(menuModel, /if \(action\.kind in SETTINGS_KINDS\) settings\.applied\(runtime, reply\)\s+shell\.acknowledged\(action\)/);
+    assert.match(settingsModel, /internal fun applied\(runtime: CoreHost, reply: JSONObject\) \{\s+reply\.optJSONObject\("persistentCapture"\)\?\.let \{ PersistentCapture\.switched\(shell\.getApplication<Application>\(\), it, runtime::logLine\) \}\s+val writes = reply\.optJSONArray\("deviceWrites"\) \?: return\s+val keys = /);
+
+
+    assert.doesNotMatch(settingsModel.slice(settingsModel.indexOf('internal fun applied(')), /^\s+store\(writes\)/m);
+
+
+    assert.match(settingsModel, /fun deviceStore\(prefs: SharedPreferences\) = DeviceWrites\(\{ prefs\.all \}, \{ changes ->\s+prefs\.edit\(\)\.apply \{[^\n]*\}\.commit\(\)\s+\}\)/);
+    assert.match(settingsModel, /fun deviceStore\(app: Context, keyValue: RnKeyValue\): DeviceWrites \{\s+val prefs = app\.getSharedPreferences\(DEVICE_PREFS, Context\.MODE_PRIVATE\)/);
+    assert.match(settingsModel, /private fun store\(writes: JSONArray\) = deviceStore\(prefs\)\.store\(writes, null, replay = false\)/);
+    {
+        const devicesKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/DeviceWrites.kt'), 'utf8');
+        assert.match(devicesKt, /if \(replay && sequence != null && sequenceOf\(now\[key \+ SEQUENCE\]\) >= sequence\) continue\s+changes\[key\] = [^\n]+\s+if \(sequence != null\) changes\[key \+ SEQUENCE\] = sequence\.toString\(\)/);
+        assert.match(devicesKt, /if \(changes\.isNotEmpty\(\)\) check\(commit\(changes\)\) \{ "Cannot store the device settings" \}/);
+        assert.match(coreHost, /journal = WriteJournal\(journalDir, log = \{ Log\.i\(TAG, it\) \}, floor = devices\.highestSequence\(\)\)/);
+        assert.match(readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/WriteJournal.kt'), 'utf8'), /\n        next = maxOf\(next, floor \+ 1\)\n/);
+        const devicesTest = readFileSync(resolve(app, 'android/app/src/test/java/com/ishaanpilar/stride/pilot/core/DeviceWritesTest.kt'), 'utf8');
+        for (const name of ['aReplayNeverUndoesANewerSetting', 'theJournalStartsAboveEverySequenceASettingHolds', 'aFirstSendAlwaysAppliesAndAFailedCommitThrows']) {
+            assert.match(devicesTest, new RegExp(`@Test fun ${name}\\(\\)`));
+        }
+    }
+    assert.match(model, /app\.getSharedPreferences\(DEVICE_PREFS, /);
+    assert.match(coreHost, /private fun settle\(entry: WriteJournal\.Entry\?, result: JSONObject, replay: Boolean\): Boolean \{\s+result\.optJSONObject\("value"\)\?\.optJSONArray\("deviceWrites"\)\?\.let \{ devices\.store\(it, entry\?\.sequence, replay\) \}\s+return entry != null && checkNotNull\(journal\)\.settle\(entry, result\.error\(\), replay\)/);
+    assert.equal(coreHost.match(/(?<!\.)\bsettle\((?:call\.)?entry, /g).length, 3, 'settle(): the first send (finish), the replay, and a backup commit\'s finish (backupFinish, pass D1a)');
+    assert.match(settingsModel, /runtime\.language\(prefs\.getString\(LANGUAGE_KEY, null\)\.orEmpty\(\), Locale\.getDefault\(\)\.toLanguageTag\(\)\)\s+Labels\.load\(runtime\.strings\(LABEL_KEYS\)\)/);
+    assert.match(model, /val runtime = ProcessCoreHost\.get\(getApplication\(\), prefs\.getString\(LANGUAGE_KEY, null\)\)\s+applyDeviceChoices\(runtime, prefs\)/, 'the device\'s own language and theme apply at boot, before any screen');
+    for (const [kotlin, file, core] of [['LANGUAGE_KEY', 'i18n/i18n-constants.ts', 'LANGUAGE_STORAGE_KEY'], ['THEME_KEY', 'general-settings-model.ts', 'MOBILE_THEME_STORAGE_KEY'],
+        ['MANAGE_SECTIONS_KEY', 'manage-settings-model.ts', 'MANAGE_OPEN_SECTIONS_STORAGE_KEY'], ['TASK_OPEN_MODE_KEY', 'gtd-settings-model.ts', 'MOBILE_TASK_OPEN_MODE_STORAGE_KEY']]) {
+        const value = new RegExp(`export const ${core} = '([^']+)'`).exec(coreFile(file))[1];
+        assert.match(settingsModel, new RegExp(`const val ${kotlin} = "${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`), `${kotlin} is core's ${core}`);
+    }
+
+    const gtdEdits = [...coreFile('gtd-settings-model.ts').matchAll(/type: '(\w+)'/g)].map(([, name]) => name);
+    const built = [...code(settingsModel + settingsUi).matchAll(/put\("type", "(\w+)"\)/g)].map(([, name]) => name);
+    assert.deepEqual([...new Set(built)].sort(), ['defaultScheduleTime', 'pomodoroDurations'], 'only the typed text fields build an edit');
+    for (const name of built) assert(gtdEdits.includes(name), `${name} is one of core's GTD edits`);
+    assert(code(settingsUi).match(/getJSONObject\("edit"\)/g).length >= 10, 'the controls send core\'s edits');
+
+
+    assert.match(settingsUi, /val enabled = row\.getBoolean\("enabled"\) && idle/);
+    assert.match(hostEntry, /^\s+manageCheck: \(input\) => contract\.checkManageEditor\(input\),$/m, 'menuRead manageCheck is core\'s checkManageEditor');
+    assert.match(settingsModel, /shell\.background\(listOf\(Part\.MenuDialog\), \{ runtime ->\s+runtime\.menuRead\("manageCheck", JSONObject\(\)\.put\("target", target\)\.put\("name", name\)\.toString\(\)\)/);
+    assert.match(settingsUi, /val canSave = owed \|\| \(idle && checked != null && !checked\.getBoolean\("saveDisabled"\)\)/);
+    assert.match(settingsUi, /checked\?\.menuText\("message"\)\?\.let \{ Text\(it,/);
+    assert.doesNotMatch(code(settingsUi + settingsModel), /lowercase\(\)|nameTaken"\)|isManageAreaNameTaken/, 'no Kotlin copy of core\'s taken-name rule');
+
+    assert.match(settingsUi, /RowButton\(SettingsIonicons\.PencilOutline, "\$\{t\("common\.edit"\)\}: \$\{unassigned\.getString\("label"\)\}"/);
+    assert.equal(code(settingsUi).match(/"\$\{t\("common\.(edit|delete)"\)\}: \$(name|value)"/g).length, 4, 'area and value rows name their item');
+    assert.match(settingsUi, /if \(open\) collapse \{ settings\.toggleSection\(section\.getJSONObject\("toggle"\)\); true \} else expand \{/);
+
+    assert.match(menuModel, /"settings" -> open\(MenuScreen\.Settings\)/);
+    assert.match(menuModel, /if \(screen == MenuScreen\.Settings && settings\.back\(\)\) return/);
+    assert.match(menuModel, /if \(list == "settings"\) return settings\.refresh\(\)\.also \{ done\(\) \}/);
+    for (const key of ['settingsStack', 'settingsQuery', 'settingsLocal']) assert.match(settingsModel, new RegExp(`saved(\\.get<\\w+>\\("${key}"\\)|\\["${key}"\\])`), `${key} rides the Bundle`);
+    assert.match(menuUi, /"settings" -> SettingsList\(model\)/);
+
+    assert.match(settingsModel, /runtime\.menuRead\("manageList", JSONObject\(\)\.put\("list", list\)\.put\("offset", loaded\.size\)\.put\("limit", WINDOW\)\s*\.put\("revision", view\.getString\("revision"\)\)/);
+    assert.match(settingsModel, /\.put\("revision", first\.getString\("revision"\)\)/);
+    assert.match(settingsModel, /if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure/);
+
+
+    assert.match(model, /if \(!current\.readOnly\) input\.put\("draft", JSONObject\(draftJson\(current\.fullDraft\(\)\)\)\)\.put\("checklist", JSONArray\(current\.checklistNow\)\)/);
+    assert.match(model, /background\(listOf\(Part\.TaskView\), \{ runtime -> readView\(runtime, input, depth\) \}\) \{ view, mine ->\s+if \(fresh\(mine, Part\.TaskView\) && editor\?\.id == current\.id\) taskView = view/);
+    assert.match(model, /\.put\("offset", items\.length\(\)\)\.put\("limit", VIEW_WINDOW\)\s*\.put\("revision", first\.getString\("revision"\)\)/);
+
+
+    assert.match(model, /val automatic = routeTab \?: if \(menu\.screen == null && screen == Screen\.Inbox && search == null\) "task" else "view"/);
+    assert.match(model, /val tab = if \(opened\.readOnly\) "view" else if \(routeTab == "task"\) "task" else if \(mode == "preview"\) "view" else if \(mode == "edit"\) "task" else automatic/);
+
+    assert.match(model, /menu\.whenIdle \{ openEditor\(taskId, "task"\) \}/);
+    assert.match(source('BoardModel.kt'), /shell\.openEditor\(open\.getString\("taskId"\), "task"\)/);
+    assert.match(menuModel, /shell\.openEditor\(id, "task"\)/);
+    assert.match(editorUi, /if \(editor\.readOnly \|\| editor\.tab == "view"\) TaskViewTab\(/);
+    assert.match(editorUi, /\.put\("checklist", checklist \?: JSONObject\.NULL\)\.put\("tab", tab\)/, 'the open tab and the checklist ride the draft file');
+
+    const checklistKinds = [...(/export type TaskChecklistEdit =([\s\S]*?);\n\n/.exec(coreFile('task-checklist-model.ts'))?.[1] ?? '').matchAll(/kind: '(\w+)'/g)].map(([, kind]) => kind);
+    assert(checklistKinds.includes('toggle') && checklistKinds.includes('append'), 'core\'s checklist edit kinds were read');
+    const kinds = [...code(taskViewUi + model).matchAll(/editChecklist\(JSONObject\(\)\.put\("kind", "(\w+)"\)/g)].map(([, kind]) => kind);
+    assert(kinds.length >= 7);
+    for (const kind of kinds) assert(checklistKinds.includes(kind), `${kind} is one of core's checklist edits`);
+    assert.doesNotMatch(code(taskViewUi), /editChecklist\(JSONObject\(\)\.put\("kind", [^"]/, 'no checklist edit kind is built from a variable');
+
+
+    assert.equal(code(taskViewUi).match(/put\("itemId", /g).length, 2, 'preview ticks retain ID-based resolution');
+    assert.match(editorUi, /if \(checklist != null && \(checklist\.has\("index"\) \|\| checklist\.has\("from"\)\) && checklistStructurePending\) return this/);
+    assert.match(editorUi, /"move", "remove", "insertAfter", "add", "append" -> true/);
+    assert.match(taskViewUi, /enabled = !locked && !editor\.checklistStructurePending/);
+    assert.equal(code(taskViewUi).match(/if \(model\.editor\?\.checklistStructurePending != true\)/g).length, 2, 'typing and IME submit both reject stale positions');
+
+
+    assert.match(taskViewUi, /val text = model\.editor\?\.checklistAdd\.orEmpty\(\)\n[\s\S]*?BasicTextField\(text, model::typeChecklistAdd,/,
+        'the View tab add box binds to the draft\'s checklistAdd');
+    assert.match(model, /fun saveEditor\(\) \{\n\s+if \(editor\?\.checklistAdd\?\.isNotBlank\(\) == true\) submitChecklistAdd\(\)\n/,
+        'Save adds the add box text before it saves');
+    assert.match(model, /keepEditor\(now\.refused\(now\.pending\.first\(\)\)\)/, 'a refused edit goes through TaskEditor.refused');
+    assert.match(model, /private fun currentChecklistEdit\(edit: JSONObject, checklist: String\): JSONObject\? \{\s+if \(!edit\.has\("itemId"\)\) return edit\s+val items = JSONArray\(checklist\)\s+val index = \(0 until items\.length\(\)\)\.firstOrNull \{ items\.getJSONObject\(it\)\.getString\("id"\) == edit\.getString\("itemId"\) \} \?: return null/);
+    assert.match(model, /val to = index \+ edit\.getInt\("step"\)\s+return if \(to in 0 until items\.length\(\)\) sent\.put\("from", index\)\.put\("to", to\) else null/);
+    assert.match(model, /val listEdit = queued\?\.let \{ currentChecklistEdit\(it, current\.checklistNow\) \}/);
+    assert.equal(code(model).match(/currentChecklistEdit\(/g).length, 2, 'resolved in one place, in stepEditor, right before the send');
+
+
+    assert.match(model, /val revision = taskView\?\.takeIf \{ it\.getString\("id"\) == current\.id \}\?\.optString\("taskRevision"\) \?: return\s+sendReset\(FailedAction\("resetChecklist", current\.id, UUID\.randomUUID\(\)\.toString\(\), patch = mapOf\("taskRevision" to revision\)\)\)/);
+    assert.match(model, /private fun sendReset\(action: FailedAction\) = perform\(action\) \{ runtime ->\s+try \{\s+runtime\.resetTaskChecklist\(action\.id, action\.title, action\.patch\["taskRevision"\]\.orEmpty\(\)\)\s+\} catch \(failure: Exception\) \{\s+[^\n]*\n\s+if \(failure\.message\?\.startsWith\("STALE_REVISION"\) == true\) ui \{ menu\.whenIdle \{ readTaskView\(\) \} \}\s+throw failure\s+\}\s+acknowledged\(action\)/);
+    assert.match(model, /"resetChecklist" -> sendReset\(action\)/);
+
+
+    const followLink = /val follow = \{ target: JSONObject ->([\s\S]*?)\n        Unit\n    \}/.exec(editorUi)?.[1];
+    assert(followLink, 'the editor has an explicit link-follow handler');
+    assert.match(followLink, /^\s*if \(target\.getString\("kind"\) == "external"\) \{\s+openExternalLink\(context, target\.getString\("href"\), ::t\) \{ outcome -> anyTime\(\{ it\.logLinkHandoff\(outcome, "markdown"\) \}, \{\}\) \}\s+\}\s+else if \(editor\.readOnly \|\| \(!editor\.dirty && !editsPending\)\) go\(target\)\s+else \{ linkAfterLeave = target\.toString\(\); confirmLeave = true \}\s*$/, 'every external link offers Copy link when nothing opens it (UpNote logged), and internal navigation retains the unsaved-edit guard');
+    assert.match(taskViewUi, /withLink\(LinkAnnotation\.Clickable\(target\.toString\(\), TextLinkStyles\(SpanStyle\(color = tint, textDecoration = TextDecoration\.Underline\)\)\) \{ follow\(target\) \}\)/);
+
+    for (const [name, text] of Object.entries(pass10)) {
+        assert.doesNotMatch(code(text), /\.(sort\w*|sorted\w*|filter(?!Bg\b|Edit\b|s\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/, `${name}: no Kotlin sorting, filtering, or grouping`);
+        assert.doesNotMatch(code(text), /SimpleDateFormat|DateTimeFormatter|LocalDate|LocalTime|java\.time|java\.util\.Calendar|Calendar\.getInstance|GregorianCalendar|Instant\b|\.format\(|toLocal|currentTimeMillis|\bDate\(|TimeZone/, `${name}: no Kotlin date math, formatting or parsing`);
+        assert.doesNotMatch(code(text), new RegExp(`${STATUS}(?:\\s*,\\s*${STATUS})*\\s*->\\s*${STATUS}`), `${name}: no status-to-status map`);
+        assert.doesNotMatch(code(text), /\bColor\(|Color\.(Black|White|Red|Green|Blue|Gray|Yellow|Cyan|Magenta|DarkGray|LightGray|Transparent)\b|parseColor|"#[0-9A-Fa-f]{3,8}"|0x[0-9A-Fa-f]{8}/, `${name} writes a color; colors live only in Theme.kt`);
+
+        for (const [, key] of code(text).matchAll(/"([a-z][A-Za-z]*(?:\.[A-Za-z]+)+)"/g)) assert(labelKeys.includes(key), `${name}: ${key} is not in LABEL_KEYS`);
+        for (const [, rest] of code(text).matchAll(/(?:\bText\(|contentDescription = |onClickLabel = )([^\n]*)/g)) {
+
+            for (const [, literal] of rest.replace(/\b(t|testTag|getString|optString|text|getJSONObject|optJSONObject|getBoolean|optBoolean|getInt|menuText|menuObjects)\("[^"]*"\)/g, '').replace(/\btestTag = "[^"]*"/g, '').matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+                if (labelKeys.includes(literal)) continue;
+                assert.doesNotMatch(literal.replace(/\$\{[^}]*\}|\$\w+/g, ''), /\p{L}/u, `${name}: hard-coded UI text "${literal}"`);
+            }
+        }
+    }
+
+    assert(code(settingsUi).match(/\.clearAndSetSemantics \{/g).length >= 15);
+    assert(code(taskViewUi).match(/\.clearAndSetSemantics \{/g).length >= 6);
+}
+
+
+{
+    const lockKt = source('AppLock.kt');
+
+
+    assert.match(lockKt, /Text\(t\("appLock\.title"\), [^\n]*\n\s+modifier = Modifier\.padding\(bottom = 10\.dp\)\.semantics \{ heading\(\) \}\)/, 'the app lock title is a heading');
+    assert.match(lockKt, /Text\(message, [^\n]*\n\s+modifier = [^\n]*\.testTag\("app-lock-message"\)\.semantics \{ liveRegion = LiveRegionMode\.Polite \}\)/, 'the unlock message is a polite live region');
+    const settingsUi = source('SettingsScreen.kt');
+    const settingsModel = source('SettingsModel.kt');
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+
+
+    assert.match(hostEntry, /appLock\(\): string \{\s*return submit\(async \(\) => \(\{ \.\.\.unwrap\(contract\.getGeneralSettings\(\{\}\)\)\.privacy\.appLock,\s*relockDelayMinutes: resolveMobileAppLockRelockDelayMinutes\(useTaskStore\.getState\(\)\.settings\?\.security\?\.mobileAppLockRelockDelayMinutes\) \}\)\);/);
+    assert.doesNotMatch(hostEntry.slice(hostEntry.indexOf('appLock(): string {'), hostEntry.indexOf('    projects(): string {')), /requireSaved/);
+    assert.match(coreHost, /fun appLock\(\): JSONObject = callAsync\("appLock"\)/);
+
+    assert.match(model, /applyDeviceChoices\(runtime, prefs\)\s+applySyncedChoices\(runtime, prefs\)\s+lock\.boot\(runtime\)\s+ProcessCoreHost\.failure\?\.let/);
+    assert.match(lockKt, /val row = runtime\.appLock\(\)\s+val on = row\.getBoolean\("value"\)\s+shell\.ui \{ enabled = on; locked = on; relock\.delayMinutes = row\.optInt\("relockDelayMinutes"\) \}/);
+
+
+    assert.match(activity, /StrideTheme\(if \(model\.loading\) null else ThemeChoice\.current\) \{ AppLockGate\(model\) \{ CompositionLocalProvider\(LocalFailureBanners provides banners\) \{ with\(model\) \{/);
+    assert.match(lockKt, /if \(model\.lock\.locked && !model\.loading\) AppLockScreen\(model\) else screens\.SaveableStateProvider\("app", content\)/);
+
+
+    assert.match(lockKt, /Lifecycle\.Event\.ON_PAUSE -> model\.lock\.paused\(activity\?\.isChangingConfigurations == true\)/);
+    assert.match(lockKt, /if \(!enabled \|\| authenticating \|\| rotating\) return\s+relock\.left\(unlocked = !locked\)\s+locked = true\s+failure = null\s+locks \+= 1/);
+
+    assert.match(lockKt, /Lifecycle\.Event\.ON_RESUME -> model\.lock\.resumed\(\)/);
+    assert.match(lockKt, /fun resumed\(\) \{\s+if \(!enabled\) return\s+if \(relock\.returned\(authenticating\)\) \{ locked = false; failure = null \}/);
+
+    assert.match(lockKt, /val left = leftUnlockedAt\s+leftUnlockedAt = null\s+return !authenticating && withinRelockDelay\(delayMinutes, left, clock\(\)\)/);
+    assert.match(lockKt, /fun shouldPrompt\(resumed: Boolean\) = enabled && locked && !authenticating && resumed && prompted != locks/);
+    assert.match(lockKt, /private const val PROMPT_DELAY_MS = 250L/);
+
+
+    const gradle = readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8');
+    assert.match(gradle, /implementation\("androidx\.biometric:biometric:1\.2\.0-alpha04"\)/, 'expo-local-authentication\'s androidx.biometric');
+    assert.match(gradle, /implementation\("androidx\.fragment:fragment:1\.8\.\d+"\)/, 'a fragment that knows activity 1.10\'s result registry');
+    assert.match(activity, /class MainActivity : FragmentActivity\(\) \{/);
+    assert.match(lockKt, /^import androidx\.biometric\.BiometricPrompt$/m);
+    assert.doesNotMatch(lockKt, /android\.hardware\.biometrics/, 'no platform prompt beside AndroidX\'s');
+    assert.match(lockKt, /prompt\(title, Authenticators\.BIOMETRIC_WEAK or Authenticators\.DEVICE_CREDENTIAL\)/);
+
+    assert.match(lockKt, /val activity = host\?\.get\(\) \?: return answered\("unavailable"\)\s+if \(debugProperty\("app_lock_answer"\) == "yes"\) return answered\(null\)\s+try \{\s+if \(!activity\.getSystemService\(KeyguardManager::class\.java\)\.isDeviceSecure\) return answered\("unavailable"\)\s+if \(activity\.supportFragmentManager\.isStateSaved\) return answered\("cancelled"\)/);
+    assert.match(lockKt, /BiometricPrompt\.PromptInfo\.Builder\(\)\.setTitle\(title\)\.setAllowedAuthenticators\(authenticators\)\.setConfirmationRequired\(true\)\.build\(\)/);
+    assert.match(lockKt, /BiometricPrompt\(activity, ContextCompat\.getMainExecutor\(activity\), object : BiometricPrompt\.AuthenticationCallback\(\) \{\s+override fun onAuthenticationSucceeded\(result: BiometricPrompt\.AuthenticationResult\) = answered\(null\)\s+override fun onAuthenticationError\(code: Int, message: CharSequence\) = failed\(title, code\)/);
+
+    assert.match(lockKt, /main\?\.let\(model\.lock::attach\)[\s\S]{0,400}?onDispose \{\s+owner\.lifecycle\.removeObserver\(observer\)\s+main\?\.let\(model\.lock::detach\)/);
+    assert.match(lockKt, /private var host: WeakReference<MainActivity>\? = null/);
+
+
+    assert.match(lockKt, /private val BIOMETRIC_UNUSABLE = setOf\(BiometricPrompt\.ERROR_HW_NOT_PRESENT, BiometricPrompt\.ERROR_HW_UNAVAILABLE, BiometricPrompt\.ERROR_NO_BIOMETRICS,\s+BiometricPrompt\.ERROR_UNABLE_TO_PROCESS, BiometricPrompt\.ERROR_NO_SPACE\)/);
+    assert.match(lockKt, /if \(code !in BIOMETRIC_UNUSABLE \|\| fallback\) return answered\(reason\(code\)\)[\s\S]{0,300}?if \(!keyguard\.isDeviceSecure\) return answered\(reason\(code\)\)\s+fallback = true\s+if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.R\) activity\.credential\.launch\(keyguard\.createConfirmDeviceCredentialIntent\(title, null\)\)\s+else prompt\(title, Authenticators\.DEVICE_CREDENTIAL\)/);
+    assert.match(lockKt, /internal fun answered\(reason: String\?\) \{\s+authenticating = false\s+fallback = false/);
+    assert.match(activity, /internal val credential = registerForActivityResult\(ActivityResultContracts\.StartActivityForResult\(\)\) \{\s+model\.lock\.answered\(if \(it\.resultCode == RESULT_OK\) null else "cancelled"\)/);
+    assert.match(lockKt, /BiometricPrompt\.ERROR_CANCELED, BiometricPrompt\.ERROR_NEGATIVE_BUTTON, BiometricPrompt\.ERROR_USER_CANCELED -> "cancelled"/);
+    assert.doesNotMatch(code(lockKt), /setNegativeButton|mobileAppLockEnabled|menuCommand\(/, 'no cancel button, and Kotlin never writes the setting itself');
+    assert.match(manifest, /<uses-permission android:name="android\.permission\.USE_BIOMETRIC" \/>/);
+
+
+    assert.match(lockKt, /if \(Build\.VERSION\.SDK_INT >= Build\.VERSION_CODES\.TIRAMISU\) activity\.setRecentsScreenshotEnabled\(!on\)\s+else if \(on\) activity\.window\.addFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)\s+else activity\.window\.clearFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)/);
+    assert.match(lockKt, /val on = model\.lock\.enabled\s+LaunchedEffect\(activity, on\) \{ activity\?\.let \{ protectRecents\(it, on\) \} \}/);
+
+
+    assert.match(menuModel, /if \(!refused && action\.kind == "generalSetting"\) settings\.unsettled\(runtime, action\)\s+throw failure/);
+    assert.match(settingsModel, /internal fun unsettled\(runtime: CoreHost, action: FailedAction\) \{\s+when \(JSONObject\(action\.title\)\.getJSONObject\("edit"\)\.getString\("type"\)\) \{\s+"appLock" -> runCatching \{ runtime\.appLock\(\)\.getBoolean\("value"\) \}\.onSuccess \{ on -> shell\.ui \{ shell\.lock\.stored\(on\) \} \}/);
+
+    assert.match(lockKt, /BoxWithConstraints\(Modifier\.fillMaxSize\(\)[^\n]*\.testTag\("app-lock"\)\) \{\s+Column\(Modifier\.fillMaxWidth\(\)\.verticalScroll\(rememberScrollState\(\)\)\.heightIn\(min = maxHeight\)/);
+
+    for (const reason of ['unavailable', 'cancelled', 'failed']) assert.match(lockKt, new RegExp(`"${reason}" -> t\\("appLock\\.${reason}"\\)`));
+
+    assert.match(lockKt, /if \(!edit\.getBoolean\("value"\)\) return settings\.general\(edit\)\s+ask\(row\.getJSONObject\("enablePrompt"\)\.getString\("promptMessage"\)\) \{ reason ->\s+if \(reason == null\) shell\.menu\.whenIdle \{ settings\.general\(edit\) \} else settings\.editLocal \{ put\(SWITCH_FAILURE, reason\) \}/);
+    assert.match(lockKt, /row\.getJSONObject\("errors"\)\.getString\(it\)/);
+    assert.match(settingsUi, /RnSwitch\(lock\.getBoolean\("value"\), model\.failedAction == null && !model\.lock\.authenticating, lock\.getString\("label"\), theme\.generalSwitch\) \{ model\.lock\.toggle\(lock\) \}/);
+
+    assert.match(settingsUi, /privacy\.optJSONObject\("appLockRelockDelay"\)\?\.let \{ PressRow\(it\.getString\("label"\), it\.getString\("value"\), true, idle\) \{ open\("appLockRelockDelay"\) \} \}/);
+    assert.match(settingsUi, /"appLockRelockDelay" -> view\.getJSONObject\("privacy"\)\.optJSONObject\("appLockRelockDelay"\)/);
+
+    assert.match(settingsUi, /for \(name in listOf\("focusTaskLimit", "focusIncludeStartDates", "defaultProjectFlowMode"\)\) \{[\s\S]{0,200}?if \(name == "focusIncludeStartDates"\) \{ ToggleRow\(model, control, true, write = \{ gtd\(it\) \}\); continue \}/);
+    assert.match(settingsModel, /"appLock" -> shell\.lock\.stored\(input\.getJSONObject\("edit"\)\.getBoolean\("value"\)\)/);
+
+
+    const lockCheck = readFileSync(resolve(app, 'scripts/check-app-lock-device.mjs'), 'utf8');
+    assert.match(lockCheck, /await device\.stopApp\(\);\s+changes \+= 1;\s+const original = pullDatabase\(`original-\$\{changes\}`\);/);
+    assert.match(lockCheck, /const staged = Number\(runAs\(`stat -c %s \$\{next\}`\)\);\s+if \(staged !== statSync\(db\)\.size\) fail\([^\n]*\n\s+if \(pid\(\) !== ''\) fail\([^\n]*\n\s+runAs\(`rm -f files\/\$\{DB\}-wal files\/\$\{DB\}-shm`\);\s+runAs\(`mv -f \$\{next\} files\/\$\{DB\}`\);/);
+    assert.doesNotMatch(lockCheck, /runAs\(`cp \$\{STAGED\} files\/\$\{DB\}`\)/, 'never copy over the live database in place');
+    assert.match(lockCheck, /const after = core\('read'\);\s+const now = after\.stored === true;\s+if \(now !== original\) fail\(/);
+    assert.match(lockCheck, /await toInbox\(\);[\s\S]{0,200}?RESTORE FAILED[^\n]*\n\s+process\.exitCode = 1;/);
+
+    assert.doesNotMatch(code(lockKt), /\.(sort\w*|sorted\w*|filter(?!Bg\b)\w*|groupBy)\b|SimpleDateFormat|java\.time|\bColor\(|"#[0-9A-Fa-f]{3,8}"/);
+    for (const [, key] of code(lockKt).matchAll(/"([a-z][A-Za-z]*(?:\.[A-Za-z]+)+)"/g)) assert(labelKeys.includes(key), `AppLock.kt: ${key} is not in LABEL_KEYS`);
+    for (const [, rest] of code(lockKt).matchAll(/(?:\bText\(|contentDescription = |onClickLabel = )([^\n]*)/g)) {
+        for (const [, literal] of rest.replace(/\b(t|testTag|getString|optString|text|getJSONObject|optJSONObject|getBoolean|optBoolean|getInt|menuText|menuObjects)\("[^"]*"\)/g, '').replace(/\btestTag = "[^"]*"/g, '').matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+            if (labelKeys.includes(literal)) continue;
+            assert.doesNotMatch(literal.replace(/\$\{[^}]*\}|\$\w+/g, ''), /\p{L}/u, `AppLock.kt: hard-coded UI text "${literal}"`);
+        }
+    }
+    assert.match(lockKt, /\.testTag\("app-lock-unlock"\)\s+\.clearAndSetSemantics \{ contentDescription = label; role = Role\.Button; if \(enabled\) onClick \{ lock\.unlock\(\); true \} else disabled\(\) \}/);
+}
+
+
+{
+    assert.match(hostEntry, /^\s+widgetList: \(input\) => contract\.getWidgetListView\(input\),$/m);
+    const entryKt = source('EntryPoints.kt');
+    assert.match(entryKt, /route\.startsWith\("\/widget-list\/"\) -> menu\.openWidgetList\(Uri\.decode\(route\.removePrefix\("\/widget-list\/"\)\)\)/);
+    assert.match(menuModel, /"widgetList" -> JSONObject\(\)\.put\("id", own\.optString\("id"\)\)/);
+    assert.match(menuModel, /MenuScreen\.WidgetList -> "widgetList"/);
+    const widgetListKt = source('WidgetListScreen.kt');
+    assert.match(widgetListKt, /TaskRowItem\(model, it, status = RowStatus\.Badge\)/);
+    assert.doesNotMatch(code(widgetListKt), /getString\("(id|status|title)"\)|filter\s*\{|sorted/, 'the screen draws core\'s list, no policy of its own');
+}
+
+
+{
+    const sweepKt = source('MindSweep.kt');
+    const pass11 = { sweepKt, savedSearchUi };
+
+    for (const [name, method] of [['mindSweep', 'getMindSweep'], ['savedSearch', 'getSavedSearchView']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuRead ${name} is core's ${method}`);
+    }
+    for (const [name, method] of [['bulkCreate', 'createBulkOrganizeDestination'], ['mindSweepAdd', 'addMindSweepItem'], ['savedSearchDelete', 'deleteSavedSearch'],
+        ['savedSearchSort', 'setSavedSearchSort']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${method}\\(input\\),$`, 'm'), `menuCommand ${name} is core's ${method}`);
+    }
+
+
+    assert.match(menuModel, /"bulkCreate", "mindSweepAdd", "savedSearchDelete", "savedSearchSort" -> JSONObject\(action\.title\)\.put\("requestId", action\.id\)/);
+    assert.match(sweepKt, /menu\.create\(addAction\(group\.getString\("id"\)\)\)/, 'a Mind Sweep Add is a create: on disk first');
+    assert.match(menuModel, /create\(FailedAction\("bulkCreate", UUID\.randomUUID\(\)\.toString\(\), JSONObject\(\)\.put\("list", list\)\.put\("kind", kind\)\.put\("name", name\)/, 'Bulk organize\'s create is a create: on disk first');
+    assert.match(menuModel, /shell\.failedAction\?\.takeIf \{ it\.kind == "bulkCreate" \}\?\.let \{ return retry\(it\) \}/, 'an owed create is sent again exactly');
+    for (const [name, text] of Object.entries(pass11)) {
+        assert.doesNotMatch(code(text), /menuCommand\(|\bsend\(|shell\.perform\(action|FailedAction\((?!"mindSweepAdd")/, `${name}: writes only through MenuModel.command, act or create`);
+    }
+
+
+    assert.match(menuModel, /private val LANDLESS = setOf\("mindSweepAdd", "bulkCreate", "calendarSetting"\)/);
+    assert.match(menuModel, /if \(action\.kind == "calendarSetting"\) \{ shell\.acknowledged\(action\); return@perform \}/);
+
+    assert.match(menuModel, /\|\| \(\(action\.kind in LANDLESS \|\| action\.kind == "projectNextAction"\) && failure\.message\?\.startsWith\("ACTION_FAILED"\) == true\)/);
+    assert.match(menuModel, /if \(refused && action\.kind in LANDLESS\) \{\s+shell\.acknowledged\(action\)\s+shell\.ui \{ landless\(action\) \}\s+return@perform/);
+
+
+    assert.equal(code(inboxUi).match(/openMindSweep\(\)/g).length, 2);
+    assert.equal(code(weeklyUi).match(/openMindSweep\(\)/g).length, 2);
+    assert.match(menuModel, /private fun isSavedSearch\(id: String\) = more\?\.collection\("savedSearches"\)\?\.any \{ it\.getString\("id"\) == id && it\.getString\("route"\)\.startsWith\("\/saved-search\/"\) \} == true/);
+    assert.match(menuModel, /else -> if \(isSavedSearch\(id\)\) openSavedSearch\(id\)/);
+    assert.match(menuModel, /leave\(if \(flow \|\| over\) MenuScreen\.entries\.firstOrNull \{ it\.name == saved\.get<String>\(if \(over\) "screenFrom" else "reviewFrom"\) \} else null\)/);
+    assert.match(menuUi, /MenuScreen\.MindSweep -> MindSweepScreen\(model\)/);
+    assert.match(menuUi, /"savedSearch" -> SavedSearchList\(model\)/);
+
+
+    assert.match(sweepKt, /var state by mutableStateOf\(if \(menu\.screen == MenuScreen\.MindSweep\) stored\(\) \?: fresh\(\) else fresh\(\)\.also \{ file\.delete\(\) \}\)/);
+    assert.match(sweepKt, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(value\.toString\(\)\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+    for (const control of ['start', 'back', 'next']) assert.match(sweepKt, new RegExp(`\\{ step\\(${control}\\.getInt\\("step"\\)\\) \\}`), `${control} carries core's step`);
+    assert.match(sweepKt, /scope\(option\.getString\("value"\)\)/);
+    assert.match(sweepKt, /if \(viewDraft != state\.getString\("draft"\) \|\| group\.getJSONObject\("add"\)\.getBoolean\("disabled"\)\) return/);
+    assert.match(sweepKt, /private fun ours\(action: FailedAction\) = menu\.screen == MenuScreen\.MindSweep && state\.getString\("requestId"\) == action\.id/);
+    assert.match(sweepKt, /\.put\("state", sent\.getJSONObject\("sweep"\)\)\.put\("draft", sent\.getString\("draft"\)\)\.put\("addFailed", sent\.getBoolean\("addFailed"\)\)/);
+
+    assert.match(menuModel, /"savedSearch" -> JSONObject\(\)\.put\("id", own\.optString\("id"\)\)/);
+    assert.match(savedSearchUi, /confirm\(delete\.getJSONObject\("confirm"\), JSONObject\(\)\.put\("id", view\.getString\("id"\)\), "savedSearchDelete"\)/);
+    assert.match(menuModel, /"savedSearchDelete" -> if \(screen == MenuScreen\.SavedSearch && own\("savedSearch"\)\.optString\("id"\) == JSONObject\(action\.title\)\.getString\("id"\)\) closeScreen\(\)/);
+    assert.match(savedSearchUi, /TaskRowItem\(model, it, status = RowStatus\.Badge\)/, 'rows keep the lists\' own commands and editor');
+
+
+    assert.match(sweepKt, /private fun <T> wholeView\(read: \(\) -> T\): T \{\s+repeat\(STALE_READS - 1\) \{\s+try \{\s+return read\(\)\s+\} catch \(failure: Exception\) \{\s+if \(failure\.message\?\.startsWith\("STALE_REVISION"\) != true\) throw failure\s+\}\s+\}\s+return read\(\)/);
+    assert.match(sweepKt, /private const val STALE_READS = 3/);
+    assert.match(sweepKt, /private fun read\(runtime: CoreHost, sent: JSONObject\): JSONObject = wholeView \{/);
+    assert.equal(code(sweepKt).match(/startsWith\("STALE_REVISION"\)/g).length, 1, 'no reader keeps a partial view: only wholeView catches a stale window');
+
+
+    const sweepCheck = readFileSync(resolve(app, 'scripts/check-sweep-saved-device.mjs'), 'utf8');
+    assert.match(sweepCheck, /const restore = async \(\) => \{\s+for \(const name of PROPS\) \{ try \{ setProp\(name, ''\); \} catch \{\s*\} \}\s+await settleOwed\(\);/);
+    assert.match(sweepCheck, /if \(!retry && !pendingOnDisk\(\)\) \{/);
+    assert.match(sweepCheck, /RESTORE FAILED: \$\{owed\} is still owed[^\n]*\n\s+process\.exitCode = 1;/);
+    assert.equal(sweepCheck.match(/owed = '/g).length, 1, 'the injected failure is named while its retry is owed');
+    assert.equal(sweepCheck.match(/(?<!let )owed = null;/g).length, 2, 'and cleared once settled');
+
+    assert.match(focusModelKt, /runtime\.menuRead\("focusList", JSONObject\(\)\.put\("controls", JSONObject\(sent\)\)\.put\("list", name\)\.put\("offset", items\.length\(\)\)\s+\.put\("limit", WINDOW\)\.put\("revision", revision\)\.put\("query", query\)\.toString\(\)\)/);
+    assert.match(focusModelKt, /else if \(found == null\) shell\.refreshFocus\(\)/);
+    assert.match(focusControlsUi, /LaunchedEffect\(revision, picker\) \{ if \(query\.isNotBlank\(\)\) searchPicker\(picker, query,/);
+
+
+    assert.match(bulkUi, /picker\?\.optJSONObject\("create"\)\?\.let \{ create ->/);
+    assert.match(bulkUi, /organizeCreate\(create\.getString\("name"\)\)/);
+    assert.match(menuModel, /submit\.optJSONObject\("edit"\)\?\.let \{ edit -> organizePicker\(null\); organizeEdit\(edit\) \} \?: submit\.menuText\("create"\)\?\.let\(::organizeCreate\)/);
+    assert.match(menuModel, /"bulkCreate" -> dialog\?\.takeIf \{ it\.optString\("kind"\) == "organize" \}\?\.let \{ open ->\s+keepDialog\(JSONObject\(open\.toString\(\)\)\.put\("draft", reply\.getJSONObject\("draft"\)\)/);
+
+    for (const [name, text] of Object.entries(pass11)) {
+        assert.doesNotMatch(code(text), /\.(sort\w*|sorted\w*|filter(?!Bg\b|Edit\b|s\b)\w*|groupBy|reversed|asReversed|shuffled|distinct\w*|partition|minBy|maxBy)\b/, `${name}: no Kotlin sorting, filtering, or grouping`);
+        assert.doesNotMatch(code(text), /SimpleDateFormat|DateTimeFormatter|LocalDate|LocalTime|java\.time|java\.util\.Calendar|Calendar\.getInstance|GregorianCalendar|Instant\b|\.format\(|toLocal|currentTimeMillis|\bDate\(|TimeZone/, `${name}: no Kotlin date math, formatting or parsing`);
+        assert.doesNotMatch(code(text), new RegExp(`${STATUS}(?:\\s*,\\s*${STATUS})*\\s*->\\s*${STATUS}`), `${name}: no status-to-status map`);
+        assert.doesNotMatch(code(text), /\bColor\(|Color\.(Black|White|Red|Green|Blue|Gray|Yellow|Cyan|Magenta|DarkGray|LightGray|Transparent)\b|parseColor|"#[0-9A-Fa-f]{3,8}"|0x[0-9A-Fa-f]{8}/, `${name} writes a color; colors live only in Theme.kt`);
+        for (const [, key] of code(text).matchAll(/"([a-z][A-Za-z]*(?:\.[A-Za-z]+)+)"/g)) assert(labelKeys.includes(key), `${name}: ${key} is not in LABEL_KEYS`);
+        for (const [, rest] of code(text).matchAll(/(?:\bText\(|contentDescription = |onClickLabel = )([^\n]*)/g)) {
+            for (const [, literal] of rest.replace(/\b(t|testTag|getString|optString|text|getJSONObject|optJSONObject|getBoolean|optBoolean|getInt|menuText|menuObjects)\("[^"]*"\)/g, '').replace(/\btestTag = "[^"]*"/g, '').matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+                if (labelKeys.includes(literal)) continue;
+                assert.doesNotMatch(literal.replace(/\$\{[^}]*\}|\$\w+/g, ''), /\p{L}/u, `${name}: hard-coded UI text "${literal}"`);
+            }
+        }
+
+        const ui = code(text).slice(Math.max(0, code(text).indexOf('@Composable')));
+        assert.doesNotMatch(ui, /runtime\.|menuCommand\(|menuRead\(|shell\.perform/, `${name}: the screen reaches core only through its model`);
+        assert.doesNotMatch(code(text), /\.clickable\(enabled = [^\n]*\.semantics \{ contentDescription|\.semantics \{ contentDescription[^\n]*\}\s*\.clickable\(enabled/, `${name}: no control with a clickable and a separate semantics block`);
+    }
+    assert(code(sweepKt).match(/\.clearAndSetSemantics \{/g).length >= 3);
+    assert(code(savedSearchUi).match(/\.clearAndSetSemantics \{/g).length >= 2);
+}
+
+
+{
+    const entryKt = source('EntryPoints.kt');
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+    const gradle = readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8');
+
+
+    const alias = manifest.match(/<activity-alias\s[\s\S]*?<\/activity-alias>/g) ?? [];
+    assert.equal(alias.length, 1, 'one activity alias');
+    assert.match(alias[0], /android:name="\$\{applicationId\}\.MainActivity"/);
+    assert.match(alias[0], /android:targetActivity="\.MainActivity"/);
+    assert.match(alias[0], /android:exported="true"/);
+    const filters = alias[0].match(/<intent-filter>[\s\S]*?<\/intent-filter>/g);
+    const filter = (action) => filters.find((entry) => entry.includes(`android:name="${action}"`));
+    assert.match(filter('android.intent.action.MAIN'), /android\.intent\.category\.LAUNCHER/);
+    assert.match(filter('android.intent.action.VIEW'), /category\.DEFAULT[\s\S]*category\.BROWSABLE[\s\S]*<data android:scheme="\$\{urlScheme\}" \/>/);
+
+    const shareConfig = JSON.parse(readFileSync(resolve(app, '../mobile/app.json'), 'utf8')).expo.plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === 'expo-share-intent')[1];
+    const mimeTypes = (entry) => [...entry.matchAll(/<data android:mimeType="([^"]+)" \/>/g)].map((m) => m[1]);
+    assert.match(filter('android.intent.action.SEND'), /category\.DEFAULT/);
+    assert.deepEqual(mimeTypes(filter('android.intent.action.SEND')), shareConfig.androidIntentFilters, 'SEND takes RN\'s types');
+    assert.match(filter('android.intent.action.SEND_MULTIPLE'), /category\.DEFAULT/);
+    assert.deepEqual(mimeTypes(filter('android.intent.action.SEND_MULTIPLE')), shareConfig.androidMultiIntentFilters, 'SEND_MULTIPLE takes RN\'s types');
+    assert.match(filter('com.google.android.gms.actions.CREATE_NOTE'), /category\.DEFAULT[\s\S]*category\.VOICE[\s\S]*mimeType="text\/plain"[\s\S]*mimeType="\*\/\*"/);
+    assert.match(alias[0], /android:name="android\.app\.shortcuts"\s+android:resource="@xml\/stride_shortcuts"/);
+    assert.equal(manifest.match(/category\.LAUNCHER/g).length, 1, 'one launcher entry: the alias');
+    const mainActivity = manifest.match(/<activity\s[^>]*android:name="\.MainActivity"[^>]*\/>/)?.[0] ?? assert.fail('MainActivity has no filter of its own');
+    assert.match(mainActivity, /android:launchMode="singleTask"/);
+
+
+    assert.match(mainActivity, /android:exported="false"/);
+    {
+        const { readdirSync } = await import('node:fs');
+        for (const name of readdirSync(resolve(app, 'scripts')).filter((file) => file.endsWith('.mjs'))) {
+            assert.doesNotMatch(readFileSync(resolve(app, 'scripts', name), 'utf8'), /\/com\.ishaanpilar\.stride\.pilot\.MainActivity/, `${name} launches the unexported class`);
+        }
+    }
+    assert.doesNotMatch(manifest, /android:process=/);
+
+    assert.match(gradle, /val urlSchemes = mapOf\("debug" to "stride-native-dev", "upgradetest" to "stride-upgradetest", "release" to "stride"\)/);
+    assert.match(gradle, /buildConfigField\("String", "URL_SCHEME", "\\"\$scheme\\""\)\s+manifestPlaceholders\["urlScheme"\] = scheme/);
+    assert.match(gradle, /getByName\("debug"\) \{ launcherIdentity\(\) \}/);
+    assert.match(gradle, /getByName\("release"\) \{[^}]*launcherIdentity\(\)\s+\}/);
+    assert.match(gradle, /create\("upgradetest"\) \{[^}]*launcherIdentity\(\)\s+\}/);
+    assert.match(gradle, /tasks\.named\("preBuild"\) \{ dependsOn\(buildCoreBundle, buildShortcuts, buildWidgets, rnAttachmentInstaller, rnPersistentCapture, rnFileSync, rnGmail\) \}/);
+
+
+    assert.equal(/buildConfigField\("String", "QUICKJS_WRAPPER", "\\"([^"\\]+)\\""\)/.exec(gradle)?.[1],
+        /implementation\("wang\.harlon\.quickjs:wrapper-android:([^"]+)"\)/.exec(gradle)?.[1], 'the cache key names the QuickJS wrapper in use');
+    {
+        const verifier = resolve(app, 'scripts/verify-bundle.mjs');
+        const buildBundle = readFileSync(resolve(app, 'scripts/build-bundle.mjs'), 'utf8');
+        const verifies = (file) => spawnSync(process.execPath, [verifier, file], { encoding: 'utf8' }).status === 0;
+        const bundlePath = resolve(app, 'android/app/src/main/assets/core-host.js');
+        const bundle = readFileSync(bundlePath);
+        const newline = bundle.indexOf(10);
+        assert.match(bundle.subarray(0, newline).toString('utf8'), /^\/\/stride-bundle-sha256:[0-9a-f]{64}$/, 'the bundle starts with its hash line');
+        assert(verifies(bundlePath), 'the built bundle matches its own hash line');
+        const scratch = mkdtempSync(resolve(tmpdir(), 'bundle-pair-'));
+        try {
+            const write = (name, bytes) => { writeFileSync(resolve(scratch, name), bytes); return resolve(scratch, name); };
+
+            assert(!verifies(write('other-body.js', Buffer.concat([bundle.subarray(0, newline + 1), Buffer.from('globalThis.other = 1;')]))), 'another body under the hash line fails');
+            const changed = Buffer.from(bundle); changed[changed.length - 2] ^= 1;
+            assert(!verifies(write('changed.js', changed)), 'a changed byte fails');
+            assert(!verifies(write('no-header.js', bundle.subarray(newline + 1))), 'a bundle without its hash line fails');
+            assert(!verifies(resolve(scratch, 'missing.js')), 'a missing bundle fails');
+        } finally {
+            rmSync(scratch, { recursive: true, force: true });
+        }
+        assert.match(gradle, /val verifyBundle = [^\n]*verify-bundle\.mjs[\s\S]{0,300}?tasks\.withType<com\.android\.build\.gradle\.tasks\.MergeSourceSetFolders>\(\)\.configureEach \{\s+if \(name\.startsWith\("merge"\) && name\.endsWith\("Assets"\) && !name\.contains\("Test"\)\) \{[\s\S]{0,300}?commandLine\(listOfNotNull\("node", verifyBundle, outputDir\.get\(\)\.asFile\.resolve\("core-host\.js"\)\.path, traced\)\)\s*\}\.result\.get\(\)\.assertNormalExitValue\(\)/, 'every variant\'s merged assets are verified and a mismatch fails the build');
+        assert.match(buildBundle, /renameSync\(/, 'the bundle is written under a temporary name and renamed into place');
+    }
+
+
+    {
+        const shipped = readFileSync(resolve(app, 'android/app/src/main/assets/core-host.js'), 'utf8');
+        assert.match(shipped, /async saveTaskDraft\(/, 'saveTaskDraft stays an async method in the shipped bundle, so the write gate wraps it');
+        assert.match(shipped, /constructor\.name\s*!==\s*["']AsyncFunction["']/, 'the write gate still tells a command by its AsyncFunction constructor');
+    }
+
+
+    {
+        const shipped = readFileSync(resolve(app, 'android/app/src/main/assets/core-host.js'), 'utf8');
+        assert(!shipped.includes('__mwTraceModule') && !/__STRIDE_STARTUP_PROFILING__\s*=\s*(true|!0)/.test(shipped), 'the shipped bundle has no module hooks');
+        const buildBundle = readFileSync(resolve(app, 'scripts/build-bundle.mjs'), 'utf8');
+        assert.doesNotMatch(buildBundle, /process\.env/, 'no environment variable changes the bundle');
+        assert.equal(gradle.match(/--trace-modules/g)?.length, 1, 'one Gradle task builds the traced bundle');
+        assert.match(gradle, /val buildTracedCoreBundle by tasks\.registering\(Exec::class\) \{[\s\S]{0,300}?"--trace-modules", "--out", tracedBundle\.get\(\)\.asFile\.path/);
+        assert.equal(gradle.match(/tracedBundleAssets/g)?.length, 3, 'the traced bundle is declared once, written once, and merged once');
+        assert.match(gradle, /getByName\("benchmarkTrace"\)\.assets\.srcDir\(tracedBundleAssets\)/, 'only benchmarkTrace merges it');
+
+
+        const mainBundle = resolve(app, 'android/app/src/main/assets/core-host.js');
+        const before = readFileSync(mainBundle);
+        const run = (script, args) => spawnSync(process.execPath, [resolve(app, 'scripts', script), ...args], { encoding: 'utf8' }).status;
+        assert.notEqual(run('build-bundle.mjs', ['--trace-modules']), 0, 'no traced bundle without --out');
+        assert.notEqual(run('build-bundle.mjs', ['--trace-modules', '--out', mainBundle]), 0, 'no traced bundle into the main assets');
+        assert(readFileSync(mainBundle).equals(before), 'the main bundle is untouched by a refused traced build');
+        const scratch = mkdtempSync(resolve(tmpdir(), 'traced-bundle-'));
+        try {
+            const traced = resolve(scratch, 'core-host.js');
+            assert.equal(run('build-bundle.mjs', ['--trace-modules', '--out', traced]), 0, 'a traced bundle builds to its own output');
+            assert.notEqual(run('verify-bundle.mjs', [traced]), 0, 'a bundle with module hooks fails an ordinary variant');
+            assert.equal(run('verify-bundle.mjs', [traced, '--allow-module-trace']), 0, 'benchmarkTrace accepts it');
+            assert.equal(run('verify-bundle.mjs', [mainBundle]), 0, 'the ordinary bundle passes');
+        } finally {
+            rmSync(scratch, { recursive: true, force: true });
+        }
+        assert.equal(gradle.match(/--allow-module-trace/g)?.length, 1, 'one place allows module hooks');
+
+        assert.match(gradle, /if \(name\.endsWith\("BenchmarkTraceAssets"\)\) "--allow-module-trace"/, 'only benchmarkTrace\'s merged assets may carry them');
+    }
+
+
+    assert.match(gradle, /urlSchemes\.map \{ \(type, scheme\) -> "\$type=\$scheme@\$\{packages\.getValue\(type\)\}" \}/);
+    const { createRequire } = await import('node:module');
+    const rnShortcuts = createRequire(import.meta.url)('../../mobile/plugins/android-app-shortcuts.js').__testables;
+    const { buildShortcuts } = await import('./build-shortcuts.mjs');
+    const ids = (xml) => [...xml.matchAll(/android:shortcutId="([^"]+)"/g)].map(([, id]) => id);
+    const capabilities = (xml) => [...xml.matchAll(/<capability android:name="([^"]+)"/g)].map(([, id]) => id);
+    for (const [scheme, applicationId] of [['stride-native-dev', 'com.ishaanpilar.stride.nativeclient.dev'], ['stride-upgradetest', 'com.ishaanpilar.stride.upgradetest'], ['stride', 'com.ishaanpilar.stride']]) {
+        const { xml, strings } = buildShortcuts(scheme, applicationId);
+        const rnXml = rnShortcuts.buildShortcutsXml(applicationId);
+        assert.deepEqual(ids(xml), ['capture', 'inbox', 'focus', 'waiting', 'someday', 'projects', 'review', 'calendar', 'add_task_inbox', 'add_task_details', 'open_focus', 'open_calendar']);
+        assert.deepEqual(ids(xml), ids(rnXml));
+        assert.deepEqual(capabilities(xml), capabilities(rnXml));
+        assert.equal(strings, rnShortcuts.SHORTCUTS_STRINGS_XML);
+        assert.equal(xml.replaceAll(`${scheme}:///`, 'stride:///'), rnXml, 'RN\'s shortcuts but for the scheme');
+        assert.match(xml, new RegExp(`android:targetPackage="${applicationId.replace(/\./g, '\\.')}"\\s+android:targetClass="tech\\.ishaanpilar\\.stride\\.androidwidget\\.QuickCaptureActivity"`), 'Add task opens RN\'s dialog');
+    }
+
+
+    const startupTrace = readFileSync(resolve(app, '../mobile/plugins/android-startup-trace.js'), 'utf8');
+    assert.match(startupTrace, /val rawTitle = intent\.getStringExtra\("com\.google\.android\.gms\.actions\.extra\.NAME"\)\?\.trim\(\)\.orEmpty\(\)\s+val rawText = \(\s+intent\.getStringExtra\("com\.google\.android\.gms\.actions\.extra\.TEXT"\)\s+\?: intent\.getStringExtra\(Intent\.EXTRA_TEXT\)\s+\)\?\.trim\(\)\.orEmpty\(\)\s+val title = when \{\s+rawTitle\.isNotBlank\(\) -> rawTitle\s+rawText\.isNotBlank\(\) -> rawText\s+else -> return\s+\}/);
+    assert.match(startupTrace, /if \(rawText\.isNotBlank\(\) && rawText != title\) \{\s+builder\.appendQueryParameter\("note", rawText\)/);
+
+
+    const intentRead = code(entryKt.slice(entryKt.indexOf('fun Intent.entryInput()'), entryKt.indexOf('fun Context.readPickedText')));
+    assert.match(intentRead, /= runCatching \{/);
+    assert.match(intentRead, /Intent\.ACTION_VIEW -> dataString\?\.let \{ JSONObject\(\)\.put\("kind", "link"\)\.put\("url", it\)\.put\("scheme", BuildConfig\.URL_SCHEME\) \}/);
+    assert.match(intentRead, /Intent\.ACTION_SEND -> when \{\s+type == null -> null\s+type!!\.startsWith\("text\/plain"\) -> JSONObject\(\)\.put\("kind", "share"\)/);
+    assert.match(intentRead, /\.extra\("text", getStringExtra\(Intent\.EXTRA_TEXT\)\)\.extra\("title", getCharSequenceExtra\(Intent\.EXTRA_TITLE\)\?\.toString\(\)\)\s+\.extra\("subject", getStringExtra\(Intent\.EXTRA_SUBJECT\)\)/);
+    assert.match(intentRead, /\.extra\("text", getStringExtra\(NOTE_TEXT\)\)\.extra\("extraText", getStringExtra\(Intent\.EXTRA_TEXT\)\)/);
+    assert.match(entryKt, /private const val NOTE_NAME = "com\.google\.android\.gms\.actions\.extra\.NAME"\s+private const val NOTE_TEXT = "com\.google\.android\.gms\.actions\.extra\.TEXT"/);
+
+    assert.match(intentRead, /else -> fileShare\(listOfNotNull\(IntentCompat\.getParcelableExtra\(this, Intent\.EXTRA_STREAM, Uri::class\.java\)\)\)/);
+    assert.match(intentRead, /Intent\.ACTION_SEND_MULTIPLE -> fileShare\(IntentCompat\.getParcelableArrayListExtra\(this, Intent\.EXTRA_STREAM, Uri::class\.java\)\.orEmpty\(\)\)/);
+    assert.match(code(entryKt), /\.put\("uris", JSONArray\(uris\.take\(SharedFileStager\.MAX_FILES\)\.map \{ it\.toString\(\) \}\)\)/);
+    assert.equal(code(entryKt).match(/getParcelable/g).length, 2, 'only the two EXTRA_STREAM reads');
+
+    assert.match(code(entryKt), /private fun fileShare\(uris: List<Uri>\): JSONObject = JSONObject\(\)\.put\("kind", "files"\)\s+\.put\("uris", [^\n]*\n(?!\s+\.put)/);
+    assert.match(entryKt, /\.put\("files", staged\)\.put\("text", JSONObject\.NULL\)\.put\("subject", JSONObject\.NULL\)/);
+    assert.doesNotMatch(code(entryKt), /getSerializable|getBundleExtra/);
+
+
+    const queueKt = source('EntryQueue.kt');
+    assert.match(entryKt, /private val queue = EntryQueue\(dir\)/);
+    assert.match(model, /val entries = EntryRouter\(this, File\(app\.noBackupFilesDir, "entries"\), SharedFileStager\(File\(app\.cacheDir, "shared-entries"\), ContentSharedFileSource\(app\)\)\)/);
+    assert.doesNotMatch(code(entryKt), /saved\[|SavedStateHandle/, 'the queue lives on disk, not in the saved state');
+    assert.match(entryKt, /if \(!queue\.add\(input\.toString\(\)\)\)/);
+
+
+    assert.match(model, /val editorClean get\(\) = editor\?\.closesOnNavigation\(editsPending, covered = editorPickerOpen \|\| attachments\.link != null \|\| attachments\.view != null\s+\|\| ai\.working == "editor" \|\| ai\.answer != null \|\| editorMenu\.promoteTitle != null\) \?: true/);
+    assert.match(editorUi, /fun closesOnNavigation\(editsPending: Boolean, covered: Boolean\) = readOnly \|\| \(!dirty && !editsPending && waitingFor == null && !covered\)/);
+    assert.match(editorUi, /val pickerOpen = picker != null \|\| pickDate != null \|\| pickTime != null \|\| descriptionExpanded\s+DisposableEffect\(pickerOpen\) \{ editorPickerOpen = pickerOpen; onDispose \{ editorPickerOpen = false \} \}/);
+    assert.match(entryKt, /if \(reply\.menuText\("route"\) != null \|\| reply\.has\("capture"\) && !reply\.isNull\("capture"\) \|\| reply\.has\("captureModal"\) && !reply\.isNull\("captureModal"\)\) \{/);
+
+    assert.match(entryKt, /if \(editor != null\) anyTime\(\{ it\.logLine\("Native Android task editor dismissed on navigation releaseCheck=v1\.3\.8\/native-editor-navigation", JSONObject\(\)\.put\("releaseCheck", "v1\.3\.8\/native-editor-navigation"\)\.put\("outcome", "closed-clean"\)\) \}, \{\}\)\s+closeEditor\(\)/);
+
+    assert.match(entryKt, /private val ready: Boolean get\(\) = with\(shell\) \{ writable && !busy && failedAction == null \}/);
+    assert.match(entryKt, /val blocked: Boolean get\(\) = !ready \|\| locked \|\| workOpen/);
+
+
+    assert.match(entryKt, /private val locked: Boolean get\(\) = shell\.lock\.enabled && shell\.lock\.locked/);
+    assert.match(entryKt, /fun pump\(\): Unit = with\(shell\) \{\s+if \(hold\.holds\(locked, queue\.head\(\), ::held\)\) return\s+val entry = lifecycle\.next\(!ready, workOpen\)/);
+    assert.match(entryKt, /val entry = lifecycle\.next\(!ready, workOpen\) \?: return\s+if \(workOpen\) return peek\(entry\)/);
+
+    assert.match(entryKt, /private fun peek\(entry: EntryQueue\.Entry\) \{[\s\S]{0,400}runtime\.menuRead\("entryPoint", entry\.input\)[\s\S]{0,300}\?\.takeIf \{ it\.optJSONObject\("contextAutomation"\) != null \}/);
+    assert.match(entryKt, /val workOpen: Boolean get\(\) = with\(shell\) \{\s+!editorClean \|\| processing\?\.hidden == false \|\| capture != null \|\| captureModal\.open != null\s+\|\| menu\.dialog != null \|\| menu\.focusControls\.dialog != null \|\| menu\.calendar\.composer != null \|\| search\?\.saveName != null\s+\|\| menu\.screen == MenuScreen\.MindSweep/);
+
+
+    assert.match(entryKt, /\|\| \(menu\.screen == MenuScreen\.Settings && menu\.settings\.uncommitted\)\s+\|\| \(projectDraft\.isNotBlank\(\) && openProjectId == null && \(menu\.screen == MenuScreen\.Projects\s+\|\| \(menu\.screen == null && screen == Screen\.Projects && menu\.quickView == "projects"\)\)\)/);
+    assert.match(source('SettingsModel.kt'), /val uncommitted: Boolean get\(\) = local\.has\("renaming"\) \|\| local\.keys\(\)\.asSequence\(\)\.any \{ it\.startsWith\("typed:"\) \}/);
+    assert.match(entryKt, /val reply = if \(staged == null\) runtime\.menuRead\("entryPoint", entry\.input\) else runtime\.attachmentRequest\("prepareSharedFiles",/);
+
+
+    assert.match(entryKt, /if \(!queue\.add\(input\.toString\(\)\)\) [^\n]*\s+else if \(input\.optString\("kind"\) == "files"\) queue\.all\(\)\.lastOrNull\(\)\?\.let \{ stage\(it\) \}/);
+    assert.match(entryKt, /threads\.background \{\s+val failure = runCatching \{ stager\.stage\(entry\.id, uris\) \}\.exceptionOrNull\(\)/);
+
+    assert.match(entryKt, /if \(failure != null && lifecycle\.head == entry\.id\) failed\(entry, "Staging failed"\) else pump\(\)/);
+    assert.match(entryKt, /shell\.coreHost\(\)\?\.logLine\("Native file share staging failed releaseCheck=v1\.3\.7\/native-share-files", context\)/);
+    assert.match(entryKt, /override fun authority\(uri: String\): String\? = Uri\.parse\(uri\)\.authority/);
+    assert.match(model, /entries\.close\(\)\s+routeWrites\.shutdown\(\)\s+prompts\.shutdown\(\)\s+super\.onCleared\(\)/);
+
+    assert.match(entryKt, /fun close\(\) \{\s+threads\.close\(\)\s+\}/);
+    assert.match(entryKt, /EntryThreads\(\{ delayMs, job -> main\.postDelayed\(\{ job\(\) \}, delayMs\) \}, \{ main\.removeCallbacksAndMessages\(null\) \}\)/);
+
+    assert.match(entryKt, /threads\.later \{\s+staging\.remove\(entry\.id\)/);
+
+    const routerJobs = code(entryKt).replace('{ delayMs, job -> main.postDelayed({ job() }, delayMs) }', '').replace('menu.whenIdle { openEditor(id, "view") }', '');
+    assert.doesNotMatch(routerJobs, /\bpost(Delayed)?\(|\bui \{|\bui\((?!threads\.guarded \{)|whenIdle \{|whenIdle\((?!threads\.guarded \{)|\.execute\(|Executors/, 'every router job goes through EntryThreads');
+    assert.match(source('EntryLifecycle.kt'), /fun later\(delayMs: Long = 0, job: \(\) -> Unit\) = post\(delayMs, guarded\(job\)\)\s+[^\n]*\s+fun guarded\(job: \(\) -> Unit\): \(\) -> Unit = \{ if \(!closed\) job\(\) \}/);
+    assert.match(source('EntryLifecycle.kt'), /fun close\(\) \{\s+closed = true\s+cancelPosts\(\)\s+worker\.shutdownNow\(\)\s+\}/);
+    assert.match(readFileSync(resolve(app, 'android/app/src/test/java/com/ishaanpilar/stride/pilot/EntryLifecycleTest.kt'), 'utf8'), /fun aStagingThatEndsAfterTheRouterClosedNeverPumpsOrRetries\(\)[\s\S]*fun aCoreReadThatAnswersAfterTheRouterClosedLeavesTheShareForTheNextRouter\(\)/);
+
+    assert.match(entryKt, /override fun ownProvider\(authority: String\): Boolean = context\.packageManager\.resolveContentProvider\(authority, 0\)\?\.packageName == context\.packageName\s+&& !\(BuildConfig\.DEBUG && authority == "\$\{context\.packageName\}\.sharetest"\)/);
+    assert.match(entryKt, /JSONObject\(\)\.put\("requestId", entry\.id\)\.put\("files", staged\)/);
+    assert.match(entryKt, /lifecycle\.dismissed\(entry\)\s+stager\.discard\(entry\.id\)/);
+    assert.match(entryKt, /lifecycle\.opened\(entry\)\s+stager\.discard\(entry\.id\)/);
+    assert.match(entryKt, /runtime\.openQuickCapture\(\)\s+runtime\.quickCaptureView\(JSONObject\(\)\.put\("text", open\.getString\("text"\)\)\.put\("options", open\.getJSONObject\("options"\)\)\.toString\(\)\)/);
+
+    assert.match(entryKt, /private val lifecycle = EntryLifecycle\(queue\) \{ SystemClock\.uptimeMillis\(\) \}/);
+    assert.match(entryKt, /\} catch \(failure: Throwable\) \{\s+ui\(threads\.guarded \{ failed\(entry, failure\.message\) \}\)\s+if \(!entryRetryable\(failure\.message\)\) return@perform\s+throw failure\s+\}\s+ui\(threads\.guarded \{ menu\.whenIdle\(threads\.guarded \{ opened\(entry, reply, view\) \}\) \}\)/);
+    assert.match(entryKt, /is EntryLifecycle\.Failure\.Retry -> threads\.later\(outcome\.delayMs\) \{ pump\(\) \}\s+is EntryLifecycle\.Failure\.Refused -> \{\s+shell\.showToast\(null, outcome\.notice, \"warning\"\)\s+lifecycle\.dismissed\(entry\)/, 'a refused entry shows its notice before it leaves');
+
+    assert.match(entryKt, /if \(blocked && reply\.optJSONObject\("contextAutomation"\) == null\) \{\s+lifecycle\.deferred\(entry\)\s+return\s+\}\s+open\(reply, view, runCatching \{ JSONObject\(entry\.input\)\.optString\("url"\)\.ifEmpty \{ null \} \}\.getOrNull\(\)\)\s+lifecycle\.opened\(entry\)/);
+    assert.doesNotMatch(code(entryKt), /queue\.remove\(/, 'only EntryLifecycle takes an entry out of the queue');
+    assert.equal(code(source('EntryLifecycle.kt')).match(/queue\.remove\(/g).length, 2, 'an entry leaves only after it opened, or when core refused its input');
+    assert.match(readFileSync(resolve(app, 'android/app/src/test/java/com/ishaanpilar/stride/pilot/EntryLifecycleTest.kt'), 'utf8'), /fun severalQueuedEntriesOpenInOrderAcrossARestart\(\)/);
+    assert.match(queueKt, /fun entryRetryable\(message: String\?\): Boolean = message\?\.startsWith\("INVALID_INPUT"\) != true/);
+    assert.match(queueKt, /out\.fd\.sync\(\)\s+\}\s+check\(partial\.renameTo\(file\)\)/);
+    assert.match(readFileSync(resolve(app, 'android/app/src/test/java/com/ishaanpilar/stride/pilot/EntryQueueTest.kt'), 'utf8'), /fun aSecondEntryNeverReplacesTheFirst\(\)/);
+    assert.match(entryKt, /highlight\(id\); menu\.whenIdle \{ openEditor\(id, "view"\) \}/);
+    assert.match(activity, /if \(savedInstanceState == null\) model\.entries\.receive\(intent\)/);
+    assert.match(activity, /override fun onNewIntent\(intent: Intent\) \{\s+super\.onNewIntent\(intent\)\s+setIntent\(intent\)\s+model\.entries\.receive\(intent\)/);
+    assert.match(activity, /LaunchedEffect\(entries\.head, entries\.blocked\) \{ entries\.pump\(\) \}/);
+    assert.match(activity, /LaunchedEffect\(leaveApp\) \{ if \(leaveApp\) \{ leftApp\(\); moveTaskToBack\(true\) \} \}/);
+    assert.match(hostEntry, /^\s+entryPoint: \(input\) => logEntryPoint\(input, isNotificationTap\(input\) \? notificationEntry\(input\) : contract\.resolveNativeEntryPoint\(input\)\),$/m);
+
+    assert.match(hostEntry, /const result = contract\.routeNotificationOpen\(payload\);/);
+    assert.match(entryKt, /getStringExtra\(CoreNotifications\.EXTRA_OPEN\)\?\.let \{ data -> return@runCatching JSONObject\(\)\.put\("kind", "notification"\)\.put\("data", JSONObject\(data\)\) \}/);
+    assert.match(hostEntry, /^\s+captureImport: \(input\) => contract\.planQuickCaptureImport\(input\),$/m);
+    assert.ok(hostEntry.includes("releaseCheck: 'v1.3.3/native-android-entry-point', kind, outcome }"));
+
+
+    assert.doesNotMatch(code(captureUi + model + entryKt), /returnToPreviousApp(?!"\))/, 'the popup has no return-to-previous-app path');
+    assert.doesNotMatch(readFileSync(resolve(app, '../../packages/core/src/native-host-contract-entry-points.ts'), 'utf8'), /returnToPreviousApp/);
+
+
+    assert.match(captureUi, /rememberLauncherForActivityResult\(ActivityResultContracts\.OpenDocument\(\)\) \{ uri -> uri\?\.let\(::importCaptureText\) \}/);
+    assert.match(captureUi, /ImportTextButton\(!locked\) \{ importText\.launch\(arrayOf\("text\/plain"\)\) \}/);
+    assert.match(captureUi, /\.clearAndSetSemantics \{ contentDescription = label; role = Role\.Button; testTag = "capture-import-text"; if \(enabled\) onClick \{ pick\(\); true \} else disabled\(\) \}/);
+    assert.match(model, /perform \{ runtime ->\s+val text = getApplication<Application>\(\)\.readPickedText\(uri\)\s+val plan = runtime\.menuRead\("captureImport"/);
+    assert.match(model, /FailedAction\("captureLines", current\.lineIds\.first\(\), current\.linesText \?: current\.text,/);
+    for (const key of ['quickAdd.bulkImportTextFile', 'quickAdd.bulkImportTextFileLabel']) assert(labelKeys.includes(key), `LABEL_KEYS lacks ${key}`);
+
+    const entryCode = code(entryKt).replace(/private const val \w+ = "[^"]*"/g, '');
+    assert.doesNotMatch(entryCode, /\.(sort\w*|sorted\w*|filter\w*|groupBy|reversed|distinct\w*|partition)\b/, 'EntryPoints.kt: no Kotlin sorting, filtering, or grouping');
+    assert.doesNotMatch(entryCode, /SimpleDateFormat|DateTimeFormatter|java\.time|Calendar\.getInstance|currentTimeMillis|\bDate\(|\bColor\(|"#[0-9A-Fa-f]{3,8}"/);
+    for (const [, key] of entryCode.matchAll(/"([a-z][A-Za-z]*(?:\.[A-Za-z]+)+)"/g)) assert(labelKeys.includes(key), `EntryPoints.kt: ${key} is not in LABEL_KEYS`);
+    assert.doesNotMatch(entryCode, /\bText\(|contentDescription|showToast\("/, 'EntryPoints.kt: every word is core\'s');
+
+    assert.match(entryKt, /reply\.optJSONObject\("contextAutomation"\)\?\.let \{ trigger ->\s+val outcome = queueTrigger\(trigger\.getString\("action"\), trigger\.getString\("context"\)\) \{ CoreWork\.enqueue\(getApplication\(\), CoreJob\.CONTEXT, it\) \}[\s\S]{0,600}leaveApp = true\s+return\s+\}/);
+
+    assert.match(entryKt, /JSONObject\(\)\.put\("releaseCheck", "v1\.3\.8\/native-context-link"\)\.put\("outcome", outcome\)\.put\("action", trigger\.getString\("action"\)\)\.put\("overWork", workOpen\)/);
+    assert.match(entryKt, /anyTime\(\{ it\.logLine\("Native Android context link ran releaseCheck=v1\.3\.8\/native-context-link", fields\) \}, \{\}\)/);
+    assert.match(hostEntry, /const outcome = !entry \? 'refused' : entry\.contextAutomation \? 'contextAutomation' : entry\.captureModal/);
+}
+
+
+{
+    const coreLog = readFileSync(resolve(app, '../../packages/core/src/diagnostics-log.ts'), 'utf8');
+    const relative = /export const DIAGNOSTICS_LOG_RELATIVE_PATH = '([^']+)'/.exec(coreLog)[1];
+    assert.equal(relative, 'logs/stride.log', 'RN\'s log path, relative to its documents directory (Android files/)');
+    assert.match(logFileKt, new RegExp(`const val RELATIVE_PATH = "${relative}"`), 'Kotlin\'s log path is core\'s');
+    assert.match(owner, /File\(app\.filesDir, DiagnosticsLogFile\.RELATIVE_PATH\)/);
+
+    assert.match(logFileKt, /"append" -> \{\s+FileOutputStream\(file, true\)\.use \{ it\.write\(text\.toByteArray\(\)\) \}/);
+    assert.match(logFileKt, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(text\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+    assert.doesNotMatch(code(logFileKt), /[Bb]uffered|appendText|JSONObject|loggingEnabled|500_?000|stride-native-dev/, 'Kotlin holds no log policy');
+    assert.match(coreHost, /val logs = DiagnosticsLogFile\(logFile\)\s+bridge\.setProperty\("logFile", guarded \{ args -> logs\.run\(/);
+    assert.match(coreHost, /fun logShare\(\): JSONObject = callAsync\("logShare"\)/);
+    assert.match(coreHost, /fun logClear\(\): JSONObject = callAsync\("logClear"\)/);
+
+    assert.match(hostEntry, /setLogger\(\(payload\) => \{\s+consoleLogger\(payload\);\s+try \{\s+void diagnosticsLog\.append\(diagnosticsEntryFromLogPayload\(payload\), \{ force: payload\.force \}\);/);
+    assert.match(hostEntry, /isEnabled: \(\) => isDiagnosticsLoggingEnabled\(useTaskStore\.getState\(\)\.settings\),\s+files: \[nativeLogFile\],/);
+    const shareBody = hostEntry.slice(hostEntry.indexOf('    logShare(): string {'), hostEntry.indexOf('    logClear(): string {'));
+    assert.match(shareBody, /diagnosticsLog\.serialize\(\(\) => diagnosticsLog\.ensurePath\(\)\)/);
+    const markerAt = shareBody.indexOf("logInfo('Native iOS diagnostics share requested'");
+    assert(markerAt >= 0 && markerAt < shareBody.indexOf('diagnosticsLog.serialize'), 'iOS marker queues before the final export barrier');
+    assert.match(shareBody, /__strideHostPlatform === 'ios'/);
+    assert.match(shareBody, /force: true/);
+    assert(shareBody.includes("context: { releaseCheck: 'v1.3.4/ios-diagnostics', operation: 'share' }"));
+    const clearBody = hostEntry.slice(hostEntry.indexOf('    logClear(): string {'), hostEntry.indexOf('    archiveTaskSelection(json: string)'));
+    assert.doesNotMatch(clearBody, /logInfo\(|logWarn\(|diagnosticsLog\.append\(/, 'Clear cannot append a line that recreates its target');
+    assert.match(clearBody, /logClearChecked\(\): string \{\s+return submit\(\(\) => diagnosticsLog\.clearChecked\(\)\);/);
+    assert.match(hostEntry, /logClear\(\): string \{\s+return submit\(async \(\) => \{\s+await diagnosticsLog\.clear\(\);/);
+
+    const checkDiagnosticFields = (source) => {
+        const visit = (node) => {
+            if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && node.name.getText() === 'extra') {
+                const object = node.parent, call = object.parent;
+                assert(ts.isCallExpression(call) && call.expression.getText() === 'buildDiagnosticsLogEntry'
+                    && call.arguments[2] === object, 'Direct diagnostic payloads must use context');
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(ts.createSourceFile('host-entry.ts', source, ts.ScriptTarget.Latest, true));
+    };
+    assert.throws(() => checkDiagnosticFields('diagnosticsLog.append({ extra: { outcome: "lost" } });'));
+    assert.throws(() => checkDiagnosticFields('diagnosticsLog.append({ message, extra });'));
+    checkDiagnosticFields(hostEntry);
+    assert.match(hostEntry, /^\s+dataSettings: \(\) => contract\.getDataSettings\(\),$/m);
+    assert.match(hostEntry, /^\s+dataSetting: \(input\) => contract\.setDataSetting\(input\),$/m);
+
+
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+    assert.match(manifest, /<provider\s+android:name="androidx\.core\.content\.FileProvider"\s+android:authorities="\$\{applicationId\}\.diagnostics"\s+android:exported="false"\s+android:grantUriPermissions="true">/);
+    const paths = readFileSync(resolve(app, 'android/app/src/main/res/xml/diagnostics_paths.xml'), 'utf8');
+    assert.deepEqual(paths.match(/<[\w-]+-path [^>]*>/g), ['<files-path name="logs" path="logs/" />', '<cache-path name="exports" path="exports/" />']);
+    assert.match(source('DataTransfer.kt'), /val dir = File\(app\.cacheDir, "exports"\)\.apply \{ mkdirs\(\) \}\s+dir\.listFiles\(\)\.orEmpty\(\)\.forEach \{ it\.delete\(\) \}/);
+    const settingsModelKt = source('SettingsModel.kt');
+    const share = code(settingsModelKt.slice(settingsModelKt.indexOf('fun shareLog()'), settingsModelKt.indexOf('fun clearLog()')));
+    assert.match(share, /FileProvider\.getUriForFile\(activity, "\$\{activity\.packageName\}\.diagnostics", File\(path\)\)/);
+    assert.match(share, /Intent\(Intent\.ACTION_SEND\)\.setType\("text\/plain"\)\.putExtra\(Intent\.EXTRA_STREAM, uri\)\s+\.addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
+    assert.equal(share.match(/startActivity\(/g).length, 1);
+    assert.match(share, /activity\.startActivity\(Intent\.createChooser\(send, null\)\)/, 'the share sheet from the activity, as RN\'s expo-sharing: the user picks where it goes');
+    assert.doesNotMatch(share, /FLAG_ACTIVITY_NEW_TASK|getApplication/, 'never a new task from the application context');
+
+    assert.match(share, /logToShare = path/);
+    for (const word of ['logMissing', 'shareUnavailable']) assert.match(share, new RegExp(`words\\.getString\\("${word}"\\)`), `RN's ${word} toast, core's words`);
+    assert.match(settingsModelKt, /fun data\(edit: JSONObject\) = menu\.command\("dataSetting", JSONObject\(\)\.put\("edit", edit\)\)/);
+
+    const settingsUiKt = source('SettingsScreen.kt');
+    const data = code(settingsUiKt.slice(settingsUiKt.indexOf('private fun DataSettings('), settingsUiKt.indexOf('private fun ActionRow(')));
+
+    assert.match(data, /ToggleRow\(model, diagnostics\.getJSONObject\("debugLogging"\), true\) \{ settings\.data\(it\) \}/);
+    assert.match(data, /diagnostics\.optJSONObject\("shareLog"\)\?\.let/);
+    assert.match(data, /val activity = LocalActivity\.current\s+LaunchedEffect\(settings\.logToShare\) \{ if \(settings\.logToShare != null\) activity\?\.let\(settings::openShareSheet\) \}/);
+    assert.match(data, /diagnostics\.optJSONObject\("clearLog"\)\?\.let/);
+    assert.doesNotMatch(data, /\bt\(|"settings\./, 'every word is the view\'s');
+
+    const rnDataCard = readFileSync(resolve(app, '../../apps/mobile/components/settings/sync-settings-sections.tsx'), 'utf8');
+    assert.match(rnDataCard, /style=\{\[styles\.sectionTitle, \{ color: tc\.text, marginTop: 24 \}\]\}>\{t\('settings\.diagnostics'\)\}/);
+    assert.match(data, /SectionTitle\(diagnostics\.getString\("title"\), top = 24, color = c\.text\)/);
+
+    assert.match(data, /ActionRow\(share\.getString\("label"\), share\.getString\("description"\), c\.tint, true, "settings-share-log"\)/);
+    assert.match(data, /ActionRow\(clear\.getString\("label"\), null, c\.secondaryText, true, "settings-clear-log"\)/);
+    const clear = code(settingsModelKt.slice(settingsModelKt.indexOf('fun clearLog()'), settingsModelKt.indexOf('\n    }\n', settingsModelKt.indexOf('fun clearLog()'))));
+    for (const body of [share, clear]) {
+        assert.match(body, /shell\.anyTime\(\{ runtime ->/);
+        assert.doesNotMatch(body, /perform|background\(/);
+    }
+    assert.match(model, /internal fun anyTime\(work: \(CoreHost\) -> Unit, failed: \(Throwable\) -> Unit\) \{\s+val runtime = host \?: return/);
+
+    assert.match(share, /screen == "data" && menu\.list == "settings" -> logToShare = path/);
+    for (const fn of ['fun reset()', 'fun push(', 'fun back()']) {
+        const at = settingsModelKt.indexOf(fn);
+        assert.match(settingsModelKt.slice(at, settingsModelKt.indexOf('\n    }\n', at)), /logToShare = null/, `${fn} drops a pending share`);
+    }
+
+    const actionRow = code(settingsUiKt.slice(settingsUiKt.indexOf('private fun ActionRow('), settingsUiKt.indexOf('\n}\n', settingsUiKt.indexOf('private fun ActionRow('))));
+    assert.match(actionRow, /Column\(Modifier\.padding\(end = 16\.dp\)\)/);
+
+    assert.match(logFileKt, /"moveAside" -> \{\s+val aside = File\(file\.parentFile, "\$\{file\.name\}\.unreadable"\)\s+aside\.delete\(\)\s+check\(file\.renameTo\(aside\)\)/);
+    assert.match(logFileKt, /if \(file\.isDirectory\) file\.deleteRecursively\(\)\s+file\.createNewFile\(\)/);
+    assert.match(logFileKt, /file\.isDirectory -> \{ file\.deleteRecursively\(\); "" \}/);
+    assert.match(hostEntry, /moveAside: async \(\) => \{ logFile\('moveAside'\); \},/);
+}
+
+
+{
+    const rnSource = (file) => readFileSync(resolve(app, '../../apps/mobile', file), 'utf8');
+    const props = (name) => new RegExp(`val ${name} = RnSwitchProps\\(([^\\n]*)\\)\\n`).exec(themeKt)?.[1] ?? '';
+
+    const legacy = /LEGACY_SWITCH_TRACK_COLOR = \{ false: '(#\w{6})', true: '(#\w{6})' \}/.exec(rnSource('components/settings/setting-row.tsx'));
+    assert.equal(props('settingsSwitch'), `rgb("${legacy[1].toUpperCase()}"), rgb("${legacy[2].toUpperCase()}")`);
+    const rnDebug = /<Switch value=\{loggingEnabled\} onValueChange=\{toggleDebugLogging\} ([^/]*)\/>/.exec(rnSource('components/settings/sync-settings-sections.tsx'))?.[1] ?? '';
+    assert.equal(rnDebug.trim(), `trackColor={{ false: '${legacy[1]}', true: '${legacy[2]}' }}`, 'RN\'s Debug logging switch sets only SettingToggleRow\'s pair');
+    const gtd = rnSource('components/settings/gtd-settings-screen.tsx');
+    assert(gtd.includes('<SettingToggleRow') && !/trackColor|thumbColor/.test(gtd), 'RN\'s GTD switches keep SettingToggleRow\'s default');
+
+    const general = rnSource('components/settings/general-settings-screen.tsx');
+    assert.equal(general.match(/trackColor=\{\{ false: tc\.secondaryText, true: tc\.tint \}\}/g)?.length, 3);
+    assert.doesNotMatch(general, /thumbColor/);
+    assert.equal(props('generalSwitch'), 'colors.secondaryText, colors.tint');
+
+    assert.match(rnSource('components/quick-capture-sheet/QuickCaptureSheetBody.tsx'), /thumbColor=\{addAnother \? tc\.tint : tc\.border\}\s+trackColor=\{\{ false: tc\.border, true: `\$\{tc\.tint\}55` \}\}/);
+    assert.equal(props('captureSwitch'), 'colors.border, tintTrack, colors.border, colors.tint');
+    assert.match(themeKt, /val tintTrack = colors\.tint\.copy\(alpha = 0x55 \/ 255f\)/);
+
+    assert.match(rnSource('components/task-list.tsx'), /trackColor=\{\{ false: themeColors\.border, true: themeColors\.tint \}\}/);
+    assert.equal(props('referenceSwitch'), 'colors.border, colors.tint');
+
+    assert.match(themeKt, /!enabled -> if \(systemDark\) rgb\("#616161"\) else rgb\("#BDBDBD"\)\s+on -> if \(systemDark\) rgb\("#80CBC4"\) else rgb\("#008577"\)\s+else -> if \(systemDark\) rgb\("#BDBDBD"\) else rgb\("#F1F1F1"\)/);
+
+    const graphicAt = captureUi.indexOf('internal fun RnSwitchGraphic(');
+    const graphic = code(captureUi.slice(graphicAt, captureUi.indexOf('\n}\n', graphicAt)));
+    assert.match(graphic, /background\(if \(on\) props\.trackOn else props\.trackOff\)/);
+    assert.match(graphic, /theme\.switchThumbShade\(\(if \(on\) props\.thumbOn else props\.thumbOff\) \?: theme\.switchThumb\(on, enabled, isSystemInDarkTheme\(\)\)\)/);
+
+    assert.match(themeKt, /private const val THUMB_IMAGE = 250f \/ 255f/);
+    assert.match(themeKt, /Color\(red = color\.red \* THUMB_IMAGE, green = color\.green \* THUMB_IMAGE, blue = color\.blue \* THUMB_IMAGE, alpha = color\.alpha\)/);
+    const rnSwitch = code(captureUi.slice(captureUi.indexOf('internal fun RnSwitch('), graphicAt));
+    assert.doesNotMatch(rnSwitch + graphic, /fade\(|alpha/, 'RN never fades a disabled switch');
+
+
+    assert.match(graphic, /Box\(Modifier\.size\(46\.67\.dp, 27\.dp\), contentAlignment = Alignment\.Center\)/);
+    assert.match(graphic, /Box\(Modifier\.size\(24\.dp, 14\.dp\)/);
+    assert.match(graphic, /offset\(x = if \(on\) 10\.dp else \(-10\)\.dp\)\.size\(20\.dp\)/);
+
+    const settingsUiKt = code(source('SettingsScreen.kt'));
+    assert.equal(settingsUiKt.match(/theme\.generalSwitch/g)?.length, 3);
+    assert.match(settingsUiKt, /props: RnSwitchProps = LocalTheme\.current\.settingsSwitch/);
+    assert.match(code(captureUi), /RnSwitch\(on, enabled = !locked, label = label, props = theme\.captureSwitch\)/);
+    assert.match(code(menuUi), /RnSwitchGraphic\(on, true, LocalTheme\.current\.referenceSwitch\)/);
+    assert.doesNotMatch(code(menuUi), /fun RnSwitch\(/, 'one switch drawing');
+}
+
+
+{
+    const rnSheet = readFileSync(resolve(app, '../../apps/mobile/components/quick-capture-sheet/QuickCaptureSheetBody.tsx'), 'utf8');
+    assert.equal(rnSheet.match(/opacity: value\.trim\(\) && !saving \? 1 : 0\.5/g)?.length, 2);
+    assert.equal(rnSheet.match(/disabled=\{saving \|\| !value\.trim\(\)\}/g)?.length, 2);
+    const buttons = code(captureUi).match(/Box\(Modifier\.fade\(if \(canSave\) 1f else 0\.5f\)\.widthIn\(min = 1(12|04)\.dp\)[^\n]*/g) ?? [];
+    assert.equal(buttons.length, 2, 'Save and edit and Save fade as a whole');
+    assert.doesNotMatch(code(captureUi), /\.clickable\(enabled = canSave[^\n]*\n[^\n]*\.fade\(/, 'no fade after a pill\'s background');
+    assert.match(readFileSync(resolve(app, '../../packages/core/src/quick-capture-model.ts'), 'utf8'), /canSave: Boolean\(text\.trim\(\)\)/);
+}
+
+
+{
+    const rnStyles = readFileSync(resolve(app, '../../apps/mobile/components/settings/settings.styles.ts'), 'utf8');
+    assert.match(rnStyles, /settingRow: \{[^}]*alignItems: 'flex-start',/);
+    const settingsKt = source('SettingsScreen.kt');
+    const row = code(settingsKt.slice(settingsKt.indexOf('internal fun SettingRow('), settingsKt.indexOf('\n}\n', settingsKt.indexOf('internal fun SettingRow('))));
+    assert.match(row, /\.padding\(16\.dp\),\s+verticalAlignment = Alignment\.Top\)/, 'SettingRow aligns its trailing control to the top, as RN');
+}
+
+
+{
+    const pilot = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+    const blank = (text) => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (comment) => comment.replace(/[^\n]/g, ' '));
+    const late = [];
+    for (const name of readdirSync(pilot).filter((file) => file.endsWith('.kt'))) {
+        const text = blank(readFileSync(resolve(pilot, name), 'utf8'));
+        for (const match of text.matchAll(/\.fade\(/g)) {
+
+            let depth = 0;
+            let at = match.index;
+            while (--at >= 0) {
+                const char = text[at];
+                if (char === ')' || char === '}') depth++;
+                else if (char === '(' || char === '{') { if (depth === 0) break; depth--; }
+                else if (depth === 0 && /[,=;]/.test(char)) break;
+            }
+            if (/\.(background|border)\(/.test(text.slice(at + 1, match.index))) late.push(`${name}:${text.slice(0, match.index).split('\n').length}`);
+        }
+    }
+    assert.deepEqual(late, [], `a fade after a background or border: ${late.join(', ')}`);
+}
+
+
+{
+    const modalKt = captureModalModel;
+    const entryKt = source('EntryPoints.kt');
+    for (const [name, call] of [['captureModalOpen', 'openCaptureModal'], ['captureModalView', 'getCaptureModalView'], ['captureModalEdit', 'editCaptureModal'],
+        ['captureModalDiscard', 'discardCaptureModal']]) {
+        assert.match(hostEntry, new RegExp(`^\\s+${name}: \\(input\\) => contract\\.${call}\\(input\\),$`, 'm'), `${name} is a Menu read`);
+    }
+    for (const [method, operation, call] of [['captureModalSubmit', 'captureModal', 'submitCaptureModal'], ['captureModalLines', 'captureModalLines', 'submitCaptureModalLines']]) {
+        assert.match(hostEntry, new RegExp(`${method}\\(json: string\\): string \\{\\s*return submit\\(async \\(\\) => taskResult\\('${operation}', await contract\\.${call}\\(JSON\\.parse\\(json\\)\\)\\)\\);`));
+        assert.match(coreHost, new RegExp(`fun ${call}\\(json: String\\): JSONObject = callAsync\\("${method}", json\\)`), `CoreHost.${call} reaches ${method}`);
+        assert.match(modalKt, new RegExp(`runtime\\.${call}\\(request\\)`));
+    }
+    assert.match(hostEntry, /entry\.captureModal \? 'captureModal'/, 'the entry-point line says the capture screen opened');
+
+    assert.match(entryKt, /reply\.optJSONObject\("captureModal"\)\?\.let \{ modal ->\s+runtime\.menuRead\("captureModalOpen", JSONObject\(\)\.put\("params", modal\.getJSONObject\("params"\)\)\.toString\(\)\)/);
+    assert.match(entryKt, /reply\.optJSONObject\("captureModal"\)\?\.let \{ captureModal\.opened\(it\.getJSONObject\("params"\), view \?: return\) \}/);
+
+    assert.match(modalKt, /private fun send\(action: FailedAction\) = shell\.perform\(action\) \{ runtime ->/);
+    assert.equal(code(modalKt).match(/keep\(current\.copy\(pending = action, [^\n]*\)\)\s+send\(action\)/g)?.length, 2, 'Save and Create tasks persist their request first');
+
+    assert.equal(code(modalKt).match(/val action = current\.pending \?: FailedAction\(/g)?.length, 2, 'a retry reuses the pending request');
+
+    assert.match(modalKt, /keep\(if \(refused\) current\.copy\(pending = null, captureId = UUID\.randomUUID\(\)\.toString\(\), confirm = null, lineIds = emptyList\(\)\) else current\.copy\(confirm = null\)\)/);
+    assert.match(modalKt, /shell\.acknowledged\(action\)/);
+    assert.match(modalKt, /val refused = UPDATE_REFUSALS\.any \{ failure\.message\?\.startsWith\(it\) == true \}/);
+
+
+    assert.match(modalKt, /if \(failure\.message\?\.startsWith\("ACTION_FAILED"\) == true\) \{\s+shell\.acknowledged\(action\)\s+shell\.ui \{ failed\(refused = true\) \}\s+return@perform\s+\}/);
+
+
+    assert.match(modalKt, /if \(shell\.failedAction != null\) \{ keep\(null\); inFlight = null; return \}/);
+    assert.match(captureModalUi, /control\(actions\.getString\("cancel"\), "capture-modal-cancel", !model\.busy\)/);
+    assert.match(captureModalUi, /BackHandler \{\s+if \(model\.busy\) return@BackHandler/);
+
+    assert.match(modalKt, /if \(refused\) shell\.acknowledged\(action\)\s+shell\.ui \{ failed\(refused\) \}/);
+
+    assert.match(modalKt, /saved\["captureModal"\] = value != null/);
+    assert.match(modalKt, /FileOutputStream\(partial\)\.use \{ out -> out\.write\(text\.toByteArray\(\)\); out\.fd\.sync\(\) \}\s+check\(partial\.renameTo\(file\)\)/);
+    assert.match(model, /val captureModal = CaptureModalModel\(this, saved, File\(app\.noBackupFilesDir, "capture-modal"\)\)/);
+
+    assert.match(model, /menu\.start\(sheet\)\s+captureModal\.resume\(\)/);
+
+    assert.match(modalKt, /keep\(restored\.copy\(edits = restored\.edits \+ READ\)\)/);
+    assert.match(modalKt, /runtime\.menuRead\(if \(read\) "captureModalView" else "captureModalEdit", request\.toString\(\)\)/);
+    assert.match(model, /if \(action\.kind in CAPTURE_MODAL_KINDS\) captureModal\.restored\(action\)/);
+    assert.match(model, /"captureModal", "captureModalLines" -> captureModal\.retry\(action\)/);
+
+    assert.deepEqual([...new Set([...code(modalKt + captureModalUi).matchAll(/put\("type", "(\w+)"\)/g)].map(([, type]) => type))].sort(), ['setDescription', 'setText']);
+    assert.match(captureModalUi, /edit\(help\.getJSONObject\("edit"\)\)/, 'the ? button sends core\'s toggleHelp');
+
+    assert.match(activity, /if \(modal != null && writable\) CaptureModalScreen\(model, modal\)\s+else if \(open != null && writable\) Box\(Modifier\.fillMaxSize\(\)\) \{\s+TaskEditorScreen\(model, open\)/);
+    assert.match(modalKt, /if \(leave && close\.getBoolean\("returnToPreviousApp"\)\) shell\.leaveApp = true/);
+
+    assert.match(captureModalUi, /if \(modal\.confirm != null\) cancelLines\(\) else cancel\(leave = false\)/);
+
+
+    assert.match(captureModalUi, /Box\(Modifier\.fillMaxSize\(\)\.background\(c\.bg\)\.imePadding\(\)\.semantics \{ testTagsAsResourceId = true \}\.testTag\("capture-modal"\)\)/);
+    assert.match(readFileSync(resolve(app, '../mobile/app/capture-modal.tsx'), 'utf8'), /behavior=\{Platform\.OS === 'ios' \? 'padding' : 'height'\}/);
+
+
+    assert.match(model, /internal fun openSavedTask\(taskId: String, projectId: String\?\) = menu\.whenIdle \{\s+closeSearch\(\)\s+menu\.closeSheet\(\)\s+if \(projectId != null\) openFromSearch\(Screen\.Projects, projectId\) else \{ menu\.toTabs\(\); show\(Screen\.Focus\); highlight\(taskId\) \}\s+menu\.whenIdle \{ openEditor\(taskId, "task"\) \}/);
+    assert.match(model, /"open" -> \{\s+keepCapture\(null\)\s+openSavedTask\(reply\.getString\("taskId"\), reply\.menuText\("projectId"\)\)/);
+    assert.match(modalKt, /shell\.openSavedTask\(reply\.getString\("taskId"\), reply\.menuText\("projectId"\)\)/);
+    assert.doesNotMatch(code(model + modalKt), /openEditor\(id, "task"\)/, 'Save & edit never opens the editor over the screen it was on');
+
+    assert.match(model, /openEditor = \{ taskId -> menu\.whenIdle \{ openEditor\(taskId, "task"\) \} \}/);
+
+
+    assert.match(captureModalUi, /if \(model\.failedAction != null\) FailureBanner\(model\.error\.orEmpty\(\)\) \{ OwedRetry\(model\) \}/);
+
+
+    assert.match(captureModalUi, /view\.getJSONObject\("help"\)\.text\("text"\)\?\.let \{ Text\(it, style = rnText\(12, 400\), color = c\.secondaryText\) \}/);
+
+    assert.match(themeKt, /val captureSave = rgb\("#3B82F6"\)/);
+    assert.match(captureModalUi, /background\(theme\.captureSave\)/);
+}
+
+
+{
+
+    const { buildManifest } = await import('./build-widgets.mjs');
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8') + buildManifest('com.ishaanpilar.stride.nativeclient.dev', 'Stride Native Dev');
+    const gradle = readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8');
+    const widgetGradle = readFileSync(resolve(app, 'android/widget/build.gradle.kts'), 'utf8');
+    const rnWidget = (name) => readFileSync(resolve(app, '../mobile/modules/android-widget/android/src/main/java/com/ishaanpilar/stride/androidwidget', name), 'utf8');
+    const nativeKt = (path) => readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride', path), 'utf8');
+    const widgetKt = (name) => readFileSync(resolve(app, 'android/widget/src/main/java/com/ishaanpilar/stride/androidwidget', name), 'utf8');
+
+
+    const exported = [...manifest.matchAll(/<(?:activity-alias|activity|receiver|service|provider)\s[^>]*?android:name="([^"]+)"[^>]*?android:exported="true"/g)].map((m) => m[1]).sort();
+    assert.deepEqual(exported.filter((name) => !/Widget|TasksWidget|CaptureTileService/.test(name)), ['${applicationId}.MainActivity', '.ReminderRescheduleReceiver', 'com.ishaanpilar.stride.androidwidget.CaptureIntentReceiver',
+        'com.ishaanpilar.stride.contextautomation.ContextAutomationReceiver'], 'only RN\'s exported components');
+    const receiver = (name) => manifest.match(new RegExp(`<receiver\\s+android:name="${name.replace(/\./g, '\\.')}"[\\s\\S]*?</receiver>`))?.[0] ?? assert.fail(`no ${name}`);
+    const rnPlugin = readFileSync(resolve(app, '../mobile/plugins/android-widget.js'), 'utf8');
+    const rnFixes = readFileSync(resolve(app, '../mobile/plugins/android-manifest-fixes.js'), 'utf8');
+    assert.match(rnPlugin, /const CAPTURE_RECEIVER_NAME = `\$\{MODULE_PACKAGE\}\.CaptureIntentReceiver`;/);
+    const captureAction = /const CAPTURE_ACTION = '([^']+)'/.exec(rnPlugin)[1];
+    assert.deepEqual([...receiver('com.ishaanpilar.stride.androidwidget.CaptureIntentReceiver').matchAll(/<action android:name="([^"]+)"/g)].map((m) => m[1]), [captureAction]);
+    assert.match(rnFixes, /const CONTEXT_AUTOMATION_RECEIVER = 'com\.ishaanpilar\.stride\.contextautomation\.ContextAutomationReceiver';/);
+    const contextActions = [.../const CONTEXT_INTENT_ACTIONS = \[([^\]]*)\]/.exec(rnFixes)[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const contextFilters = receiver('com.ishaanpilar.stride.contextautomation.ContextAutomationReceiver').match(/<intent-filter>[\s\S]*?<\/intent-filter>/g);
+    assert.equal(contextFilters.length, 2, 'RN\'s two context filters: without data, and with the stride scheme');
+    for (const filter of contextFilters) {
+        assert.deepEqual([...filter.matchAll(/<action android:name="([^"]+)"/g)].map((m) => m[1]), contextActions);
+        assert.match(filter, /<category android:name="android\.intent\.category\.DEFAULT" \/>/);
+    }
+    assert.doesNotMatch(contextFilters[0], /<data /);
+    assert.match(contextFilters[1], /<data android:scheme="stride" \/>/);
+    assert.match(manifest, /<uses-permission android:name="android\.permission\.POST_NOTIFICATIONS" \/>/);
+
+
+    const allowedExclusions = /val rnExcluded = listOf\("AndroidWidgetModule", "CaptureSyncHeadlessService"\)/;
+    assert.match(widgetGradle, allowedExclusions, 'only the Expo bridge and the headless task stay out');
+    assert.deepEqual(readdirSync(resolve(app, 'android/widget/src/main/java/com/ishaanpilar/stride/androidwidget')), ['CaptureSyncHeadlessService.kt'], 'the module\'s one native file is the headless task\'s stand-in');
+    const shim = widgetKt('CaptureSyncHeadlessService.kt');
+    assert.match(shim, /object : FileObserver\(queue\.path, FileObserver\.MOVED_TO\)/, 'the stand-in watches RN\'s queue folder for a published item');
+    assert.match(shim, /CaptureIntentReceiver\.queuedHook = queued\?\.let \{ \{ context: Context -> start\(context\) \} \}/, 'RN\'s receiver waits for the stored job before its broadcast finishes');
+    assert.match(shim, /internal fun queueEvent\(context: Context, event: Int, path: String\?\) \{\s+if \(event and FileObserver\.MOVED_TO != 0 && path\?\.endsWith\("\.json"\) == true\) start\(context\)\s+\}/);
+    assert(!existsSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/androidwidget')), 'RN\'s CheckoffStore.kt is compiled in; no native copy is left');
+
+    const rnContext = readFileSync(resolve(app, '../mobile/modules/context-automation/android/src/main/java/com/ishaanpilar/stride/contextautomation/ContextAutomationReceiver.kt'), 'utf8');
+    const nativeContext = nativeKt('contextautomation/ContextAutomationReceiver.kt');
+    const payload = (text) => text.slice(text.indexOf('private data class ContextAutomationPayload('));
+    assert.equal(payload(nativeContext), payload(rnContext), 'the context receiver reads the intent as RN\'s');
+    for (const name of ['ACTIVATE_CONTEXT_ACTION', 'DEACTIVATE_CONTEXT_ACTION']) {
+        const value = (text) => new RegExp(`private const val ${name} = "([^"]+)"`).exec(text)[1];
+        assert.equal(value(nativeContext), value(rnContext));
+    }
+    assert.match(nativeContext, /val payload = runCatching \{ ContextAutomationPayload\.fromIntent\(intent\) \}\.getOrNull\(\) \?: return\s+val outcome = queueTrigger\(payload\.action, payload\.context\) \{ CoreWork\.enqueue\(context\.applicationContext, CoreJob\.CONTEXT, it\) \}/);
+
+
+    const coreTextBound = /const isOptionalText = \(value: unknown\) => value === undefined \|\| value === null \|\| isText\(value, (\d+)\);/
+        .exec(readFileSync(resolve(app, '../../packages/core/src/native-host-contract-capture-ingest.ts'), 'utf8'))[1];
+    assert.equal(/internal const val MAX_TRIGGER_TEXT = (\d+)/.exec(nativeContext)[1], coreTextBound, 'the trigger bound is core\'s');
+    assert.match(nativeContext, /if \(context\.length > MAX_TRIGGER_TEXT\) return "too-long"\s+return if \(runCatching \{ enqueue\(mapOf\("action" to action, "context" to context\)\) \}\.isSuccess\) "queued" else "failed"/);
+
+    const coreJob = source('CoreJob.kt');
+    assert.match(coreJob, /val host = boot\(\)\s+if \(!host\.recover\(\) \|\| !host\.drain\(\)\) Outcome\.Retry/);
+    assert.match(owner, /fun recover\(runtime: CoreHost\): Boolean \{\s+val owed = failure \?: return true\s+if \(owed\.action\.kind != "journal"\) return false\s+runtime\.replayJournal\(\)\.owed\?\.let \{ return false \}\s+clearFailure\(owed\.action\)\s+return true\s+\}/);
+    assert.match(source('CoreWork.kt'), /override fun recover\(\) = ProcessCoreHost\.recover\(host\)\s+override fun drain\(\) = ProcessCoreHost\.recovered\(app, host\)/, 'CoreWork drains through the start order');
+
+    assert.match(model, /if \(failedAction == null\) ProcessCoreHost\.failure\?\.takeIf \{ it\.action\.kind == "journal" \}\?\.let \{ owed ->\s+failedAction = owed\.action\s+error = owed\.error\s+\}\s+if \(busy \|\| runtime == null/);
+
+    const rnWork = /androidx\.work:work-runtime(?:-ktx)?:([\d.]+)/.exec(readFileSync(resolve(app, '../../node_modules/expo-background-task/android/build.gradle'), 'utf8'))[1];
+    assert.match(gradle, new RegExp(`implementation\\("androidx\\.work:work-runtime:${rnWork.replace(/\./g, '\\.')}"\\)`), 'WorkManager at RN\'s version');
+    const coreWork = source('CoreWork.kt');
+    assert.match(coreWork, /val delayMs = debugProperty\("core_work_delay_ms"\)\.toLongOrNull\(\) \?: 0L/);
+    assert.match(coreWork, /else if \(Build\.VERSION\.SDK_INT >= Build\.VERSION_CODES\.S\) setExpedited\(OutOfQuotaPolicy\.RUN_AS_NON_EXPEDITED_WORK_REQUEST\)/);
+    assert.match(coreWork, /fun enqueue\(context: Context, job: String, input: Map<String, String> = emptyMap\(\)\): Operation = enqueue\(context, job, input, ExistingWorkPolicy\.REPLACE\)/, 'a new drain request never waits behind a back-off');
+    assert.match(coreWork, /work\.enqueueUniqueWork\(INGEST_WORK, policy, request\)/);
+    assert.match(coreWork, /val host = ProcessCoreHost\.get\(app, language\)/, 'the job runs on this process\'s one host');
+
+    const pendingTs = readFileSync(resolve(app, '../../packages/core/src/pending-captures.ts'), 'utf8');
+    assert.equal(/const val DIRECTORY = "([^"]+)"/.exec(rnWidget('PendingCaptureWriter.kt'))[1], /export const PENDING_CAPTURES_DIRECTORY = '([^']+)'/.exec(pendingTs)[1]);
+    assert.match(hostEntry, /const QUEUE = `files\/\$\{PENDING_CAPTURES_DIRECTORY\}`;/);
+    assert.match(hostEntry, /ingest\(requestId: string\): string \{\s+return submit\(async \(\) => taskResult\('ingest', await contract\.ingestPendingCaptures\(\{ requestId, queue: pendingCaptureQueue, lastApplied: lastAppliedRecord \}\)\)\);/);
+
+    const settingsModel = source('SettingsModel.kt');
+    assert.match(settingsModel, /input\.put\("captureIntent", JSONObject\(\)\.put\("enabled", it\.getOrNull\(\)\?\.enabled \?: JSONObject\.NULL\)\)/);
+    assert.doesNotMatch(settingsModel + hostEntry, /put\("token"|captureToken[^\n]*menuRead|menuCommand[^\n]*token/, 'the token never goes to core');
+    assert.match(settingsModel, /CaptureIntentConfigStore\.setEnabled\(shell\.getApplication<Application>\(\), enabled\)/);
+
+    for (const [name, text] of [['CoreJob.kt', source('CoreJob.kt')], ['CoreWork.kt', coreWork], ['HostFiles.kt', nativeKt('pilot/core/HostFiles.kt')]]) {
+        assert.doesNotMatch(code(text), /\.(sort\w*|sorted\w*|groupBy|reversed|distinct\w*|partition)\b/, `${name}: no Kotlin ordering`);
+    }
+}
+
+
+{
+    const harness = await build({
+        stdin: { contents: `
+            import { createWidgetPublisher } from './bundle/host-widgets.ts';
+            import { buildAndroidWidgetPublication, getFocusWidgetFilter } from '@stride/core';
+            // The store from its own file: core is side-effect free and lazily initializes the modules its own dynamic imports
+            // reach (store.ts among them), so an entry that reaches the store only through index.ts gets no init call from esbuild.
+            import { useTaskStore } from '../../packages/core/src/store';
+            export { buildAndroidWidgetPublication, getFocusWidgetFilter, useTaskStore, createWidgetPublisher };
+        `, resolveDir: app, loader: 'ts' },
+        bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent',
+    });
+    const core = await import(`data:text/javascript;base64,${Buffer.from(harness.outputFiles[0].text).toString('base64')}`);
+    const now = new Date().toISOString();
+    const task = (id, title, extra = {}) => ({ id, title, status: 'next', tags: [], contexts: [], createdAt: now, updatedAt: now, ...extra });
+    const data = {
+        tasks: [task('a', 'Alpha', { contexts: ['@work'], dueDate: now }), task('b', 'Beta'), task('c', 'Gamma', { status: 'inbox' })],
+        projects: [], sections: [], areas: [], settings: { language: 'system' },
+    };
+    core.useTaskStore.setState({ _allTasks: data.tasks, _allProjects: [], _allSections: [], _allAreas: [], settings: data.settings, lastDataChangeAt: 1 });
+    const inputs = { systemColorScheme: 'dark', systemLocale: 'zh-CN', listSelections: ['inbox', 'filter:missing'] };
+    let ready = false;
+    const published = [];
+    const timers = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const pendingTimers = [];
+    let active = false;
+    globalThis.setTimeout = (fn, ms) => { timers.push(ms); pendingTimers.push(fn); return realSetTimeout(() => {}, 0); };
+    const fireTimer = () => pendingTimers.pop()();
+    try {
+        const widgets = core.createWidgetPublisher({ ready: () => ready, inputs: () => inputs, publish: (text) => published.push(text), storedLanguage: () => null, active: () => active });
+        assert.equal(widgets.publish(), false, 'nothing is published before the validated load');
+        ready = true;
+        assert.equal(widgets.publish(), true);
+
+        const expected = (filter) => JSON.stringify(core.buildAndroidWidgetPublication(data, 'zh', { ...inputs, focusFilter: filter }));
+        assert.equal(published[0], expected(core.getFocusWidgetFilter()), 'the payload is core\'s publication with the device\'s inputs');
+        assert.equal(widgets.publish(), false, 'an unchanged payload is not sent again');
+        assert.equal(published.length, 1);
+
+        inputs.stale = true;
+        assert.equal(widgets.publish(), true, 'a publication that did not reach the widgets is sent again');
+        assert.equal(published[1], published[0]);
+        delete inputs.stale;
+        assert.equal(widgets.publish(), false, 'once it reached them, it is not sent again');
+        published.pop();
+        widgets.focusFilter({ criteria: { contexts: ['@work'] }, sortBy: 'due', sortOrder: null });
+        assert.deepEqual(timers, [1000], 'a new Focus filter republishes');
+        assert.deepEqual(Object.entries(core.getFocusWidgetFilter()), [['criteria', { contexts: ['@work'] }], ['sortBy', 'due'], ['sortOrder', undefined]], 'core\'s null sortOrder is RN\'s absent one');
+        widgets.focusFilter({ criteria: { contexts: ['@work'] }, sortBy: 'due', sortOrder: null });
+        assert.equal(timers.length, 1, 'the same filter republishes nothing');
+        assert.equal(widgets.publish(), true);
+        assert.equal(published[1], expected({ criteria: { contexts: ['@work'] }, sortBy: 'due', sortOrder: undefined }));
+        assert.notEqual(published[1], published[0], 'the widget shows the filtered Focus list');
+        widgets.focusFilter(undefined);
+        core.useTaskStore.setState({ lastDataChangeAt: 2 });
+        assert.deepEqual(timers, [1000, 1000], 'a store change republishes after the delay');
+
+
+        active = true;
+        const sent = published.length;
+        core.useTaskStore.setState({ _allTasks: [...data.tasks, task('d', 'Delta', { status: 'inbox' })], lastDataChangeAt: 3 });
+        fireTimer();
+        assert.equal(published.length, sent + 1, 'the waiting store change published');
+        core.useTaskStore.setState({ _allTasks: [...data.tasks, task('d', 'Delta', { status: 'inbox' }), task('e', 'Epsilon', { status: 'inbox' })], lastDataChangeAt: 4 });
+        assert(timers.at(-1) > 299_000 && timers.at(-1) <= 300_000, `in front, the next store change waits out five minutes (${timers.at(-1)} ms)`);
+        widgets.focusFilter({ criteria: { contexts: ['@home'] }, sortBy: 'due', sortOrder: null });
+        assert.equal(timers.at(-1), 1000, 'a new Focus filter publishes at once, the waiting change with it');
+        fireTimer();
+        assert.equal(published.length, sent + 2);
+        core.useTaskStore.setState({ settings: { ...data.settings, gtd: { focusIncludeStartDates: false } }, lastDataChangeAt: 5 });
+        assert.equal(timers.at(-1), 1000, 'the Focus start-date setting publishes at once');
+        fireTimer();
+        active = false;
+        core.useTaskStore.setState({ _allTasks: data.tasks, lastDataChangeAt: 6 });
+        assert.equal(timers.at(-1), 1000, 'away from the front, a store change publishes after one second');
+    } finally {
+        globalThis.setTimeout = realSetTimeout;
+    }
+
+
+    const { buildManifest, buildTileSource, TILE_PACKAGE } = await import('./build-widgets.mjs');
+
+    const overlay = buildManifest('com.ishaanpilar.stride.nativeclient.dev', 'Stride Native Dev');
+
+    assert.match(readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8'), /onVariants \{ variant ->\s+listOf\("widgets", "shortcuts"\)\.forEach \{ set ->\s+variant\.sources\.manifests\?\.addStaticManifestFile\(layout\.buildDirectory\.file\("generated\/\$set\/\$\{variant\.buildType\}\/AndroidManifest\.xml"\)/);
+    const { buildShortcutsManifest } = await import('./build-shortcuts.mjs');
+    const merged = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8') + overlay + buildShortcutsManifest();
+    const exportedNames = (text) => [...text.matchAll(/<(?:activity-alias|activity|receiver|service|provider)\s[^>]*?android:name="([^"]+)"[^>]*?android:exported="true"/g)].map((m) => m[1]).sort();
+    assert.deepEqual(exportedNames(merged), ['${applicationId}.MainActivity', '.ReminderRescheduleReceiver', 'com.ishaanpilar.stride.androidwidget.CaptureIntentReceiver',
+        'com.ishaanpilar.stride.androidwidget.CompactWidgetProvider', 'com.ishaanpilar.stride.androidwidget.QuickCaptureWidgetProvider',
+        'com.ishaanpilar.stride.androidwidget.TasksWidgetProvider', 'com.ishaanpilar.stride.androidwidget.WidgetConfigureActivity',
+        'com.ishaanpilar.stride.contextautomation.ContextAutomationReceiver', 'com.ishaanpilar.stride.nativeclient.dev.widget.TasksWidget',
+        'com.ishaanpilar.stride.quicksettings.CaptureTileService'], 'only RN\'s exported components');
+    const debugManifest = readFileSync(resolve(app, 'android/app/src/debug/AndroidManifest.xml'), 'utf8');
+    assert.deepEqual(exportedNames(debugManifest), ['${applicationId}.DebugQuickCapture', 'com.ishaanpilar.stride.pilot.ShareTestProvider',
+        'com.ishaanpilar.stride.pilot.ShareTestSender', 'com.ishaanpilar.stride.pilot.SyncLockHolder', 'com.ishaanpilar.stride.pilot.SyncLockProbe',
+        'com.ishaanpilar.stride.pilot.WidgetHostActivity'],
+        'the debug build adds only the checks\' entries: the widget host and quick capture alias, the file share provider and sender, and the File Sync lock probes');
+    assert(!existsSync(resolve(app, 'android/app/src/release')) && !existsSync(resolve(app, 'android/app/src/upgradetest')), 'no other build type adds an entry');
+    assert.doesNotMatch(overlay, /android:process=/);
+    for (const info of ['stride_tasks_widget_info', 'stride_compact_widget_info', 'stride_quick_capture_widget_info', 'stride_legacy_tasks_widget_info']) {
+        assert.match(overlay, new RegExp(`android:resource="@xml/${info}"`), `${info} keeps RN's name`);
+    }
+    assert.equal(TILE_PACKAGE, 'com.ishaanpilar.stride', 'the tile keeps RN\'s release class name');
+    assert.equal(buildTileSource().replace('import com.ishaanpilar.stride.pilot.R\n', 'import com.ishaanpilar.stride.R\n'),
+        (await import('node:module')).createRequire(import.meta.url)('../../mobile/plugins/android-quick-settings-tile.js').__testables.buildCaptureTileServiceSource(TILE_PACKAGE), 'the tile is RN\'s but for its R');
+
+    const rnWidgetKt = (name) => readFileSync(resolve(app, '../mobile/modules/android-widget/android/src/main/java/com/ishaanpilar/stride/androidwidget', name), 'utf8');
+    assert.match(rnWidgetKt('WidgetRenderer.kt'), /REQUEST_CAPTURE = 4612[\s\S]*REQUEST_ROW = 4613/);
+    assert.match(rnWidgetKt('CheckoffStore.kt'), /ACTION_SWEEP = "com\.ishaanpilar\.stride\.androidwidget\.CHECKOFF_SWEEP"[\s\S]*REQUEST_SWEEP = 4614/);
+    const widgetGradle = readFileSync(resolve(app, 'android/widget/build.gradle.kts'), 'utf8');
+    assert.match(widgetGradle, /namespace = "com\.ishaanpilar\.stride\.androidwidget"/, 'RN\'s R and namespace');
+    assert.match(widgetGradle, /val rnExcluded = listOf\("AndroidWidgetModule", "CaptureSyncHeadlessService"\)/, 'only the Expo bridge and the headless task stay out');
+    assert.equal(realpathSync(resolve(app, 'android/widget/src/main/res')), realpathSync(resolve(app, '../mobile/modules/android-widget/android/src/main/res')), 'the module\'s resources are RN\'s');
+
+    assert.match(readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/StrideApplication.kt'), 'utf8'),
+        /CaptureSyncHeadlessService\.install\(this,\s+queued = \{ context -> CoreWork\.enqueue\(context, CoreJob\.INGEST\)\.result\.get\(DURABLE_WAIT_SECONDS, TimeUnit\.SECONDS\) \},\s+widgetRefresh = \{ context -> CoreWork\.enqueue\(context, CoreJob\.WIDGET_REFRESH\)\.result\.get\(DURABLE_WAIT_SECONDS, TimeUnit\.SECONDS\) \}\)/,
+        'capture and widget-selection wakes return once WorkManager stored their distinct jobs');
+    assert.match(readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8'), /android:name="\.StrideApplication"/);
+
+    const coreHostKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/CoreHost.kt'), 'utf8');
+    assert.match(coreHostKt, /bridge\.setProperty\("widgetInputs", guarded \{ _ -> widgets\.inputs\(\) \}\)/);
+    assert.match(coreHostKt, /bridge\.setProperty\("widgetPublish", guarded \{ args -> widgets\.publish\(args\[0\] as String\); null \}\)/);
+    assert.match(coreHostKt, /bridge\.setProperty\("widgetAppState", guarded \{ _ -> widgets\.appState\(\) \}\)/, 'the publisher reads whether the app is in front');
+
+
+    const ownerKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/ProcessCoreHost.kt'), 'utf8');
+    assert.match(ownerKt, /private fun refreshWidgets\(runtime: CoreHost, leave: Boolean = false\) = widgetThread\.execute \{\s+runCatching \{ runtime\.refreshWidgets\(leave\) \}\.onFailure \{ Log\.w\(CoreHost\.TAG, "Native Android widget refresh failed", it\) \}\s+\}/);
+
+
+    assert.match(ownerKt, /if \(!changed\) return\s+boot\?\.takeIf \{ it\.isDone \}\?\.let \{ task -> runCatching \{ task\.get\(\) \}\.getOrNull\(\) \}\?\.let \{ runtime ->\s+if \(state == "active"\) \{\s+val generation = deferredWidgets\.hold\(runtime\)\s+widgetThread\.schedule\(\{ deferredWidgets\.takeIf\(generation\)\?\.let \{ publishHeldWidgets\(it, "resume-fallback"\) \} \},\s+WIDGET_FALLBACK_MS, TimeUnit\.MILLISECONDS\)\s+\} else \{\s+refreshWidgets\(runtime, leave = !deferredWidgets\.leave\(\)\)\s+\}\s+\}/, 'a resume\'s fallback publishes only its own hold (HeldPublicationTest)');
+
+    const hostWidgetsKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/HostWidgets.kt'), 'utf8');
+    assert.match(hostWidgetsKt, /\.put\("stale", stale\)/);
+    assert.match(hostWidgetsKt, /check\(WidgetPayloadStore\.write\(app, payload\)\) \{ "[^"]+" \}/, 'a payload that did not reach the disk keeps the publication stale');
+    assert.match(hostWidgetsKt, /\}\.onSuccess \{ stale = false \}\.onFailure \{\s+stale = true/);
+
+
+    const { isRnPayloadPrefsWrite, widgetPrefs } = await import('./widget-payload.mjs');
+    const prefs = (...entries) => widgetPrefs(`<map>${entries.join('')}</map>`);
+    const payloadEntry = '<string name="payload">{}</string>';
+    assert.equal(isRnPayloadPrefsWrite(prefs(), prefs(payloadEntry)), true, 'no file before, RN\'s payload after');
+    assert.equal(isRnPayloadPrefsWrite(prefs(payloadEntry), prefs(payloadEntry)), true, 'RN\'s payload before and after');
+    assert.equal(isRnPayloadPrefsWrite(prefs('<string name="other">x</string>'), prefs(payloadEntry)), false, 'another key deleted and the payload added fails');
+    assert.equal(isRnPayloadPrefsWrite(prefs(payloadEntry), prefs(payloadEntry, '<int name="other" value="1" />')), false, 'another key added fails');
+    assert.equal(isRnPayloadPrefsWrite(prefs(payloadEntry), prefs()), false, 'the payload removed fails');
+    console.log('Widgets: core\'s Android publication from the engine with the device\'s inputs and language, sent once per change, after the validated load, with the Focus screen\'s filter');
+}
+
+const fakeCore = `
+export { createDeviceCalendarSettingsMethods } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract-device-calendar-settings.ts'))};
+export { createCalendarSubscriptionSettingsMethods } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract-calendar-subscription-settings.ts'))};
+export { createCalendarSubscriptionAddMethods } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract-calendar-subscription-add.ts'))};
+export { buildCalendarSubscriptionSettingsModel } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract-settings-calendar.ts'))};
+export { REMINDER_STORE_RESCHEDULE_DELAY_MS, shouldRescheduleReminderAlarms } from ${JSON.stringify(resolve(app, '../../packages/core/src/mobile-reminder-alarms.ts'))};
+export { nameNotifyListener } from ${JSON.stringify(resolve(app, '../../packages/core/src/store-notify-profiler.ts'))};
+export { buildShortcutsSnapshot } from ${JSON.stringify(resolve(app, '../../packages/core/src/widget-payload.ts'))};
+export { serializeBackupData } from ${JSON.stringify(resolve(app, '../../packages/core/src/backup-transfer.ts'))};
+export { validateMergedSyncData } from ${JSON.stringify(resolve(app, '../../packages/core/src/sync-normalization.ts'))};
+export { getNextFutureStartRevealAt } from ${JSON.stringify(resolve(app, '../../packages/core/src/task-utils.ts'))};
+export { resolveEntityOpenTarget } from ${JSON.stringify(resolve(app, '../../packages/core/src/entry-points.ts'))};
+export { resolveMobileAppLockRelockDelayMinutes } from ${JSON.stringify(resolve(app, '../../packages/core/src/general-settings-model.ts'))};
+export { compareAppVersions, fetchAppStoreInfo, UPDATE_BADGE_AVAILABLE_KEY, UPDATE_BADGE_LAST_CHECK_KEY, UPDATE_BADGE_LATEST_KEY, shouldCheckForAppUpdate } from ${JSON.stringify(resolve(app, '../../packages/core/src/app-store-update.ts'))};
+export { SYNC_BACKEND_KEY, CLOUD_PROVIDER_KEY } from ${JSON.stringify(resolve(app, '../../packages/core/src/sync-storage-keys.ts'))};
+export { getBaseSyncUrl } from ${JSON.stringify(resolve(app, '../../packages/core/src/attachment-paths.ts'))};
+import { NativeAttachmentCleanupUnconfirmedError as RealCleanupError } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-attachment-cleanup.ts'))};
+export { RealCleanupError as NativeAttachmentCleanupUnconfirmedError };
+import { mapSqliteTaskRow as hydrateTask285 } from ${JSON.stringify(resolve(app, '../../packages/core/src/sqlite-adapter.ts'))};
+globalThis.hydrateTaskAttachments285 = (attachments) => hydrateTask285({ id: 'task285', attachments: JSON.stringify(attachments) }).attachments;
+export { planAttachmentOpen, getAttachmentResolutionMessage } from ${JSON.stringify(resolve(app, '../../packages/core/src/attachment-editor-model.ts'))};
+import { logInfo as realLogInfo, setLogger as setRealLogger } from ${JSON.stringify(resolve(app, '../../packages/core/src/logger.ts'))};
+export { createDiagnosticsLog, diagnosticsEntryFromLogPayload, isDiagnosticsLoggingEnabled, buildDiagnosticsLogEntry } from ${JSON.stringify(resolve(app, '../../packages/core/src/diagnostics-log.ts'))};
+export { createFeedbackDiagnosticsBuffer, buildFeedbackDiagnostics, buildFeedbackDiagnosticsSnapshot, FEEDBACK_DIAGNOSTICS_SOURCE_CHARS, feedbackDiagnosticEntry, sanitizeSavedFeedbackLog } from ${JSON.stringify(resolve(app, '../../packages/core/src/feedback-diagnostics.ts'))};
+export { buildFeedbackSubmissionPayload, submitFeedbackSubmission, FEEDBACK_CATEGORIES } from ${JSON.stringify(resolve(app, '../../packages/core/src/feedback.ts'))};
+export { sanitizeForLog, sanitizeLogContext } from ${JSON.stringify(resolve(app, '../../packages/core/src/log-sanitize.ts'))};
+export { getBreadcrumbs } from ${JSON.stringify(resolve(app, '../../packages/core/src/log-breadcrumbs.ts'))};
+export { validateNativeAttachmentDraftBeginV3, validateNativeAttachmentDraftLineageV3,
+    validateNativeAttachmentDraftBeginV4, validateNativeAttachmentDraftLineageV4,
+    validateNativeAttachmentDraftBeginV5, validateNativeAttachmentDraftLineageV5,
+    prepareNativeAttachmentDraftAddV4, prepareNativeAttachmentDraftRemoveV4, completeNativeAttachmentDraftAddV4,
+    prepareNativeAttachmentDraftAddV3, prepareNativeAttachmentDraftRemoveV3,
+    readNativeAttachmentDraftRemoveFrozen, prepareNativeAttachmentDraftAvailability } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-attachment-draft.ts'))};
+export { prepareNativeAttachmentDraftDiscardCandidates, prepareNativeAttachmentDraftDiscardCandidatesV3, prepareNativeAttachmentDraftDiscardCandidatesV4, prepareNativeAttachmentDraftDiscardCandidatesV5 } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-attachment-draft-discard.ts'))};
+export { prepareNativeAttachmentCleanupWitness, isNativeAttachmentCleanupWitnessEligible } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-attachment-cleanup.ts'))};
+import { createOwnedEditorFileEditTaskDraftSaveMethods as createRealMixedSaveMethods } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract-owned-file-edit-save.ts'))};
+import { createNativeHostContract as createRealCompleteContract } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-host-contract.ts'))};
+import { NativePomodoroTransitionRefusal as PomodoroRefusal520, NativeReceiptSqliteAdapter as RealCompleteAdapter } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-request-receipts.ts'))};
+import { TASK_SQLITE_COLUMNS as pomodoroColumns520, taskToSqliteRow as pomodoroRow520 } from ${JSON.stringify(resolve(app, '../../packages/core/src/task-sync-schema.ts'))};
+import { rememberRawReadRow as rememberPomodoroRow520 } from ${JSON.stringify(resolve(app, '../../packages/core/src/sqlite-raw-snapshot.ts'))};
+import { setStorageAdapter as setRealCompleteAdapter, useTaskStore as realCompleteStore,
+    getPersistenceStatus as realCompletePersistence } from ${JSON.stringify(resolve(app, '../../packages/core/src/store.ts'))};
+const realCompleteContract = createRealCompleteContract();
+let realCompleteActivation;
+async function completeFixtureContract() {
+  if (!realCompleteActivation) realCompleteActivation = (async () => {
+    if (!globalThis.completeSqliteClient) throw new Error('complete SQLite fixture unavailable');
+    if (globalThis.completeSeed) await new RealCompleteAdapter(globalThis.completeSqliteClient).saveData(globalThis.completeSeed);
+    const adapter = new RealCompleteAdapter(globalThis.completeSqliteClient, { rejectConcurrentWrites: true });
+    if (globalThis.resumeFixture) {
+      const read = adapter.getData.bind(adapter);
+      adapter.getData = async (options) => { globalThis.resumeReads++; await globalThis.onResumeRead?.(); return read(options); };
+      globalThis.actualResumeStore = realCompleteStore;
+      globalThis.actualResumePersistence = realCompletePersistence;
+    }
+    setRealCompleteAdapter(adapter);
+    const ready = await realCompleteContract.activate({ writeSafetyReady: true, recoveryLoad: true });
+    if (!ready.ok) throw new Error('complete SQLite fixture activation failed: ' + JSON.stringify(ready));
+  })();
+  await realCompleteActivation; return realCompleteContract;
+}
+export { taskRevisionOf } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-request-receipts.ts'))};
+export { buildNativePomodoroPanel, readNativePomodoroPresentation } from ${JSON.stringify(resolve(app, '../../packages/core/src/native-pomodoro-panel.ts'))};
+// File-only changed/noop fixtures have no ordinary patch fields. Refuse any
+// field edit rather than manufacturing a second editor field policy here.
+const realMixedSaveMethods = createRealMixedSaveMethods({ readiness: () => ({ ok: true, value: null }),
+    save: async () => ({ ok: true, value: null }), validateField: () => false });
+export { isAttachmentFileInUse } from ${JSON.stringify(resolve(app, '../../packages/core/src/attachment-draft-settlement.ts'))};
+export { canSaveTaskListTag } from ${JSON.stringify(resolve(app, '../../packages/core/src/task-list-bulk-actions.ts'))};
+export { formatListItemCount } from ${JSON.stringify(resolve(app, '../../packages/core/src/list-count.ts'))};
+export { getBulkMoveStatusOptions } from ${JSON.stringify(resolve(app, '../../packages/core/src/task-list-bulk-actions.ts'))};
+export { formatI18nTemplate } from ${JSON.stringify(resolve(app, '../../packages/core/src/i18n/index.ts'))};
+export { sortRecoverySnapshotNames } from ${JSON.stringify(resolve(app, '../../packages/core/src/recovery-snapshot-names.ts'))};
+export { buildLastRouteSnapshot, LAST_ROUTE_STORAGE_KEY, parseRestorableLastRoute } from ${JSON.stringify(resolve(app, '../../packages/core/src/session-restore.ts'))};
+export { createAppSearchIndexing } from ${JSON.stringify(resolve(app, '../../packages/core/src/app-search-service.ts'))};
+export { MOBILE_APP_SEARCH_STORAGE_KEY, MOBILE_APP_SEARCH_WIPE_OWED_STORAGE_KEY } from ${JSON.stringify(resolve(app, '../../packages/core/src/general-settings-model.ts'))};
+// These service stand-ins test bridge dispatch/admission, not import or receipt policy.
+// Actual shared policy and SQLite receipts have their own core and Swift/JSC suites.
+export function inspectNativeBackupDocument(text, metadata, t, format = 'json') {
+  globalThis.backupInputs.push(JSON.stringify(['inspect', text, metadata, format]));
+  return { valid: true, title: t('settings.mergeBackup'),
+    summary: t('settings.backupMobile.backupPreviewCounts', { taskCount: 2, projectCount: 1 }),
+    confirmLabel: t('settings.mergeBackupAction'), cancelLabel: t('common.cancel'),
+    errorTitle: t('settings.backupMobile.invalidBackup'), errorMessage: '' };
+}
+export async function prepareNativeBackupDocument(adapter, input) {
+  globalThis.backupInputs.push(JSON.stringify(['prepare', adapter === globalThis.adapter, input]));
+  if (globalThis.backupPrepareHold) await globalThis.backupPrepareHold;
+  return globalThis.backupPrepared;
+}
+export async function commitNativeBackupDocument(adapter, reference, planJSON, snapshotName) {
+  globalThis.backupInputs.push(JSON.stringify(['commit', adapter === globalThis.adapter, reference, planJSON, snapshotName]));
+  return globalThis.backupReply;
+}
+export async function readNativeBackupDocumentOutcome(adapter, reference, planJSON, snapshotName) {
+  globalThis.backupInputs.push(JSON.stringify(['outcome', adapter === globalThis.adapter, reference, planJSON, snapshotName]));
+  return globalThis.backupOutcome;
+}
+export function buildNativeBackupDocumentResult(reply, t) {
+  globalThis.backupInputs.push(JSON.stringify(['result', reply]));
+  return { title: t('settings.mergeBackup'), message: t('settings.mergeBackupSummary', { addedCount: reply.added, updatedCount: reply.updated }),
+    undoLabel: t('settings.undoImport'), doneLabel: t('common.done') };
+}
+export function buildNativeBackupDocumentFailure(operation, error, t, limitMb) {
+  globalThis.backupInputs.push(JSON.stringify(['failure', operation, error, limitMb]));
+  return { title: t('settings.backupMobile.restoreFailed'), message: error };
+}
+export function holdNativeBackupUndoAttachments(snapshotText, snapshotName) {
+  globalThis.backupInputs.push(JSON.stringify(['undoHold', snapshotText.length, snapshotName]));
+  return true;
+}
+export function buildNativeBackupNoUndoConfirmation(t) {
+  return { title: t('settings.backupMobile.undoUnavailableTitle'), message: t('settings.backupMobile.undoUnavailableConfirm'),
+    confirmLabel: t('settings.backupMobile.undoUnavailableContinue'), cancelLabel: t('common.cancel') };
+}
+export function buildNativeBackupSnapshotRestoreConfirmation(snapshotName, t) {
+  globalThis.backupInputs.push(JSON.stringify(['restoreModel', snapshotName]));
+  return { title: t('settings.undoImportConfirmTitle'), message: t('settings.undoImportConfirm', { snapshotName }),
+    confirmLabel: t('markdown.referenceRestore'), cancelLabel: t('common.cancel') };
+}
+export function createNativeAIRequestTimeoutMethods(deps) {
+  const read = (kind, input, current) => {
+    current(); const ready = deps.readiness(); if (!ready.ok) return ready;
+    globalThis.aiTimeoutInputs.push([kind, JSON.stringify(input)]);
+    return globalThis.aiTimeoutReplies[kind];
+  };
+  return {
+    options: async (input, current) => read('options', input, current),
+    prepare: async (input, current) => read('prepare', input, current),
+    commit: async (input, current) => read('commit', input, current),
+    validate: input => { globalThis.aiTimeoutInputs.push(['validate', JSON.stringify(input)]); return globalThis.aiTimeoutReplies.validate; },
+    outcome: input => { const ready = deps.readiness(); if (!ready.ok) return ready; globalThis.aiTimeoutInputs.push(['outcome', JSON.stringify(input)]); return globalThis.aiTimeoutReplies.outcome; },
+  };
+}
+export function createNativeAIReasoningEffortMethods(deps) {
+  globalThis.aiReasoningDeps = deps;
+  const read = async (kind, input, current) => {
+    current(); const ready = deps.readiness(); if (!ready.ok) return ready;
+    await globalThis.aiReasoningHold; current();
+    globalThis.aiReasoningInputs.push([kind, JSON.stringify(input)]);
+    return globalThis.aiReasoningReplies[kind];
+  };
+  return {
+    options: (input, current) => read('options', input, current),
+    prepare: (input, current) => read('prepare', input, current),
+    commit: (input, current) => read('commit', input, current),
+    validate: input => { globalThis.aiReasoningInputs.push(['validate', JSON.stringify(input)]); return globalThis.aiReasoningReplies.validate; },
+    outcome: input => { const ready = deps.readiness(); if (!ready.ok) return ready; globalThis.aiReasoningInputs.push(['outcome', JSON.stringify(input)]); return globalThis.aiReasoningReplies.outcome; },
+  };
+}
+export function createNativeAIGeminiThinkingBudgetMethods(deps) {
+  globalThis.aiGeminiDeps = deps;
+  const read = async (kind, input, current) => {
+    current(); const ready = deps.readiness(); if (!ready.ok) return ready;
+    await globalThis.aiGeminiHold; current();
+    globalThis.aiGeminiInputs.push([kind, JSON.stringify(input)]);
+    return globalThis.aiGeminiReplies[kind];
+  };
+  return {
+    options: (input, current) => read('options', input, current),
+    prepare: (input, current) => read('prepare', input, current),
+    commit: (input, current) => read('commit', input, current),
+    validate: input => { globalThis.aiGeminiInputs.push(['validate', JSON.stringify(input)]); return globalThis.aiGeminiReplies.validate; },
+    outcome: input => { const ready = deps.readiness(); if (!ready.ok) return ready; globalThis.aiGeminiInputs.push(['outcome', JSON.stringify(input)]); return globalThis.aiGeminiReplies.outcome; },
+  };
+}
+export function setLogger(logger) { globalThis.coreLogger = logger; setRealLogger(logger); }
+export function consoleLogger() {}
+export class SqliteAdapter {
+  get concurrentWritesGuarded() { return globalThis.linesUnguarded !== true; }
+  async ensureSchema() { globalThis.events.push('schema'); }
+  async withConnection(work) { return work(); }
+  async afterReadNow() {}
+  // core's row-version read after activation: the ids and the mapped settings a full read would give (rowBaseline overrides;
+  // rowBaselineNull is another connection's commit since the last full read).
+  async readRowBaseline() {
+    globalThis.events.push('baseline');
+    if (globalThis.rowBaselineNull) return null;
+    const data = globalThis.fakeData;
+    const light = globalThis.rowBaseline || { ids: Object.fromEntries(['tasks', 'projects', 'sections', 'areas', 'people'].map((table) =>
+      [table, data[table].map((row) => row.id)])), settings: data.settings };
+    await this.afterReadNow((table) => light.ids[table].length, light.settings);
+    return light;
+  }
+  // core's public read runs its protected body, which ends with the subclass's check (afterReadNow) in the same hold.
+  async getData(options) { return this.getDataNow(options); }
+  async getDataNow(options) {
+    globalThis.events.push('load');
+    globalThis.lastLoaded = globalThis.fakeDataSequence.shift() || globalThis.fakeData;
+    if (globalThis.linesReadHold) await globalThis.linesReadHold;
+    if (options?.rawTasks && globalThis.pomodoroRawCells) {
+      for (const task of globalThis.lastLoaded.tasks) {
+        const projection = pomodoroRow520(task);
+        const row = Object.fromEntries(pomodoroColumns520.map((name, index) => [name, projection[index]]));
+        Object.assign(row, globalThis.pomodoroRawCells);
+        rememberPomodoroRow520(task, row, pomodoroColumns520, projection);
+        globalThis.pomodoroExpectedRaw = pomodoroColumns520.map((name) => row[name]);
+      }
+    }
+    await this.afterReadNow((table) => globalThis.lastLoaded[table].length, globalThis.lastLoaded.settings);
+    return globalThis.lastLoaded;
+  }
+  async saveData(data) {
+    globalThis.events.push('save');
+    if (globalThis.saveError) throw new Error(globalThis.saveError);
+    globalThis.fakeData = globalThis.afterSave || data;
+  }
+}
+export function planLegacyJsonImport(state, current, sqliteHasData) {
+  globalThis.events.push('plan');
+  globalThis.planInputs.push(JSON.stringify([state, current.tasks.length, sqliteHasData]));
+  return globalThis.plan;
+}
+export async function sqliteHasAnyData() { return globalThis.sqliteHasData; }
+export function assertNativeLegacyBackupSafe() { globalThis.events.push('legacyCheck'); }
+export function countSqliteCopyRepairs(counts) { return Object.values(counts ?? {}).reduce((total, count) => total + count, 0); }
+// Core compares every persisted field; the fake compares the whole snapshot.
+export function legacyImportMismatch(merged, saved) { return JSON.stringify(merged) === JSON.stringify(saved) ? null : 'tasks'; }
+export function splitSqlStatements(sql) { return [sql]; }
+// The save warm only fills caches: the fake has none, so a slice just moves on.
+export function warmTaskRowEntries(tasks, from, count) { return Math.min(tasks.length, from + count); }
+export class NativeReceiptSqliteAdapter extends SqliteAdapter {
+  async readPomodoroSession() {
+    globalThis.events.push('pomodoro-read');
+    if (globalThis.pomodoroReadHold) await globalThis.pomodoroReadHold;
+    if (globalThis.pomodoroReadError) throw new Error('Pomodoro session could not be read');
+    return globalThis.pomodoroSession ? JSON.parse(JSON.stringify(globalThis.pomodoroSession)) : { raw: null, state: null };
+  }
+  async savePomodoroTransitionWithReceipt(plan, options) {
+    globalThis.pomodoroInputs.push(JSON.stringify([plan, options]));
+    if (globalThis.pomodoroRefusal) throw new PomodoroRefusal520(globalThis.pomodoroRefusal, 'pre-domain');
+    if (globalThis.pomodoroCommitError) throw new Error(globalThis.pomodoroCommitError);
+    globalThis.pomodoroOutcome = plan.result;
+    globalThis.pomodoroSession = { raw: plan.sessionAfter, state: JSON.parse(plan.sessionAfter) };
+    return { result: plan.result, replayed: options.replayOnly, projectionReloaded: globalThis.pomodoroProjection !== false };
+  }
+  async readPomodoroTransitionOutcome() { return globalThis.pomodoroOutcome || null; }
+}
+export async function loadNativeRequestReceipts(_client, options) { globalThis.receiptsLoadedAt = globalThis.events.length;
+  globalThis.receiptScope = options?.durableCommands ?? null; return 0; }
+export function setNativeReplayTokens(mode) { globalThis.replayTokens = mode; }
+export async function pruneNativeRequestReceipts(client, at, options) { globalThis.pruneInputs.push(options ?? null); return 3; }
+export function setStorageAdapter(adapter) { globalThis.adapter = adapter; }
+export function getStorageAdapter() { return globalThis.adapter; }
+export async function flushPendingSave() { globalThis.events.push('flush'); await globalThis.flushHold;
+  if (globalThis.flushError) throw new Error(globalThis.flushError); }
+export const runSerializedSyncDocumentWriteOperation = (operation) => operation();
+export const setStorageTimeoutMs = (ms) => { globalThis.storageTimeouts?.push(ms); };
+export const getStorageTimeoutMs = () => 15000;
+export function getPersistenceStatus() { globalThis.onPersistenceStatus?.(); return globalThis.persistenceStatus ||
+  { generation: 0, queued: false, inFlight: false, immediate: false, retrying: false, failed: false }; }
+export function isSupportedLanguage(value) { return ['en', 'zh', 'fa', 'de'].includes(value); }
+export function getGeneralSettingsDeviceWrites(edit) { return edit.type === 'language'
+  ? [{ key: 'stride-language', value: edit.value }] : [
+  { key: '@stride_theme', value: edit.value },
+  { key: '@stride_theme_style', value: edit.value === 'material3-light' || edit.value === 'material3-dark' ? 'material3' : 'default' },
+]; }
+// The queue drain's and the context notification's names (pending-captures.ts, mobile-reminder-alarms.ts, sandbox.ts).
+export const PENDING_CAPTURES_DIRECTORY = 'pending-captures';
+export const PENDING_CAPTURE_LAST_APPLIED_STORAGE_KEY = 'stride:pending-captures:last-applied:v1';
+export const REMINDER_NOTIFICATION_CHANNEL_NAME = 'Stride reminders';
+export const REMINDER_ALARM_MAP_STORAGE_KEY = 'stride:local:alarms:v1';
+export const NATIVE_REMINDER_STATE_STORAGE_KEY = 'stride:native:reminders:v1';
+// The persistent capture switch's key (pass R2).
+export const PERSISTENT_CAPTURE_STORAGE_KEY = 'stride:persistentCaptureNotification';
+export const NATIVE_HOST_CONTRACT_VERSION = 1;
+export function buildImmediateNotificationDetails(title, message, data) { return { title, message, channel: 'stride_reminders_v2', data: { kind: 'pomodoro', ...data } }; }
+export function isSandboxMode() { return globalThis.sandbox === true; }
+export const isEntityOpenUrl = () => false;
+export const parseEntityOpenUrl = () => null;
+export function isWorkspaceTransitionActive() { return globalThis.workspaceTransition === true; }
+// The debug net check's WebDAV calls: bundled, never run here.
+export const [cloudHeadJson, webdavDeleteFile, webdavGetFile, webdavGetJson, webdavGetSyncDocument, webdavHeadFile, webdavMakeDirectory, webdavPutFile, webdavPutJson] = Array(9).fill(async () => null);
+export function createNativeHostContract(bindings = {}) {
+  globalThis.contractBindings = bindings;
+  return {
+    async activate() {
+      globalThis.events.push('activate');
+      await globalThis.adapter.getData();
+      globalThis.activationCount++;
+      globalThis.saveCount++;
+      return { ok: true, value: null };
+    },
+    getGtdPomodoroOptions(input) {
+      globalThis.menuInputs.push(JSON.stringify(['gtdPomodoroOptions', input]));
+      return globalThis.gtdPomodoroResult;
+    },
+    getInboxWindow() {
+      globalThis.queryCount++;
+      return { ok: true, value: { version: 1, revision: 'r', total: 0, rows: [] } };
+    },
+    getFocus(input) {
+      globalThis.focusInputs.push(JSON.stringify(input));
+      return { ok: true, value: { version: 1, revision: 'f', sections: [] } };
+    },
+    getFocusSectionWindow(input) {
+      globalThis.focusInputs.push(JSON.stringify(input));
+      return globalThis.focusWindowResult;
+    },
+    // An AI request that waits until its caller's signal aborts it (review C1 5: StrideHost.abort).
+    requestTaskEditorClarify(input, options) {
+      globalThis.aiInputs.push(JSON.stringify(input));
+      return new Promise((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(options.signal.reason)); });
+    },
+    getTaskEditorModel(input) {
+      globalThis.editorInputs.push(JSON.stringify(input));
+      return { ok: true, value: { version: 1, id: input.id } };
+    },
+    async checkOwnedTaskEditorResume(input) { globalThis.resumeInputs.push(['owned', input]);
+        return (await completeFixtureContract()).checkOwnedTaskEditorResume(input); },
+    async checkTaskEditorResume(input) { globalThis.resumeInputs.push(['ordinary', input]);
+        return (await completeFixtureContract()).checkTaskEditorResume(input); },
+    getTaskView(input) {
+      globalThis.editorInputs.push(JSON.stringify(['view', input]));
+      if (globalThis.localTaskViewFailure) return globalThis.localTaskViewFailure;
+      return { ok: true, value: { version: 1, id: input.id, readOnly: globalThis.localTaskReadOnly === true, rows: [], checklistBase: [{ id: 'c', title: 'Milk', isCompleted: true }] } };
+    },
+    async prepareOwnedEditorFileEditTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['prepare', input]); return globalThis.fileEditSaveReply; },
+    validatePreparedOwnedEditorFileEditTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['validate', input]);
+        return globalThis.realMixedSaveValidation ? realMixedSaveMethods.validatePreparedOwnedEditorFileEditTaskDraftSave(input) : globalThis.fileEditSaveReply; },
+    async commitPreparedOwnedEditorFileEditTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['commit', input]); return globalThis.fileEditSaveReply; },
+    async prepareOwnedEditorCompleteTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['completePrepare', input]);
+        return (await completeFixtureContract()).prepareOwnedEditorCompleteTaskDraftSave(input); },
+    validatePreparedOwnedEditorCompleteTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['completeValidate', input]);
+        return realCompleteContract.validatePreparedOwnedEditorCompleteTaskDraftSave(input); },
+    async commitPreparedOwnedEditorCompleteTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['completeCommit', input]);
+        return (await completeFixtureContract()).commitPreparedOwnedEditorCompleteTaskDraftSave(input); },
+    async prepareOwnedEditorCompleteTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['completeUndoPrepare', input]);
+        return (await completeFixtureContract()).prepareOwnedEditorCompleteTaskCancellationUndo(input); },
+    validatePreparedOwnedEditorCompleteTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['completeUndoValidate', input]);
+        return realCompleteContract.validatePreparedOwnedEditorCompleteTaskCancellationUndo(input); },
+    async commitPreparedOwnedEditorCompleteTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['completeUndoCommit', input]);
+        return (await completeFixtureContract()).commitPreparedOwnedEditorCompleteTaskCancellationUndo(input); },
+    async prepareTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['oldUndoPrepare', input]);
+        return realCompleteContract.prepareTaskCancellationUndo(input); },
+    validatePreparedTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['oldUndoValidate', input]);
+        return realCompleteContract.validatePreparedTaskCancellationUndo(input); },
+    async commitPreparedTaskCancellationUndo(input) { globalThis.fileEditSaveInputs.push(['oldUndoCommit', input]);
+        return realCompleteContract.commitPreparedTaskCancellationUndo(input); },
+    async prepareOwnedEditorFileAddTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['legacyPrepare', input]); return globalThis.fileEditSaveReply; },
+    validatePreparedOwnedEditorFileAddTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['legacyValidate', input]); return globalThis.fileEditSaveReply; },
+    async commitPreparedOwnedEditorFileAddTaskDraftSave(input) { globalThis.fileEditSaveInputs.push(['legacyCommit', input]); return globalThis.fileEditSaveReply; },
+    async addAttachmentFile(input) { globalThis.attachmentInputs.push(['draftAddFile', input]); return globalThis.attachmentReply; },
+    async removeAttachment(input) { globalThis.attachmentInputs.push(['draftRemove', input]); return globalThis.attachmentReply; },
+    getProjectAttachmentEditOptions(input) {
+      globalThis.projectOptionsReads = (globalThis.projectOptionsReads ?? 0) + 1;
+      const project = globalThis.ownerProjects.find((item) => item.id === input.projectId);
+      return project && !project.deletedAt && !project.purgedAt
+        ? { ok: true, value: { revision: 'project-revision', project, canEdit: project.status !== 'archived' } }
+        : { ok: false, error: { code: 'STALE_REVISION', message: 'Project unavailable' } };
+    },
+    async runSyncEncryptionAction(input) {
+      globalThis.encryptionInputs ??= [];
+      globalThis.encryptionInputs.push(input);
+      if (bindings.syncSettings?.encryption?.mode !== 'saved-webdav-or-local'
+          || bindings.syncSettings.encryption.unlockOnly !== undefined) throw new Error('Missing selected WebDAV or local encryption capability');
+      return globalThis.encryptionReply ?? { ok: true, value: { toasts: [], passphrase: null } };
+    },
+    getSyncSettings() { return { ok: true, value: { backend: { options: ['off', 'webdav', 'selfhosted', 'dropbox', 'cloudkit', 'file'].map(option => ({ option })) } } }; },
+    async openSyncSettings(input) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['openSyncSettings', input]); return this.getSyncSettings(); },
+    async selectSyncBackend(input) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['selectSyncBackend', input]); return globalThis.foregroundReply ?? { ok: true, value: { toasts: [] } }; },
+    async saveSyncBackend(input) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['saveSyncBackend', input]); return globalThis.foregroundReply ?? { ok: true, value: { toasts: [] } }; },
+    async syncNow(input) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['syncNow', input]); return globalThis.foregroundReply ?? { ok: true, value: { toasts: [] } }; },
+    async testSyncConnection(input) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['testSyncConnection', input]); return globalThis.foregroundReply ?? { ok: true, value: { toasts: [] } }; },
+    async downloadAttachment(input) {
+      globalThis.attachmentInputs.push(['downloadAttachment', input]);
+      globalThis.downloadHosts.push(bindings.attachments);
+      await globalThis.downloadHold;
+      if (globalThis.downloadFatal) throw new RealCleanupError();
+      if (globalThis.downloadError) throw new Error(globalThis.downloadError);
+      globalThis.afterDownload?.();
+      return globalThis.attachmentReply;
+    },
+    async downloadRelocatedProjectAttachment(input, currentTargetURI) {
+      globalThis.attachmentInputs.push(['downloadRelocatedProjectAttachment', input, currentTargetURI]);
+      globalThis.downloadHosts.push(bindings.attachments);
+      await globalThis.downloadHold;
+      if (globalThis.downloadFatal) throw new RealCleanupError();
+      if (globalThis.downloadError) throw new Error(globalThis.downloadError);
+      globalThis.afterDownload?.();
+      return globalThis.attachmentReply;
+    },
+    async openAttachment(input) { globalThis.attachmentInputs.push(['openAttachment', input]); return globalThis.attachmentReply; },
+    async settleTaskDraftAttachments(input) { globalThis.attachmentInputs.push(['settleTaskDraftAttachments', input]); return globalThis.attachmentReply; },
+    editTaskChecklist(input) {
+      globalThis.editorInputs.push(JSON.stringify(['checklist', input]));
+      return { ok: true, value: { draft: input.draft, checklist: input.checklist, changed: false, focusId: null, field: { items: [] } } };
+    },
+    async resetTaskChecklist(input) {
+      globalThis.updateInputs.push(JSON.stringify(['reset', input]));
+      return { ok: true, value: { id: input.id, checklist: [] } };
+    },
+    getTaskEditorSuggestions(input) {
+      globalThis.editorInputs.push(JSON.stringify(['suggest', input]));
+      return { ok: true, value: { draftValue: '@home', matches: [], quick: [] } };
+    },
+    editTaskDraft(input) {
+      globalThis.editorInputs.push(JSON.stringify(['edit', input]));
+      return { ok: true, value: { version: 1, id: input.id, draft: input.draft } };
+    },
+    async saveTaskDraft(input) {
+      globalThis.updateInputs.push(JSON.stringify(['draft', input]));
+      return globalThis.saveDraftResult;
+    },
+    async updateTask(input) {
+      globalThis.updateInputs.push(JSON.stringify(input));
+      return globalThis.updateResult;
+    },
+    async setLanguage(input) {
+      globalThis.languageInputs.push(JSON.stringify(input));
+      globalThis.afterLanguage?.();
+      return { ok: true, value: { language: input.storedLanguage ?? 'en' } };
+    },
+    getStrings(input) {
+        globalThis.languageInputs.push(JSON.stringify(input));
+        return { ok: true, value: { language: 'zh', strings: Object.fromEntries(input.keys.map((key) =>
+          [key, key === 'tab.inbox' ? '收集箱' : globalThis.backupStrings[key] ?? key])), missing: [] } };
+    },
+    getDataSettings() {
+        globalThis.backupReadinessChecks++;
+        globalThis.onReadiness?.();
+        return globalThis.backupReadinessResult;
+    },
+    async prepareInboxTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTagPrepare', input]));
+      return { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } };
+    },
+    validatePreparedInboxTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTagValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedInboxTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTagCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async inboxTasksAddTagOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTagOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async prepareInboxTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxRemoveTagPrepare', input]));
+      return { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } };
+    },
+    validatePreparedInboxTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxRemoveTagValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedInboxTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxRemoveTagCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async inboxTasksRemoveTagOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxRemoveTagOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async prepareInboxTasksOrganize(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTasksOrganizePrepare', input]));
+      return { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } };
+    },
+    validatePreparedInboxTasksOrganize(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTasksOrganizeValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedInboxTasksOrganize(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTasksOrganizeCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async inboxTasksOrganizeOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxTasksOrganizeOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async prepareInboxOrganizeDestinationCreate(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxOrganizeDestinationCreatePrepare', input]));
+      return { ok: true, value: { kind: 'prepared', prepared: { version: 1, request: input, result: { id: input.requestId, changed: true } } } };
+    },
+    validatePreparedInboxOrganizeDestinationCreate(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxOrganizeDestinationCreateValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedInboxOrganizeDestinationCreate(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxOrganizeDestinationCreateCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async inboxOrganizeDestinationCreateOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['inboxOrganizeDestinationCreateOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async prepareReferenceTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceTagPrepare', input]));
+      return { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } };
+    },
+    validatePreparedReferenceTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceTagValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedReferenceTasksAddTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceTagCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async referenceTasksAddTagOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceTagOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async prepareReferenceTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceRemoveTagPrepare', input]));
+      return { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } };
+    },
+    validatePreparedReferenceTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceRemoveTagValidate', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async commitPreparedReferenceTasksRemoveTag(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceRemoveTagCommit', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    async referenceTasksRemoveTagOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['referenceRemoveTagOutcome', input]));
+      return { ok: true, value: input.prepared.result };
+    },
+    getTrashSelection(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashSelection', input]));
+      return globalThis.trashSelectionResult;
+    },
+    async prepareTrashItemsRestore(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashRestorePrepare', input]));
+      return globalThis.trashRestorePreparation;
+    },
+    validatePreparedTrashItemsRestore(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashRestoreValidate', input]));
+      return globalThis.trashRestoreValidation;
+    },
+    async commitPreparedTrashItemsRestore(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashRestoreCommit', input]));
+      return globalThis.trashRestoreResult;
+    },
+    trashItemsRestoreOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashRestoreOutcome', input]));
+      return globalThis.trashRestoreOutcome;
+    },
+    async prepareTrashItemsPurge(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashPurgePrepare', input]));
+      return globalThis.trashPurgePreparation;
+    },
+    validatePreparedTrashItemsPurge(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashPurgeValidate', input]));
+      return globalThis.trashPurgeValidation;
+    },
+    async commitPreparedTrashItemsPurge(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashPurgeCommit', input]));
+      return globalThis.trashPurgeResult;
+    },
+    trashItemsPurgeOutcome(input) {
+      globalThis.menuInputs.push(JSON.stringify(['trashPurgeOutcome', input]));
+      return globalThis.trashPurgeOutcome;
+    },
+    getProjects() {
+      globalThis.projectInputs.push('projects');
+      return { ok: true, value: { version: 1, revision: 'p', active: [], deferred: [], archived: [] } };
+    },
+    getProjectDetail(input) {
+      globalThis.projectInputs.push(JSON.stringify(input));
+      return globalThis.projectDetailResult;
+    },
+    async submitQuickCapture(input) { globalThis.createCount++; globalThis.captureInputs.push(JSON.stringify(['submit', input])); return { ok: true, value: { kind: 'saved', taskId: 'id', next: 'close', reset: null } }; },
+    prepareQuickCaptureLines(request) {
+      globalThis.captureInputs.push(JSON.stringify(['linesPrepare', request]));
+      if (globalThis.linesRefused) return { ok: true, value: { kind: 'refused', notice: { message: 'Invalid date' } } };
+      return { ok: true, value: { kind: 'prepared', prepared: { version: 1, request,
+        tasks: [], projects: [], deviceIdToInitialize: null, result: { kind: 'saved', taskIds: request.captureIds } } } };
+    },
+    validatePreparedQuickCaptureLines(input) { return { ok: true, value: input.prepared.result }; },
+    async commitPreparedQuickCaptureLines(input) {
+      globalThis.captureInputs.push(JSON.stringify(['linesCommit', input]));
+      if (globalThis.linesCommitFailure) return { ok: false, error: { code: 'SAVE_FAILED', message: 'Injected lines save' } };
+      return { ok: true, value: input.prepared.result };
+    },
+    openQuickCapture() { globalThis.captureInputs.push('open'); return { ok: true, value: { version: 1, options: {} } }; },
+    getQuickCaptureView(input) { globalThis.captureInputs.push(JSON.stringify(['view', input])); return { ok: true, value: { version: 1, options: input.options } }; },
+    editQuickCapture(input) { globalThis.captureInputs.push(JSON.stringify(['edit', input])); return { ok: true, value: { view: { options: input.options }, notice: null } }; },
+    async createQuickCaptureSnapshot() { globalThis.captureInputs.push('snapshot'); return globalThis.snapshotResult; },
+    async submitQuickCaptureLines(input) { globalThis.captureInputs.push(JSON.stringify(['lines', input])); return { ok: true, value: { kind: 'saved', taskIds: input.captureIds } }; },
+    async submitQuickCapturePickerQuery(input) { globalThis.captureInputs.push(JSON.stringify(['picker', input])); return { ok: true, value: { options: input.options, created: true } }; },
+    openCaptureModal(input) { globalThis.captureInputs.push(JSON.stringify(['modalOpen', input])); return { ok: true, value: { draft: { text: '' }, view: { version: 1 } } }; },
+    getCaptureModalView(input) { globalThis.captureInputs.push(JSON.stringify(['modalView', input])); return { ok: true, value: { version: 1 } }; },
+    editCaptureModal(input) { globalThis.captureInputs.push(JSON.stringify(['modalEdit', input])); return { ok: true, value: { draft: input.draft, view: { version: 1 } } }; },
+    discardCaptureModal(input) { globalThis.captureInputs.push(JSON.stringify(['modalDiscard', input])); return { ok: true, value: { close: { returnTo: null, returnToPreviousApp: false } } }; },
+    async submitCaptureModal(input) { globalThis.captureInputs.push(JSON.stringify(['modalSubmit', input])); return { ok: true, value: { kind: 'saved', taskId: input.captureId, projectId: null, next: 'close', close: { returnTo: null, returnToPreviousApp: false } } }; },
+    async submitCaptureModalLines(input) { globalThis.captureInputs.push(JSON.stringify(['modalLines', input])); return { ok: true, value: { kind: 'saved', taskIds: input.captureIds, close: { returnTo: null, returnToPreviousApp: true } } }; },
+    async setTaskFocus(input) { globalThis.newInputs.push(JSON.stringify(['taskFocus', input])); return globalThis.taskFocusResult; },
+    async setProjectFocus(input) { globalThis.newInputs.push(JSON.stringify(['projectFocus', input])); return { ok: true, value: { blocked: '' } }; },
+    async createProject(input) { globalThis.newInputs.push(JSON.stringify(['createProject', input])); return { ok: true, value: { id: 'p' } }; },
+    getAreaFilter() { globalThis.newInputs.push('areaFilter'); return { ok: true, value: { revision: 'a', label: 'All', summary: 'All areas', options: [] } }; },
+    async setAreaFilter(input) { globalThis.newInputs.push(JSON.stringify(['setAreaFilter', input])); return { ok: true, value: input }; },
+    async completeTask() { globalThis.completeCount++; return { ok: true, value: { id: 'id' } }; },
+    async searchTasks(input) { globalThis.newInputs.push(JSON.stringify(['search', input])); return { ok: true, value: { version: 1, query: input.query.trim() } }; },
+    async saveSearch(input) { globalThis.newInputs.push(JSON.stringify(['saveSearch', input])); return { ok: true, value: { id: 's', existing: false } }; },
+    startInboxProcessing(input) { globalThis.newInputs.push(JSON.stringify(['inboxStart', input])); return { ok: true, value: { sessionId: 'x', view: { step: 'actionable' } } }; },
+    getInboxProcessingStep(input) { globalThis.newInputs.push(JSON.stringify(['inboxStep', input])); return { ok: true, value: { step: 'actionable' } }; },
+    async commitInboxProcessingStep(input) { globalThis.newInputs.push(JSON.stringify(['inboxCommit', input])); return globalThis.inboxCommitResult; },
+    async skipInboxProcessingTask(input) { globalThis.newInputs.push(JSON.stringify(['inboxSkip', input])); return { ok: true, value: { view: null, notice: null, toast: null } }; },
+    endInboxProcessing(input) { globalThis.newInputs.push(JSON.stringify(['inboxEnd', input])); return { ok: true, value: null }; },
+    getMoreMenu() { globalThis.menuInputs.push('more'); return { ok: true, value: { version: 1, revision: 'm', primary: [] } }; },
+    getWaitingView(input) { globalThis.menuInputs.push(JSON.stringify(['waiting', input])); return { ok: true, value: { version: 1, revision: 'w', total: 0, rows: [] } }; },
+    getSomedayView(input) { globalThis.menuInputs.push(JSON.stringify(['someday', input])); return globalThis.menuReadResult; },
+    getMenuViewCollection(input) { globalThis.menuInputs.push(JSON.stringify(['collection', input])); return { ok: true, value: { items: [] } }; },
+    getArchiveView(input) { globalThis.menuInputs.push(JSON.stringify(['archive', input])); return { ok: true, value: { version: 1, items: [] } }; },
+    async moveSomedayTasksToSection(input) { globalThis.menuInputs.push(JSON.stringify(['somedayMove', input])); return globalThis.menuCommandResult; },
+    async addSomedaySectionTask(input) { globalThis.menuInputs.push(JSON.stringify(['somedayTask', input])); return { ok: true, value: { id: input.captureId, toast: 'Task created' } }; },
+    async runArchiveAction(input) { globalThis.menuInputs.push(JSON.stringify(['archiveAction', input])); return { ok: true, value: { changed: true, toast: null } }; },
+    getContextsView(input) { globalThis.menuInputs.push(JSON.stringify(['contexts', input])); return { ok: true, value: { version: 1, revision: 'c', total: 0, rows: [] } }; },
+    getTrashView(input) { globalThis.menuInputs.push(JSON.stringify(['trash', input])); return { ok: true, value: { version: 1, revision: 't', total: 0, items: [] } }; },
+    getReviewOverview(input) { globalThis.menuInputs.push(JSON.stringify(['review', input])); return { ok: true, value: { version: 1, revision: 'o', total: 0, items: [] } }; },
+    getWeeklyReview(input) { globalThis.menuInputs.push(JSON.stringify(['weekly', input])); return { ok: true, value: { version: 1, revision: 'w', total: 0, items: [] } }; },
+    getWeeklyReviewList(input) { globalThis.menuInputs.push(JSON.stringify(['weeklyList', input])); return { ok: true, value: { version: 1, revision: 'w', total: 0, items: [] } }; },
+    getDailyReview(input) { globalThis.menuInputs.push(JSON.stringify(['daily', input])); return { ok: true, value: { version: 1, revision: 'd', total: 0, items: [] } }; },
+    async runContextsAction(input) { globalThis.menuInputs.push(JSON.stringify(['contextsAction', input])); return { ok: true, value: { changed: true, toast: null } }; },
+    async runTrashAction(input) { globalThis.menuInputs.push(JSON.stringify(['trashAction', input])); return { ok: true, value: { changed: true, toast: null } }; },
+    async ingestPendingCaptures(input) {
+      const names = await input.queue.list();
+      const texts = [];
+      for (const name of names ?? []) texts.push(await input.queue.read(name));
+      const record = await input.lastApplied.read();
+      if (names?.length) await input.lastApplied.write('{"t":{"tapMs":1,"id":"c","at":2}}');
+      for (const name of names ?? []) await input.queue.delete(name);
+      globalThis.ingestInputs.push(JSON.stringify([input.requestId, names, texts, record]));
+      return { ok: true, value: { ingested: names?.length ?? 0 } };
+    },
+    runContextAutomation(input) {
+      globalThis.ingestInputs.push(JSON.stringify(['context', input]));
+      return { ok: true, value: { notification: input.action === 'activate' ? { title: '@home next action', message: 'Call', data: { kind: 'context-automation', context: '@home' } } : null } };
+    },
+    async runReviewAction(input) {
+      globalThis.menuInputs.push(JSON.stringify(['reviewAction', input]));
+      return input.action.type === 'markReviewedTasks' ? { ok: false, error: { code: 'SAVE_FAILED', message: 'disk full' } } : { ok: true, value: { changed: true, toast: null, createdId: null } };
+    },
+  };
+}
+export const DEFAULT_GLOBAL_SEARCH_FILTERS = { scope: 'all' };
+export const STATUS_COLORS_BY_THEME = {
+  light: { done: { bg: '#22C55E20', text: '#22C55E', border: '#22C55E' } }, dark: { done: { bg: '#4ADE8026', text: '#4ADE80', border: '#4ADE80' } },
+  nord: { done: { bg: '#A3BE8C26', text: '#A3BE8C', border: '#A3BE8C' } },
+};
+export const TASK_PRIORITY_COLORS = { urgent: '#dc2626', low: '#3b82f6' };
+export function themeDescriptor(theme) {
+  return new Map([['nord', { scheme: 'dark', statusPreset: 'nord' }],
+    ['material3-light', { scheme: 'light', statusPreset: null }]]).get(theme);
+}
+export function resolveThemeStatusPreset(theme) { return themeDescriptor(theme)?.statusPreset ?? null; }
+export const useTaskStore = { getState: () => {
+  globalThis.onStateRead?.();
+  return {
+  settings: globalThis.settings,
+  _allTasks: globalThis.lastLoaded ? globalThis.lastLoaded.tasks : globalThis.emptyOwnerTasks,
+  _tasksById: globalThis.ownerTaskMap,
+  _allProjects: globalThis.ownerProjects, _allSections: globalThis.ownerSections ??= [],
+  _allAreas: globalThis.ownerAreas ??= [], _allPeople: globalThis.ownerPeople ??= [],
+  persistenceFailure: globalThis.persistenceFailure, isLoading: globalThis.storeLoading, editLockCount: globalThis.storeEditLocks,
+}; } };
+export function logInfo(message, meta) {
+  if (globalThis.__strideHostPlatform === 'ios') return realLogInfo(message, meta);
+  throw new Error('diagnostic sink failed');
+}
+export function logWarn() { throw new Error('diagnostic sink failed'); }
+// The durable iOS draft owner is exercised by the actual-core Swift host tests.
+// Legacy owner fixtures remain unbound; Task257 below exercises the real pure V3 helpers.
+export function validateNativeAttachmentDraftBegin() { throw new Error('attachment draft owner unbound'); }
+export function validateNativeAttachmentDraftLineage() { throw new Error('attachment draft owner unbound'); }
+export function prepareNativeAttachmentDraftAdd() { throw new Error('attachment draft owner unbound'); }
+export function validateNativeAttachmentDraftBeginV2() { throw new Error('attachment draft owner unbound'); }
+export function validateNativeAttachmentDraftLineageV2() { throw new Error('attachment draft owner unbound'); }
+export function prepareNativeAttachmentDraftAddV2() { throw new Error('attachment draft owner unbound'); }
+export function completeNativeAttachmentDraftAdd() { throw new Error('attachment draft owner unbound'); }
+// Only the explicit iOS local-capability fixture may construct these. Backends
+// and sync triggers retain the throwing stand-ins below.
+export function createMobileAttachmentFiles(host) {
+  if (!globalThis.localAttachmentTest) throw new Error('local attachments unbound');
+  globalThis.localFilePorts = host;
+  return { persistAttachmentLocally: async (attachment) => attachment, deleteManagedAttachmentFile: async () => false };
+}
+export function createMobileAttachmentInstaller() {
+  if (!globalThis.localAttachmentTest) throw new Error('local attachments unbound');
+  return { installAttachmentFileGeneration: async () => { throw new Error('no remote installer call'); } };
+}
+export function createMobileAttachmentCommon(host) {
+  if (!globalThis.localAttachmentTest) throw new Error('local attachments unbound');
+  if (host.preparePlaintextDownload) return { prepareAttachmentDownloadBytes: async () => { throw new Error('Unexpected source creation in Off entry fixture'); } };
+  return {};
+}
+export function setSha256HexProvider() {
+  if (!globalThis.localAttachmentTest) throw new Error('local attachments unbound');
+  globalThis.localShaInstallCount++;
+}
+`;
+
+
+const hostSyncTs = readFileSync(resolve(app, 'bundle/host-sync.ts'), 'utf8') + readFileSync(resolve(app, 'bundle/host-attachments.ts'), 'utf8')
+    + readFileSync(resolve(app, 'bundle/host-reminders.ts'), 'utf8') + readFileSync(resolve(app, 'bundle/host-widgets.ts'), 'utf8')
+    + readFileSync(resolve(app, 'bundle/host-calendar.ts'), 'utf8') + readFileSync(resolve(app, 'bundle/host-gmail.ts'), 'utf8')
+    + readFileSync(resolve(app, 'bundle/host-widget-audio.ts'), 'utf8') + readFileSync(resolve(app, 'bundle/host-voice.ts'), 'utf8');
+const syncOnly = [...new Set([...hostSyncTs.matchAll(/^import \{([\s\S]*?)\} from '@stride\/core';/gm)].flatMap((m) => [...m[1].matchAll(/^\s+(\w+),$/gm)].map((n) => n[1])))]
+    .filter((name) => !new RegExp(`export (?:async )?(?:function|const|class) ${name}\\b|export \\{[^}]*\\b${name}\\b`).test(fakeCore));
+assert(syncOnly.includes('createMobileSyncService') && syncOnly.includes('createMobileSyncTriggers'), 'host-sync.ts\'s core imports parsed');
+
+
+assert(/probeLocationCiphertext: \(target\) => transitions\.probeSyncLocationCiphertext\(target\),/.test(hostSyncTs), 'the native sync service asks whether the location holds ciphertext');
+assert(/recheck: async \(\) => \{\s*const outcome = await transitions\.recheckPartlyEncryptedLocation\(\);/.test(hostSyncTs), 'the native encryption card rechecks a partly encrypted location');
+const fakeCoreWithSync = `${fakeCore}\n${syncOnly.map((name) => `export const ${name} = () => { throw new Error('${name}: sync is not bound in the gates'); };`).join('\n')}\n`;
+const built = await build({
+    entryPoints: [resolve(app, 'bundle/host-entry.ts')], bundle: true, write: false, format: 'iife',
+    plugins: [{ name: 'fake-core', setup(plugin) {
+        plugin.onResolve({ filter: /^@stride\/core$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-request-timeout$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-reasoning-effort$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-gemini-thinking-budget$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: fakeCoreWithSync, loader: 'js', resolveDir: app }));
+    } }],
+});
+const makeState = (taskCount, fakeDataSequence = [], hostPlatform = undefined, configure = () => {}, source = built.outputFiles[0].text) => {
+    const state = {
+        fakeData: { tasks: [], projects: [], sections: [], areas: [], people: [], settings: {} },
+        pomodoroInputs: [], pomodoroSession: null, pomodoroOutcome: null, pruneInputs: [],
+        fakeDataSequence, activationCount: 0, saveCount: 0, queryCount: 0,
+        __strideHostPlatform: hostPlatform,
+        events: [], planInputs: [], plan: null, sqliteHasData: true, saveError: null, afterSave: null, lastLoaded: null, commitResult: null,
+        createCount: 0, completeCount: 0, persistenceFailure: null, captureInputs: [],
+        snapshotResult: { ok: true, value: { fileName: 'data.2026-09-24T10-00-00.000.snapshot.json', contents: '{}' } }, editorInputs: [], updateInputs: [], focusInputs: [],
+
+        AbortController, setTimeout, clearTimeout, TextEncoder, URL,
+        languageInputs: [], projectInputs: [], settings: undefined, persistenceStatus: null, aiInputs: [],
+        settingsReadFailure: false, afterLanguage: null, newInputs: [], menuInputs: [],
+        fileCalls: [], ingestInputs: [], queueFiles: null, kv: {}, deleteResult: null, sandbox: false,
+        workspaceTransition: false, backupInputs: [], backupReadinessChecks: 0,
+        backupReadinessResult: { ok: true, value: { version: 1 } }, backupPrepareHold: null,
+        backupPrepared: { planJSON: '{"frozen":true}', recoveryJSON: '{"before":true}' },
+        backupReply: { version: 1, operation: 'merge', snapshotName: 'data.2026-10-04T12-00-00.000.snapshot.json', added: 2, updated: 1 },
+        backupOutcome: null,
+        backupStrings: { 'settings.mergeBackup': '合并备份',
+          'settings.backupMobile.backupPreviewCounts': '{{taskCount}} tasks / {{projectCount}} projects',
+          'settings.mergeBackupSummary': '{{addedCount}} added / {{updatedCount}} updated',
+          'settings.undoImportConfirm': 'Restore {{snapshotName}}; later edits are rolled back' },
+        menuReadResult: { ok: false, error: { code: 'STALE_REVISION', message: 'Someday changed; restart paging from offset zero' } },
+        menuCommandResult: { ok: false, error: { code: 'SAVE_FAILED', message: 'disk full' } },
+        taskFocusResult: { ok: true, value: { blocked: 'Max 5 focus items.', blockedTitle: 'Focus' } },
+        projectDetailResult: { ok: false, error: { code: 'STALE_REVISION', message: 'Project changed; restart paging from offset zero' } },
+        focusWindowResult: { ok: false, error: { code: 'STALE_REVISION', message: 'Focus changed; restart paging' } },
+        updateResult: { ok: true, value: { id: 't', changed: true } },
+        saveDraftResult: { ok: true, value: { id: 't', draft: { title: 'b' } } },
+        inboxCommitResult: { ok: false, error: { code: 'SAVE_FAILED', message: 'disk full' } },
+        logText: null, logOps: [], logFailure: null,
+        localAttachmentTest: false, localShaInstallCount: 0, attachmentInputs: [],
+        fileEditSaveInputs: [], fileEditSaveReply: { ok: true, value: null }, resumeInputs: [], resumeReads: 0,
+        emptyOwnerTasks: [], ownerProjects: [], ownerTaskMap: new Map(), storeLoading: false, storeEditLocks: 0,
+        attachmentReply: { ok: true, value: { kind: 'saved', ids: [], attachments: [] } },
+        __strideNative: {
+            sqlAll(sql) {
+                if (sql === 'SELECT data FROM settings WHERE id = 1') {
+                    if (state.settingsReadFailure) return '!StrideNativeError:settings storage unavailable';
+                    return state.fakeData.settings ? JSON.stringify([{ data: JSON.stringify(state.fakeData.settings) }]) : '[]';
+                }
+                if (sql === 'SELECT COUNT(*) AS n FROM settings WHERE id = 1')
+                    return JSON.stringify([{ n: state.fakeData.settings ? 1 : 0 }]);
+
+                if (sql.includes('COUNT(*)') && sql.includes('tasks')) {
+                    return JSON.stringify([{ n: taskCount === 'auto' ? state.lastLoaded.tasks.length : taskCount }]);
+                }
+                if (sql.includes('COUNT(*)') && sql.includes('saved_filters')) return JSON.stringify([{ n: state.filterCount ?? 0 }]);
+                if (sql.includes('COUNT(*)')) return '[{"n":0}]';
+                return '[]';
+            },
+            sqlRun() {}, sqlExec() {},
+            rnStateCommit(change) { state.events.push(`commit:${change}`); return state.commitResult; },
+
+            logFile(operation, text) {
+                state.logOps.push(operation);
+                if (state.logFailure) return `!StrideNativeError:${state.logFailure}`;
+                switch (operation) {
+                    case 'path': return state.logUnavailable ? '' : 'files/logs/stride.log';
+                    case 'ensure': state.logText ??= ''; return 'files/logs/stride.log';
+                    case 'exists': return state.logText === null ? '' : '1';
+                    case 'isAbsent': return state.logAbsentError ? '!StrideNativeError:absence unknown' : state.logText === null ? '1' : '';
+                    case 'read': return state.logText;
+                    case 'size': return String(Buffer.byteLength(state.logText ?? ''));
+                    case 'append': state.logText += text; return '';
+                    case 'write': state.logText = text; return '';
+                    case 'delete': { if (state.logDeleteRefused) return ''; const had = state.logText !== null; state.logText = null; return had ? '1' : ''; }
+                    default: throw new Error(`unknown log operation ${operation}`);
+                }
+            },
+
+            fileList(path) { state.fileCalls.push(`list ${path}`); return state.queueFiles ? JSON.stringify(Object.keys(state.queueFiles)) : 'null'; },
+            fileRead(path) { state.fileCalls.push(`read ${path}`); return state.queueFiles[path.split('/').pop()]; },
+            fileDelete(path) { state.fileCalls.push(`delete ${path}`); return state.deleteResult; },
+            kvGet(key) { state.fileCalls.push(`kvGet ${key}`); return JSON.stringify([state.kv[key] ?? null]); },
+            kvSet(key, value) { state.fileCalls.push(`kvSet ${key} ${value}`); state.kv[key] = value; return null; },
+        },
+    };
+    state.aiTimeoutInputs = []; state.aiTimeoutReplies = {};
+    state.aiReasoningInputs = []; state.aiReasoningReplies = {};
+    state.aiGeminiInputs = []; state.aiGeminiReplies = {};
+    configure(state);
+    vm.runInNewContext(source, state);
+    assert.equal(state.contractBindings.reminderPlatform, hostPlatform === 'ios' ? 'ios' : 'android');
+    return state;
+};
+const poll = async (state, id) => {
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    return JSON.parse(state.StrideHost.poll(id));
+};
+
+
+{
+    const read = (state, input = '{}', owner = () => '') => poll(state, state.StrideHost.iosAISettingsProjection(input, owner));
+    const ready = async (settings = {}) => {
+        const state = makeState(0, [], 'ios', state => { state.fakeData.settings = settings; });
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.settings = state.fakeData.settings;
+        state.events.length = 0; state.fileCalls.length = 0;
+        return state;
+    };
+    const marker = 'v1.3.5/ios-ai-settings-projection';
+    const refused = async (state, input = '{}', owner = () => '') => {
+        const before = state.logText, data = JSON.stringify(state.fakeData), kv = JSON.stringify(state.kv);
+        assert.equal((await read(state, input, owner)).ok, false);
+        assert.equal(state.logText, before, 'refusal emits no projection marker');
+        assert.equal(JSON.stringify(state.fakeData), data); assert.equal(JSON.stringify(state.kv), kv);
+        assert(!state.events.includes('save')); assert.equal(state.aiInputs.length, 0);
+    };
+    const sentinel = 'PRIVATE587-SENTINEL';
+    const state = await ready({ ai: { provider: 'anthropic', enabled: true, reasoningEffort: 'high', thinkingBudget: 4096,
+        requestTimeoutSeconds: 300, model: sentinel, copilotModel: sentinel, baseUrl: 'https://' + sentinel,
+        openAIExtraBodyParams: { secret: sentinel }, speechToText: { enabled: true, provider: 'parakeet',
+            model: sentinel, language: sentinel, baseUrl: sentinel, offlineModelPath: sentinel,
+            mode: 'transcribe_only', fieldStrategy: 'description_only' } } });
+    const before = JSON.stringify(state.fakeData), kv = JSON.stringify(state.kv);
+    const first = await read(state), second = await read(state);
+    assert.equal(first.ok, true); assert.deepEqual(second, first);
+    assert.equal(first.value.version, 1); assert.equal(first.value.aiProvider, 'anthropic');
+    assert.equal(first.value.aiThinkingBudget, 4096); assert.equal(first.value.speechProvider, 'whisper');
+    assert.equal(first.value.anthropicThinkingEnabled, true); assert.equal(first.value.speechMode, 'transcribe_only');
+    assert(!JSON.stringify(first).includes(sentinel)); assert(!state.logText.includes(sentinel));
+    assert.equal(JSON.stringify(state.fakeData), before); assert.equal(JSON.stringify(state.kv), kv);
+    assert.deepEqual(state.events, ['baseline', 'baseline', 'baseline', 'baseline']);
+    assert.equal(state.fileCalls.length, 0); assert.equal(state.aiInputs.length, 0);
+    assert.equal(state.contractBindings.ai, undefined, 'the read never activates the AI factory');
+    const lines = state.logText.split('\n').filter(line => line.includes(marker));
+    assert.equal(lines.length, 2);
+    assert.deepEqual(JSON.parse(lines[0]).context, { releaseCheck: marker, outcome: 'read' });
+    for (const input of ['null', '[]', '{', '{"extra":true}', ' '.repeat(257) + '{}']) await refused(state, input);
+    await refused(state, '{}', null); await refused(state, '{}', () => 'retired-owner');
+    for (const field of ['failed', 'queued', 'inFlight', 'immediate', 'retrying']) {
+        state.persistenceStatus = { [field]: true }; await refused(state); state.persistenceStatus = null;
+    }
+    for (const field of ['sandbox', 'workspaceTransition', 'storeLoading', 'storeEditLocks', 'linesUnguarded']) {
+        state[field] = true; await refused(state); state[field] = false;
+    }
+    state.rowBaselineNull = true; await refused(state); state.rowBaselineNull = false;
+    state.rowBaseline = { settings: { ai: { provider: 'gemini' } } }; await refused(state); state.rowBaseline = null;
+    state.adapter = {}; await refused(state);
+    await refused(makeState(0, [], 'ios'));
+    const android = makeState(0, [], 'android');
+    assert.equal((await poll(android, android.StrideHost.boot())).ok, true);
+    await refused(android);
+    for (const mutation of ['baseline', 'settings', 'generation', 'owner']) {
+        const changed = await ready(), original = changed.adapter.readRowBaseline.bind(changed.adapter);
+        let reads = 0, currentOwner = true;
+        changed.adapter.readRowBaseline = async () => {
+            const saved = await original();
+            if (++reads === 1) {
+                if (mutation === 'baseline') changed.rowBaselineNull = true;
+                if (mutation === 'settings') changed.settings = {};
+                if (mutation === 'generation') changed.persistenceStatus = { generation: 1 };
+                if (mutation === 'owner') currentOwner = false;
+            }
+            return saved;
+        };
+        await refused(changed, '{}', () => currentOwner ? '' : 'retired');
+    }
+    const invalid = await ready({ ai: { provider: sentinel } });
+    await refused(invalid);
+    assert(!(await read(invalid)).error.includes(sentinel));
+    for (const dispatch of ['menuRead', 'menuCommand']) {
+        const fresh = await ready();
+        assert.equal((await poll(fresh, fresh.StrideHost[dispatch]('iosAISettingsProjection', '{}'))).ok, false);
+        assert(!(fresh.logText ?? '').includes(marker));
+    }
+    const swift = readFileSync(resolve(app, '../ios-native/Sources/StrideNativeCore/CoreHost.swift'), 'utf8');
+    assert.match(swift, /guard method != "iosAISettingsProjection"/);
+    assert.match(swift, /\n    public func readAISettingsProjection\(\) async throws -> NativeAISettingsProjection/);
+    console.log('Task587: private AI projection routing, bounds, saved baseline, authority, secret omission and no-write gates passed; Apple execution pending');
+}
+
+
+{
+    const state = makeState(0, [], 'ios');
+    assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+    assert(state.receiptScope.includes('aiRequestTimeout'), 'private timeout receipts must survive native restart');
+    const expected = { aiPresent: false, timeoutPresent: false, timeout: null, providerPresent: false, provider: null, stampPresent: false, stamp: null };
+    const request = { requestId: '00000000-0000-4000-8000-000000000590', value: 60, expected };
+    const prepared = { version: 1, request }, envelope = { request, prepared }, reply = { value: 60, changed: true };
+    state.aiTimeoutReplies = {
+        options: { ok: true, value: { value: 30, expected } }, prepare: { ok: true, value: { kind: 'prepared', prepared } },
+        validate: { ok: true, value: reply }, commit: { ok: true, value: reply }, outcome: { ok: true, value: reply },
+    };
+    const invoke = async (route, value, owner = () => '') => poll(state, state.StrideHost[route](JSON.stringify(value), owner));
+    for (const [route, kind, input] of [['iosAIRequestTimeoutOptions', 'options', {}], ['iosAIRequestTimeoutPrepare', 'prepare', request],
+        ['iosAIRequestTimeoutValidate', 'validate', envelope], ['iosAIRequestTimeoutCommit', 'commit', envelope],
+        ['iosAIRequestTimeoutRetryOutcome', 'outcome', request]]) {
+        assert.equal(typeof state.StrideHost[route], 'function', 'actual private timeout route missing: ' + route);
+        const before = state.aiTimeoutInputs.length;
+        assert.deepEqual(await invoke(route, input), state.aiTimeoutReplies[kind]);
+        assert.deepEqual(JSON.parse(JSON.stringify(state.aiTimeoutInputs.at(-1))), [kind, JSON.stringify(input)]);
+        assert.equal(state.aiTimeoutInputs.length, before + 1);
+    }
+    for (const route of ['iosAIRequestTimeoutOptions', 'iosAIRequestTimeoutPrepare', 'iosAIRequestTimeoutCommit']) {
+        const before = state.aiTimeoutInputs.length;
+        assert.equal((await invoke(route, {}, null)).ok, false);
+        assert.equal((await invoke(route, {}, () => 'retired')).ok, false);
+        assert.equal(state.aiTimeoutInputs.length, before, 'invalid owner reaches no contract method');
+    }
+    const marker = 'v1.3.5/ios-ai-request-timeout';
+    assert(!(state.logText ?? '').includes(marker), 'prepare/commit dispatch alone cannot claim native durable acknowledgment');
+    assert.equal((await poll(state, state.StrideHost.iosAIRequestTimeoutAcknowledged())).ok, true);
+    const lines = state.logText.split('\n').filter(line => line.includes(marker));
+    assert.equal(lines.length, 1); assert.deepEqual(JSON.parse(lines[0]).context, { releaseCheck: marker, outcome: 'saved' });
+    for (const dispatch of ['menuRead', 'menuCommand']) {
+        for (const route of ['iosAIRequestTimeout', 'iosAIRequestTimeoutOptions', 'iosAIRequestTimeoutPrepare', 'iosAIRequestTimeoutCommit'])
+            assert.equal((await poll(state, state.StrideHost[dispatch](route, '{}'))).ok, false);
+    }
+    const swift = readFileSync(resolve(app, '../ios-native/Sources/StrideNativeCore/CoreHost.swift'), 'utf8');
+    assert.match(swift, /guard !Engine\.aiRequestTimeoutMethods\.contains\(method\)/);
+    assert.match(swift, /func setAIRequestTimeout\(_ request: NativeAIRequestTimeoutRequest,/);
+
+    const requireTypedAITimeoutFacade = source => {
+        assert.match(source, /public func readAIRequestTimeoutOptions\(\) async throws -> NativeAIRequestTimeoutOptions/);
+        assert.match(source, /public func setAIRequestTimeout\(_ request: NativeAIRequestTimeoutRequest,\s*readmission:/);
+        assert.match(source, /public init\(requestId: String, value: Int, expected: NativeAIRequestTimeoutWitness\)/);
+        for (const name of ['Witness', 'Request', 'Options', 'Result'])
+            assert.match(source, new RegExp('public struct NativeAIRequestTimeout' + name + ':'));
+        for (const [name, fields] of [['Request', ['value']], ['Options', ['value', 'expected']], ['Result', ['value', 'changed']]]) {
+            const dto = new RegExp('public struct NativeAIRequestTimeout' + name + ':([\\s\\S]*?)\\n}').exec(source)?.[1];
+            assert(dto);
+            assert.deepEqual([...dto.matchAll(/\n    public (?:let|var) (\w+):/g)].map(match => match[1]), fields);
+            assert.doesNotMatch(dto, /public func (?:json|validated)/);
+        }
+        const witness = source.slice(source.indexOf('public struct NativeAIRequestTimeoutWitness:'), source.indexOf('public struct NativeAIRequestTimeoutRequest:'));
+        assert.match(witness, /^public struct NativeAIRequestTimeoutWitness: Sendable, Equatable \{/);
+        assert.doesNotMatch(witness, /public (?:let|var|func|init)/);
+        assert.doesNotMatch(source, /public func (?:probeAIRequestTimeoutOutcome|readAIProviderDeviceState|invokeAIRequestTimeoutRead)/);
+        assert.doesNotMatch(source, /public func (?:setAIRequestTimeout|readAIRequestTimeoutOptions)\([^)]*(?:requestJSON|argumentsJSON)/);
+        assert.match(source, /guard !Engine\.aiRequestTimeoutMethods\.contains\(method\)/);
+    };
+    requireTypedAITimeoutFacade(swift);
+    for (const [before, after] of [
+        ['public func readAIRequestTimeoutOptions()', 'func readAIRequestTimeoutOptions()'],
+        ['public func setAIRequestTimeout(_ request:', 'func setAIRequestTimeout(_ request:'],
+        ['public init(requestId: String, value: Int, expected:', 'init(requestId: String, value: Int, expected:'],
+        ['    let stamp: String?', '    public let stamp: String?'],
+        ['public struct NativeAIRequestTimeoutWitness: Sendable, Equatable', 'public struct NativeAIRequestTimeoutWitness: Decodable, Sendable, Equatable'],
+        ['    func probeAIRequestTimeoutOutcome(', '    public func probeAIRequestTimeoutOutcome('],
+        ['guard !Engine.aiRequestTimeoutMethods.contains(method)', 'guard true'],
+    ]) {
+        const target = before === '    let stamp: String?'
+            ? swift.slice(swift.indexOf('public struct NativeAIRequestTimeoutWitness:'), swift.indexOf('public struct NativeAIRequestTimeoutRequest:')) : swift;
+        assert(target.includes(before), 'Task601 gate mutation anchor exists: ' + before);
+        const changed = target === swift ? swift.replace(before, after) : swift.replace(target, target.replace(before, after));
+        assert.throws(() => requireTypedAITimeoutFacade(changed));
+    }
+    console.log('Task590: production private timeout invocation, exact arguments, owner refusal and receipt registration passed; Apple execution pending');
+}
+
+
+{
+    const ready = async (platform = 'ios') => {
+        const state = makeState(0, [], platform);
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        return state;
+    };
+    const state = await ready();
+    assert.equal(typeof state.StrideHost.iosAIReasoningEffortOptions, 'function', 'actual private reasoning route missing');
+    assert(state.receiptScope.includes('aiReasoningEffort'), 'effort receipts survive restart independently of timeout');
+    assert(state.receiptScope.includes('aiRequestTimeout'));
+    const expected = { aiPresent: true, effortPresent: true, effort: 'minimal', providerPresent: false, provider: null, stampPresent: false, stamp: null };
+    const request = { requestId: '00000000-0000-4000-8000-000000000678', value: 'medium', expected };
+    const prepared = { version: 1, request }, envelope = { request, prepared }, reply = { value: 'medium', changed: true };
+    state.aiReasoningReplies = {
+        options: { ok: true, value: { value: 'minimal', expected } }, prepare: { ok: true, value: { kind: 'prepared', prepared } },
+        validate: { ok: true, value: reply }, commit: { ok: true, value: reply }, outcome: { ok: true, value: reply },
+    };
+    const routes = [['iosAIReasoningEffortOptions', 'options', {}], ['iosAIReasoningEffortPrepare', 'prepare', request],
+        ['iosAIReasoningEffortValidate', 'validate', envelope], ['iosAIReasoningEffortCommit', 'commit', envelope],
+        ['iosAIReasoningEffortRetryOutcome', 'outcome', request]];
+    const invoke = (route, input, owner = () => '') => poll(state, state.StrideHost[route](JSON.stringify(input), owner));
+    for (const [route, kind, input] of routes) {
+        assert.equal(typeof state.StrideHost[route], 'function');
+        const before = state.aiReasoningInputs.length;
+        assert.deepEqual(await invoke(route, input), state.aiReasoningReplies[kind]);
+        assert.deepEqual(JSON.parse(JSON.stringify(state.aiReasoningInputs.at(-1))), [kind, JSON.stringify(input)]);
+        assert.equal(state.aiReasoningInputs.length, before + 1);
+    }
+    for (const value of ['low', 'medium', 'high']) {
+        const input = { ...request, value };
+        await invoke('iosAIReasoningEffortPrepare', input);
+        assert.equal(JSON.parse(state.aiReasoningInputs.at(-1)[1]).value, value);
+    }
+    for (const route of ['iosAIReasoningEffortOptions', 'iosAIReasoningEffortPrepare', 'iosAIReasoningEffortCommit']) {
+        const before = state.aiReasoningInputs.length;
+        assert.equal((await invoke(route, {}, null)).ok, false);
+        assert.equal((await invoke(route, {}, () => 'retired')).ok, false);
+        for (const raw of ['{', ' '.repeat(route.endsWith('Options') ? 257 : route.endsWith('Prepare') ? 2049 : 8193) + '{}'])
+            assert.equal((await poll(state, state.StrideHost[route](raw, () => ''))).ok, false);
+        assert.equal(state.aiReasoningInputs.length, before);
+        let release; state.aiReasoningHold = new Promise(resolve => { release = resolve; });
+        const ticket = state.StrideHost[route]('{}', () => '');
+        state.StrideHost.abort(ticket); release();
+        assert.equal((await poll(state, ticket)).ok, false);
+        assert.equal(state.aiReasoningInputs.length, before, 'cancelled route does not reach contract');
+        state.aiReasoningHold = undefined;
+        let active = true;
+        state.aiReasoningHold = new Promise(resolve => { release = resolve; });
+        const changed = state.StrideHost[route]('{}', () => active ? '' : 'retired');
+        active = false; release();
+        assert.equal((await poll(state, changed)).ok, false);
+        assert.equal(state.aiReasoningInputs.length, before, 'late owner refuses');
+        state.aiReasoningHold = undefined;
+    }
+    for (const [route, , input] of routes.filter(([route]) => route.endsWith('Validate') || route.endsWith('RetryOutcome'))) {
+        const before = state.aiReasoningInputs.length;
+        for (const raw of ['{', ' '.repeat(route.endsWith('Validate') ? 8193 : 2049) + '{}'])
+            assert.equal((await poll(state, state.StrideHost[route](raw))).ok, false);
+        assert.equal(state.aiReasoningInputs.length, before);
+    }
+    for (const flag of ['sandbox', 'workspaceTransition', 'linesUnguarded']) {
+        state[flag] = true;
+        assert.equal((await invoke('iosAIReasoningEffortOptions', {})).ok, false);
+        assert.equal((await invoke('iosAIReasoningEffortRetryOutcome', request)).ok, false);
+        state[flag] = false;
+    }
+    const adapter = state.adapter; state.adapter = {};
+    assert.equal((await invoke('iosAIReasoningEffortOptions', {})).ok, false); state.adapter = adapter;
+    const android = await ready('android');
+    assert.equal((await poll(android, android.StrideHost.iosAIReasoningEffortOptions('{}', () => ''))).ok, false);
+    assert.equal((await poll(android, android.StrideHost.iosAIReasoningEffortAcknowledged())).ok, true);
+    assert(!(android.logText ?? '').includes('v1.3.5/ios-ai-reasoning-effort'));
+    assert.equal((await state.aiReasoningDeps.save()).ok, true);
+    state.flushError = 'PRIVATE678-FAILURE';
+    assert.equal((await state.aiReasoningDeps.save()).ok, false); state.flushError = undefined;
+    const marker = 'v1.3.5/ios-ai-reasoning-effort';
+    assert(!(state.logText ?? '').includes(marker), 'route replies do not claim native acknowledgment');
+    assert.equal((await poll(state, state.StrideHost.iosAIReasoningEffortAcknowledged())).ok, true);
+    const lines = state.logText.split('\n').filter(line => line.includes(marker));
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]).context, { releaseCheck: marker, outcome: 'saved' });
+    assert(!lines[0].includes(request.requestId) && !lines[0].includes('minimal') && !lines[0].includes('medium'));
+    for (const dispatch of ['menuRead', 'menuCommand']) {
+        for (const route of ['iosAIReasoningEffort', ...routes.map(([route]) => route), 'iosAIReasoningEffortAcknowledged'])
+            assert.equal((await poll(state, state.StrideHost[dispatch](route, '{}'))).ok, false);
+    }
+    const count = state.logText.split('\n').filter(line => line.includes(marker)).length;
+    assert.equal(count, 1, 'generic route cannot emit marker');
+    console.log('Task678: private reasoning routing, saved minimal, choices, bounds, platform/owner/cancellation, receipts and fixed acknowledgment gates passed; Swift/Apple pending');
+}
+
+
+{
+    const ready = async (platform = 'ios') => {
+        const state = makeState(0, [], platform);
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        return state;
+    };
+    const state = await ready();
+    assert.equal(typeof state.StrideHost.iosAIGeminiThinkingBudgetOptions, 'function', 'actual private Gemini thinking budget route missing');
+    assert(state.receiptScope.includes('aiGeminiThinkingBudget'), 'Gemini receipts survive restart independently of timeout and effort');
+    assert(state.receiptScope.includes('aiRequestTimeout') && state.receiptScope.includes('aiReasoningEffort'));
+    const rawSentinel = JSON.stringify({ ai: { enabled: false, provider: 'gemini', thinkingBudget: 123, model: 'PRIVATE698-MODEL', baseUrl: 'https://PRIVATE698-URL', reasoningEffort: 'high' }, security: { mobileAppLockEnabled: false } });
+    state.fakeData.settings = JSON.parse(rawSentinel);
+    const expected = { aiPresent: true, budgetPresent: true, budget: 123, providerPresent: true, provider: 'gemini', stampPresent: false, stamp: null };
+    const request = { requestId: '00000000-0000-4000-8000-000000000698', value: 256, expected };
+    const prepared = { version: 1, request }, envelope = { request, prepared }, reply = { value: 256, changed: true };
+    state.aiGeminiReplies = {
+        options: { ok: true, value: { value: 123, expected } }, prepare: { ok: true, value: { kind: 'prepared', prepared } },
+        validate: { ok: true, value: reply }, commit: { ok: true, value: reply }, outcome: { ok: true, value: reply },
+    };
+    const routes = [['iosAIGeminiThinkingBudgetOptions', 'options', {}], ['iosAIGeminiThinkingBudgetPrepare', 'prepare', request],
+        ['iosAIGeminiThinkingBudgetValidate', 'validate', envelope], ['iosAIGeminiThinkingBudgetCommit', 'commit', envelope],
+        ['iosAIGeminiThinkingBudgetRetryOutcome', 'outcome', request]];
+    const invoke = (route, input, owner = () => '') => poll(state, state.StrideHost[route](JSON.stringify(input), owner));
+    for (const [route, kind, input] of routes) {
+        assert.equal(typeof state.StrideHost[route], 'function');
+        const before = state.aiGeminiInputs.length;
+        assert.deepEqual(await invoke(route, input), state.aiGeminiReplies[kind]);
+        assert.deepEqual(JSON.parse(JSON.stringify(state.aiGeminiInputs.at(-1))), [kind, JSON.stringify(input)]);
+        assert.equal(state.aiGeminiInputs.length, before + 1);
+    }
+    await invoke('iosAIGeminiThinkingBudgetCommit', envelope);
+    assert.deepEqual(JSON.parse(JSON.stringify(state.aiGeminiInputs.at(-1))), ['commit', JSON.stringify(envelope)], 'exact retry forwards the retained request/prepared envelope unchanged');
+    for (const value of [0, 128, 256, 512]) {
+        const input = { ...request, value };
+        await invoke('iosAIGeminiThinkingBudgetPrepare', input);
+        assert.equal(JSON.parse(state.aiGeminiInputs.at(-1)[1]).value, value);
+    }
+    for (const route of ['iosAIGeminiThinkingBudgetOptions', 'iosAIGeminiThinkingBudgetPrepare', 'iosAIGeminiThinkingBudgetCommit']) {
+        const before = state.aiGeminiInputs.length;
+        assert.equal((await invoke(route, {}, null)).ok, false);
+        assert.equal((await invoke(route, {}, () => 'retired')).ok, false);
+        for (const raw of ['{', ' '.repeat(route.endsWith('Options') ? 257 : route.endsWith('Prepare') ? 2049 : 8193) + '{}'])
+            assert.equal((await poll(state, state.StrideHost[route](raw, () => ''))).ok, false);
+        assert.equal(state.aiGeminiInputs.length, before);
+        let release; state.aiGeminiHold = new Promise(resolve => { release = resolve; });
+        const ticket = state.StrideHost[route]('{}', () => '');
+        state.StrideHost.abort(ticket); release();
+        assert.equal((await poll(state, ticket)).ok, false);
+        assert.equal(state.aiGeminiInputs.length, before, 'cancelled route does not reach contract');
+        state.aiGeminiHold = undefined;
+        let active = true;
+        state.aiGeminiHold = new Promise(resolve => { release = resolve; });
+        const changed = state.StrideHost[route]('{}', () => active ? '' : 'retired');
+        active = false; release();
+        assert.equal((await poll(state, changed)).ok, false);
+        assert.equal(state.aiGeminiInputs.length, before, 'late owner refuses');
+        state.aiGeminiHold = undefined;
+    }
+    for (const [route, , input] of routes.filter(([route]) => route.endsWith('Validate') || route.endsWith('RetryOutcome'))) {
+        const before = state.aiGeminiInputs.length;
+        for (const raw of ['{', ' '.repeat(route.endsWith('Validate') ? 8193 : 2049) + '{}'])
+            assert.equal((await poll(state, state.StrideHost[route](raw))).ok, false);
+        assert.equal(state.aiGeminiInputs.length, before);
+    }
+    for (const flag of ['sandbox', 'workspaceTransition', 'linesUnguarded']) {
+        state[flag] = true;
+        assert.equal((await invoke('iosAIGeminiThinkingBudgetOptions', {})).ok, false);
+        assert.equal((await invoke('iosAIGeminiThinkingBudgetRetryOutcome', request)).ok, false);
+        state[flag] = false;
+    }
+    const adapter = state.adapter; state.adapter = {};
+    assert.equal((await invoke('iosAIGeminiThinkingBudgetOptions', {})).ok, false); state.adapter = adapter;
+    const android = await ready('android');
+    assert.equal((await poll(android, android.StrideHost.iosAIGeminiThinkingBudgetOptions('{}', () => ''))).ok, false);
+    assert.equal((await poll(android, android.StrideHost.iosAIGeminiThinkingBudgetAcknowledged())).ok, true);
+    assert(!(android.logText ?? '').includes('v1.3.5/ios-ai-gemini-thinking-budget'));
+    assert.equal((await state.aiGeminiDeps.save()).ok, true);
+    state.flushError = 'PRIVATE698-FAILURE';
+    assert.equal((await state.aiGeminiDeps.save()).ok, false); state.flushError = undefined;
+    state.aiGeminiReplies.options = { ok: false, error: { code: 'ACTION_FAILED', message: 'Thinking budget is available for explicit Gemini only' } };
+    const providerRefusal = await invoke('iosAIGeminiThinkingBudgetOptions', {});
+    assert.equal(providerRefusal.ok, false);
+    assert.equal(providerRefusal.error, 'ACTION_FAILED: Thinking budget is available for explicit Gemini only', 'shared provider refusal stays a refusal at the private bridge');
+    const marker = 'v1.3.5/ios-ai-gemini-thinking-budget';
+    assert(!(state.logText ?? '').includes(marker), 'route replies do not claim native acknowledgment');
+    assert.equal((await poll(state, state.StrideHost.iosAIGeminiThinkingBudgetAcknowledged())).ok, true);
+    const lines = state.logText.split('\n').filter(line => line.includes(marker));
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]).context, { releaseCheck: marker, outcome: 'saved' });
+    assert(!lines[0].includes(request.requestId) && !lines[0].includes('123') && !lines[0].includes('256') && !lines[0].includes('PRIVATE698'));
+    assert.equal(JSON.stringify(state.fakeData.settings), rawSentinel, 'bridge routing never rewrites saved private neighbors');
+    for (const dispatch of ['menuRead', 'menuCommand']) {
+        for (const route of ['iosAIGeminiThinkingBudget', ...routes.map(([route]) => route), 'iosAIGeminiThinkingBudgetAcknowledged'])
+            assert.equal((await poll(state, state.StrideHost[dispatch](route, '{}'))).ok, false);
+    }
+    const count = state.logText.split('\n').filter(line => line.includes(marker)).length;
+    assert.equal(count, 1, 'generic route cannot emit marker');
+    console.log('Task698: private Gemini thinking budget routing, saved custom123, four presets, bounds, platform/owner/cancellation, receipts and fixed acknowledgment gates passed; Swift/Apple pending');
+}
+
+
+{
+    const marker = 'v1.3.5/ios-ai-device-state', sentinel = 'PRIVATE592-SENTINEL';
+    const ready = async (settings = {}) => {
+        const state = makeState(0, [], 'ios', state => { state.fakeData.settings = settings; });
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.settings = settings.ai?.apiKey ? { ...settings, ai: { ...settings.ai, apiKey: undefined } } : settings;
+        state.events.length = 0; state.fileCalls.length = 0;
+        return state;
+    };
+    const calls = [];
+    const metadata = async (...input) => {
+        calls.push(input); return JSON.stringify({ consentRecorded: true, secureItem: 'present', legacyItemPresent: true });
+    };
+    const read = (state, input = '{}', owner = () => '', inspect = metadata) =>
+        poll(state, state.StrideHost.iosAIProviderDeviceState(input, owner, inspect));
+    const refused = async (state, input = '{}', owner = () => '', inspect = metadata) => {
+        const before = state.logText, data = JSON.stringify(state.fakeData), kv = JSON.stringify(state.kv);
+        assert.equal((await read(state, input, owner, inspect)).ok, false);
+        assert.equal(state.logText, before); assert.equal(JSON.stringify(state.fakeData), data);
+        assert.equal(JSON.stringify(state.kv), kv); assert(!state.events.includes('save'));
+        assert.equal(state.aiInputs.length, 0);
+    };
+    for (const provider of [undefined, 'openai', 'gemini', 'anthropic']) {
+        const state = await ready({ ai: { ...(provider ? { provider } : {}), apiKey: sentinel, baseUrl: sentinel } });
+        const before = JSON.stringify(state.fakeData), selected = provider ?? 'openai';
+        calls.length = 0;
+        const result = await read(state);
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.deepEqual(result.value, { version: 1, provider: selected, consentRecorded: true, secureItem: 'present', legacyItemPresent: true });
+        assert.deepEqual(calls, [[selected, 'stride-ai-key_' + selected, 'stride-ai-key:' + selected]]);
+        assert.equal(JSON.stringify(state.fakeData), before); assert.equal(state.fileCalls.length, 0);
+        assert.equal(state.contractBindings.ai, undefined); assert.equal(state.aiInputs.length, 0);
+        assert(!JSON.stringify(result).includes(sentinel)); assert(!state.logText.includes(sentinel));
+        const lines = state.logText.split('\n').filter(line => line.includes(marker));
+        assert.equal(lines.length, 1); assert.deepEqual(JSON.parse(lines[0]).context, { releaseCheck: marker });
+    }
+    const state = await ready();
+    for (const input of ['null', '[]', '{', '{"provider":"gemini"}', '{"account":"' + sentinel + '"}', ' '.repeat(257) + '{}']) {
+        calls.length = 0; await refused(state, input); assert.equal(calls.length, 0);
+    }
+    calls.length = 0; await refused(state, '{}', null); await refused(state, '{}', () => 'retired');
+    await refused(state, '{}', () => '', null); assert.equal(calls.length, 0);
+    for (const field of ['failed', 'queued', 'inFlight', 'immediate', 'retrying']) {
+        state.persistenceStatus = { [field]: true }; await refused(state); state.persistenceStatus = null;
+    }
+    for (const field of ['sandbox', 'workspaceTransition', 'storeLoading', 'storeEditLocks', 'linesUnguarded']) {
+        state[field] = true; await refused(state); state[field] = false;
+    }
+    for (const secureItem of ['present', 'absent', 'unavailable']) {
+        const result = await read(state, '{}', () => '', () => JSON.stringify({ consentRecorded: false, secureItem, legacyItemPresent: false }));
+        assert.equal(result.ok, true); assert.equal(result.value.secureItem, secureItem);
+    }
+    for (const raw of ['null', '[]', '{}', JSON.stringify({ consentRecorded: 1, secureItem: 'present', legacyItemPresent: false }),
+        JSON.stringify({ consentRecorded: false, secureItem: 'absent', legacyItemPresent: false, value: sentinel }),
+        '!StrideNativeError:Device metadata is unavailable']) await refused(state, '{}', () => '', () => raw);
+    state.rowBaselineNull = true; await refused(state); state.rowBaselineNull = false;
+    state.rowBaseline = { settings: { ai: { provider: 'gemini' } } }; await refused(state); state.rowBaseline = null;
+    await refused(await ready({ ai: { provider: sentinel } }));
+    for (const mutation of ['settings', 'provider', 'generation', 'owner', 'baseline', 'adapter']) {
+        const changed = await ready(); let live = true;
+        await refused(changed, '{}', () => live ? '' : 'retired', async () => {
+            if (mutation === 'settings') changed.settings = {};
+            if (mutation === 'provider') changed.settings = { ai: { provider: 'gemini' } };
+            if (mutation === 'generation') changed.persistenceStatus = { generation: 1 };
+            if (mutation === 'owner') live = false;
+            if (mutation === 'baseline') changed.rowBaselineNull = true;
+            if (mutation === 'adapter') changed.adapter = {};
+            return JSON.stringify({ consentRecorded: false, secureItem: 'absent', legacyItemPresent: false });
+        });
+    }
+
+    const late = await ready(), originalLog = late.__strideNative.logFile;
+    let retired = false;
+    late.__strideNative.logFile = (operation, text) => {
+        const result = originalLog(operation, text);
+        if (operation === 'append' && text.includes(marker)) retired = true;
+        return result;
+    };
+    assert.equal((await read(late, '{}', () => retired ? 'retired' : '')).ok, false);
+    assert(retired); assert(late.logText.includes(marker));
+    await refused(makeState(0, [], 'ios'));
+    const android = makeState(0, [], 'android');
+    assert.equal((await poll(android, android.StrideHost.boot())).ok, true); await refused(android);
+    for (const dispatch of ['menuRead', 'menuCommand']) {
+        const fresh = await ready();
+        assert.equal((await poll(fresh, fresh.StrideHost[dispatch]('iosAIProviderDeviceState', '{}'))).ok, false);
+        assert(!(fresh.logText ?? '').includes(marker));
+    }
+    const swift = readFileSync(resolve(app, '../ios-native/Sources/StrideNativeCore/CoreHost.swift'), 'utf8');
+    assert.match(swift, /guard method != "iosAIProviderDeviceState"/);
+    assert.match(swift, /\n    func readAIProviderDeviceState\(\) async throws -> NativeAIProviderDeviceState/);
+    assert.doesNotMatch(swift, /public func readAIProviderDeviceState/);
+    const secrets = readFileSync(resolve(app, '../ios-native/Sources/StrideNativeCore/NativeSecretJobs.swift'), 'utf8');
+    const query = secrets.slice(secrets.indexOf('    private func inspectAIProviderItem(_ job:'), secrets.indexOf('    private func write('));
+    assert.match(query, /kSecReturnAttributes as String\] = true/);
+    assert.match(query, /kSecMatchLimit as String\] = kSecMatchLimitOne/);
+    assert.match(secrets, /kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail/);
+    assert.doesNotMatch(query, /kSecReturnData|kSecReturnRef|kSecReturnPersistentRef|kSecValueData|SecItemAdd|SecItemUpdate|SecItemDelete/);
+    assert.match(query, /if result == errSecItemNotFound \{ continue \}/);
+    assert.match(query, /result == errSecSuccess \? "present" : "unavailable"/);
+    assert.match(query, /worker\.sync \{\}/);
+    assert.match(secrets, /let operation = input\["op"\] as\? String, \["get", "set", "delete"\]\.contains\(operation\)/);
+    const kv = readFileSync(resolve(app, '../ios-native/Sources/StrideNativeCore/NativeDeviceKV.swift'), 'utf8');
+    const selected = kv.slice(kv.indexOf('    func readAIProviderDeviceMetadata('), kv.indexOf('    func readSearchConsent('));
+    assert.match(selected, /pending == nil/); assert.match(selected, /try checkedRead\(\)/);
+    assert.match(selected, /current\.values\.keys\.contains/);
+    assert.match(selected, /CFGetTypeID\(value\) == CFBooleanGetTypeID\(\) && value\.boolValue/);
+    assert.match(selected, /Self\.strictAIConsentJSON\(raw\)/);
+    assert.doesNotMatch(selected, /mutate\(|multiGet\(|get\(|current\.values\[Data\("stride-ai-key/);
+    console.log('Task592: actual private metadata route, exact DTO/input/mappings, saved identity/refusal and value-free checkpoint gates passed; Apple execution pending');
+}
+
+
+{
+    const state = makeState(0, [], 'ios');
+    const request = { requestId: '0bfaf47b-9fa9-4c53-af66-3c9a8a582278', taskIds: ['t'],
+        taskRevisions: { t: 'rt' }, projectIds: ['p'], projectRevisions: { p: 'rp' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 2 } } };
+    state.trashSelectionResult = { ok: true, value: { taskIds: ['t'], taskRevisions: { t: 'rt' }, projectIds: ['p'], projectRevisions: { p: 'rp' } } };
+    state.trashRestorePreparation = { ok: true, value: { kind: 'prepared', prepared: envelope.prepared } };
+    state.trashRestoreValidation = { ok: true, value: { count: 2 } };
+    state.trashRestoreResult = { ok: true, value: { count: 2 } };
+    state.trashRestoreOutcome = { ok: true, value: null };
+    state.persistenceFailure = { kind: 'save_failed' };
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestorePrepare(JSON.stringify(request)))).ok, false);
+    assert.equal(state.menuInputs.length, 0, 'preparation waits for the existing exact saved-state gate');
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestoreValidate(JSON.stringify(envelope)))).ok, true, 'cold pure validation is available before activation');
+    state.menuInputs.length = 0; state.persistenceFailure = null;
+    assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+    assert.deepEqual((await poll(state, state.StrideHost.trashSelection('{"revision":"r"}'))).value, state.trashSelectionResult.value);
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestorePrepare(JSON.stringify(request)))).value.kind, 'prepared');
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestoreValidate(JSON.stringify(envelope)))).value.count, 2);
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestoreCommit(JSON.stringify(envelope)))).value.count, 2);
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestoreOutcome(JSON.stringify(envelope)))).value, null);
+    assert.deepEqual(state.menuInputs.map(JSON.parse), [['trashSelection', { revision: 'r' }],
+        ['trashRestorePrepare', request], ['trashRestoreValidate', envelope], ['trashRestoreCommit', envelope], ['trashRestoreOutcome', envelope]]);
+    state.trashRestoreOutcome = { ok: true, value: { count: 2 } };
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestoreOutcome(JSON.stringify(envelope)))).value.count, 2);
+    state.trashRestoreResult = { ok: false, error: { code: 'SAVE_FAILED', message: 'owned raw save' } };
+    assert.match((await poll(state, state.StrideHost.trashItemsRestoreCommit(JSON.stringify(envelope)))).error, /SAVE_FAILED/);
+    state.trashSelectionResult = { ok: false, error: { code: 'STALE_REVISION', message: 'refresh Trash' } };
+    assert.match((await poll(state, state.StrideHost.trashSelection('{"revision":"old"}'))).error, /STALE_REVISION/);
+    const before = state.menuInputs.length;
+    assert.equal((await poll(state, state.StrideHost.trashItemsRestorePrepare(JSON.stringify({ text: 'x'.repeat(2_000_001) })))).ok, false);
+    assert.equal(state.menuInputs.length, before, 'existing completion transport length refusal never reaches core');
+}
+
+
+{
+    const state = makeState(0, [], 'ios');
+    const request = { requestId: '0bfaf47b-9fa9-4c53-af66-3c9a8a582278', taskIds: ['t'],
+        taskRevisions: { t: 'rt' }, projectIds: ['p'], projectRevisions: { p: 'rp' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 2 } } };
+    state.trashSelectionResult = { ok: true, value: { taskIds: ['t'], taskRevisions: { t: 'rt' }, projectIds: ['p'], projectRevisions: { p: 'rp' } } };
+    state.trashPurgePreparation = { ok: true, value: { kind: 'prepared', prepared: envelope.prepared } };
+    state.trashPurgeValidation = { ok: true, value: { count: 2 } };
+    state.trashPurgeResult = { ok: true, value: { count: 2 } };
+    state.trashPurgeOutcome = { ok: true, value: null };
+    state.persistenceFailure = { kind: 'save_failed' };
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgePrepare(JSON.stringify(request)))).ok, false);
+    assert.equal(state.menuInputs.length, 0, 'preparation waits for the existing exact saved-state gate');
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgeValidate(JSON.stringify(envelope)))).ok, true, 'cold pure validation is available before activation');
+    state.trashPurgeValidation = { ok: false, error: { code: 'INVALID_INPUT', message: 'closed purge plan' } };
+    assert.match((await poll(state, state.StrideHost.trashItemsPurgeValidate(JSON.stringify(envelope)))).error, /INVALID_INPUT/);
+    state.trashPurgeValidation = { ok: true, value: { count: 2 } };
+    state.menuInputs.length = 0; state.persistenceFailure = null;
+    assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+    assert.deepEqual((await poll(state, state.StrideHost.trashSelection('{"revision":"r"}'))).value, state.trashSelectionResult.value);
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgePrepare(JSON.stringify(request)))).value.kind, 'prepared');
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgeValidate(JSON.stringify(envelope)))).value.count, 2);
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgeCommit(JSON.stringify(envelope)))).value.count, 2);
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgeOutcome(JSON.stringify(envelope)))).value, null);
+    assert.deepEqual(state.menuInputs.map(JSON.parse), [['trashSelection', { revision: 'r' }],
+        ['trashPurgePrepare', request], ['trashPurgeValidate', envelope], ['trashPurgeCommit', envelope], ['trashPurgeOutcome', envelope]]);
+    state.trashPurgeOutcome = { ok: true, value: { count: 2 } };
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgeOutcome(JSON.stringify(envelope)))).value.count, 2);
+    state.trashPurgeResult = { ok: false, error: { code: 'SAVE_FAILED', message: 'owned raw save' } };
+    assert.match((await poll(state, state.StrideHost.trashItemsPurgeCommit(JSON.stringify(envelope)))).error, /SAVE_FAILED/);
+    state.trashSelectionResult = { ok: false, error: { code: 'STALE_REVISION', message: 'refresh Trash' } };
+    assert.match((await poll(state, state.StrideHost.trashSelection('{"revision":"old"}'))).error, /STALE_REVISION/);
+    const before = state.menuInputs.length;
+    assert.equal((await poll(state, state.StrideHost.trashItemsPurgePrepare(JSON.stringify({ text: 'x'.repeat(2_000_001) })))).ok, false);
+    assert.equal(state.menuInputs.length, before, 'existing completion transport length refusal never reaches core');
+}
+
+
+{
+    const state = makeState(0, [], 'ios');
+    state.gtdPomodoroResult = { ok: false, error: { code: 'NOT_READY', message: 'core is not ready' } };
+    assert.match((await poll(state, state.StrideHost.gtdPomodoroOptions('{}'))).error, /^NOT_READY:/);
+    state.menuInputs.length = 0;
+    assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+    state.gtdPomodoroResult = { ok: true, value: { pomodoro: { title: 'Pomodoro' }, expected: {} } };
+    assert.deepEqual((await poll(state, state.StrideHost.gtdPomodoroOptions('{}'))).value, state.gtdPomodoroResult.value);
+    assert.deepEqual(state.menuInputs.map(JSON.parse), [['gtdPomodoroOptions', {}]]);
+    state.persistenceFailure = { kind: 'save_failed' };
+    assert.equal((await poll(state, state.StrideHost.gtdPomodoroOptions('{}'))).ok, false);
+    assert.equal(state.menuInputs.length, 1);
+    state.persistenceFailure = null;
+    state.gtdPomodoroResult = { ok: false, error: { code: 'STORAGE_ERROR', message: 'settings read failed' } };
+    assert.match((await poll(state, state.StrideHost.gtdPomodoroOptions('{}'))).error, /STORAGE_ERROR: settings read failed/);
+    const count = state.menuInputs.length;
+    assert.equal((await poll(state, state.StrideHost.gtdPomodoroOptions('{'))).ok, false);
+    assert.equal(state.menuInputs.length, count);
+}
+
+
+{
+    const source = { version: 1, requestId: '11111111-1111-4111-8111-111111111111',
+        list: { id: 'selected-list', sourceId: 'selected-source' },
+        reminder: { id: '22222222-2222-4222-8222-222222222222', title: 'Literal @home /due:today', notes: 'Keep notes', completed: false } };
+    const registry = JSON.stringify({ selectedListId: source.list.id, selectedListTitle: 'Selected',
+        importedReminderIds: ['older'], deleteImportedReminders: false, autoImportOnOpen: true });
+    const ready575 = async () => {
+        const state = makeState(0, [], 'ios');
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.fakeData.settings.deviceId = '33333333-3333-4333-8333-333333333333';
+        state.settings = state.fakeData.settings;
+        return state;
+    };
+    const state = await ready575();
+    const prepared = await poll(state, state.StrideHost.appleReminderItemPrepare(JSON.stringify(source), registry));
+    assert.equal(prepared.ok, true, JSON.stringify(prepared));
+    const plan = JSON.parse(prepared.value.planJSON);
+    assert.equal(plan.prepared.task.title, source.reminder.title);
+    assert.equal(plan.prepared.task.status, 'inbox'); assert.equal(plan.prepared.task.dueDate, undefined);
+    assert.deepEqual(plan.prepared.task.contexts, []);
+    assert.equal(plan.request.generatedTaskId, null);
+    assert.equal(plan.prepared.target.row, null);
+    const cold = makeState(0, [], 'ios');
+    assert.deepEqual((await poll(cold, cold.StrideHost.appleReminderItemValidate(prepared.value.planJSON))).value, plan.prepared.result);
+    assert.equal(cold.events.length, 0, 'preboot validation has no SQL/KV/provider access');
+    const rebased = await poll(cold, cold.StrideHost.appleReminderRegistryPlan(prepared.value.planJSON, registry));
+    assert.deepEqual(JSON.parse(rebased.value.nextRaw), { ...JSON.parse(registry), importedReminderIds: ['older', source.reminder.id] });
+    assert.equal(cold.events.length, 0);
+    const before = state.events.length;
+    for (const raw of ['{', '[]', JSON.stringify({ importedReminderIds: [1] }), JSON.stringify({ deleteImportedReminders: 'true' })])
+        assert.equal((await poll(state, state.StrideHost.appleReminderItemPrepare(JSON.stringify(source), raw))).ok, false);
+    assert.deepEqual((await poll(state, state.StrideHost.appleReminderItemPrepare(JSON.stringify(source), JSON.stringify({ ...JSON.parse(registry), importedReminderIds: [source.reminder.id] })))).value, { kind: 'noop', reason: 'duplicate' });
+    assert.equal(state.events.length, before, 'malformed and duplicate sources perform no saved-data reads');
+    const deletion = await ready575();
+    const deletionRaw = JSON.stringify({ ...JSON.parse(registry), deleteImportedReminders: true });
+    assert.equal((await poll(deletion, deletion.StrideHost.appleReminderItemPrepare(JSON.stringify(source), deletionRaw))).ok, true);
+    const enabled = await poll(state, state.StrideHost.appleReminderSettingPrepare(JSON.stringify({ type: 'deleteImportedReminders', value: true }), registry));
+    assert.equal(enabled.ok, true);
+    assert.deepEqual(JSON.parse(enabled.value.nextRaw), JSON.parse(deletionRaw), 'enabling deletion preserves the import registry');
+    const fresh = await ready575();
+    const claim = await poll(fresh, fresh.StrideHost.appleReminderItemPrepare(JSON.stringify(source), registry));
+    assert.equal(claim.ok, true);
+    assert.equal((await poll(fresh, fresh.StrideHost.appleReminderItemAdmission(claim.value.planJSON))).value, true);
+    fresh.persistenceStatus = { generation: 1 };
+    assert.equal((await poll(fresh, fresh.StrideHost.appleReminderItemAdmission(claim.value.planJSON))).ok, false);
+    assert.equal((await poll(fresh, fresh.StrideHost.appleReminderItemCommit(claim.value.planJSON, true))).ok, false);
+}
+
+
+{
+    const request = JSON.stringify({ action: 'initialize', requestId: '11111111-1111-4111-8111-111111111111',
+        observedAtMs: 1791590400000, localDayKey: '2026-10-10', durations: { focusMinutes: 25, breakMinutes: 5 } });
+    const ready520 = async (platform = 'ios', taskCount = 0) => {
+        const state = makeState(taskCount, [], platform);
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.settings = state.fakeData.settings;
+        return state;
+    };
+    const state = await ready520();
+    assert.deepEqual((await poll(state, state.StrideHost.pomodoroSessionRead())).value, { raw: null, state: null });
+    const prepared = await poll(state, state.StrideHost.pomodoroTransitionPrepare(request));
+    assert.equal(prepared.ok, true); assert.equal(prepared.value.kind, 'prepared');
+    const planJSON = prepared.value.planJSON, plan = JSON.parse(planJSON);
+    assert.deepEqual(plan.request, JSON.parse(request)); assert.equal(plan.sessionBefore, null);
+    assert.equal(JSON.parse(plan.sessionAfter).session.timerState.isRunning, false);
+
+    for (const method of ['pomodoroAlarmRead', 'pomodoroPanelRead']) {
+        const args = method === 'pomodoroPanelRead' ? [JSON.stringify({ collapsed: false, lastEvent: null })] : [];
+        for (const during of [false, true]) {
+            const reader = await ready520();
+            reader.pomodoroSession = { raw: plan.sessionAfter, state: JSON.parse(plan.sessionAfter) };
+            reader.events.length = 0;
+            let release;
+            if (during) reader.pomodoroReadHold = new Promise(resolve => { release = resolve; });
+            else reader.rowBaselineNull = true;
+            const ticket = reader.StrideHost[method](...args);
+            if (during) {
+                await new Promise(resolve => setImmediate(resolve));
+                assert(reader.events.includes('pomodoro-read'));
+                reader.rowBaselineNull = true;
+                release();
+            }
+            const answer = await poll(reader, ticket);
+            assert.equal(answer.ok, false, method + ': stale external baseline must refuse');
+            assert.match(answer.error, /STALE_REVISION/);
+            assert.equal(reader.pomodoroInputs.length, 0);
+            assert.equal(reader.events.filter(event => event === 'baseline').length, during ? 2 : 1);
+        }
+        const current = await ready520();
+        current.pomodoroSession = { raw: plan.sessionAfter, state: JSON.parse(plan.sessionAfter) };
+        assert.equal((await poll(current, current.StrideHost[method](...args))).ok, true);
+    }
+
+    const scope586 = 'tech.test.native:' + 'a'.repeat(64);
+    const prepare586 = (owner, granted = true) => poll(owner,
+        owner.StrideHost.iosPomodoroAlarmPrepare('alarm586', granted, null, scope586, '[]', '[]'));
+    const alarm586 = await ready520();
+    alarm586.pomodoroSession = { raw: plan.sessionAfter, state: JSON.parse(plan.sessionAfter) };
+    assert.equal((await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).value, true);
+    assert.equal((await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmBegin('second'))).ok, false);
+    const probe586 = await prepare586(alarm586);
+    assert.equal(probe586.ok, true); assert.equal(probe586.value.schedule, null);
+    assert.deepEqual((await prepare586(alarm586)).value, probe586.value, 'repeated preparation has no effects');
+    assert.equal(alarm586.pomodoroInputs.length, 0);
+    assert.equal((await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmCurrent('wrong'))).ok, false);
+    await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmEnd('wrong'));
+    assert.equal((await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmCurrent('alarm586'))).value, true);
+    await poll(alarm586, alarm586.StrideHost.iosPomodoroAlarmEnd('alarm586'));
+    assert.equal((await prepare586(alarm586)).ok, false);
+    for (const denial of [false, true]) {
+        const cancel586 = await ready520();
+        if (!denial) cancel586.settings = { gtd: { pomodoro: { completionAlert: false } } };
+        cancel586.pomodoroReadError = true;
+        assert.equal((await poll(cancel586, cancel586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).value, true);
+        cancel586.events.length = 0;
+        assert.equal((await prepare586(cancel586, !denial)).ok, true, 'off/denied bypass corrupt timer decode');
+        assert(!cancel586.events.includes('pomodoro-read'));
+        cancel586.rowBaselineNull = true;
+        assert.equal((await prepare586(cancel586, !denial)).ok, false, 'off/denied still require accepted saved settings');
+    }
+    for (const mutation of ['generation', 'settings', 'baseline', 'queued', 'sandbox']) {
+        const stale586 = await ready520();
+        assert.equal((await poll(stale586, stale586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).value, true);
+        if (mutation === 'generation') stale586.persistenceStatus = { generation: 2 };
+        if (mutation === 'settings') stale586.settings = { ...stale586.settings };
+        if (mutation === 'baseline') stale586.rowBaselineNull = true;
+        if (mutation === 'queued') stale586.persistenceStatus = { queued: true };
+        if (mutation === 'sandbox') stale586.sandbox = true;
+        assert.equal((await prepare586(stale586)).ok, false, mutation + ' invalidates private alarm turn');
+    }
+    const held586 = await ready520();
+    held586.pomodoroSession = { raw: plan.sessionAfter, state: JSON.parse(plan.sessionAfter) };
+    assert.equal((await poll(held586, held586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).value, true);
+    let release586; held586.pomodoroReadHold = new Promise(resolve => { release586 = resolve; });
+    const heldTicket586 = held586.StrideHost.iosPomodoroAlarmPrepare('alarm586', true, null, scope586, '[]', '[]');
+    await new Promise(resolve => setImmediate(resolve));
+    assert(held586.events.includes('pomodoro-read'));
+    held586.rowBaselineNull = true; release586();
+    assert.match((await poll(held586, heldTicket586)).error, /STALE_REVISION/);
+    const dispatch586 = await ready520(), fire586 = Date.now() + 60_000;
+    const running586 = JSON.parse(plan.sessionAfter);
+    running586.session.timerState.isRunning = true;
+    running586.session.phaseEndsAt = new Date(fire586).toISOString();
+    dispatch586.pomodoroSession = { raw: JSON.stringify(running586), state: running586 };
+    assert.equal((await poll(dispatch586, dispatch586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).value, true);
+    const future586 = await prepare586(dispatch586);
+    assert.equal(future586.value.schedule.immediate, false);
+    vm.runInNewContext(`globalThis.Date = class extends Date { static now() { return ${fire586}; } };`, dispatch586);
+    const immediate586 = await poll(dispatch586, dispatch586.StrideHost.iosPomodoroAlarmDispatchPrepare(
+        'alarm586', JSON.stringify(future586.value.schedule), future586.value.writeAhead, scope586));
+    assert.equal(immediate586.ok, true);
+    assert.equal(immediate586.value.schedule.immediate, true, 'dispatch refresh happens after durable-publication delay');
+    assert.equal(JSON.parse(immediate586.value.writeAhead).libraries[0].alarm.immediate, true);
+    assert.equal(JSON.parse(immediate586.value.writeAhead).libraries[0].alarm.status, 'attempted');
+    assert.equal((await poll(dispatch586, dispatch586.StrideHost.iosPomodoroAlarmDispatchPrepare(
+        'alarm586', JSON.stringify(future586.value.schedule), immediate586.value.published, scope586))).ok, false,
+        'confirmed receipts never authorize a second dispatch');
+    const android586 = await ready520('android');
+    assert.equal((await poll(android586, android586.StrideHost.iosPomodoroAlarmBegin('alarm586'))).ok, false);
+    const cold = makeState(0, [], 'ios');
+    assert.equal((await poll(cold, cold.StrideHost.pomodoroTransitionValidate(planJSON))).ok, true);
+    assert.equal(cold.events.length, 0, 'pure validation does not activate/read/write');
+    assert.equal((await poll(cold, cold.StrideHost.pomodoroSessionRead())).ok, false);
+    assert.equal((await poll(cold, cold.StrideHost.pomodoroTransitionPrepare(request))).ok, false);
+    assert.equal((await poll(state, state.StrideHost.pomodoroTransitionCommit(planJSON, false))).value.projectionReloaded, true);
+    assert.deepEqual(JSON.parse(state.pomodoroInputs[0]), [plan, { replayOnly: false }]);
+    assert.deepEqual((await poll(state, state.StrideHost.pomodoroTransitionOutcome(planJSON))).value, plan.result);
+    assert.equal((await poll(state, state.StrideHost.pomodoroTransitionCommit(planJSON, true))).value.replayed, true);
+    const reconcile = JSON.stringify({ action: 'reconcile', requestId: '22222222-2222-4222-8222-222222222222',
+        observedAtMs: 1791590400000, localDayKey: '2026-10-10', autoStart: { autoStartFocus: false, autoStartBreaks: false } });
+    const before = state.pomodoroInputs.length;
+    assert.deepEqual((await poll(state, state.StrideHost.pomodoroTransitionPrepare(reconcile))).value, { kind: 'noop' });
+    assert.equal(state.pomodoroInputs.length, before, 'countdown/paused observation commits nothing');
+    state.pomodoroReadError = true;
+    assert.equal((await poll(state, state.StrideHost.pomodoroTransitionPrepare(reconcile))).ok, false, 'read failure never means native absence');
+
+    const android = await ready520('android');
+    const androidRead = await poll(android, android.StrideHost.pomodoroSessionRead());
+    assert.equal(androidRead.ok, true, 'native Android reads the durable Pomodoro session');
+    assert.equal(androidRead.value.raw, null);
+    const androidScope = 'com.ishaanpilar.stride.nativeclient:' + 'a'.repeat(64);
+    const androidPlan = await poll(android, android.StrideHost.pomodoroAlarmPlan(true, null, androidScope, '[]', '[]'));
+    assert.equal(androidPlan.ok, true, 'native Android plans its Pomodoro alarm');
+    assert.equal(androidPlan.value.outcome, 'uninitialized');
+    assert.equal((await poll(android, android.StrideHost.pomodoroLegacyAlert(null, Number.NaN))).ok, false,
+        'the RN alert owed at the upgrade needs a real upgrade time');
+    const raw = await ready520('ios', 'auto');
+    const task = { id: 'task', title: 'Private', status: 'next', contexts: [], tags: [],
+        createdAt: '2026-10-10T00:00:00.000Z', updatedAt: '2026-10-10T00:00:00.000Z', rev: 1,
+        revBy: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', timeSpentMinutes: 4 };
+    raw.fakeData = { ...raw.fakeData, tasks: [task], settings: { deviceId: task.revBy } };
+    raw.lastLoaded = raw.fakeData; raw.settings = raw.fakeData.settings;
+    const running = JSON.parse(plan.sessionAfter);
+    running.session.selectedTaskId = task.id; running.session.timerState.isRunning = true;
+    running.session.phaseEndsAt = '2026-10-10T00:00:00.000Z';
+    raw.pomodoroSession = { raw: JSON.stringify(running), state: running };
+    raw.pomodoroRawCells = { contexts: ' [ ] ', tags: null, timeSpentMinutes: 4, isFocusedToday: 0 };
+    const rawPrepared = await poll(raw, raw.StrideHost.pomodoroTransitionPrepare(reconcile));
+    assert.equal(rawPrepared.ok, true, JSON.stringify(rawPrepared));
+    const rawPlan = JSON.parse(rawPrepared.value.planJSON);
+    assert.deepEqual(rawPlan.target.row, [...raw.pomodoroExpectedRaw], 'literal SQL JSON/null/numeric cells reach the actual helper');
+    assert.equal((await poll(raw, raw.StrideHost.pomodoroTransitionCommit(rawPrepared.value.planJSON, false))).ok, true);
+    assert.deepEqual(JSON.parse(raw.pomodoroInputs[0])[0].target.row, rawPlan.target.row, 'Commit preserves literal BEFORE cells');
+    const owed = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const retained = Array.from({ length: 128 }, (_, index) => index.toString(16).padStart(8, '0') + '-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    assert.equal((await poll(raw, raw.StrideHost.iosPruneReceipts(JSON.stringify(retained), owed))).ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(raw.pruneInputs.at(-1))), { retainedRequestIds: [...retained, owed] });
+    assert.equal((await poll(raw, raw.StrideHost.iosPruneReceipts('null', owed))).ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(raw.pruneInputs.at(-1))), {
+        retainedCommands: ['reminderComplete', 'reminderSnooze'], retainedRequestIds: [owed] });
+    const pruneCount = raw.pruneInputs.length;
+    assert.equal((await poll(raw, raw.StrideHost.iosPruneReceipts('null', 'NOT-UUID'))).ok, false);
+    assert.equal(raw.pruneInputs.length, pruneCount, 'invalid owner never reaches pruning');
+    for (const mutation of ['generation', 'tasks', 'settings', 'edit', 'adapter', 'queued']) {
+        const stale = await ready520(), preparation = await poll(stale, stale.StrideHost.pomodoroTransitionPrepare(request));
+        assert.equal(preparation.ok, true);
+        if (mutation === 'generation') stale.persistenceStatus = { generation: 1 };
+        else if (mutation === 'tasks') stale.lastLoaded = { ...stale.lastLoaded, tasks: [] };
+        else if (mutation === 'settings') stale.settings = {};
+        else if (mutation === 'edit') stale.storeEditLocks = 1;
+        else if (mutation === 'adapter') stale.adapter = {};
+        else stale.persistenceStatus = { generation: 0, queued: true };
+        assert.equal((await poll(stale, stale.StrideHost.pomodoroTransitionCommit(preparation.value.planJSON, false))).ok, false, mutation);
+        assert.equal(stale.pomodoroInputs.length, 0, 'stale first preparation never enters storage');
+    }
+    for (const code of ['staleBaseline', 'notReady']) {
+        const refused = await ready520(); refused.pomodoroRefusal = code;
+        const prep = await poll(refused, refused.StrideHost.pomodoroTransitionPrepare(request));
+        assert.match((await poll(refused, refused.StrideHost.pomodoroTransitionCommit(prep.value.planJSON, false))).error,
+            code === 'staleBaseline' ? /^STALE_REVISION:/ : /^NOT_READY:/);
+    }
+    const uncertain = await ready520(); uncertain.pomodoroCommitError = 'NOT_READY: provider text';
+    const prep = await poll(uncertain, uncertain.StrideHost.pomodoroTransitionPrepare(request));
+    assert.equal((await poll(uncertain, uncertain.StrideHost.pomodoroTransitionCommit(prep.value.planJSON, false))).error,
+        'Pomodoro transition could not be proven', 'arbitrary provider text is never a refusal witness');
+
+
+    const controls = ['toggle', 'reset', 'switchPhase', 'setDurations', 'selectTask'];
+    const at = 1791590400000;
+    const options = { autoStartFocus: false, autoStartBreaks: false };
+    const control = (action, fields = {}) => ({ action, requestId: '33333333-3333-4333-8333-333333333333',
+        observedAtMs: at, localDayKey: '2026-10-10', autoStart: options, ...fields });
+    for (const action of controls) {
+        const active = await ready520();
+        await poll(active, active.StrideHost.pomodoroTransitionCommit(planJSON, false));
+        const fields = action === 'setDurations' ? { durations: { focusMinutes: 50, breakMinutes: 10 } }
+            : action === 'selectTask' ? { taskId: null } : {};
+        const preparedControl = await poll(active, active.StrideHost.pomodoroTransitionPrepare(JSON.stringify(control(action, fields))));
+        assert.equal(preparedControl.ok, true, action); assert.equal(preparedControl.value.kind, 'prepared');
+        const nextPlan = JSON.parse(preparedControl.value.planJSON), nextState = JSON.parse(nextPlan.sessionAfter);
+        assert.deepEqual(nextPlan.request, control(action, fields));
+        assert.equal(nextState.generation, JSON.parse(plan.sessionAfter).generation + 1, action);
+        assert.equal(nextState.session.updatedAtMs, at + 1, 'same-time explicit intent has a monotonic stamp');
+        assert.equal(Object.hasOwn(nextState.session, 'lastEvent'), false);
+        const validator = makeState(0, [], 'ios');
+        assert.equal((await poll(validator, validator.StrideHost.pomodoroTransitionValidate(preparedControl.value.planJSON))).ok, true);
+        assert.equal(validator.events.length, 0, 'control pure validation precedes any activation');
+        const forged = { ...nextPlan, result: { ...nextPlan.result, generation: nextPlan.result.generation + 1 } };
+        assert.equal((await poll(validator, validator.StrideHost.pomodoroTransitionValidate(JSON.stringify(forged)))).ok, false);
+        assert.equal(validator.events.length, 0, 'forged result cannot open storage');
+        active.pomodoroProjection = false;
+        const saved = await poll(active, active.StrideHost.pomodoroTransitionCommit(preparedControl.value.planJSON, false));
+        assert.equal(saved.value.projectionReloaded, false);
+        assert.deepEqual(JSON.parse(active.pomodoroInputs.at(-1)), [nextPlan, { replayOnly: false }]);
+        assert.deepEqual((await poll(active, active.StrideHost.pomodoroTransitionOutcome(preparedControl.value.planJSON))).value, nextPlan.result);
+        assert.equal((await poll(active, active.StrideHost.pomodoroTransitionCommit(preparedControl.value.planJSON, true))).value.replayed, true);
+        assert.deepEqual(JSON.parse(active.pomodoroInputs.at(-1)), [nextPlan, { replayOnly: true }]);
+        const count = active.pomodoroInputs.length;
+        assert.equal((await poll(active, active.StrideHost.pomodoroTransitionCommit(preparedControl.value.planJSON, 'true'))).ok, false);
+        assert.equal(active.pomodoroInputs.length, count, 'closed replay flag never reaches storage');
+    }
+    for (const autoStartFocus of [false, true]) for (const autoStartBreaks of [false, true]) {
+        const selected = await ready520('ios', 'auto');
+        const other = { ...task, id: 'other', timeSpentMinutes: 7 };
+        selected.fakeData = { ...selected.fakeData, tasks: [task, other], settings: { deviceId: task.revBy } };
+        selected.lastLoaded = selected.fakeData; selected.settings = selected.fakeData.settings;
+        selected.pomodoroRawCells = { contexts: ' [ ] ', tags: null, timeSpentMinutes: 4, isFocusedToday: 0 };
+        for (const taskId of ['other', null]) {
+            selected.pomodoroSession = { raw: JSON.stringify(running), state: running };
+            const input = control('selectTask', { taskId, autoStart: { autoStartFocus, autoStartBreaks } });
+            const answer = await poll(selected, selected.StrideHost.pomodoroTransitionPrepare(JSON.stringify(input)));
+            assert.equal(answer.ok, true, JSON.stringify(input));
+            const frozen = JSON.parse(answer.value.planJSON), after = JSON.parse(frozen.sessionAfter);
+            assert.equal(frozen.target.id, 'task', 'selection always credits the raw BEFORE selection');
+            assert.equal(frozen.target.row[0], 'task'); assert.equal(frozen.result.creditedMinutes, 25);
+            assert.equal(after.session.selectedTaskId ?? null, taskId);
+            assert.equal(after.session.timerState.phase, 'break');
+            assert.equal(after.session.timerState.isRunning, autoStartBreaks);
+            assert.equal(after.session.phaseEndsAt ?? null, autoStartBreaks ? '2026-10-10T00:05:00.000Z' : null);
+        }
+        selected.pomodoroSession = { raw: JSON.stringify(running), state: running };
+        const preset = await poll(selected, selected.StrideHost.pomodoroTransitionPrepare(JSON.stringify(control('setDurations', {
+            durations: { focusMinutes: 50, breakMinutes: 10 }, autoStart: { autoStartFocus, autoStartBreaks } }))));
+        assert.equal(preset.ok, true); const preparedPreset = JSON.parse(preset.value.planJSON);
+        assert.equal(preparedPreset.result.creditedMinutes, 25, 'preset credits the old duration');
+        assert.deepEqual(JSON.parse(preparedPreset.sessionAfter).session.durations, { focusMinutes: 50, breakMinutes: 10 });
+    }
+    const invalid = await ready520(); await poll(invalid, invalid.StrideHost.pomodoroTransitionCommit(planJSON, false));
+    const count = invalid.pomodoroInputs.length;
+    const requests = [control('unknown'), control('reset', { extra: true }), control('toggle', { autoStart: { autoStartFocus: 1, autoStartBreaks: false } }),
+        control('setDurations', { durations: { focusMinutes: true, breakMinutes: 5 } }), control('setDurations', { durations: { focusMinutes: 181, breakMinutes: 5 } }),
+        control('selectTask'), control('selectTask', { taskId: '' }), control('selectTask', { taskId: '__proto__' }),
+        control('selectTask', { taskId: ' task' }), control('selectTask', { taskId: '😀'.repeat(251) }),
+        control('selectTask', { taskId: null, localDayKey: '2026-02-31' })];
+    for (const value of requests) assert.equal((await poll(invalid, invalid.StrideHost.pomodoroTransitionPrepare(JSON.stringify(value)))).ok, false, JSON.stringify(value));
+
+
+    assert.equal(invalid.pomodoroInputs.length, count, 'invalid controls never reach the storage stand-in');
+    const maximum = await poll(invalid, invalid.StrideHost.pomodoroTransitionPrepare(JSON.stringify(control('selectTask', { taskId: '😀'.repeat(250) }))));
+    assert.equal(maximum.ok, true, '500 UTF-16 units remain byte-exact');
+    assert.equal(JSON.parse(maximum.value.planJSON).request.taskId, '😀'.repeat(250));
+
+
+    const adoption = (sessionRaw = null, collapsedRaw = null) => control('adoptLegacy', {
+        legacy: { version: 1, namespace: 'NativeUITests.fixture', sessionRaw, collapsedRaw },
+    });
+    const absent = await ready520();
+    const absence = await poll(absent, absent.StrideHost.pomodoroTransitionPrepare(JSON.stringify(adoption())));
+    assert.equal(absence.ok, true);
+    const absentPlan = JSON.parse(absence.value.planJSON);
+    assert.equal(absentPlan.sessionBefore, null); assert.equal(absentPlan.result.creditedMinutes, 0);
+    assert.equal(JSON.parse(absentPlan.sessionAfter).session.updatedAtMs, 0);
+    const pureLegacy = makeState(0, [], 'ios');
+    assert.equal((await poll(pureLegacy, pureLegacy.StrideHost.pomodoroTransitionValidate(absence.value.planJSON))).ok, true);
+    assert.equal(pureLegacy.events.length, 0, 'adoption validator does not read KV, boot or open SQL');
+    const forgedLegacy = { ...absentPlan, request: { ...absentPlan.request, legacy: { ...absentPlan.request.legacy, version: 2 } } };
+    assert.equal((await poll(pureLegacy, pureLegacy.StrideHost.pomodoroTransitionValidate(JSON.stringify(forgedLegacy)))).ok, false);
+    assert.equal(pureLegacy.events.length, 0);
+    assert.equal((await poll(absent, absent.StrideHost.pomodoroTransitionCommit(absence.value.planJSON, false))).ok, true);
+    assert.equal((await poll(absent, absent.StrideHost.pomodoroTransitionPrepare(JSON.stringify(adoption())))).ok, false,
+        'existing native session cannot fall back to legacy');
+    assert.equal((await poll(absent, absent.StrideHost.pomodoroTransitionCommit(absence.value.planJSON, true))).value.replayed, true);
+    assert.deepEqual(JSON.parse(absent.pomodoroInputs.at(-1)), [absentPlan, { replayOnly: true }]);
+
+    assert.equal((await poll(android, android.StrideHost.pomodoroTransitionPrepare(JSON.stringify(adoption())))).ok, true);
+    for (const autoStartFocus of [false, true]) for (const autoStartBreaks of [false, true]) {
+        const active = await ready520('ios', 'auto');
+        active.fakeData = { ...active.fakeData, tasks: [task], settings: { deviceId: task.revBy } };
+        active.lastLoaded = active.fakeData; active.settings = active.fakeData.settings;
+        active.pomodoroRawCells = { contexts: ' [ ] ', tags: null, timeSpentMinutes: 4, isFocusedToday: 0 };
+        const legacy = { durations: { focusMinutes: 50, breakMinutes: 10 }, selectedTaskId: 'task',
+            timerState: { phase: 'focus', remainingSeconds: 1, isRunning: true, completedFocusSessions: 3 },
+            sessionHistory: { totalCompletedFocusSessions: 3, completedFocusSessionsByTaskId: { task: 3 } },
+            phaseEndsAt: '2026-10-10T00:00:00.000Z', updatedAtMs: at - 1000 };
+        const rawSource = ' '.repeat(9000) + JSON.stringify(legacy);
+        const input = { ...adoption(rawSource, 'true'), autoStart: { autoStartFocus, autoStartBreaks } };
+        const response = await poll(active, active.StrideHost.pomodoroTransitionPrepare(JSON.stringify(input)));
+        assert.equal(response.ok, true, JSON.stringify(response));
+        const frozen = JSON.parse(response.value.planJSON), after = JSON.parse(frozen.sessionAfter);
+        assert.deepEqual(frozen.request, input, 'source beyond ordinary intent bound is retained exactly');
+        assert.deepEqual(frozen.target.row, [...active.pomodoroExpectedRaw], 'legacy selection uses literal raw BEFORE cells');
+        assert.equal(frozen.result.creditedMinutes, 50); assert.equal(after.session.updatedAtMs, at - 1000);
+        assert.equal(after.session.timerState.phase, 'break'); assert.equal(after.session.timerState.isRunning, autoStartBreaks);
+        assert.equal((await poll(active, active.StrideHost.pomodoroTransitionCommit(response.value.planJSON, false))).ok, true);
+    }
+    for (const raw of ['', 'null', '{"unknown":1}', '{"updatedAtMs":1,"updatedAtMs":2}',
+        '{"timerState":{"isRunning":"true"}}']) {
+        const active = await ready520();
+        assert.equal((await poll(active, active.StrideHost.pomodoroTransitionPrepare(JSON.stringify(adoption(raw))))).ok, false);
+        assert.equal(active.pomodoroInputs.length, 0, 'malformed present source never reaches commit');
+    }
+    const oversizedLegacy = await ready520();
+    assert.equal((await poll(oversizedLegacy, oversizedLegacy.StrideHost.pomodoroTransitionPrepare(
+        JSON.stringify(adoption(null, '\\'.repeat(1_000_000)))))).ok, false, 'encoded private request budget remains bounded');
+}
+
+
+{
+    const input = JSON.stringify({ text: 'One\nTwo', options: {}, captureIds: [
+        '164f0a4c-6fb4-4385-b1db-3c55a651f161', 'f8ca0ea6-c084-48fb-8dcc-7bdcc1196d42'] });
+    const ready499 = async () => {
+        const state = makeState(0, [], 'ios');
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.settings = state.fakeData.settings; state.events.length = 0;
+        return state;
+    };
+    const prepare499 = async (state) => poll(state, state.StrideHost.captureLinesPrepare(input));
+    const local = await ready499(), prepared = await prepare499(local);
+    assert.equal(prepared.ok, true); assert.equal(prepared.value.kind, 'prepared');
+    assert.deepEqual(Array.from(local.events), ['flush', 'baseline', 'load']);
+    assert.deepEqual(JSON.parse(prepared.value.recoveryJSON).tasks, []);
+    assert.equal((await poll(local, local.StrideHost.captureLinesAdmission(prepared.value.planJSON))).ok, true);
+    assert.equal((await poll(local, local.StrideHost.captureLinesCommit(prepared.value.planJSON, true))).ok, true);
+    assert.equal(local.events.filter((event) => event === 'load').length, 1, 'first commit never resets the accepted adapter epoch with another full read');
+    assert.equal((await poll(local, local.StrideHost.captureLinesAdmission(prepared.value.planJSON))).ok, false, 'successful commit consumes warm admission');
+    const stale = await ready499(); stale.rowBaselineNull = true;
+    assert.match((await prepare499(stale)).error, /STALE_REVISION/);
+    assert.deepEqual(Array.from(stale.events), ['flush', 'baseline'], 'stale accepted epoch is refused before getData can adopt it');
+    for (const mutation of ['generation', 'tasks', 'projects', 'sections', 'areas', 'people', 'settings', 'adapter', 'unguarded', 'sandbox', 'transition', 'failed', 'inFlight', 'immediate', 'retrying', 'queued']) {
+        const state = await ready499(), plan = await prepare499(state); assert.equal(plan.ok, true);
+        if (mutation === 'generation') state.persistenceStatus = { generation: 1 };
+        else if (mutation === 'tasks') state.lastLoaded = { ...state.lastLoaded, tasks: [] };
+        else if (mutation === 'projects') state.ownerProjects = [];
+        else if (mutation === 'sections') state.ownerSections = [];
+        else if (mutation === 'areas') state.ownerAreas = [];
+        else if (mutation === 'people') state.ownerPeople = [];
+        else if (mutation === 'settings') state.settings = {};
+        else if (mutation === 'adapter') state.adapter = {};
+        else if (mutation === 'unguarded') state.linesUnguarded = true;
+        else if (mutation === 'sandbox') state.sandbox = true;
+        else if (mutation === 'transition') state.workspaceTransition = true;
+        else state.persistenceStatus = { generation: 0, [mutation]: 1 };
+        assert.match((await poll(state, state.StrideHost.captureLinesAdmission(plan.value.planJSON))).error, /STALE_REVISION|NOT_READY/, mutation);
+        assert.match((await poll(state, state.StrideHost.captureLinesCommit(plan.value.planJSON, true))).error, /STALE_REVISION|NOT_READY/, mutation);
+        assert.equal(state.captureInputs.filter((entry) => JSON.parse(entry)[0] === 'linesCommit').length, 0);
+    }
+    const held = await ready499(); let release;
+    held.linesReadHold = new Promise((resolveHold) => { release = resolveHold; });
+    const ticket = held.StrideHost.captureLinesPrepare(input); await new Promise((tick) => setImmediate(tick));
+    held.ownerPeople = []; release();
+    assert.match((await poll(held, ticket)).error, /STALE_REVISION/);
+    const owed = await ready499(), owedPlan = await prepare499(owed);
+    const cold = makeState(0, [], 'ios');
+    assert.equal((await poll(cold, cold.StrideHost.captureLinesValidate(owedPlan.value.planJSON))).ok, true, 'pure cold validation requires no activation or live defaults');
+    assert.equal(cold.captureInputs.filter((entry) => JSON.parse(entry)[0] === 'linesCommit').length, 0);
+    owed.linesCommitFailure = true;
+    assert.match((await poll(owed, owed.StrideHost.captureLinesCommit(owedPlan.value.planJSON, true))).error, /SAVE_FAILED/);
+    owed.linesCommitFailure = false; owed.persistenceStatus = { generation: 4 }; owed.ownerPeople = [];
+    assert.equal((await poll(owed, owed.StrideHost.captureLinesCommit(owedPlan.value.planJSON))).ok, true, 'already-journaled replay does not reapply warm base proof');
+    const refused = await ready499(); refused.linesRefused = true;
+    const rejection = await prepare499(refused);
+    assert.equal(rejection.value.kind, 'refused'); assert.equal('planJSON' in rejection.value, false);
+    assert.equal(refused.captureInputs.filter((entry) => JSON.parse(entry)[0] === 'linesCommit').length, 0);
+    console.log('Task499: private saved-base admission, await identity, stale epoch ordering and owed replay facades (Node VM; no native proof)');
+}
+
+
+{
+    const AT = '2026-10-07T00:00:00.000Z', taskID = 'task362';
+    const selected = { id: 'baseline362', kind: 'file', title: 'Fixture.txt', uri: '', cloudKey: 'attachments/baseline362.txt',
+        localStatus: 'missing', createdAt: AT, updatedAt: AT };
+    const request = { version: 1, requestId: '00000000-0000-4000-8000-000000000362',
+        sessionID: '00000000-0000-4000-8000-000000000363', generation: 0, attachmentId: selected.id,
+        identity: '' };
+    const beforePayloadJSON = JSON.stringify({ version: 2, taskID, attachmentsOwned: true,
+        attachmentsBase: [selected], attachments: [selected], opaque: 'Retain 文' });
+
+    const identityBuild = await build({ stdin: { contents: `export { getAttachmentDownloadIdentity } from './mobile-attachment-availability';`,
+        resolveDir: resolve(app, '../../packages/core/src'), loader: 'ts' }, bundle: true, write: false, format: 'iife', globalName: 'identity362' });
+    const identityState = {}; vm.runInNewContext(identityBuild.outputFiles[0].text, identityState);
+    request.identity = identityState.identity362.getAttachmentDownloadIdentity(selected);
+    const base = { version: 1, taskID, beforePayloadJSON, requestJSON: JSON.stringify(request) };
+    const route = { ...base, webdavURL: 'https://synthetic.invalid/dav/data.json', managedDirectoryURI: 'file:///library/documents/attachments/' };
+    const configure = (state) => {
+        state.localAttachmentTest = true; state.localShaInstallCount = 0; state.selectedIoCalls = 0;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) {
+            state.__strideNative[name] = () => { state.selectedIoCalls++; throw new Error('Unexpected selected IO'); };
+        }
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => { state.selectedIoCalls++; throw new Error('Unexpected selected file IO'); };
+        state.__strideInstallerCall = async () => { throw new Error('No selected installer'); };
+        state.__strideSyncSecrets = { getSecret: async () => { state.selectedIoCalls++; throw new Error('No Off secret read'); } };
+    };
+    const state = makeState(0, [], 'ios', configure);
+    const preflight = () => poll(state, state.StrideHost.attachmentDraftAvailabilityPreflight(JSON.stringify(route)));
+    assert.match((await preflight()).error, /^NOT_READY:/);
+    assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+    assert.deepEqual((await preflight()).value, { version: 1, requestId: request.requestId, attachmentJSON: JSON.stringify(selected),
+        initialURL: 'https://synthetic.invalid/dav/attachments/baseline362.txt', targetURI: 'file:///library/documents/attachments/baseline362.txt' });
+    const rawConfigJSON = JSON.stringify({ backend: 'off', url: null, username: null, allowInsecureHttp: null, encryptionStateJSON: null });
+    const run = (input = { ...base, rawConfigJSON }, callback = () => { throw new Error('No Off source callback'); }) =>
+        poll(state, state.StrideHost.iosTaskDraftPrepareAvailability(JSON.stringify(input), callback));
+    const logBefore = state.logText, shaBefore = state.localShaInstallCount;
+    assert.deepEqual(await run(), { ok: true, value: { version: 1, requestId: request.requestId, status: 'unavailable' } });
+    assert.match((await run({ ...base, rawConfigJSON, extra: true })).error, /^INVALID_INPUT:/);
+    assert.deepEqual((await run()).value, { version: 1, requestId: request.requestId, status: 'unavailable' }, 'A refused invocation releases its private slot');
+    assert.match((await run(undefined, null)).error, /^NOT_READY:/);
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        state[field] = true; assert.match((await run()).error, /^NOT_READY:/); assert.match((await preflight()).error, /^NOT_READY:/); state[field] = false;
+    }
+    assert.equal(state.selectedIoCalls, 0); assert.equal(state.localShaInstallCount, shaBefore); assert.equal(state.logText, logBefore);
+    const resolved = { ...selected, uri: route.managedDirectoryURI + 'baseline362.txt', localStatus: 'available', fileHash: 'a'.repeat(64) };
+    const proof = await poll(state, state.StrideHost.attachmentDraftPrepareAvailability(JSON.stringify({ version: 1, taskID,
+        requestId: request.requestId, attachmentId: selected.id, identity: request.identity, beforePayloadJSON,
+        status: 'available', resolvedAttachmentJSON: JSON.stringify(resolved) })));
+    assert.equal(proof.ok, true); assert.equal(proof.value.kind, 'prepared-file-availability');
+    assert.deepEqual(JSON.parse(proof.value.afterPayloadJSON).attachments, [resolved]);
+    assert.equal(JSON.parse(proof.value.afterPayloadJSON).opaque, 'Retain 文');
+    const android = makeState(0, [], 'android');
+    assert.match((await poll(android, android.StrideHost.attachmentDraftAvailabilityPreflight(JSON.stringify(route)))).error, /^NOT_READY:/);
+    assert.match((await poll(android, android.StrideHost.iosTaskDraftPrepareAvailability(JSON.stringify({ ...base, rawConfigJSON }), () => ''))).error, /^NOT_READY:/);
+}
+
+
+{
+    const configureHTTP = (state) => {
+        state.httpCalls = 0;
+        state.__strideNative.netFetch = () => { state.httpCalls++; throw new Error('Unexpected startup network'); };
+        state.__strideNative.netAbort = () => {};
+        state.__strideNative.ioNext = () => '';
+        state.__strideNative.ioBody = () => '';
+    };
+    const local = makeState(0, [], 'ios', configureHTTP);
+    assert.deepEqual(Object.keys(local.contractBindings).filter((name) => local.contractBindings[name] !== undefined), ['reminderPlatform']);
+    assert.equal(typeof local.__strideNative.kvMultiGet, 'undefined');
+    local.StrideHost.nativeHTTPDelivered();
+    assert.equal(local.logText, null, 'No preboot transport receipt');
+    assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+    assert.equal(local.httpCalls, 0, 'Installing transport starts no request');
+    local.settings = { diagnostics: { loggingEnabled: false } };
+    local.StrideHost.nativeHTTPDelivered();
+    await poll(local, local.StrideHost.logShare());
+    const lines = local.logText.split('\n').filter((line) => line.includes('v1.3.5/ios-http-transport'));
+    assert.equal(lines.length, 1, 'Forced marker survives disabled logging');
+    assert.deepEqual(JSON.parse(lines[0]).context, {
+        releaseCheck: 'v1.3.5/ios-http-transport', operation: 'http-transport', outcome: 'delivered',
+    });
+    const before = local.logText;
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        local[field] = true; local.StrideHost.nativeHTTPDelivered(); local[field] = false;
+    }
+    await new Promise((tick) => setImmediate(tick));
+    assert.equal(local.logText, before, 'Unsettled workspace emits no receipt');
+    for (const platform of ['android', undefined]) {
+        const other = makeState(0, [], platform, configureHTTP);
+        assert.equal((await poll(other, other.StrideHost.boot())).ok, true);
+        const prior = other.logText;
+        other.StrideHost.nativeHTTPDelivered(); await new Promise((tick) => setImmediate(tick));
+        assert.equal(other.logText, prior, 'Invalid platform emits no transport marker');
+        assert.equal(other.httpCalls, 0);
+    }
+}
+
+
+for (const [bridge, receipt, operation] of [
+    ['secretCall', 'nativeSecretDelivered', 'secure-storage'],
+    ['cryptoCall', 'nativeCryptoDelivered', 'sync-crypto'],
+]) {
+    const configurePort = (state) => {
+        state.primitiveCalls = 0;
+        state.__strideNative[bridge] = () => { state.primitiveCalls++; throw new Error('Unexpected startup native primitive'); };
+        state.__strideNative.ioNext = () => '';
+        state.__strideNative.ioBody = () => '';
+    };
+    const local = makeState(0, [], 'ios', configurePort);
+    assert.deepEqual(Object.keys(local.contractBindings).filter((name) => local.contractBindings[name] !== undefined), ['reminderPlatform']);
+    assert.equal(typeof local.__strideNative.kvMultiGet, 'undefined');
+    local.StrideHost[receipt]();
+    assert.equal(local.logText, null, 'No preboot native primitive receipt');
+    assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+    assert.equal(local.primitiveCalls, 0, 'Installing the native bridge performs no startup operation');
+    local.settings = { diagnostics: { loggingEnabled: false } };
+    local.StrideHost[receipt]();
+    await poll(local, local.StrideHost.logShare());
+    const lines = local.logText.split('\n').filter((line) => line.includes(`v1.3.5/ios-${operation}`));
+    assert.equal(lines.length, 1, 'Forced native primitive marker survives disabled logging');
+    assert.deepEqual(JSON.parse(lines[0]).context, {
+        releaseCheck: `v1.3.5/ios-${operation}`, operation, outcome: 'delivered',
+    });
+    const before = local.logText;
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        local[field] = true; local.StrideHost[receipt](); local[field] = false;
+    }
+    await new Promise((tick) => setImmediate(tick));
+    assert.equal(local.logText, before, 'Unsettled workspace emits no native primitive receipt');
+    for (const platform of ['android', undefined]) {
+        const other = makeState(0, [], platform, configurePort);
+        assert.equal((await poll(other, other.StrideHost.boot())).ok, true);
+        const prior = other.logText;
+        other.StrideHost[receipt](); await new Promise((tick) => setImmediate(tick));
+        assert.equal(other.logText, prior, 'Invalid platform emits no native primitive marker');
+        assert.equal(other.primitiveCalls, 0);
+    }
+}
+
+
+{
+    const receipts = [
+        ['nativeDeviceStorageDelivered', 'ios-device-storage', 'device-storage'],
+        ['nativeLegacySecretRetirementDelivered', 'ios-legacy-secret-retirement', 'legacy-secret-retirement'],
+    ];
+    const names = ['kvGet', 'kvSet', 'kvRemove', 'kvMultiGet', 'kvMultiSet', 'kvMultiRemove'];
+    const configureKV = (state) => {
+        state.kvBridgeCalls = 0;
+        for (const name of names) state.__strideNative[name] = () => {
+            state.kvBridgeCalls++; throw new Error('Unexpected startup device storage');
+        };
+    };
+    const local = makeState(0, [], 'ios', configureKV);
+    assert.deepEqual(Object.keys(local.contractBindings).filter((name) => local.contractBindings[name] !== undefined), ['reminderPlatform'], 'KV does not enable iOS Sync or AI');
+    for (const name of names) assert.equal(typeof local.__strideNative[name], 'function');
+    for (const [method] of receipts) local.StrideHost[method]();
+    assert.equal(local.logText, null, 'No preboot device storage receipt');
+    assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+    assert.equal(local.kvBridgeCalls, 0, 'Explicit storage bridge performs no startup request');
+    local.settings = { diagnostics: { loggingEnabled: false } };
+    for (const [method] of receipts) local.StrideHost[method]();
+    await poll(local, local.StrideHost.logShare());
+    for (const [, slug, operation] of receipts) {
+        const lines = local.logText.split('\n').filter((line) => line.includes(`v1.3.5/${slug}`));
+        assert.equal(lines.length, 1, 'Forced fixed storage marker survives disabled logging');
+        assert.deepEqual(JSON.parse(lines[0]).context, {
+            releaseCheck: `v1.3.5/${slug}`, operation, outcome: 'delivered',
+        });
+    }
+    const before = local.logText;
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        local[field] = true; for (const [method] of receipts) local.StrideHost[method](); local[field] = false;
+    }
+    await new Promise((tick) => setImmediate(tick));
+    assert.equal(local.logText, before, 'Unsettled workspace emits no device storage receipt');
+    local.logFailure = 'synthetic diagnostic failure';
+    assert.doesNotThrow(() => local.StrideHost.nativeLegacySecretRetirementDelivered());
+    await new Promise((tick) => setImmediate(tick));
+    assert.equal(local.logText, before, 'Logging failure does not emit or throw a retirement receipt');
+    local.logFailure = null;
+    for (const platform of ['android', undefined]) {
+        const other = makeState(0, [], platform);
+        assert.equal((await poll(other, other.StrideHost.boot())).ok, true);
+        const prior = other.logText;
+        for (const [method] of receipts) other.StrideHost[method](); await new Promise((tick) => setImmediate(tick));
+        assert.equal(other.logText, prior, 'Invalid platform emits no device storage receipt');
+        assert.equal(typeof other.__strideNative.kvMultiGet, 'undefined');
+    }
+}
+
+
+{
+    const syncFixture = `
+export function createHostSyncCrypto() { return {}; }
+export function isNativeIosSelfHostedProvider(value) { return !value?.trim() || value.trim() === 'selfhosted'; }
+export function createNativeSync() {
+  globalThis.syncFactoryCalls++;
+  return { attachmentsHost: globalThis.remoteAttachmentHost, settingsHost: { encryption: {} },
+    async assertSelfHostedSyncAdmission() { globalThis.admissionChecks = (globalThis.admissionChecks ?? 0) + 1;
+      if (globalThis.incompleteTransition) throw new Error('Sync encryption transition is incomplete'); },
+    async performStoredAutomaticSync(reason) { globalThis.foregroundInputs ??= []; globalThis.foregroundInputs.push(['stored', reason]);
+      return globalThis.storedReply ?? { success: true, skipped: false }; } };
+}
+`;
+    const downloadBuilt = await build({
+        entryPoints: [resolve(app, 'bundle/host-entry.ts')], bundle: true, write: false, format: 'iife',
+        plugins: [{ name: 'project-download-entry', setup(plugin) {
+            plugin.onResolve({ filter: /^\.\/host-sync$/ }, () => ({ path: 'sync', namespace: 'download-test' }));
+            plugin.onLoad({ filter: /.*/, namespace: 'download-test' }, () => ({ contents: syncFixture, loader: 'js' }));
+            plugin.onResolve({ filter: /^@stride\/core$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-request-timeout$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-reasoning-effort$/ }, () => ({ path: 'core', namespace: 'test' }));
+        plugin.onResolve({ filter: /packages\/core\/src\/native-ai-gemini-thinking-budget$/ }, () => ({ path: 'core', namespace: 'test' }));
+            plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: fakeCoreWithSync, loader: 'js', resolveDir: app }));
+        } }],
+    });
+    const input = { projectId: 'project346', attachmentId: 'attachment346', revision: 'project-revision' };
+    const attachment = { id: input.attachmentId, kind: 'file', title: 'Synthetic346', uri: 'file:///library/documents/attachments/attachment346.pdf' };
+    const create = (platform = 'ios') => makeState(0, [], platform, (state) => {
+        state.localAttachmentTest = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null; state.__strideInstallerCall = async () => null;
+        state.syncFactoryCalls = 0; state.secretReads = 0; state.storedReads = 0; state.downloadHosts = [];
+        state.remoteAttachmentHost = { selected: 'remote-346' };
+        state.ownerProjects = [];
+        state.storedBackend = 'webdav';
+
+        if (platform === 'ios') state.__strideNative.kvMultiGet = () => { throw new Error('Unexpected multi-read'); };
+        state.__strideNative.kvGet = (key) => { state.storedReads++; return JSON.stringify([
+            key === '@stride_cloud_provider' ? state.storedProvider ?? null : state.storedBackend ?? null]); };
+        state.__strideSyncSecrets = { getSecret: () => { state.secretReads++; throw new Error('Unexpected secret read'); } };
+        state.attachmentReply = { ok: true, value: { status: 'available', message: null, update: null } };
+        state.settings = { diagnostics: { loggingEnabled: false } };
+    }, downloadBuilt.outputFiles[0].text);
+    const boot = async (state) => {
+        const answer = await poll(state, state.StrideHost.boot());
+        if (answer.ok) state.ownerProjects = [{ id: input.projectId, status: 'active', attachments: [{ ...attachment }] }];
+        return answer;
+    };
+    const command = (state, value = input) => poll(state,
+        state.StrideHost.iosForegroundSync('projectAttachmentDownload', JSON.stringify(value), () => ''));
+    const markerLines = (state) => (state.logText ?? '').split('\n').filter((line) => line.includes('v1.3.5/ios-project-file-download'));
+
+    const encrypted = create();
+    const unlock = { revision: 'saved-location', action: { type: 'open', flow: 'unlock' } };
+    const unlockCommand = (value) => poll(encrypted,
+        encrypted.StrideHost.iosForegroundSync('runSyncEncryptionAction', JSON.stringify(value), () => ''));
+    assert.equal((await boot(encrypted)).ok, true);
+    const invalidEncryptionInputs = [null, [], {}, { ...unlock, revision: '' }, { ...unlock, revision: 'r'.repeat(101) },
+        { ...unlock, requestId: '11111111-1111-1111-1111-111111111111' }, { ...unlock, extra: true },
+        { ...unlock, action: { type: 'open', flow: 'unknown' } },
+        ...['generate', 'reveal', 'recheck'].map((type) => ({ ...unlock, action: { type } })),
+        { ...unlock, action: { type: 'typed', field: 'unknown', value: 'synthetic' } },
+        ...['current', 'next', 'confirm'].map((field) => ({ ...unlock, action: { type: 'typed', field, value: 'x'.repeat(1001) } })),
+        { ...unlock, action: { type: 'typed', field: 'confirm', value: '🧠'.repeat(501) } },
+        ...['unlock', 'enable', 'change', 'disable', 'abandon'].map((flow) => ({ ...unlock, action: { type: 'submit', flow } })),
+        { ...unlock, action: { type: 'decline' }, requestId: 'invalid' },
+        { ...unlock, action: { type: 'recheck' }, requestId: 'invalid' },
+        { ...unlock, action: { type: 'open', flow: 'enable', extra: true } },
+        { ...unlock, action: { type: 'typed', field: 'next', value: 'synthetic', extra: true } }];
+    for (const value of invalidEncryptionInputs) {
+        assert.match((await unlockCommand(value)).error, /^INVALID_INPUT:/);
+    }
+    assert.equal(encrypted.storedReads, 0);
+    assert.equal(encrypted.syncFactoryCalls, 0);
+    assert.equal(encrypted.secretReads, 0);
+    const unsupportedEncryptionBackends = ['dropbox', 'file', 'cloud', 'cloudkit', 'unsupported'];
+    for (const backend of unsupportedEncryptionBackends) {
+        encrypted.storedBackend = backend;
+        assert.deepEqual((await unlockCommand(unlock)).value, { ok: false, error: { code: 'ACTION_FAILED',
+            message: 'This sync provider is not available in native iOS yet; the stored configuration is unchanged' } });
+        assert.equal(encrypted.storedBackend, backend);
+    }
+    assert.equal(encrypted.syncFactoryCalls, 0);
+    assert.equal(encrypted.secretReads, 0);
+    assert.equal(encrypted.encryptionInputs?.length ?? 0, 0, 'Unsupported providers never reach the selected contract');
+
+    const localEncryptionActions = [{ type: 'open', flow: 'enable' },
+        ...['next', 'confirm'].map((field) => ({ type: 'typed', field, value: 'synthetic-local-388' })),
+        { type: 'submit', flow: 'enable' }, { type: 'open', flow: 'disable' }, { type: 'submit', flow: 'disable' }];
+    const locallyRoutedBackends = [undefined, '', 'off', ' off '];
+    for (const backend of locallyRoutedBackends) {
+        const localEncryption = create(); assert.equal((await boot(localEncryption)).ok, true);
+        localEncryption.storedBackend = backend;
+        const localCommand = (value) => poll(localEncryption,
+            localEncryption.StrideHost.iosForegroundSync('runSyncEncryptionAction', JSON.stringify(value), () => ''));
+        for (const action of localEncryptionActions) {
+            const value = { revision: unlock.revision, action,
+                ...(action.type === 'submit' ? { requestId: '11111111-1111-1111-1111-111111111111' } : {}) };
+            assert.deepEqual((await localCommand(value)).value, { ok: true, value: { toasts: [], passphrase: null } });
+            assert.deepEqual(JSON.parse(JSON.stringify(localEncryption.encryptionInputs.at(-1))), value);
+            assert.equal(localEncryption.storedBackend, backend, 'Routing never activates or rewrites a backend');
+        }
+        assert.equal(localEncryption.syncFactoryCalls, 1, 'Local routing retains one foreground service');
+        assert.equal(localEncryption.contractBindings.syncSettings.encryption.mode, 'saved-webdav-or-local');
+        localEncryption.encryptionReply = { ok: false, error: { code: 'ACTION_FAILED', message: 'Synthetic selected-state refusal' } };
+        assert.deepEqual(await localCommand({ ...unlock, action: { type: 'open', flow: 'disable' } }),
+            { ok: true, value: localEncryption.encryptionReply }, 'Core admission refusals survive local routing');
+        assert.equal(localEncryption.syncFactoryCalls, 1); assert.equal(localEncryption.secretReads, 0);
+        assert(!(localEncryption.logText ?? '').includes('synthetic-local-388'), 'Local field text never enters entry diagnostics');
+    }
+    encrypted.storedBackend = 'webdav';
+    const selectedEncryptionActions = [...['unlock', 'enable', 'change', 'disable', 'abandon'].map((flow) => ({ type: 'open', flow })),
+        ...['current', 'next', 'confirm'].map((field) => ({ type: 'typed', field, value: 'synthetic' })),
+        ...['unlock', 'enable', 'change', 'disable', 'abandon'].map((flow) => ({ type: 'submit', flow })),
+        { type: 'decline' }, { type: 'cancel' }, { type: 'retry' }, { type: 'recheck' }];
+    for (const action of selectedEncryptionActions) {
+        const value = { revision: unlock.revision, action,
+            ...(['submit', 'decline', 'recheck'].includes(action.type) ? { requestId: '11111111-1111-1111-1111-111111111111' } : {}) };
+        assert.equal((await unlockCommand(value)).value.ok, true);
+        assert.deepEqual(JSON.parse(JSON.stringify(encrypted.encryptionInputs.at(-1))), value);
+    }
+    assert.equal(encrypted.syncFactoryCalls, 1, 'Selected encryption uses the retained foreground service');
+    assert.equal(encrypted.secretReads, 0, 'Entry fixture reads no credentials');
+    assert(!(encrypted.logText ?? '').includes('synthetic'), 'Passphrase never enters entry diagnostics');
+    console.log(`Selected encryption: ${invalidEncryptionInputs.length} invalid envelopes refused before storage; ${unsupportedEncryptionBackends.length} providers refused before factory; ${selectedEncryptionActions.length} WebDAV and ${localEncryptionActions.length * locallyRoutedBackends.length} local envelopes routed with exact mode and UUID ownership; ${locallyRoutedBackends.length} core refusals preserved (NodeVM)`);
+    const foreground = create();
+    assert.equal((await boot(foreground)).ok, true);
+    const foregroundCommand = (name, value, currentTargetURI) => poll(foreground,
+        foreground.StrideHost.iosForegroundSync(name, JSON.stringify(value), () => '', currentTargetURI));
+    const selfHostedFields = { url: 'https://synthetic398.invalid/v1/data', token: null, allowInsecureHttp: false };
+    const webdavFields = { url: 'https://synthetic398.invalid/data.json', username: 'synthetic', password: null, allowInsecureHttp: false };
+    const request = { requestId: '11111111-1111-1111-1111-111111111111', revision: 'config-398' };
+    const malformedForms = [{}, { webdav: webdavFields, selfHosted: selfHostedFields }, { selfHosted: null },
+        { selfHosted: [] }, { selfHosted: { ...selfHostedFields, password: 'synthetic' } },
+        { webdav: { ...webdavFields, token: null } }, { selfHosted: { ...selfHostedFields, token: 1 } }];
+    for (const name of ['saveSyncBackend', 'syncNow', 'testSyncConnection']) for (const fields of malformedForms) {
+        assert.match((await foregroundCommand(name, { ...request, ...fields })).error, /^INVALID_INPUT:/);
+    }
+    assert.equal(foreground.storedReads, 0, 'Malformed/mixed forms never read configuration');
+    assert.equal(foreground.syncFactoryCalls, 0, 'Malformed/mixed forms never construct a service');
+    assert.equal(foreground.secretReads, 0);
+    foreground.storedBackend = 'cloud';
+    for (const provider of ['dropbox', 'cloudkit', 'file', 'unknown']) {
+        foreground.storedProvider = provider;
+        const refusal = await foregroundCommand('openSyncSettings', {});
+        assert.equal(refusal.value.error.code, 'ACTION_FAILED');
+        assert.equal(foreground.storedProvider, provider, 'Unsupported provider authority is never rewritten');
+    }
+    assert.equal(foreground.syncFactoryCalls, 0);
+    for (const provider of [undefined, '', 'selfhosted', ' selfhosted ']) {
+        foreground.storedProvider = provider;
+        const model = await foregroundCommand('openSyncSettings', {});
+        assert.deepEqual(JSON.parse(JSON.stringify(model.value.value.backend.options.map(({ option }) => option))), ['off', 'webdav', 'selfhosted']);
+        for (const name of ['saveSyncBackend', 'syncNow', 'testSyncConnection']) {
+            const value = { ...request, selfHosted: selfHostedFields };
+            assert.equal((await foregroundCommand(name, value)).value.ok, true);
+            assert.deepEqual(JSON.parse(JSON.stringify(foreground.foregroundInputs.at(-1))), [name, value]);
+        }
+        for (const [name, reason] of [['syncStored', 'startup'], ['syncResume', 'resume']]) {
+            assert.deepEqual((await foregroundCommand(name, {})).value.value, { success: true, skipped: false });
+            assert.deepEqual(JSON.parse(JSON.stringify(foreground.foregroundInputs.at(-1))), ['stored', reason]);
+        }
+    }
+    assert.equal(foreground.syncFactoryCalls, 1, 'All self-hosted foreground commands retain one owned factory');
+    assert.equal(foreground.secretReads, 0, 'Entry never reads credentials itself');
+    assert(!(foreground.logText ?? '').includes('synthetic398'), 'Owned command marker contains no endpoint or token');
+    for (const [name, value] of [['selectSyncBackend', { requestId: request.requestId, option: 'selfhosted' }],
+        ...['saveSyncBackend', 'syncNow', 'testSyncConnection'].map(name => [name, { ...request, selfHosted: selfHostedFields }]),
+        ['syncStored', {}], ['syncResume', {}]]) {
+        foreground.incompleteTransition = true;
+        const prior = foreground.foregroundInputs.length;
+        const priorDownloads = foreground.attachmentInputs.length;
+        const priorLog = foreground.logText;
+        const refusal = await foregroundCommand(name, value);
+        assert.deepEqual(refusal.value, { ok: false, error: { code: 'ACTION_FAILED', message: 'Sync encryption transition is incomplete' } });
+        assert.equal(foreground.foregroundInputs.length, prior, 'Incomplete transition refuses before shared settings dispatch');
+        assert.equal(foreground.attachmentInputs.length, priorDownloads, 'Incomplete transition refuses before availability bytes');
+        assert.equal(foreground.logText, priorLog, 'Refused admission emits no settled-command marker');
+    }
+    foreground.incompleteTransition = false;
+    assert.equal((await foregroundCommand('selectSyncBackend', { requestId: request.requestId, option: 'selfhosted' })).value.ok, true);
+
+
+    const ordinaryCloudProject = create(); assert.equal((await boot(ordinaryCloudProject)).ok, true);
+    ordinaryCloudProject.storedBackend = 'cloud';
+    const ordinaryLogs = ordinaryCloudProject.logText;
+    for (const provider of [undefined, '', 'selfhosted', ' selfhosted ']) {
+        ordinaryCloudProject.storedProvider = provider;
+        assert.deepEqual((await command(ordinaryCloudProject)).value, { ok: false, error: { code: 'ACTION_FAILED',
+            message: 'This sync provider is not available in native iOS yet; the stored configuration is unchanged' } });
+    }
+    assert.equal(ordinaryCloudProject.syncFactoryCalls, 0); assert.equal(ordinaryCloudProject.secretReads, 0);
+    assert.equal(ordinaryCloudProject.projectOptionsReads ?? 0, 0); assert.equal(ordinaryCloudProject.attachmentInputs.length, 0);
+    assert.equal(ordinaryCloudProject.logText, ordinaryLogs, 'Gated ordinary cloud Project emits no completion marker');
+    const downloadsBefore = foreground.attachmentInputs.length;
+    const localForegroundHost = foreground.contractBindings.attachments;
+    const mappedTarget = attachment.uri;
+    assert.equal((await foregroundCommand('projectAttachmentDownload', input, mappedTarget)).value.ok, true);
+    assert.equal(foreground.attachmentInputs.length, downloadsBefore + 1, 'Saved selfhosted relocated Project routes through selected availability');
+    assert.deepEqual(JSON.parse(JSON.stringify(foreground.attachmentInputs.at(-1))), ['downloadRelocatedProjectAttachment', {
+        ...input, managedDirectoryURI: mappedTarget.slice(0, mappedTarget.lastIndexOf('/') + 1),
+    }, mappedTarget]);
+    assert.notEqual(foreground.downloadHosts.at(-1), foreground.remoteAttachmentHost, 'Relocated selfhosted availability uses its read-only scoped host');
+    assert.equal(foreground.contractBindings.attachments, localForegroundHost, 'Relocated Project scope restores the local host');
+    foreground.incompleteTransition = true;
+    const blockedDownloads = foreground.attachmentInputs.length;
+    const blockedLogs = foreground.logText;
+    assert.deepEqual((await foregroundCommand('projectAttachmentDownload', input, mappedTarget)).value,
+        { ok: false, error: { code: 'ACTION_FAILED', message: 'Sync encryption transition is incomplete' } });
+    assert.equal(foreground.attachmentInputs.length, blockedDownloads, 'Incomplete transition refuses before relocated Project availability');
+    assert.equal(foreground.logText, blockedLogs, 'Refused relocated admission emits no completion marker');
+    foreground.incompleteTransition = false;
+    foreground.foregroundReply = { ok: false, error: { code: 'STALE_REVISION', message: 'Synthetic shared stale refusal' } };
+    assert.deepEqual((await foregroundCommand('saveSyncBackend', { ...request, selfHosted: selfHostedFields })).value,
+        foreground.foregroundReply, 'Shared revision/admission refusal survives routing');
+    console.log(`Self-hosted entry: ${malformedForms.length * 3} invalid/mixed forms before storage; 4 unsupported providers before factory; 4 legacy/provider forms routed; 7 incomplete-transition commands before dispatch; 4 ordinary cloud Project forms before factory; scoped read-only relocated Project routing and restoration (NodeVM)`);
+    const malformed = create();
+    assert.match((await command(malformed)).error, /^NOT_READY:/);
+    const bootMalformed = await boot(malformed);
+    assert.equal(bootMalformed.ok, true, JSON.stringify(bootMalformed));
+    for (const value of [null, [], {}, { ...input, projectId: '' }, { ...input, attachmentId: 1 }, { ...input, revision: null },
+        { ...input, projectId: 'x'.repeat(501) }, { ...input, attachmentId: 'x'.repeat(501) }, { ...input, revision: 'x'.repeat(201) },
+        { ...input, uri: 'file:///foreign' }, { ...input, remoteKey: 'synthetic' }, { ...input, password: 'synthetic' },
+        { ...input, extra: 'x'.repeat(128 * 1024) }]) assert.match((await command(malformed, value)).error, /^INVALID_INPUT:/);
+    assert.equal(malformed.storedReads, 0); assert.equal(malformed.syncFactoryCalls, 0); assert.equal(malformed.secretReads, 0);
+    for (const flag of ['failed', 'queued', 'inFlight', 'immediate', 'retrying']) {
+        malformed.persistenceStatus = { [flag]: true }; assert.match((await command(malformed)).error, /^NOT_READY:/);
+    }
+    malformed.persistenceStatus = null;
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        malformed[field] = true; assert.match((await command(malformed)).error, /^NOT_READY:/); malformed[field] = false;
+    }
+    assert.equal(malformed.storedReads, 0);
+    for (const stored of [undefined, '', 'off', ' off ', 'dropbox', 'cloudkit']) {
+        malformed.storedBackend = stored;
+        const result = await command(malformed);
+        assert.equal(result.ok, true); assert.equal(result.value.ok, false); assert.equal(result.value.error.code, 'ACTION_FAILED');
+        assert.equal(malformed.storedBackend, stored);
+    }
+    assert.equal(malformed.syncFactoryCalls, 0); assert.equal(malformed.secretReads, 0); assert.equal(malformed.projectOptionsReads ?? 0, 0);
+    assert.equal(markerLines(malformed).length, 0);
+    const noIos = create('android'); assert.equal((await boot(noIos)).ok, true);
+    assert.match((await command(noIos)).error, /^NOT_READY:/); assert.equal(noIos.syncFactoryCalls, 0);
+
+    const stale = create(); assert.equal((await boot(stale)).ok, true);
+    const staleCases = [
+        () => ({ ...input, revision: 'older-revision' }),
+        () => { stale.ownerProjects = []; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, deletedAt: 'deleted', attachments: [attachment] }]; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, purgedAt: 'purged', attachments: [attachment] }]; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, attachments: [{ ...attachment, kind: 'link' }] }]; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, attachments: [{ ...attachment, deletedAt: 'deleted' }] }]; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, attachments: [{ ...attachment, id: 'replacement' }] }]; return input; },
+        () => { stale.ownerProjects = [{ id: input.projectId, attachments: [attachment, attachment] }]; return input; },
+    ];
+    for (const replace of staleCases) {
+        const result = await command(stale, replace());
+        assert.equal(result.ok, true); assert.equal(result.value.ok, false); assert.equal(result.value.error.code, 'STALE_REVISION');
+    }
+    assert.equal(stale.syncFactoryCalls, 0); assert.equal(stale.secretReads, 0); assert.equal(stale.attachmentInputs.length, 0);
+    assert.equal(markerLines(stale).length, 0);
+
+    const selected = create(); assert.equal((await boot(selected)).ok, true);
+    const localHost = selected.contractBindings.attachments;
+    assert.notEqual(localHost, selected.remoteAttachmentHost);
+    const rowsBefore = JSON.stringify(selected.ownerProjects);
+    assert.deepEqual(await command(selected), { ok: true, value: selected.attachmentReply });
+    assert.equal(selected.syncFactoryCalls, 1); assert.equal(selected.downloadHosts[0], selected.remoteAttachmentHost);
+    assert.equal(selected.contractBindings.attachments, localHost, 'Successful download restores the local-only host');
+    assert.equal(JSON.stringify(selected.ownerProjects), rowsBefore);
+    assert.equal(JSON.stringify(selected.attachmentInputs[0]), JSON.stringify(['downloadAttachment', { owner: { kind: 'project', projectId: input.projectId }, attachmentId: input.attachmentId }]));
+    assert.equal(markerLines(selected).length, 1, 'Forced availability marker is persisted with diagnostics disabled');
+    const marker = JSON.parse(markerLines(selected)[0]);
+    assert.deepEqual(marker.context, { releaseCheck: 'v1.3.5/ios-project-file-download', operation: 'projectAttachmentDownload', outcome: 'available' });
+    assert.equal(marker.message, 'Native iOS Project file availability settled');
+    for (const privateValue of [input.projectId, input.attachmentId, input.revision, attachment.title, attachment.uri]) assert(!markerLines(selected)[0].includes(privateValue));
+    selected.ownerProjects[0].status = 'archived';
+    assert.deepEqual(await command(selected), { ok: true, value: selected.attachmentReply });
+    assert.equal(selected.syncFactoryCalls, 1, 'The same retained factory handles archived availability');
+    assert.equal(selected.contractBindings.attachments, localHost);
+    selected.logFailure = 'synthetic log refusal';
+    assert.deepEqual(await command(selected), { ok: true, value: selected.attachmentReply });
+    assert.equal(markerLines(selected).length, 2, 'A failed log append cannot invalidate durable availability');
+    selected.logFailure = null;
+    for (const answer of [{ ok: true, value: { status: 'unavailable', message: 'synthetic refusal', update: null } },
+        { ok: false, error: { code: 'ACTION_FAILED', message: 'synthetic host refusal' } }]) {
+        selected.attachmentReply = answer; const count = markerLines(selected).length;
+        assert.deepEqual(await command(selected), { ok: true, value: answer });
+        assert.equal(markerLines(selected).length, count);
+        assert.equal(selected.contractBindings.attachments, localHost);
+    }
+    selected.downloadError = 'synthetic download failure';
+    assert.match((await command(selected)).error, /synthetic download failure/);
+    assert.equal(selected.contractBindings.attachments, localHost, 'Thrown download restores the local-only host');
+    selected.downloadError = null;
+    const general = await poll(selected, selected.StrideHost.attachmentRequest('downloadAttachment', JSON.stringify({ owner: { kind: 'project', projectId: input.projectId }, attachmentId: input.attachmentId })));
+    assert.equal(general.ok, false, 'General local attachment download remains closed');
+
+    const draining = create(); assert.equal((await boot(draining)).ok, true);
+    const drainingLocalHost = draining.contractBindings.attachments;
+    let releaseDownload, releaseFlush;
+    draining.downloadHold = new Promise((resolveHold) => { releaseDownload = resolveHold; });
+    draining.flushHold = new Promise((resolveHold) => { releaseFlush = resolveHold; });
+    const ticket = draining.StrideHost.iosForegroundSync('projectAttachmentDownload', JSON.stringify(input), () => '');
+    await new Promise((tick) => setImmediate(tick));
+    assert.equal(draining.StrideHost.poll(ticket), null);
+    assert.equal(draining.contractBindings.attachments, draining.remoteAttachmentHost);
+    assert.match((await command(draining)).error, /^NOT_READY:/, 'The current invocation excludes another command');
+    releaseDownload(); await new Promise((tick) => setImmediate(tick));
+    assert.equal(draining.contractBindings.attachments, drainingLocalHost);
+    assert.notEqual(draining.contractBindings.attachments, draining.remoteAttachmentHost, 'Scope is restored before durable flush');
+    assert.equal(draining.StrideHost.poll(ticket), null, 'No result before the durable barrier settles');
+    assert.equal(markerLines(draining).length, 0);
+    releaseFlush(); assert.deepEqual(await poll(draining, ticket), { ok: true, value: draining.attachmentReply });
+    for (const flag of ['failed', 'queued', 'inFlight', 'immediate', 'retrying']) {
+        const failure = create(); assert.equal((await boot(failure)).ok, true);
+        const originalHost = failure.contractBindings.attachments;
+        failure.afterDownload = () => { failure.persistenceStatus = { [flag]: true }; };
+        assert.match((await command(failure)).error, /^NOT_READY:/);
+        assert.equal(failure.contractBindings.attachments, originalHost); assert.equal(markerLines(failure).length, 0);
+    }
+    const flushFailure = create(); assert.equal((await boot(flushFailure)).ok, true);
+    const originalHost = flushFailure.contractBindings.attachments;
+    flushFailure.flushError = 'synthetic durable failure';
+    assert.match((await command(flushFailure)).error, /synthetic durable failure/);
+    assert.equal(flushFailure.contractBindings.attachments, originalHost); assert.equal(markerLines(flushFailure).length, 0);
+    const fatal = create(); assert.equal((await boot(fatal)).ok, true);
+    fatal.downloadFatal = true;
+    assert.match((await command(fatal)).error, /cleanup could not be confirmed/i);
+    const counts = [fatal.storedReads, fatal.attachmentInputs.length, fatal.events.length];
+    assert.match((await command(fatal)).error, /cleanup could not be confirmed/i);
+    assert.deepEqual([fatal.storedReads, fatal.attachmentInputs.length, fatal.events.length], counts);
+    assert.equal(markerLines(fatal).length, 0);
+    console.log('Task346: strict selected Project Download admission, archived eligibility, scoped host restoration and durable availability acknowledgment (NodeVM)');
+}
+
+
+{
+    const configureLocal = (state) => {
+        state.localAttachmentTest = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null;
+        state.__strideInstallerCall = async () => null;
+    };
+
+
+    const stored = makeState(0, [], 'ios', (state) => {
+        configureLocal(state);
+        state.storedReads = 0; state.secretReads = 0;
+        state.__strideNative.kvMultiGet = () => { throw new Error('Unexpected stored multi-read'); };
+        state.__strideNative.kvGet = (key) => {
+            assert.equal(key, '@stride_sync_backend');
+            state.storedReads++;
+            return JSON.stringify([state.storedBackend ?? null]);
+        };
+        state.__strideSyncSecrets = { getSecret: () => {
+            state.secretReads++; throw new Error('Unexpected stored secret read');
+        } };
+    });
+    for (const name of ['syncStored', 'syncResume']) {
+        assert.match((await poll(stored, stored.StrideHost.iosForegroundSync(name, '{}', () => ''))).error, /^NOT_READY:/);
+    }
+    assert.equal(stored.storedReads, 0);
+    assert.equal((await poll(stored, stored.StrideHost.boot())).ok, true);
+    for (const name of ['syncStored', 'syncResume']) {
+        const command = (json = '{}') => poll(stored, stored.StrideHost.iosForegroundSync(name, json, () => ''));
+        stored.storedReads = 0;
+        stored.storedBackend = undefined;
+        for (const input of ['null', '[]', '{', '{"revision":"r"}', '{"config":{}}', '{"password":"synthetic"}', '{"x":"' + 'x'.repeat(128 * 1024) + '"}']) {
+            assert.match((await command(input)).error, /^INVALID_INPUT:/, `${name} accepts only a bounded empty object`);
+        }
+        assert.equal(stored.storedReads, 0, 'Invalid requests reach no storage port');
+        for (const flag of ['failed', 'queued', 'inFlight', 'immediate', 'retrying']) {
+            stored.persistenceStatus = { [flag]: true };
+            assert.match((await command()).error, /^NOT_READY:/, `${name} preserves strict persistence admission`);
+        }
+        stored.persistenceStatus = null;
+        for (const field of ['sandbox', 'workspaceTransition']) {
+            stored[field] = true;
+            assert.match((await command()).error, /^NOT_READY:/);
+            stored[field] = false;
+        }
+        assert.equal(stored.storedReads, 0, 'Unsettled requests reach no storage port');
+        const beforeRows = JSON.stringify(stored.fakeData);
+        const beforeLog = stored.logText;
+        for (const value of [undefined, '', 'off', ' off ']) {
+            stored.storedBackend = value;
+            assert.deepEqual(await command('  {}  '), { ok: true, value: { ok: true, value: { success: true, skipped: true } } });
+        }
+        stored.storedBackend = 'dropbox';
+        const unsupported = await command();
+        assert.equal(unsupported.ok, true);
+        assert.equal(unsupported.value.ok, false);
+        assert.equal(unsupported.value.error.code, 'ACTION_FAILED');
+        assert.equal(stored.storedBackend, 'dropbox', 'Unsupported stored provider is preserved');
+        assert.equal(stored.storedReads, 5, 'One exact provider read per admitted invocation');
+        assert.equal(stored.secretReads, 0, 'Off and unsupported runs read no secret');
+        assert.equal(JSON.stringify(stored.fakeData), beforeRows, 'Off admission writes no domain rows');
+        assert.equal(stored.logText, beforeLog, 'No configured-run settlement marker is emitted for skipped/refused admission');
+        assert.equal(stored.contractBindings.syncSettings, undefined, 'Off and unsupported runs never construct the Sync factory');
+    }
+    assert.ok(hostEntry.includes("name === 'syncResume' ? { message: 'Native iOS resume Sync command settled', releaseCheck: 'v1.3.5/ios-resume-sync' }"));
+    assert.match(hostEntry, /context: \{ releaseCheck: diagnostic\.releaseCheck, operation: name, outcome:/);
+    const local = makeState(0, [], 'ios', configureLocal);
+    assert.deepEqual(Object.keys(local.contractBindings).filter((name) => local.contractBindings[name] !== undefined), ['reminderPlatform', 'attachments'], 'local capability enables neither Sync nor AI');
+    assert.equal(local.localShaInstallCount, 1, 'successful local construction installs native SHA once');
+    assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+    const owner = { kind: 'task', taskId: 'task215', attachments: [] };
+    const markerLines = () => (local.logText ?? '').split('\n').filter((line) => line.includes('v1.3.4/ios-local-attachment-host'));
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('draftRemove', JSON.stringify({ owner })))).ok, true);
+    assert.equal(markerLines().length, 1, 'one forced marker follows an acknowledged task draft operation');
+    const marker = JSON.parse(markerLines()[0]);
+    assert.deepEqual(marker.context, { releaseCheck: 'v1.3.4/ios-local-attachment-host', operation: 'draftRemove', outcome: 'completed' });
+    assert(!markerLines()[0].includes('task215'), 'diagnostic has no task ID or request body');
+    local.localTaskReadOnly = true;
+    const beforeInputs = local.attachmentInputs.length;
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('draftAddFile', JSON.stringify({ owner })))).ok, false);
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('draftRemove', JSON.stringify({ owner })))).ok, false);
+    assert.equal(local.attachmentInputs.length, beforeInputs, 'read-only task cannot enter copy/remove policy');
+    local.attachmentReply = { ok: true, value: { status: 'available', open: { kind: 'file' } } };
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('openAttachment', JSON.stringify({ owner })))).ok, true,
+        'read-only task can still ask shared Open policy');
+    local.attachmentReply = { ok: true, value: { deleted: 0 } };
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('settleTaskDraftAttachments', '{}'))).ok, true,
+        'stale/read-only draft settlement remains owned by shared latest-keep policy');
+    local.localTaskReadOnly = false;
+    local.localTaskViewFailure = { ok: false, error: { code: 'TASK_NOT_FOUND', message: 'Task not found' } };
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('draftAddFile', JSON.stringify({ owner })))).ok, false);
+    local.localTaskViewFailure = null;
+    const successfulMarkers = markerLines().length;
+    for (const reply of [{ ok: false, error: { code: 'ACTION_FAILED', message: 'refused' } },
+        { ok: true, value: { kind: 'refused' } }, { ok: true, value: { kind: 'blocked' } }]) {
+        local.attachmentReply = reply;
+        await poll(local, local.StrideHost.attachmentRequest('draftAddFile', JSON.stringify({ owner })));
+    }
+    local.attachmentReply = { ok: true, value: { status: 'unavailable' } };
+    await poll(local, local.StrideHost.attachmentRequest('openAttachment', JSON.stringify({ owner })));
+    assert.equal(markerLines().length, successfulMarkers, 'refused/blocked/unavailable operations emit no success marker');
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('openAttachment', JSON.stringify({ owner: { kind: 'project', projectId: 'p' } })))).ok, false);
+    assert.equal((await poll(local, local.StrideHost.attachmentRequest('downloadAttachment', JSON.stringify({ owner })))).ok, false);
+    local.persistenceFailure = { message: 'previous save failed' };
+    assert.match((await poll(local, local.StrideHost.attachmentRequest('draftRemove', JSON.stringify({ owner })))).error, /SAVE_FAILED/);
+    assert.equal(markerLines().length, successfulMarkers);
+    assert(local.fileCalls.every((call) => !call.startsWith('kv')), 'local requests never touch RN device storage');
+    for (const variant of ['partial', 'refused', 'android']) {
+        const unavailable = makeState(0, [], variant === 'android' ? undefined : 'ios', (state) => {
+            configureLocal(state);
+            if (variant === 'partial') delete state.__strideNative.ioBody;
+            if (variant === 'refused') state.__strideNative.fileDirectories = () => '!StrideNativeError:fixed unavailable';
+        });
+        assert.deepEqual(Object.keys(unavailable.contractBindings).filter((name) => unavailable.contractBindings[name] !== undefined), ['reminderPlatform'], `${variant} capability offers no local fallback`);
+        assert.equal(unavailable.localShaInstallCount, 0, 'failed optional discovery leaves SHA binding unchanged');
+        assert.equal((await poll(unavailable, unavailable.StrideHost.boot())).ok, true, 'optional local failure does not fail boot');
+    }
+}
+
+
+{
+    const configureLocal = (state) => {
+        state.localAttachmentTest = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null;
+        state.__strideInstallerCall = async () => null;
+    };
+    const ROOT = 'file:///library/documents/attachments/';
+    const AT = '2026-10-05T00:00:00.000Z';
+    const baseline = { id: 'baseline', kind: 'file', title: 'Original', uri: ROOT + 'baseline.pdf', createdAt: AT, updatedAt: AT };
+    const opening = JSON.stringify({ version: 2, taskID: 'task257', attachmentsOwned: true,
+        attachmentsBase: [baseline], attachments: [baseline], raw: { notes: 'Retain opaque checkpoint' } });
+    const begin = { taskID: 'task257', payloadJSON: opening };
+    const lineage = { version: 3, taskID: 'task257', initialPayloadJSON: opening,
+        beforePayloadJSON: opening, priorOperations: [], managedDirectoryURI: ROOT };
+    const removeInput = { ...lineage, requestId: '25700000-0000-4000-8000-000000000001', attachmentId: 'baseline' };
+    const addInput = { ...lineage, requestId: '25700000-0000-4000-8000-000000000002',
+        picked: { uri: 'file:///library/cache/picked.pdf', name: 'Picked.pdf', mimeType: null, size: null }, measuredSize: 3 };
+    let cases = 0;
+    const check = async (action) => { await action(); cases++; };
+    const call = (state, method, value) => poll(state, state.StrideHost[method](JSON.stringify(value)));
+    const local = makeState(0, [], 'ios', configureLocal);
+    assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+    await check(async () => assert.deepEqual(await call(local, 'attachmentDraftBeginV3', begin),
+        { ok: true, value: { version: 3, taskID: 'task257', payloadJSON: opening } }));
+    await check(async () => {
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-attachment-link-lineage', outcome: 'validated' });
+        const beforeLog = local.logText;
+        assert.equal((await call(local, 'attachmentDraftBeginV3', { ...begin, payloadJSON: '{}' })).ok, false);
+        assert.equal(local.logText, beforeLog);
+        local.logFailure = 'private log failure';
+        assert.equal((await call(local, 'attachmentDraftBeginV3', begin)).ok, true);
+        assert.equal(local.logText, beforeLog);
+        local.logFailure = null;
+    });
+    await check(async () => {
+        local.settings = { diagnostics: { loggingEnabled: false } };
+        assert.deepEqual(await call(local, 'attachmentDraftBeginV4', begin),
+            { ok: true, value: { version: 4, taskID: 'task257', payloadJSON: opening } });
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-attachment-link-lineage', outcome: 'validated' });
+        const beforeLog = local.logText;
+        assert.equal((await call(local, 'attachmentDraftBeginV4', { ...begin, payloadJSON: '{}' })).ok, false);
+        assert.equal(local.logText, beforeLog);
+        local.logFailure = 'private log failure';
+        assert.equal((await call(local, 'attachmentDraftBeginV4', begin)).ok, true);
+        assert.equal(local.logText, beforeLog); local.logFailure = null;
+    });
+    const removedReply = await call(local, 'attachmentDraftRemovePrepareV3', removeInput);
+    assert.equal(removedReply.ok, true);
+    const removed = removedReply.value;
+    await check(async () => {
+        assert.equal(removed.kind, 'prepared-file-remove'); assert.equal(removed.version, 1);
+        assert.equal(removed.beforePayloadJSON, opening);
+        assert.equal(new Date(removed.removedAt).toISOString(), removed.removedAt);
+        assert.deepEqual(JSON.parse(removed.afterPayloadJSON).attachments,
+            [{ ...baseline, deletedAt: removed.removedAt, updatedAt: removed.removedAt }]);
+    });
+    const mixed = { ...lineage, beforePayloadJSON: removed.afterPayloadJSON,
+        priorOperations: [{ kind: 'remove', operation: removed }] };
+    const addedReply = await call(local, 'attachmentDraftPrepareV3', { ...addInput, ...mixed });
+    assert.equal(addedReply.ok, true);
+    const added = addedReply.value;
+    await check(async () => {
+        assert.equal(added.kind, 'prepared'); assert.equal(added.beforePayloadJSON, removed.afterPayloadJSON);
+        const final = { ...mixed, beforePayloadJSON: added.afterPayloadJSON,
+            priorOperations: [...mixed.priorOperations, { kind: 'add', operation: added }] };
+        assert.deepEqual(await call(local, 'attachmentDraftValidateLineageV3', final),
+            { ok: true, value: { version: 3, taskID: 'task257', payloadJSON: added.afterPayloadJSON } });
+        assert.deepEqual(JSON.parse(added.afterPayloadJSON).raw, JSON.parse(opening).raw);
+    });
+    await check(async () => {
+        const selected = { ...lineage, version: 4 }, sha = 'a'.repeat(64);
+        const reply = await call(local, 'attachmentDraftPrepareV4', { ...addInput, ...selected, sourceSha256: sha });
+        assert.equal(reply.ok, true); const hashed = reply.value;
+        assert.equal(hashed.version, 2); assert.equal(hashed.sourceSha256, sha);
+        assert.equal(hashed.prepared.attachment.fileHash, sha); assert.equal(hashed.attachment.fileHash, sha);
+        const full = { ...selected, beforePayloadJSON: hashed.afterPayloadJSON, priorOperations: [{ kind: 'add', operation: hashed }] };
+        assert.deepEqual(await call(local, 'attachmentDraftValidateLineageV4', full),
+            { ok: true, value: { version: 4, taskID: 'task257', payloadJSON: hashed.afterPayloadJSON } });
+        assert.equal((await call(local, 'attachmentDraftValidateLineageV3', full)).ok, false);
+        assert.equal((await call(local, 'attachmentDraftPrepareV3', { ...addInput, sourceSha256: sha })).ok, false);
+        const removed = await call(local, 'attachmentDraftRemovePrepareV4', { ...full,
+            requestId: '28800000-0000-4000-8000-000000000003', attachmentId: hashed.requestId });
+        assert.equal(removed.ok, true); assert.equal(removed.value.version, 1);
+        const discarded = { version: 3, historyVersion: 4, taskID: selected.taskID, managedDirectoryURI: ROOT,
+            initialPayloadJSON: opening, checkpointPayloadJSON: removed.value.afterPayloadJSON,
+            operations: [{ kind: 'add', phase: 'checkpointed', preparedJSON: JSON.stringify(hashed) },
+                { kind: 'remove', phase: 'checkpointed', preparedJSON: JSON.stringify(removed.value) }] };
+        const planned = await call(local, 'attachmentDraftDiscardCandidatesV4', discarded);
+        assert.equal(planned.ok, true); assert.equal(planned.value.version, 3); assert.equal(planned.value.historyVersion, 4);
+        assert.deepEqual(planned.value.candidates.map((value) => value.requestId), [hashed.requestId]);
+        assert.equal((await call(local, 'attachmentDraftDiscardCandidatesV3', discarded)).ok, false);
+        const wrong = structuredClone(full); wrong.priorOperations[0].operation.sourceSha256 = 'b'.repeat(64);
+        assert.equal((await call(local, 'attachmentDraftValidateLineageV4', wrong)).ok, false);
+    });
+
+    await check(async () => {
+        const missing = { ...baseline, uri: '', cloudKey: 'attachments/baseline.pdf',
+            fileHash: 'a'.repeat(64), localStatus: 'missing' };
+        const before = { ...JSON.parse(opening), attachmentsBase: [missing], attachments: [missing] };
+        const beforePayloadJSON = JSON.stringify(before);
+        const resolved = { ...missing, uri: ROOT + 'baseline.pdf', localStatus: 'available' };
+        const afterPayloadJSON = JSON.stringify({ ...before, attachments: [resolved] });
+        const operation = { version: 1, kind: 'prepared-file-availability', taskID: 'task257',
+            requestId: '35600000-0000-4000-8000-000000000001', attachmentId: missing.id,
+            identity: JSON.stringify([missing.id, missing.cloudKey, missing.fileHash, 0]),
+            beforePayloadJSON, afterPayloadJSON, status: 'available', resolvedAttachmentJSON: JSON.stringify(resolved) };
+        const selected = { ...lineage, version: 5, initialPayloadJSON: beforePayloadJSON,
+            beforePayloadJSON: afterPayloadJSON, priorOperations: [{ kind: 'availability', operation }] };
+        const beforeFiles = structuredClone(local.fileCalls), beforeSaves = local.saveCount;
+        assert.deepEqual(await call(local, 'attachmentDraftBeginV5', { ...begin, payloadJSON: beforePayloadJSON }),
+            { ok: true, value: { version: 5, taskID: 'task257', payloadJSON: beforePayloadJSON } });
+        assert.deepEqual(await call(local, 'attachmentDraftValidateLineageV5', selected),
+            { ok: true, value: { version: 5, taskID: 'task257', payloadJSON: afterPayloadJSON } });
+        for (const method of ['attachmentDraftValidateLineageV3', 'attachmentDraftValidateLineageV4']) {
+            assert.equal((await call(local, method, selected)).ok, false);
+        }
+        const discarded = { version: 4, historyVersion: 5, taskID: 'task257', managedDirectoryURI: ROOT,
+            initialPayloadJSON: beforePayloadJSON, checkpointPayloadJSON: afterPayloadJSON,
+            operations: [{ kind: 'availability', phase: 'checkpointed', preparedJSON: JSON.stringify(operation) }] };
+        const planned = await call(local, 'attachmentDraftDiscardCandidatesV5', discarded);
+        assert.equal(planned.ok, true);
+        assert.equal(planned.value.kind, 'owned-availability-discard-candidates');
+        assert.deepEqual(planned.value.candidates, [{ requestId: operation.requestId,
+            attachmentId: missing.id, targetURI: resolved.uri, reason: 'uncommitted-draft' }]);
+        assert.equal((await call(local, 'attachmentDraftDiscardCandidatesV4', discarded)).ok, false);
+        assert.deepEqual(local.fileCalls, beforeFiles, 'metadata continuity never installs or retires bytes');
+        assert.equal(local.saveCount, beforeSaves, 'metadata continuity never saves the Task');
+        const forged = structuredClone(selected);
+        forged.priorOperations[0].operation.afterPayloadJSON = afterPayloadJSON.replace('Retain opaque checkpoint', 'forged');
+        assert.equal((await call(local, 'attachmentDraftValidateLineageV5', forged)).ok, false);
+    });
+
+    const historical = makeState(0, [], 'ios'); historical.localTaskReadOnly = true;
+    historical.sandbox = true; historical.workspaceTransition = true;
+    historical.persistenceFailure = { message: 'not used by pure historical validation' };
+    vm.runInNewContext(`globalThis.Date = class extends Date {
+        constructor(...args) { if (!args.length) throw new Error('fresh clock forbidden'); super(...args); }
+    };`, historical);
+    await check(async () => assert.deepEqual(await call(historical, 'attachmentDraftValidateRemove', removed), { ok: true, value: removed }));
+    await check(async () => assert.deepEqual(await call(historical, 'attachmentDraftValidateLineageV3', mixed),
+        { ok: true, value: { version: 3, taskID: 'task257', payloadJSON: removed.afterPayloadJSON } }));
+    for (const method of ['attachmentDraftValidateRemove', 'attachmentDraftValidateLineageV3', 'attachmentDraftValidateLineageV5', 'attachmentDraftDiscardCandidatesV5', 'attachmentFileEditSaveValidate']) {
+        await check(async () => assert.match((await call(makeState(0), method, {})).error, /^NOT_READY:/));
+    }
+    for (const variant of ['nonIOS', 'noCapability', 'sandbox', 'workspace', 'readOnly', 'taskMissing', 'persistence']) {
+        const state = makeState(0, [], variant === 'nonIOS' ? undefined : 'ios', variant === 'noCapability' ? undefined : configureLocal);
+        if (variant === 'sandbox') state.sandbox = true;
+        if (variant === 'workspace') state.workspaceTransition = true;
+        if (variant === 'readOnly') state.localTaskReadOnly = true;
+        if (variant === 'taskMissing') state.localTaskViewFailure = { ok: false, error: { code: 'TASK_NOT_FOUND', message: 'Not found' } };
+        if (variant === 'persistence') state.persistenceFailure = { message: 'failed' };
+        for (const [method, input] of [['attachmentDraftBeginV3', begin], ['attachmentDraftBeginV4', begin], ['attachmentDraftBeginV5', begin], ['attachmentDraftPrepareV3', addInput], ['attachmentDraftRemovePrepareV3', removeInput]]) {
+            await check(async () => assert.equal((await call(state, method, input)).ok, false, `${variant}/${method}`));
+        }
+        if (variant !== 'readOnly' && variant !== 'taskMissing') {
+            for (const method of ['attachmentFileEditSavePrepare', 'attachmentFileEditSaveCommit']) {
+                if (variant === 'persistence' && method.endsWith('Commit')) continue;
+                await check(async () => assert.equal((await call(state, method, {})).ok, false, `${variant}/${method}`));
+            }
+            assert.equal(state.fileEditSaveInputs.length, 0, 'fresh admission refusal does not reach the Save stand-in');
+        }
+    }
+    await check(async () => {
+        const state = makeState(0, [], 'ios', configureLocal);
+        const ticket = state.StrideHost.attachmentDraftPrepareV3(JSON.stringify(addInput));
+        state.localTaskReadOnly = true;
+        assert.equal((await poll(state, ticket)).ok, false, 'Add checks current task again after async upload policy');
+    });
+    for (const method of ['attachmentDraftBeginV3', 'attachmentDraftValidateLineageV3', 'attachmentDraftPrepareV3',
+        'attachmentDraftRemovePrepareV3', 'attachmentDraftValidateRemove', 'attachmentFileEditSavePrepare',
+        'attachmentFileEditSaveValidate', 'attachmentFileEditSaveCommit']) {
+        await check(async () => assert.deepEqual(await poll(local, local.StrideHost[method]('{private-content')),
+            { ok: false, error: 'INVALID_INPUT' }));
+    }
+    await check(async () => {
+        const before = local.fileEditSaveInputs.length;
+        for (const json of ['x'.repeat(8 * 1024 * 1024 + 1), JSON.stringify({ secret: '界'.repeat(3 * 1024 * 1024) })]) {
+            assert.deepEqual(await poll(local, local.StrideHost.attachmentFileEditSaveValidate(json)), { ok: false, error: 'INVALID_INPUT' });
+        }
+        assert.equal(local.fileEditSaveInputs.length, before, 'actual UTF8 byte limit refuses before contract dispatch');
+    });
+
+    for (const kind of ['changed', 'noop']) {
+        const request = { version: 1, kind: 'owned-editor-file-edit-save', opaque: kind };
+        const prepared = { version: 1, kind: 'owned-editor-file-edit-save', request, decision: { kind } };
+        for (const [method, routed, value] of [
+            ['attachmentFileEditSavePrepare', 'prepare', { kind: 'prepared', prepared }],
+            ['attachmentFileEditSaveValidate', 'validate', { version: 1, kind: 'owned-editor-file-edit-save',
+                result: { id: 'task257', draft: { title: kind } }, settlementPlan: Array.from({ length: 257 }, (_, n) => ({ id: String(n), uri: ROOT + n })) }],
+            ['attachmentFileEditSaveCommit', 'commit', { id: 'task257', draft: { title: kind } }],
+        ]) {
+            await check(async () => {
+                local.fileEditSaveReply = { ok: true, value };
+                const input = routed === 'prepare' ? request : { request, prepared };
+                assert.deepEqual(await call(local, method, input), { ok: true, value });
+                assert.deepEqual(JSON.parse(JSON.stringify(local.fileEditSaveInputs.at(-1))), [routed, input]);
+            });
+        }
+    }
+    await check(async () => {
+        const value = { original: true }; historical.fileEditSaveReply = { ok: true, value };
+        const envelope = { request: { version: 1 }, prepared: { version: 1 } };
+        assert.deepEqual(await call(historical, 'attachmentFileEditSaveValidate', envelope), { ok: true, value });
+        assert.deepEqual(JSON.parse(JSON.stringify(historical.fileEditSaveInputs)), [['validate', envelope]]);
+    });
+    for (const [method, routed] of [['attachmentOwnedSavePrepare', 'legacyPrepare'], ['attachmentOwnedSaveValidate', 'legacyValidate'], ['attachmentOwnedSaveCommit', 'legacyCommit']]) {
+        await check(async () => { await call(local, method, {}); assert.deepEqual(JSON.parse(JSON.stringify(local.fileEditSaveInputs.at(-1))), [routed, {}]); });
+    }
+    await check(async () => {
+        for (const name of ['attachmentDraftBeginV3', 'attachmentDraftRemovePrepareV3', 'attachmentFileEditSaveCommit']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentRequest(name, '{}'))).ok, false, 'private methods are not generic attachment request allowlist additions');
+        }
+        assert.equal(local.attachmentInputs.length, 0);
+        assert(!(local.logText ?? '').includes('mixed-draft'), 'binding dispatch is not a native acknowledgment');
+    });
+    console.log(`Task257: ${cases} private mixed-draft binding/transport checks (real pure V3 helpers; Save dispatch stand-ins only)`);
+}
+
+
+{
+    const configureLocal = (state) => {
+        state.localAttachmentTest = true;
+        state.realMixedSaveValidation = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null; state.__strideInstallerCall = async () => null;
+    };
+    const ROOT = 'file:///library/documents/attachments/', AT = '2026-10-05T00:00:00.000Z';
+    const SESSION = '25900000-0000-4000-8000-000000000001';
+    const REQUEST = '25900000-0000-4000-8000-000000000002';
+    let cases = 0;
+    const check = async (work) => { await work(); cases++; };
+    const fixtureState = makeState(0, [], 'ios', configureLocal);
+    assert.equal((await poll(fixtureState, fixtureState.StrideHost.boot())).ok, true);
+    const fixtures = new Map();
+    const fixture = async (count = 1, kind = 'noop', managedDirectoryURI = ROOT) => {
+        const key = `${count}:${kind}:${managedDirectoryURI}`;
+        if (fixtures.has(key)) return fixtures.get(key);
+        const baseline = Array.from({ length: count }, (_, n) => ({ id: `baseline${n}`, kind: 'file', title: 'File',
+            uri: managedDirectoryURI + `baseline${n}.pdf`, createdAt: AT, updatedAt: AT, ...(n ? { deletedAt: AT } : {}) }));
+        const initialPayloadJSON = JSON.stringify({ version: 2, taskID: 'task259', tab: 'task', touchedBase: {}, edited: {},
+            raw: { title: '', note: '', location: '', estimate: '', estimateResolved: '', timeSpent: '', timeSpentResolved: '',
+                tokens: {}, tokenCanonical: {}, tokenResolved: {}, tokenEdited: [], checklistInputs: {}, checklistAppend: '',
+                relativeAmount: '', relativeUnit: '', relativeOwned: false, relativeCommitRequested: false,
+                recurrenceInputs: {}, recurrenceOwned: [], recurrenceCommitRequested: [] }, scheduleEdits: [], scheduleFailedID: null,
+            attachmentsOwned: true, attachmentsBase: baseline, attachments: baseline, linkSheet: {} });
+        const owned = { version: 3, taskID: 'task259', initialPayloadJSON, beforePayloadJSON: initialPayloadJSON,
+            priorOperations: [], managedDirectoryURI };
+        const removed = await poll(fixtureState, fixtureState.StrideHost.attachmentDraftRemovePrepareV3(JSON.stringify({ ...owned,
+            requestId: REQUEST, attachmentId: baseline[0].id })));
+        assert.equal(removed.ok, true);
+        const op = removed.value, draft = JSON.parse(op.afterPayloadJSON).attachments;
+        const saveRequest = { id: 'task259', base: {}, patch: {},
+            scheduleBase: { startTime: null, dueDate: null, relativeStartOffset: null, reviewAt: null }, attachments: { base: baseline, value: draft } };
+        const request = { version: 1, kind: 'owned-editor-file-edit-save',
+            checkpoint: { version: 1, sessionID: SESSION, taskID: 'task259', generation: 2, payloadJSON: op.afterPayloadJSON },
+            ownedDraft: { ...owned, beforePayloadJSON: op.afterPayloadJSON, priorOperations: [{ kind: 'remove', operation: op }] }, saveRequest };
+        const before = { id: 'task259', title: 'Task', status: 'next', tags: [], contexts: [], createdAt: AT, updatedAt: AT, rev: 8, revBy: 'before',
+            attachments: kind === 'noop' ? draft : baseline };
+        const after = kind === 'noop' ? before : { ...before, attachments: draft, updatedAt: op.removedAt, rev: 9, revBy: 'device' };
+        const scope = { sourceProject: null, targetProject: null, targetSection: null, targetArea: null, nextProjectOrder: null };
+        const decision = kind === 'noop' ? { kind, preparedAt: op.removedAt, deviceIdBefore: 'device', scope, effect: { task: { before, after } } }
+            : { kind, prepared: { version: 2, request: saveRequest, preparedAt: op.removedAt, deviceIdBefore: 'device',
+                deviceIdToInitialize: null, scope, effect: { task: { before, after } } } };
+        const envelope = { request, prepared: { version: 1, kind: 'owned-editor-file-edit-save', request, decision } };
+        const validation = await poll(fixtureState, fixtureState.StrideHost.attachmentFileEditSaveValidate(JSON.stringify(envelope)));
+        assert.equal(validation.ok, true, 'real254 validates the full file-only checkpoint/noop or changed effect');
+        assert.equal(validation.value.settlementPlan.length, count);
+        const value = { envelope, after, plan: validation.value.settlementPlan };
+        fixtures.set(key, value); return value;
+    };
+    const plain = await fixture(), changed = await fixture(1, 'changed'), many = await fixture(257);
+    const make = async (f = plain, configure = configureLocal, platform = 'ios') => {
+        const state = makeState(0, [], platform, configure);
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        state.lastLoaded.tasks = [JSON.parse(JSON.stringify(f.after))];
+        state.ownerTaskMap = new Map([[f.after.id, state.lastLoaded.tasks[0]]]);
+        state.persistenceStatus = { generation: 0, queued: false, inFlight: false, immediate: false, retrying: false, failed: false };
+        return state;
+    };
+    const input = (f = plain, index = 0) => JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(f.envelope), candidateIndex: index });
+    const invoke = (state, json = input(), outcome = 'removed') => {
+        const seen = [];
+        const callback = (label) => function () { assert.equal(arguments.length, 0); seen.push(label); return JSON.stringify({ outcome: label === 'retire' ? outcome : label }); };
+        const value = state.StrideHost.attachmentFileEditSaveRetire(json, callback('referenced'), callback('taskChanged'), callback('retire'));
+        return { value: JSON.parse(value), seen };
+    };
+    for (const f of [plain, changed, many]) await check(async () => {
+        const state = await make(f), before = state.fileEditSaveInputs.length;
+        assert.deepEqual(invoke(state, input(f, f.plan.length - 1)), { value: { outcome: 'removed' }, seen: ['retire'] });
+        assert.equal(state.fileEditSaveInputs.length - before, 1, 'full frozen envelope is validated once before candidate selection');
+    });
+
+
+    const reuse = await fixture(3), validations = (state) => state.fileEditSaveInputs.filter(([method]) => method === 'validate').length;
+    let memoCases = 0;
+    const checkMemo = async (work) => { await check(work); memoCases++; };
+    await checkMemo(async () => {
+        const state = await make(many);
+        for (let index = 0; index < many.plan.length; index++) {
+            assert.deepEqual(invoke(state, input(many, index)), { value: { outcome: 'removed' }, seen: ['retire'] });
+        }
+        assert.equal(validations(state), 1, 'all 257 candidates share one complete pure validation');
+        invoke(state, input(many));
+        assert.equal(validations(state), 2, 'the last candidate released the historical memo');
+    });
+    await checkMemo(async () => {
+        const state = await make(reuse);
+        for (const index of [1, 0, 1]) invoke(state, input(reuse, index));
+        assert.equal(validations(state), 1, 'nonlast reordering retains only one immutable plan');
+        invoke(state, input(reuse, 2)); invoke(state, input(reuse));
+        assert.equal(validations(state), 2, 'a call after the last index fully revalidates');
+    });
+    await checkMemo(async () => {
+        const state = await make(reuse), raw = JSON.stringify(reuse.envelope);
+        for (const envelopeJSON of [raw, ` ${raw}\n`, raw.replaceAll('task259', 't\\u0061sk259'), raw]) {
+            assert.deepEqual(invoke(state, JSON.stringify({ version: 1, envelopeJSON, candidateIndex: 0 })),
+                { value: { outcome: 'removed' }, seen: ['retire'] });
+        }
+        assert.equal(validations(state), 4, 'whitespace and equivalent Unicode escaping are different exact envelope bytes');
+    });
+    await checkMemo(async () => {
+        const state = await make(reuse); invoke(state, input(reuse));
+        const forged = JSON.parse(JSON.stringify(reuse.envelope));
+        forged.request.ownedDraft.priorOperations[0].operation.requestId += '\n'; forged.prepared.request = forged.request;
+        assert.throws(() => invoke(state, JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(forged), candidateIndex: 1 })),
+            /INVALID_INPUT: Invalid attachment Save handoff/);
+        assert.equal(validations(state), 2, 'a different history reaches full validation and cannot borrow the previous plan');
+        for (const json of [JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(reuse.envelope), candidateIndex: 3 }),
+            JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(reuse.envelope), candidateIndex: 1, permission: true }),
+            JSON.stringify({ version: 1, envelopeJSON: '界'.repeat(3 * 1024 * 1024), candidateIndex: 1 }), '{private']) {
+            assert.throws(() => invoke(state, json), /INVALID_INPUT: Invalid attachment Save handoff/);
+        }
+        assert.deepEqual(invoke(state, input(reuse, 1)), { value: { outcome: 'removed' }, seen: ['retire'] });
+        assert.equal(validations(state), 2, 'invalid frames/indexes do not replace the previously validated exact plan');
+    });
+    await checkMemo(async () => {
+        const state = await make(reuse); invoke(state, input(reuse));
+        state.ownerProjects = [{ attachments: [{ kind: 'file', uri: reuse.plan[1].attachment.uri }] }];
+        assert.deepEqual(invoke(state, input(reuse, 1)), { value: { outcome: 'referenced' }, seen: ['referenced'] });
+        state.ownerProjects = []; state.ownerTaskMap = new Map([['task259', { ...reuse.after, rev: reuse.after.rev + 1 }]]);
+        assert.deepEqual(invoke(state, input(reuse, 1)), { value: { outcome: 'taskChanged' }, seen: ['taskChanged'] });
+        state.ownerTaskMap = new Map([['task259', reuse.after]]);
+        assert.deepEqual(invoke(state, input(reuse, 1)), { value: { outcome: 'removed' }, seen: ['retire'] });
+        assert.equal(validations(state), 1, 'references/current revision and callback choice stay fresh on hits');
+    });
+    for (const field of ['queued', 'inFlight', 'immediate', 'retrying', 'failed']) await checkMemo(async () => {
+        const state = await make(reuse); invoke(state, input(reuse)); state.persistenceStatus[field] = true;
+        assert.throws(() => invoke(state, input(reuse, 1)), /NOT_READY: Attachment Save requires settled native storage/);
+        state.persistenceStatus[field] = false; invoke(state, input(reuse, 1));
+        assert.equal(validations(state), 1, 'readiness refusal never turns the immutable memo into a permission');
+    });
+    for (const field of ['tasks', 'projects', 'map', 'generation', 'queued', 'sandbox', 'adapter']) await checkMemo(async () => {
+        const state = await make(reuse); invoke(state, input(reuse));
+        const row = { id: 'cache-hit-inert' };
+        Object.defineProperty(row, 'attachments', { get() {
+            if (field === 'tasks') state.lastLoaded.tasks = [...state.lastLoaded.tasks];
+            if (field === 'projects') state.ownerProjects = [];
+            if (field === 'map') state.ownerTaskMap = new Map(state.ownerTaskMap);
+            if (field === 'generation') state.persistenceStatus.generation++;
+            if (field === 'queued') state.persistenceStatus.queued = true;
+            if (field === 'sandbox') state.sandbox = true;
+            if (field === 'adapter') state.adapter = {};
+            return [];
+        } });
+        state.lastLoaded.tasks.push(row);
+        assert.throws(() => invoke(state, input(reuse, 1)), /NOT_READY: Attachment Save requires settled native storage/);
+        assert.equal(validations(state), 1, 'collection/map/generation fences are still checked on hits');
+    });
+    await checkMemo(async () => {
+        const state = await make(reuse); invoke(state, input(reuse)); const json = input(reuse, 1);
+        assert.throws(() => state.StrideHost.attachmentFileEditSaveRetire(json, () => '{}', () => '{}', () => '{}'),
+            /INVALID_INPUT: Invalid attachment Save handoff/);
+        assert.deepEqual(invoke(state, json), { value: { outcome: 'removed' }, seen: ['retire'] });
+        assert.equal(validations(state), 1, 'a refused callback caches neither callback nor outcome');
+        assert.throws(() => state.StrideHost.attachmentFileEditSaveRetire(input(reuse, 2), () => '{}', () => '{}', () => { throw Error('private'); }),
+            /NOT_READY: Attachment Save requires settled native storage/);
+        invoke(state, input(reuse, 2));
+        assert.equal(validations(state), 2, 'a failed last callback still releases the memo before retry');
+    });
+    console.log(`Task263: ${memoCases} immutable Save-plan reuse checks (real254 complete plan; fresh mutable fences on cache hits)`);
+    for (const outcome of ['removed', 'absent', 'generationChanged', 'unsafeEntry', 'noOwnedGeneration', 'unmanaged']) await check(async () => {
+        assert.deepEqual(invoke(await make(), input(), outcome), { value: { outcome }, seen: ['retire'] });
+    });
+    for (const where of ['task', 'project', 'archived', 'deletedOwner', 'deletedAttachment', 'link']) await check(async () => {
+        const state = await make(), attachment = { kind: where === 'link' ? 'link' : 'file', uri: plain.plan[0].attachment.uri,
+            ...(where === 'deletedAttachment' ? { deletedAt: AT } : {}) };
+        const owner = { id: 'other', attachments: [attachment], ...(where === 'deletedOwner' ? { deletedAt: AT } : {}),
+            ...(where === 'archived' ? { status: 'archived' } : {}) };
+        (where === 'project' ? state.ownerProjects : state.lastLoaded.tasks).push(owner);
+        const kept = ['task', 'project', 'archived'].includes(where);
+        assert.deepEqual(invoke(state), { value: { outcome: kept ? 'referenced' : 'removed' }, seen: [kept ? 'referenced' : 'retire'] });
+    });
+
+
+    let aliasCases276 = 0;
+    const checkAlias276 = async (work) => { await check(work); aliasCases276++; };
+    const aliasSuffix276 = 'mobile/Containers/Data/Application/27600000-0000-4000-8000-000000000001/Library/attachment-files/documents/attachments/';
+    for (const [prefix, otherPrefix] of [['file:///var/', 'file:///private/var/'], ['file:///private/var/', 'file:///var/']]) {
+        const f = await fixture(1, 'noop', prefix + aliasSuffix276);
+        const aliasURI = f.plan[0].attachment.uri.replace(prefix, otherPrefix);
+        for (const where of ['task', 'project', 'deletedOwner', 'deletedAttachment']) await checkAlias276(async () => {
+            const state = await make(f), attachment = { kind: 'file', uri: aliasURI,
+                ...(where === 'deletedAttachment' ? { deletedAt: AT } : {}) };
+            const owner = { id: 'alias-owner', attachments: [attachment], ...(where === 'deletedOwner' ? { deletedAt: AT } : {}) };
+            (where === 'project' ? state.ownerProjects : state.lastLoaded.tasks).push(owner);
+            const kept = where === 'task' || where === 'project';
+            assert.deepEqual(invoke(state, input(f)), { value: { outcome: kept ? 'referenced' : 'removed' }, seen: [kept ? 'referenced' : 'retire'] });
+        });
+        await checkAlias276(async () => {
+            const state = await make(f); let reads = 0, entered = 0;
+            const owner = { id: 'alias-generation-change' };
+            Object.defineProperty(owner, 'attachments', { get() {
+
+                if (++reads === 1) state.persistenceStatus.generation++;
+                return [{ kind: 'file', uri: aliasURI }];
+            } });
+            state.ownerProjects.push(owner);
+            const callback = () => { entered++; return '{"outcome":"referenced"}'; };
+            assert.throws(() => state.StrideHost.attachmentFileEditSaveRetire(input(f), callback, callback, callback),
+                /NOT_READY: Attachment Save requires settled native storage/);
+            assert(reads >= 1, 'mutation occurs during the sibling-alias reference comparison');
+            assert.equal(entered, 0, 'alias comparison never releases the captured generation fence');
+        });
+    }
+    for (const [prefix, otherPrefix] of [['file:///variant/', 'file:///private/variant/'], ['file:///private/variant/', 'file:///variant/']]) await checkAlias276(async () => {
+        const f = await fixture(1, 'noop', prefix + aliasSuffix276), state = await make(f);
+        state.ownerProjects.push({ attachments: [{ kind: 'file', uri: f.plan[0].attachment.uri.replace(prefix, otherPrefix) }] });
+        assert.deepEqual(invoke(state, input(f)), { value: { outcome: 'removed' }, seen: ['retire'] }, 'only the complete fixed /var/ prefix has a sibling');
+    });
+    console.log(`Task276: ${aliasCases276} v1 Save alias-reference checks (real254 pure envelopes; no physical normalization)`);
+    await check(async () => {
+        const state = await make(), seen = [];
+        const callback = () => { seen.push('callback'); return '{"outcome":"removed"}'; };
+        assert.throws(() => state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: 2,
+            envelopeJSON: JSON.stringify(plain.envelope), candidateIndex: 0, currentURI: 'file:///var/current.pdf' }),
+        callback, callback, callback), /INVALID_INPUT: Invalid attachment Save handoff/);
+        assert.deepEqual(seen, [], 'v2 cannot borrow a validated legacy file-only envelope');
+    });
+    for (const change of ['missing', 'rev', 'revBy', 'updatedAt']) await check(async () => {
+        const state = await make();
+        if (change === 'missing') state.ownerTaskMap = new Map();
+        else state.ownerTaskMap = new Map([['task259', { ...plain.after, [change]: change === 'rev' ? 9 : 'changed' }]]);
+        assert.deepEqual(invoke(state), { value: { outcome: 'taskChanged' }, seen: ['taskChanged'] });
+    });
+    await check(async () => {
+        const state = await make(); state.ownerTaskMap = new Map();
+        state.ownerProjects = [{ attachments: [{ kind: 'file', uri: plain.plan[0].attachment.uri }] }];
+        assert.deepEqual(invoke(state), { value: { outcome: 'referenced' }, seen: ['referenced'] }, 'live reference wins moved-task reason');
+    });
+    await check(async () => {
+        const owned = plain.envelope.request.ownedDraft;
+        const added = await poll(fixtureState, fixtureState.StrideHost.attachmentDraftPrepareV3(JSON.stringify({ ...owned,
+            requestId: '25900000-0000-4000-8000-000000000003', picked: { uri: 'file:///library/cache/picked.pdf',
+                name: 'Picked.pdf', mimeType: null, size: null }, measuredSize: 3 })));
+        assert.equal(added.ok, true); assert.equal(added.value.kind, 'prepared');
+        const withAdd = { ...owned, beforePayloadJSON: added.value.afterPayloadJSON,
+            priorOperations: [...owned.priorOperations, { kind: 'add', operation: added.value }] };
+        const removed = await poll(fixtureState, fixtureState.StrideHost.attachmentDraftRemovePrepareV3(JSON.stringify({ ...withAdd,
+            requestId: '25900000-0000-4000-8000-000000000004', attachmentId: added.value.requestId })));
+        assert.equal(removed.ok, true);
+        const envelope = JSON.parse(JSON.stringify(plain.envelope)), request = envelope.request;
+        request.checkpoint = { ...request.checkpoint, generation: 4, payloadJSON: removed.value.afterPayloadJSON };
+        request.ownedDraft = { ...withAdd, beforePayloadJSON: removed.value.afterPayloadJSON,
+            priorOperations: [...withAdd.priorOperations, { kind: 'remove', operation: removed.value }] };
+        request.saveRequest.attachments.value = JSON.parse(removed.value.afterPayloadJSON).attachments;
+        const after = { ...plain.after, attachments: request.saveRequest.attachments.value };
+        envelope.prepared.request = request;
+        envelope.prepared.decision.effect.task = { before: after, after };
+        const validation = await poll(fixtureState, fixtureState.StrideHost.attachmentFileEditSaveValidate(JSON.stringify(envelope)));
+        assert.equal(validation.ok, true, 'real254 validates mixed Remove/Add/Remove file-only noop');
+        const f = { envelope, after, plan: validation.value.settlementPlan }, index = f.plan.findIndex((value) => value.reason === 'uncommitted-draft');
+        assert(index >= 0);
+        const state = await make(f); state.ownerTaskMap = new Map();
+        assert.deepEqual(invoke(state, input(f, index)), { value: { outcome: 'removed' }, seen: ['retire'] }, 'new draft copy ignores moved-task fence');
+        assert.throws(() => invoke(state, input(f, index), 'generationChanged'), /INVALID_INPUT: Invalid attachment Save handoff/);
+    });
+    await check(async () => {
+        const state = await make(); let release;
+        state.backupPrepareHold = new Promise((resolveHeld) => { release = resolveHeld; });
+        const ticket = state.StrideHost.backupDocumentPrepare('{}');
+        assert.throws(() => invoke(state), /NOT_READY: Attachment Save requires settled native storage/);
+        release(); await new Promise((resolveTick) => setImmediate(resolveTick));
+        assert.deepEqual(invoke(state), { value: { outcome: 'removed' }, seen: ['retire'] }, 'done unpolled slot is settled');
+        assert.equal((await poll(state, ticket)).ok, true);
+    });
+    for (const field of ['queued', 'inFlight', 'immediate', 'retrying', 'failed']) await check(async () => {
+        const state = await make(); state.persistenceStatus = { ...state.persistenceStatus, [field]: true };
+        assert.throws(() => invoke(state), /NOT_READY: Attachment Save requires settled native storage/);
+    });
+    for (const kind of ['beforeBoot', 'nonIOS', 'noCapability', 'sandbox', 'transition', 'loading', 'failure', 'editLock', 'adapter']) await check(async () => {
+        let state;
+        if (kind === 'beforeBoot') state = makeState(0, [], 'ios', configureLocal);
+        else if (kind === 'nonIOS') state = await make(plain, configureLocal, 'android');
+        else if (kind === 'noCapability') state = await make(plain, (value) => { value.realMixedSaveValidation = true; });
+        else state = await make();
+        if (kind === 'sandbox') state.sandbox = true;
+        if (kind === 'transition') state.workspaceTransition = true;
+        if (kind === 'loading') state.storeLoading = true;
+        if (kind === 'failure') state.persistenceFailure = { private: 'secret' };
+        if (kind === 'editLock') state.storeEditLocks = 1;
+        if (kind === 'adapter') state.adapter = {};
+        assert.throws(() => invoke(state), /NOT_READY: Attachment Save requires settled native storage/);
+    });
+    for (const field of ['tasks', 'projects', 'map', 'generation', 'queued', 'sandbox', 'adapter']) await check(async () => {
+        const state = await make();
+        const row = { id: 'inert' };
+        Object.defineProperty(row, 'attachments', { get() {
+            if (field === 'tasks') state.lastLoaded.tasks = [...state.lastLoaded.tasks];
+            if (field === 'projects') state.ownerProjects = [];
+            if (field === 'map') state.ownerTaskMap = new Map(state.ownerTaskMap);
+            if (field === 'generation') state.persistenceStatus.generation++;
+            if (field === 'queued') state.persistenceStatus.queued = true;
+            if (field === 'sandbox') state.sandbox = true;
+            if (field === 'adapter') state.adapter = {};
+            return [];
+        } });
+        state.lastLoaded.tasks.push(row);
+        assert.throws(() => invoke(state), /NOT_READY: Attachment Save requires settled native storage/);
+    });
+    const invalid = 'INVALID_INPUT: Invalid attachment Save handoff';
+    const awaitReady259 = await make();
+    for (const value of [null, [], {}, { version: 2, envelopeJSON: '{}', candidateIndex: 0 },
+        { version: 1, envelopeJSON: 3, candidateIndex: 0 }, { version: 1, envelopeJSON: '{}', candidateIndex: 0, permission: true },
+        ...[-1, 0.5, Number.MAX_SAFE_INTEGER + 1, true, null, 1].map((candidateIndex) => ({ version: 1, envelopeJSON: JSON.stringify(plain.envelope), candidateIndex }))]) await check(async () => {
+        assert.throws(() => invoke(awaitReady259, JSON.stringify(value)), { message: invalid });
+    });
+    for (const json of ['{private-draft', JSON.stringify({ version: 1, envelopeJSON: '{secret', candidateIndex: 0 }),
+        'x'.repeat(8 * 1024 * 1024 + 1), JSON.stringify({ version: 1, envelopeJSON: '界'.repeat(3 * 1024 * 1024), candidateIndex: 0 })]) await check(async () => {
+        assert.throws(() => invoke(awaitReady259, json), { message: invalid });
+    });
+    await check(async () => {
+        const forged = JSON.parse(JSON.stringify(plain.envelope)); forged.prepared.decision.effect.task.after.rev++;
+        assert.throws(() => invoke(awaitReady259, JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(forged), candidateIndex: 0 })), { message: invalid });
+    });
+    for (const field of ['session', 'request']) await check(async () => {
+        const forged = JSON.parse(JSON.stringify(plain.envelope));
+        if (field === 'session') forged.request.checkpoint.sessionID += '\n';
+        else forged.request.ownedDraft.priorOperations[0].operation.requestId += '\n';
+        forged.prepared.request = forged.request;
+        assert.throws(() => invoke(awaitReady259, JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(forged), candidateIndex: 0 })), { message: invalid });
+    });
+    for (const reply of ['!StrideNativeError:secret-content', '{private-content', '{}', '{"outcome":"referenced"}',
+        '{"outcome":"removed","extra":"secret"}', '界'.repeat(400), Promise.resolve('{"outcome":"removed"}')]) await check(async () => {
+        const seen = [];
+        assert.throws(() => awaitReady259.StrideHost.attachmentFileEditSaveRetire(input(), () => { seen.push('keep'); return '{}'; },
+            () => { seen.push('moved'); return '{}'; }, () => { seen.push('retire'); return reply; }), { message: invalid });
+        assert.deepEqual(seen, ['retire'], 'malformed acknowledgment never retries another callback');
+    });
+    await check(async () => {
+        const seen = [];
+        assert.throws(() => awaitReady259.StrideHost.attachmentFileEditSaveRetire(input(), () => '{}', () => '{}', () => {
+            seen.push('retire'); throw Error('private content/path');
+        }), { message: 'NOT_READY: Attachment Save requires settled native storage' });
+        assert.deepEqual(seen, ['retire']);
+    });
+    await check(async () => {
+        for (const callbacks of [[null, () => '{}', () => '{}'], [() => '{}', null, () => '{}'], [() => '{}', () => '{}', null]]) {
+            assert.throws(() => awaitReady259.StrideHost.attachmentFileEditSaveRetire(input(), ...callbacks), { message: invalid });
+        }
+    });
+    await check(async () => {
+        const state = await make(); state.order259 = []; state.input259 = input();
+        state.keep259 = () => { throw Error('wrong branch'); };
+        state.retire259 = () => { state.order259.push('retire'); return '{"outcome":"absent"}'; };
+        vm.runInNewContext(`Promise.resolve().then(() => order259.push('microtask'));
+            globalThis.direct259 = StrideHost.attachmentFileEditSaveRetire(input259, keep259, keep259, retire259);
+            order259.push('returned');`, state);
+        assert.deepEqual(state.order259, ['retire', 'returned']);
+        await new Promise((resolveTick) => setImmediate(resolveTick));
+        assert.deepEqual(state.order259, ['retire', 'returned', 'microtask']);
+        assert.equal(state.direct259, '{"outcome":"absent"}');
+    });
+    await check(async () => {
+        const state = await make();
+        const before = JSON.stringify({ events: state.events, data: state.fakeData, files: state.fileCalls, logOps: state.logOps });
+        invoke(state);
+        assert.equal(JSON.stringify({ events: state.events, data: state.fakeData, files: state.fileCalls, logOps: state.logOps }), before,
+            'unbound fence performs no native file/flush/store/diagnostic work');
+        assert.equal((await poll(state, state.StrideHost.attachmentRequest('attachmentFileEditSaveRetire', '{}'))).ok, false);
+    });
+    console.log(`Task259: ${cases} synchronous mixed Save fence checks (real254 file-only pure validation + shared references/revision; NodeVM only)`);
+}
+
+
+{
+    const { DatabaseSync } = await import('node:sqlite');
+    const AT = '2026-10-05T10:00:00.000Z', ROOT = 'file:///library/documents/attachments/';
+    const SESSION = '26800000-0000-4000-8000-000000000001', REQUEST = '26800000-0000-4000-8000-000000000002';
+    const configureLocal = (state) => {
+        state.localAttachmentTest = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null; state.__strideInstallerCall = async () => null;
+    };
+    const databases = []; let cases = 0;
+    const check = async (work) => { await work(); cases++; };
+    const call = (state, method, input) => poll(state, state.StrideHost[method](JSON.stringify(input)));
+    const fixture = async ({ empty = false, noop = false, recurring = false, cancel = false, large = false, withAdd = false, availability = false, availabilityTombstone = false, availabilitySameURI = false,
+        managedDirectoryURI = ROOT } = {}) => {
+        const baseline = Array.from({ length: 2 }, (_, n) => ({ id: `file${n}`, kind: 'file', title: 'File', uri: managedDirectoryURI + `${n}.pdf`,
+            size: 3, localStatus: 'available', createdAt: AT, updatedAt: AT }));
+        if (availability) Object.assign(baseline[0], { uri: availabilitySameURI ? managedDirectoryURI + '0.pdf' : '', cloudKey: 'attachments/file0.pdf', fileHash: 'a'.repeat(64), localStatus: 'missing' });
+        baseline.push({ ...baseline[0], id: 'old-tombstone', uri: managedDirectoryURI + 'old.pdf', deletedAt: AT });
+        const source = { id: 'task268', title: 'Task', status: 'next', taskMode: 'list', tags: [], contexts: [], checklist: [],
+            description: large ? 'x'.repeat(270_000) : 'Notes', attachments: baseline, createdAt: AT, updatedAt: AT, rev: 8, revBy: 'before',
+            ...(recurring ? { dueDate: '2026-10-05', recurrence: { rule: 'daily', strategy: 'strict' } } : {}) };
+        const data = { tasks: [source], projects: [], sections: [], areas: [], people: [], settings: { deviceId: 'device268' } };
+        const db = new DatabaseSync(':memory:'); databases.push(db);
+        const state = makeState('auto', [], 'ios', (value) => {
+            configureLocal(value); value.fakeData = JSON.parse(JSON.stringify(data)); value.completeSeed = data;
+            value.completeSqliteClient = { run: async (sql, params = []) => { db.prepare(sql).run(...params); },
+                all: async (sql, params = []) => db.prepare(sql).all(...params),
+                get: async (sql, params = []) => db.prepare(sql).all(...params)[0], exec: async (sql) => { db.exec(sql); } };
+            value.realMixedSaveValidation = true;
+        });
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        const edited = recurring ? { status: 'done', completedAt: '', focusedToday: false } : noop || cancel ? {} : { title: 'Edited' };
+        const touchedBase = Object.fromEntries(Object.keys(edited).map((field) => [field, field === 'status' ? 'next' : field === 'focusedToday' ? false : field === 'title' ? 'Task' : '']));
+        const initialPayloadJSON = JSON.stringify({ version: 2, taskID: source.id, tab: 'task', touchedBase, edited,
+            raw: { title: edited.title ?? '', note: '', location: '', estimate: '', estimateResolved: '', timeSpent: '', timeSpentResolved: '',
+                tokens: {}, tokenCanonical: {}, tokenResolved: {}, tokenEdited: [], checklistInputs: {}, checklistAppend: '',
+                relativeAmount: '', relativeUnit: '', relativeOwned: false, relativeCommitRequested: false,
+                recurrenceInputs: {}, recurrenceOwned: [], recurrenceCommitRequested: [] }, scheduleEdits: [], scheduleFailedID: null,
+            attachmentsOwned: true, attachmentsBase: baseline, attachments: baseline, linkSheet: {} });
+        const ownedDraft = { version: availability ? 5 : 3, taskID: source.id, initialPayloadJSON, beforePayloadJSON: initialPayloadJSON,
+            priorOperations: [], managedDirectoryURI };
+        if (!empty && !availability) for (let index = 0; index < (recurring || cancel ? 1 : 2); index++) {
+            const removed = await call(state, 'attachmentDraftRemovePrepareV3', { ...ownedDraft,
+                requestId: `26800000-0000-4000-8000-${String(index + 3).padStart(12, '0')}`, attachmentId: `file${index}` });
+            assert.equal(removed.ok, true); ownedDraft.beforePayloadJSON = removed.value.afterPayloadJSON;
+            ownedDraft.priorOperations.push({ kind: 'remove', operation: removed.value });
+        }
+        if (withAdd) {
+            const added = await call(state, 'attachmentDraftPrepareV3', { ...ownedDraft,
+                requestId: '27600000-0000-4000-8000-000000000003', measuredSize: 3,
+                picked: { uri: 'file:///library/cache/picked.pdf', name: 'Picked.pdf', mimeType: null, size: null } });
+            assert.equal(added.ok, true); assert.equal(added.value.kind, 'prepared');
+            ownedDraft.beforePayloadJSON = added.value.afterPayloadJSON;
+            ownedDraft.priorOperations.push({ kind: 'add', operation: added.value });
+        }
+        if (availability) {
+            const resolved = { ...baseline[0], uri: managedDirectoryURI + '0.pdf', localStatus: 'available' };
+            const afterPayloadJSON = JSON.stringify({ ...JSON.parse(initialPayloadJSON), attachments: [resolved, ...baseline.slice(1)] });
+            ownedDraft.priorOperations.push({ kind: 'availability', operation: { version: 1, kind: 'prepared-file-availability',
+                taskID: source.id, requestId: '35600000-0000-4000-8000-000000000002', attachmentId: baseline[0].id,
+                identity: JSON.stringify([baseline[0].id, baseline[0].cloudKey, baseline[0].fileHash, 0]),
+                beforePayloadJSON: initialPayloadJSON, afterPayloadJSON, status: 'available', resolvedAttachmentJSON: JSON.stringify(resolved) } });
+            ownedDraft.beforePayloadJSON = afterPayloadJSON;
+        }
+        const draft = JSON.parse(ownedDraft.beforePayloadJSON).attachments;
+        if (noop && !empty) source.attachments = draft;
+        if (availabilityTombstone) source.attachments = baseline.map((row, index) => index === 0
+            ? { ...row, deletedAt: '2026-10-06T00:00:00.000Z' } : row);
+        const request = { version: availability ? 4 : 2, kind: 'owned-editor-file-edit-save',
+            checkpoint: { version: 1, sessionID: SESSION, taskID: source.id, generation: ownedDraft.priorOperations.length + 1, payloadJSON: ownedDraft.beforePayloadJSON },
+            ownedDraft, saveRequest: { id: source.id, requestId: REQUEST, base: touchedBase, patch: edited,
+                scheduleBase: { startTime: null, dueDate: recurring ? '2026-10-05' : null, relativeStartOffset: null, reviewAt: null },
+                checklist: { base: [], value: [] }, attachments: { base: baseline, value: draft }, ...(cancel ? { intent: 'cancel' } : {}) } };
+        const prepared = await call(state, 'attachmentFileEditSavePrepare', request);
+        assert.equal(prepared.ok, true, JSON.stringify(prepared)); assert.equal(prepared.value.kind, 'prepared');
+        const envelope = { request, prepared: prepared.value.prepared };
+        const checked = await call(state, 'attachmentFileEditSaveValidate', envelope); assert.equal(checked.ok, true);
+        const after = envelope.prepared.decision.kind === 'changed'
+            ? envelope.prepared.decision.prepared.effect.tasks.find((row) => row.after.id === source.id).after
+            : envelope.prepared.decision.prepared.witness.source;
+        return { state, db, request, envelope, after, plan: checked.value.settlementPlan };
+    };
+    const syncLive = (f) => {
+        f.state.lastLoaded.tasks = f.db.prepare('SELECT id, rev, revBy, updatedAt, attachments FROM tasks ORDER BY id').all()
+            .map((row) => ({ ...row, attachments: JSON.parse(row.attachments ?? '[]') }));
+        f.state.ownerTaskMap = new Map(f.state.lastLoaded.tasks.map((row) => [row.id, row]));
+    };
+    const invoke = (f, index = 0, envelopeJSON = JSON.stringify(f.envelope), currentURI) => {
+        const seen = [], callback = (outcome) => function () { assert.equal(arguments.length, 0); seen.push(outcome); return JSON.stringify({ outcome }); };
+        const result = f.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: currentURI === undefined ? 1 : 2,
+            envelopeJSON, candidateIndex: index, ...(currentURI === undefined ? {} : { currentURI }) }),
+            callback('referenced'), callback('taskChanged'), callback('removed'));
+        return { result: JSON.parse(result), seen };
+    };
+    try {
+        for (const options of [{ empty: true }, { empty: true, noop: true }, { noop: true }, {}]) await check(async () => {
+            const f = await fixture(options); assert.equal(f.envelope.prepared.version, 2);
+            assert.equal(f.envelope.prepared.decision.kind, options.noop ? 'noop' : 'changed');
+            if (options.empty) assert.equal(f.plan.length, 0, 'empty history protects even old baseline tombstones');
+            const committed = await call(f.state, 'attachmentFileEditSaveCommit', f.envelope); assert.equal(committed.ok, true);
+            assert.equal(f.state.fileEditSaveInputs.at(-1)[0], 'completeCommit'); syncLive(f);
+            if (!options.empty) assert.deepEqual(invoke(f), { result: { outcome: 'removed' }, seen: ['removed'] });
+            if (options.empty && options.noop) assert.equal(f.db.prepare('SELECT rev FROM tasks WHERE id = ?').get('task268').rev, 8);
+        });
+        await check(async () => {
+            const f = await fixture({ availability: true });
+            assert.equal(f.envelope.prepared.version, 4);
+            assert.equal(JSON.parse(f.db.prepare('SELECT attachments FROM tasks WHERE id = ?').get('task268').attachments)[0].uri, '',
+                'selected download proof and Save preparation leave stored Task unchanged');
+            const resumed = await call(f.state, 'attachmentDraftResumeCheckV3', { version: 3, kind: 'owned-editor-resume',
+                checkpoint: f.request.checkpoint, ownedDraft: f.request.ownedDraft });
+            assert.equal(resumed.ok, true, JSON.stringify(resumed));
+            assert.equal((await call(f.state, 'attachmentFileEditSaveCommit', f.envelope)).ok, true);
+            syncLive(f);
+            const row = f.db.prepare('SELECT title, attachments FROM tasks WHERE id = ?').get('task268');
+            assert.equal(row.title, 'Edited'); assert.equal(JSON.parse(row.attachments)[0].uri, ROOT + '0.pdf');
+            assert.equal(f.state.fileEditSaveInputs.at(-1)[0], 'completeCommit');
+            assert(f.plan.length > 0);
+            assert.deepEqual(invoke(f), { result: { outcome: 'removed' }, seen: ['removed'] },
+                'outer4 uses complete result classification at the existing retirement fence');
+        });
+        await check(async () => {
+            const f = await fixture({ availability: true, cancel: true });
+            assert.equal((await call(f.state, 'attachmentFileEditSaveCommit', f.envelope)).ok, true);
+            const request = { requestId: '35600000-0000-4000-8000-000000000099', cancelRequestId: REQUEST };
+            const prepared = await call(f.state, 'taskCancellationUndoPrepare', { request, cancel: f.envelope });
+            assert.equal(prepared.ok, true, JSON.stringify(prepared));
+            assert.equal(f.state.fileEditSaveInputs.at(-1)[0], 'completeUndoPrepare');
+            assert.equal((await call(f.state, 'taskCancellationUndoCommit', { request, prepared: prepared.value.prepared })).ok, true);
+            const row = f.db.prepare('SELECT status, attachments FROM tasks WHERE id = ?').get('task268');
+            assert.equal(row.status, 'next'); assert.equal(JSON.parse(row.attachments)[0].uri, ROOT + '0.pdf');
+        });
+        await check(async () => {
+            const f = await fixture({ availability: true, availabilityTombstone: true });
+            assert.equal((await call(f.state, 'attachmentFileEditSaveCommit', f.envelope)).ok, true); syncLive(f);
+            const index = f.plan.findIndex((row) => row.reason === 'uncommitted-draft' && row.attachment.uri === ROOT + '0.pdf');
+            assert(index >= 0, 'new available URI survives as an uncommitted candidate when a concurrent tombstone wins');
+            const input = JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(f.envelope), candidateIndex: index });
+            let borrowed = 0;
+            const keep = () => '{"outcome":"referenced"}', changed = () => { throw Error('wrong branch'); };
+            const retire = () => { borrowed++; return '{"outcome":"notOwned"}'; };
+            assert.equal(f.state.StrideHost.attachmentFileEditSaveRetire(input, keep, changed, retire), '{"outcome":"notOwned"}');
+            assert.equal(borrowed, 1);
+            assert.equal(f.state.StrideHost.attachmentFileEditSaveRetire(input, changed, changed, keep), '{"outcome":"referenced"}', 'selected native durable-reference backstop can retain bytes');
+            f.state.ownerProjects = [{ attachments: [{ kind: 'file', uri: ROOT + '0.pdf' }] }];
+            assert.equal(f.state.StrideHost.attachmentFileEditSaveRetire(input, keep, changed, retire), '{"outcome":"referenced"}');
+            assert.equal(borrowed, 1, 'fresh references keep the file even on a cached selected plan');
+            f.state.ownerProjects = [];
+            const same = await fixture({ availability: true, availabilityTombstone: true, availabilitySameURI: true });
+            assert.equal((await call(same.state, 'attachmentFileEditSaveCommit', same.envelope)).ok, true); syncLive(same);
+            const baseline = same.plan.findIndex((row) => row.reason === 'deleted-after-save' && row.attachment.uri === ROOT + '0.pdf');
+            assert(baseline >= 0, 'same-URI borrowed availability can become a baseline cleanup candidate');
+            assert.equal(same.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: 1,
+                envelopeJSON: JSON.stringify(same.envelope), candidateIndex: baseline }), keep, changed, retire), '{"outcome":"notOwned"}');
+            const historical = await fixture();
+            assert.equal((await call(historical.state, 'attachmentFileEditSaveCommit', historical.envelope)).ok, true); syncLive(historical);
+            assert.throws(() => historical.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: 1,
+                envelopeJSON: JSON.stringify(historical.envelope), candidateIndex: 0 }), keep, changed, retire), /INVALID_INPUT/);
+        });
+        const recurring = await fixture({ recurring: true });
+        await check(async () => {
+            assert.equal((await call(recurring.state, 'attachmentFileEditSaveCommit', recurring.envelope)).ok, true); syncLive(recurring);
+            const child = recurring.state.lastLoaded.tasks.find((row) => row.id !== 'task268'); assert(child);
+            assert(child.attachments.some((row) => row.uri === ROOT + '0.pdf' && !row.deletedAt));
+            const index = recurring.plan.findIndex((row) => row.attachment.uri === ROOT + '0.pdf'); assert(index >= 0);
+            assert.deepEqual(invoke(recurring, index), { result: { outcome: 'referenced' }, seen: ['referenced'] }, 'fresh generated child keeps the source tombstone bytes');
+        });
+        const reusable = await fixture(); assert.equal((await call(reusable.state, 'attachmentFileEditSaveCommit', reusable.envelope)).ok, true); syncLive(reusable);
+        const validations = () => reusable.state.fileEditSaveInputs.filter(([name]) => name === 'completeValidate').length;
+        const first = reusable.plan.findIndex((row) => row.attachment.id === 'file0'), second = reusable.plan.findIndex((row) => row.attachment.id === 'file1');
+        assert(first >= 0 && second >= 0 && second < reusable.plan.length - 1);
+        await check(async () => {
+            const before = validations(); invoke(reusable, first); reusable.state.ownerProjects = [{ attachments: [{ kind: 'file', uri: ROOT + '1.pdf' }] }];
+            assert.deepEqual(invoke(reusable, second), { result: { outcome: 'referenced' }, seen: ['referenced'] });
+            reusable.state.ownerProjects = []; reusable.state.ownerTaskMap = new Map([['task268', { ...reusable.after, rev: reusable.after.rev + 1 }]]);
+            assert.deepEqual(invoke(reusable, second), { result: { outcome: 'taskChanged' }, seen: ['taskChanged'] }); syncLive(reusable);
+            assert.equal(validations() - before, 1, 'exact complete plan hits retain fresh project refs and current revision');
+        });
+        await check(async () => {
+            const before = validations(), raw = JSON.stringify(reusable.envelope);
+            for (const text of [` ${raw}\n`, raw.replaceAll('task268', 't\\u0061sk268'), raw]) invoke(reusable, first, text);
+            assert.equal(validations() - before, 3, 'raw whitespace and Unicode spelling do not share authority');
+            reusable.state.persistenceStatus = { generation: 0, queued: true };
+            assert.throws(() => invoke(reusable, second), /NOT_READY/); reusable.state.persistenceStatus.queued = false;
+            const row = { id: 'inert' }; Object.defineProperty(row, 'attachments', { get() { reusable.state.persistenceStatus.generation++; return []; } });
+            reusable.state.lastLoaded.tasks.push(row); assert.throws(() => invoke(reusable, second), /NOT_READY/); syncLive(reusable);
+        });
+        await check(async () => {
+            const historical = makeState(0, [], 'ios'); historical.sandbox = true; historical.workspaceTransition = true;
+            assert.equal((await call(historical, 'attachmentFileEditSaveValidate', reusable.envelope)).ok, true);
+            for (const version of [0, 3, null]) {
+                const wrong = JSON.parse(JSON.stringify(reusable.envelope)); wrong.request.version = version;
+                assert.equal((await call(historical, 'attachmentFileEditSaveValidate', wrong)).ok, false);
+            }
+            for (const field of ['request', 'prepared']) {
+                const wrong = JSON.parse(JSON.stringify(reusable.envelope)); wrong[field].version = 1;
+                assert.equal((await call(historical, 'attachmentFileEditSaveValidate', wrong)).ok, false);
+                assert.equal((await call(reusable.state, 'attachmentFileEditSaveCommit', wrong)).ok, false);
+            }
+            const old = JSON.parse(JSON.stringify(reusable.envelope)); old.request.version = 1; old.prepared.version = 1; old.prepared.request = old.request;
+            assert.equal((await call(reusable.state, 'attachmentFileEditSaveValidate', old)).ok, false, 'old factory rejects the selected inner grammar');
+            const android = makeState(0, [], 'android', configureLocal);
+            for (const method of ['attachmentFileEditSavePrepare', 'attachmentFileEditSaveValidate', 'attachmentFileEditSaveCommit'])
+                assert.equal((await call(android, method, method.endsWith('Prepare') ? reusable.request : reusable.envelope)).ok, false);
+            assert.equal((await poll(reusable.state, reusable.state.StrideHost.attachmentRequest('attachmentFileEditSavePrepare', JSON.stringify(reusable.request)))).ok, false);
+        });
+        const cancel = await fixture({ cancel: true, large: true });
+        await check(async () => {
+            const result = await call(cancel.state, 'attachmentFileEditSaveCommit', cancel.envelope); assert.equal(result.ok, true); assert(result.value.cancellation);
+            const attachments = JSON.parse(cancel.db.prepare('SELECT attachments FROM tasks WHERE id = ?').get('task268').attachments);
+            attachments.push({ ...attachments[0], id: 'later', uri: ROOT + 'later.pdf', deletedAt: undefined });
+            cancel.db.prepare('UPDATE tasks SET title = ?, attachments = ?, rev = rev + 1 WHERE id = ?').run('Later title', JSON.stringify(attachments), 'task268');
+            const request = { requestId: '26800000-0000-4000-8000-000000000099', cancelRequestId: REQUEST };
+            const cold = makeState(0, [], 'ios', (value) => { value.completeSqliteClient = cancel.state.completeSqliteClient; });
+            assert.equal((await poll(cold, cold.StrideHost.boot())).ok, true);
+            const prepared = await call(cold, 'taskCancellationUndoPrepare', { request, cancel: cancel.envelope }); assert.equal(prepared.ok, true, JSON.stringify(prepared));
+            const undo = { request, prepared: prepared.value.prepared }, bytes = Buffer.byteLength(JSON.stringify(undo));
+            assert(bytes > 2_000_000 && bytes < 8 * 1024 * 1024, 'selected Undo crosses the old editor bound but stays attachment-bounded');
+            const historical = makeState(0, [], 'ios');
+            assert.equal((await call(historical, 'taskCancellationUndoValidate', undo)).ok, true);
+            assert.equal((await call(cold, 'taskCancellationUndoCommit', undo)).ok, true, 'cold metadata Undo needs no current local attachment capability');
+            const row = cancel.db.prepare('SELECT title, status, attachments FROM tasks WHERE id = ?').get('task268');
+            assert.equal(row.title, 'Later title'); assert.equal(row.status, 'next'); assert(JSON.parse(row.attachments).some((entry) => entry.id === 'later'));
+            for (const mutate of [(value) => { value.prepared.cancel.request.saveRequest.requestId += '\n'; }, (value) => { value.prepared.version = 1; }]) {
+                const wrong = JSON.parse(JSON.stringify(undo)); mutate(wrong); assert.equal((await call(historical, 'taskCancellationUndoValidate', wrong)).ok, false);
+            }
+            const android = makeState(0, [], 'android'); assert.equal((await call(android, 'taskCancellationUndoValidate', undo)).ok, false);
+            assert.equal((await call(historical, 'taskCancellationUndoValidate', { request, prepared: { version: 1, kind: 'undo', oversized: 'x'.repeat(2_000_001) } })).ok, false,
+                'legacy iOS Undo retains its ordinary editor bound');
+        });
+        await check(async () => {
+            reusable.state.order268 = []; reusable.state.input268 = JSON.stringify({ version: 1, envelopeJSON: JSON.stringify(reusable.envelope), candidateIndex: first });
+            reusable.state.keep268 = () => { throw Error('wrong branch'); }; reusable.state.retire268 = () => { reusable.state.order268.push('retire'); return '{"outcome":"absent"}'; };
+            vm.runInNewContext(`Promise.resolve().then(() => order268.push('microtask'));
+                StrideHost.attachmentFileEditSaveRetire(input268, keep268, keep268, retire268); order268.push('returned');`, reusable.state);
+            assert.deepEqual(reusable.state.order268, ['retire', 'returned']); await new Promise((done) => setImmediate(done));
+            assert.deepEqual(reusable.state.order268, ['retire', 'returned', 'microtask']);
+        });
+
+
+        let relocationCases276 = 0;
+        const checkRelocation276 = async (work) => { await check(work); relocationCases276++; };
+        const oldRoot276 = 'file:///private/var/mobile/Containers/Data/Application/27600000-0000-4000-8000-000000000001/Library/attachment-files/documents/attachments/';
+        const relocated = await fixture({ managedDirectoryURI: oldRoot276 });
+        assert.equal((await call(relocated.state, 'attachmentFileEditSaveCommit', relocated.envelope)).ok, true); syncLive(relocated);
+        const index276 = relocated.plan.findIndex((entry) => entry.attachment.id === 'file0'); assert(index276 >= 0);
+        const raw276 = JSON.stringify(relocated.envelope), original276 = relocated.plan[index276].attachment.uri;
+        const current276 = original276.replace('file:///private/var/', 'file:///var/')
+            .replace('Application/27600000-0000-4000-8000-000000000001/', 'Application/27600000-0000-4000-8000-000000000002/');
+        const refs276 = [original276, original276.replace('file:///private/var/', 'file:///var/'), current276,
+            current276.replace('file:///var/', 'file:///private/var/')];
+        const reset276 = () => { syncLive(relocated); relocated.state.ownerProjects = []; relocated.state.persistenceStatus = { generation: 0 }; };
+        for (const where of ['task', 'project']) for (const uri of refs276) await checkRelocation276(async () => {
+            reset276(); const owner = { id: 'live-alias-ref', attachments: [{ kind: 'file', uri }] };
+            (where === 'task' ? relocated.state.lastLoaded.tasks : relocated.state.ownerProjects).push(owner);
+            assert.deepEqual(invoke(relocated, index276, raw276, current276), { result: { outcome: 'referenced' }, seen: ['referenced'] });
+        });
+        await checkRelocation276(async () => {
+            reset276(); relocated.state.ownerProjects = [{ deletedAt: AT, attachments: [{ kind: 'file', uri: current276 }] },
+                { attachments: [{ kind: 'file', uri: refs276[3], deletedAt: AT }] }];
+            assert.deepEqual(invoke(relocated, index276, raw276, current276), { result: { outcome: 'removed' }, seen: ['removed'] });
+            relocated.state.ownerTaskMap = new Map();
+            assert.deepEqual(invoke(relocated, index276, raw276, current276), { result: { outcome: 'taskChanged' }, seen: ['taskChanged'] });
+            relocated.state.ownerProjects.push({ attachments: [{ kind: 'file', uri: refs276[3] }] });
+            assert.deepEqual(invoke(relocated, index276, raw276, current276), { result: { outcome: 'referenced' }, seen: ['referenced'] },
+                'current alias reference wins over a moved source');
+        });
+        await checkRelocation276(async () => {
+            reset276(); const before = relocated.state.fileEditSaveInputs.filter(([name]) => name === 'completeValidate').length;
+            assert.deepEqual(invoke(relocated, index276, raw276, current276), { result: { outcome: 'removed' }, seen: ['removed'] });
+            const laterURI = current276.replace('/0.pdf', '/later.pdf');
+            relocated.state.ownerProjects.push({ attachments: [{ kind: 'file', uri: laterURI }] });
+            assert.deepEqual(invoke(relocated, index276, raw276, laterURI), { result: { outcome: 'referenced' }, seen: ['referenced'] });
+            assert.equal(relocated.state.fileEditSaveInputs.filter(([name]) => name === 'completeValidate').length, before,
+                'memo hits retain neither current URI nor reference outcome');
+            relocated.state.persistenceStatus.queued = true;
+            assert.throws(() => invoke(relocated, index276, raw276, laterURI), /NOT_READY/);
+        });
+        await checkRelocation276(async () => {
+            reset276(); let reads = 0, entered = 0; const owner = {};
+            Object.defineProperty(owner, 'attachments', { get() {
+
+                if (++reads === 3) relocated.state.persistenceStatus.generation++;
+                return [{ kind: 'file', uri: refs276[3] }];
+            } });
+            relocated.state.ownerProjects.push(owner);
+            const callback = () => { entered++; return '{"outcome":"referenced"}'; };
+            assert.throws(() => relocated.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: 2,
+                envelopeJSON: raw276, candidateIndex: index276, currentURI: current276 }), callback, callback, callback), /NOT_READY/);
+            assert(reads >= 3, 'old/current and both alias spellings share the same generation fence'); assert.equal(entered, 0);
+        });
+        await checkRelocation276(async () => {
+            reset276(); const valid = { version: 2, envelopeJSON: raw276, candidateIndex: index276, currentURI: current276 };
+            const invalid = 'INVALID_INPUT: Invalid attachment Save handoff';
+            const frames = [
+                ...[null, '', 'https://example.test/file', 'file://authority/file', 'file:///x?query', 'file:///x#fragment',
+                    'file:///x//leaf', 'file:///x/../leaf', 'file:///x/%2e%2e/leaf', 'file:///x%2Fleaf', 'file:///x%5cleaf',
+                    'file:///x/%00', 'file:///x/\u0000', 'file:///x/%', 'file:///' + '界'.repeat(5462)]
+                    .map((currentURI) => ({ ...valid, currentURI })),
+                ...[0, 3, null].map((version) => ({ ...valid, version })), { ...valid, version: 1 },
+                { version: 2, envelopeJSON: raw276, candidateIndex: index276 }, { ...valid, proof: true },
+                ...[-1, 0.5, true, relocated.plan.length].map((candidateIndex) => ({ ...valid, candidateIndex })),
+                { ...valid, envelopeJSON: ' '.repeat(8 * 1024 * 1024) + raw276 },
+            ];
+            for (const frame of frames) {
+                let entered = 0; const callback = () => { entered++; return '{"outcome":"removed"}'; };
+                assert.throws(() => relocated.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify(frame), callback, callback, callback),
+                    (error) => error.message === invalid); assert.equal(entered, 0, 'bad v2 fields refuse even on a memo hit');
+            }
+        });
+        await checkRelocation276(async () => {
+            const mixed = await fixture({ withAdd: true });
+            assert.equal((await call(mixed.state, 'attachmentFileEditSaveCommit', mixed.envelope)).ok, true); syncLive(mixed);
+            let entered = 0; const callback = () => { entered++; return '{"outcome":"removed"}'; };
+            assert.throws(() => mixed.state.StrideHost.attachmentFileEditSaveRetire(JSON.stringify({ version: 2,
+                envelopeJSON: JSON.stringify(mixed.envelope), candidateIndex: 0, currentURI: current276 }), callback, callback, callback),
+            /INVALID_INPUT: Invalid attachment Save handoff/); assert.equal(entered, 0, 'a real complete Add/Remove envelope cannot borrow v2 cleanup');
+        });
+        console.log(`Task276: ${relocationCases276} v2 complete Remove-only reference/grammar checks (real266 SQLite envelope; same-turn callbacks only)`);
+    } finally { for (const db of databases) db.close(); }
+    console.log(`Task268: ${cases} complete Save/Undo/retire checks (real bound266 factory + SQLite, fresh refs and same-turn callbacks; Node VM)`);
+}
+
+{
+    const { DatabaseSync } = await import('node:sqlite');
+    const AT = '2026-10-05T10:00:00.000Z', ROOT = 'file:///library/documents/attachments/';
+    const SESSION = '27000000-0000-4000-8000-000000000001';
+    const databases = []; let cases = 0;
+    const check = async (work) => { await work(); cases++; };
+    const call = (state, method, input) => poll(state, state.StrideHost[method](JSON.stringify(input)));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const fixture = async (mixed = false) => {
+        const baseline = [{ id: 'file', kind: 'file', title: 'File', uri: ROOT + 'file.pdf', size: 3, localStatus: 'available', createdAt: AT, updatedAt: AT },
+            { id: 'link', kind: 'link', title: 'Link', uri: 'https://example.test', createdAt: AT, updatedAt: AT }];
+        const source = { id: 'task270', title: 'Opening', status: 'next', taskMode: 'list', tags: [], contexts: [],
+            checklist: [{ id: 'row', title: 'Opening row', isCompleted: false }], description: 'Notes', attachments: baseline,
+            createdAt: AT, updatedAt: AT, rev: 8, revBy: 'before' };
+        const data = { tasks: [source], projects: [], sections: [], areas: [], people: [], settings: { deviceId: 'existing270' } };
+        const db = new DatabaseSync(':memory:'); databases.push(db); let writes = 0;
+        const state = makeState('auto', [], 'ios', (value) => {
+            value.resumeFixture = true; value.fakeData = clone(data); value.completeSeed = data;
+            value.completeSqliteClient = {
+                run: async (sql, params = []) => { db.prepare(sql).run(...params); if (/^(INSERT|UPDATE|DELETE)/.test(sql)) writes++; },
+                all: async (sql, params = []) => db.prepare(sql).all(...params),
+                get: async (sql, params = []) => db.prepare(sql).all(...params)[0], exec: async (sql) => { db.exec(sql); } };
+        });
+        assert.equal((await poll(state, state.StrideHost.boot())).ok, true);
+        const initialPayloadJSON = JSON.stringify({ version: 2, taskID: source.id, tab: 'task', touchedBase: { title: 'Opening' }, edited: {},
+            raw: { title: 'Unresolved title 🧪\n', estimate: '12.', timeSpent: '-', checklistInputs: { row: 'Unresolved row' }, checklistAppend: 'Pending row' },
+            scheduleEdits: [{ id: 'pending', field: 'dueDate', value: '2026-10-10' }], scheduleFailedID: 'pending', checklistBase: source.checklist,
+            attachmentsOwned: true, attachmentsBase: baseline, attachments: baseline, linkSheet: { text: 'https://[' } }, null, 2);
+        const ownedDraft = { version: 3, taskID: source.id, initialPayloadJSON, beforePayloadJSON: initialPayloadJSON,
+            priorOperations: [], managedDirectoryURI: ROOT };
+        if (mixed) {
+
+            const producer = makeState(0, [], 'ios', (value) => {
+                value.localAttachmentTest = true;
+                for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) value.__strideNative[name] = () => '';
+                value.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+                value.__strideFileCall = async () => null; value.__strideInstallerCall = async () => null;
+            });
+            assert.equal((await poll(producer, producer.StrideHost.boot())).ok, true);
+            const added = await call(producer, 'attachmentDraftPrepareV3', { ...ownedDraft,
+                requestId: '27000000-0000-4000-8000-000000000010', picked: { uri: 'file:///cache/picked.pdf', name: 'Report.pdf', mimeType: null, size: 3 }, measuredSize: 3 });
+            assert.equal(added.ok, true); assert.equal(added.value.kind, 'prepared');
+            ownedDraft.priorOperations.push({ kind: 'add', operation: added.value }); ownedDraft.beforePayloadJSON = added.value.afterPayloadJSON;
+            const gap = JSON.parse(ownedDraft.beforePayloadJSON); gap.attachments.find((row) => row.id === 'link').title = 'Draft link title';
+            ownedDraft.beforePayloadJSON = JSON.stringify(gap);
+            const removed = await call(producer, 'attachmentDraftRemovePrepareV3', { ...ownedDraft,
+                requestId: '27000000-0000-4000-8000-000000000011', attachmentId: 'file' });
+            assert.equal(removed.ok, true); ownedDraft.priorOperations.push({ kind: 'remove', operation: removed.value });
+            ownedDraft.beforePayloadJSON = removed.value.afterPayloadJSON;
+        }
+        const request = { version: 1, kind: 'owned-editor-resume', checkpoint: { version: 1, sessionID: SESSION, taskID: source.id,
+            generation: ownedDraft.priorOperations.length + 1, payloadJSON: ownedDraft.beforePayloadJSON }, ownedDraft };
+
+        assert.equal((await call(state, 'attachmentDraftResumeCheckV3', request)).ok, true);
+        writes = 0; state.resumeReads = 0; state.resumeInputs.length = 0;
+        return { state, db, request, source, writes: () => writes,
+            rows: () => JSON.stringify([db.prepare('SELECT * FROM tasks ORDER BY id').all(), db.prepare('SELECT * FROM settings ORDER BY id').all()]) };
+    };
+    try {
+        for (const mixed of [false, true]) await check(async () => {
+            const f = await fixture(mixed), before = f.rows(), input = JSON.stringify(f.request), status = f.state.actualResumePersistence();
+            const sideEffects = JSON.stringify([f.state.fileCalls, f.state.logOps, f.state.events]);
+            const result = await call(f.state, 'attachmentDraftResumeCheckV3', f.request);
+            assert.equal(result.ok, true); assert.equal(result.value.kind, 'ready');
+            assert.equal(result.value.freshDraft.title, 'Opening'); assert.deepEqual(result.value.freshChecklistBase, f.source.checklist);
+            assert.equal(typeof result.value.freshScheduleBase, 'object'); assert.equal(typeof result.value.freshRecurrenceBase, 'object');
+            assert.deepEqual(result.value.freshAttachmentsBase, f.source.attachments);
+            assert.equal(JSON.stringify(f.request), input); assert.equal(f.rows(), before); assert.equal(f.writes(), 0);
+            assert.deepEqual(f.state.actualResumePersistence(), status); assert.equal(f.state.resumeReads, 1);
+            assert.equal(JSON.stringify([f.state.fileCalls, f.state.logOps, f.state.events]), sideEffects, 'read emits no file work or success diagnostic');
+            assert.equal(f.state.localShaInstallCount, 0, 'historical opening does not renew publication capability');
+        });
+        const f = await fixture(true);
+        await check(async () => {
+            const fresh = clone(f.source.attachments); fresh[0].cloudKey = 'concurrent'; fresh[0].deletedAt = AT;
+            f.db.prepare('UPDATE tasks SET attachments = ?, description = ? WHERE id = ?').run(JSON.stringify(fresh), 'External note', f.source.id);
+            const before = f.rows(), original = f.request.checkpoint.payloadJSON;
+            const result = await call(f.state, 'attachmentDraftResumeCheckV3', f.request); assert.equal(result.ok, true);
+            assert.deepEqual(result.value.freshAttachmentsBase, fresh); assert.equal(result.value.freshDraft.description, 'External note');
+            assert.equal(f.request.checkpoint.payloadJSON, original); assert.equal(f.rows(), before); assert.equal(f.writes(), 0);
+        });
+        await check(async () => {
+            f.db.prepare('UPDATE tasks SET title = ? WHERE id = ?').run('Later title', f.source.id);
+            const stale = await call(f.state, 'attachmentDraftResumeCheckV3', f.request); assert.equal(stale.ok, false); assert.match(stale.error, /STALE_REVISION/);
+            f.db.prepare('INSERT INTO projects (id, title, status, color, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)')
+                .run('archived270', 'Archived', 'archived', '#000000', AT, AT);
+            f.db.prepare('UPDATE tasks SET title = ?, projectId = ? WHERE id = ?').run('Opening', 'archived270', f.source.id);
+            const archived = await call(f.state, 'attachmentDraftResumeCheckV3', f.request); assert.equal(archived.ok, false); assert.match(archived.error, /INVALID_INPUT/);
+            f.db.prepare('UPDATE tasks SET projectId = NULL WHERE id = ?').run(f.source.id);
+            f.db.prepare('DELETE FROM projects WHERE id = ?').run('archived270'); assert.equal(f.writes(), 0);
+        });
+        await check(async () => {
+            const reads = f.state.resumeReads;
+            for (const mutate of [(value) => { value.version = 2; }, (value) => { value.ownedDraft.version = 2; },
+                (value) => { value.checkpoint.generation = 1; }, (value) => { value.checkpoint.payloadJSON += ' '; },
+                (value) => { value.checkpoint.taskID = 'foreign'; }, (value) => { value.touchedBase = { title: 'Caller base' }; }]) {
+                const wrong = clone(f.request); mutate(wrong); const result = await call(f.state, 'attachmentDraftResumeCheckV3', wrong);
+                assert.equal(result.ok, false); assert.match(result.error, /INVALID_INPUT/);
+            }
+            assert.equal(f.state.resumeReads, reads);
+            const calls = f.state.resumeInputs.length;
+            for (const text of ['{ private-picked-path', JSON.stringify({ ...f.request, oversized: '界'.repeat(3 * 1024 * 1024) })]) {
+                const result = await poll(f.state, f.state.StrideHost.attachmentDraftResumeCheckV3(text));
+                assert.equal(result.ok, false); assert.equal(result.error, 'INVALID_INPUT');
+            }
+            assert.equal(f.state.resumeInputs.length, calls, 'invalid UTF8 transport refuses before selected factory invocation');
+            assert.equal(f.writes(), 0);
+        });
+        await check(async () => {
+            for (const platform of ['android', undefined]) {
+                const absent = makeState(0, [], platform);
+                const result = await call(absent, 'attachmentDraftResumeCheckV3', f.request);
+                assert.equal(result.ok, false); assert.match(result.error, /NOT_READY/); assert.equal(absent.resumeInputs.length, 0);
+            }
+            assert.equal((await poll(f.state, f.state.StrideHost.attachmentRequest('attachmentDraftResumeCheckV3', JSON.stringify(f.request)))).ok, false);
+            f.state.persistenceFailure = 'existing failed save'; const before = f.state.resumeInputs.length;
+            const result = await call(f.state, 'attachmentDraftResumeCheckV3', f.request); assert.equal(result.ok, false); assert.match(result.error, /SAVE_FAILED/);
+            assert.equal(f.state.resumeInputs.length, before); f.state.persistenceFailure = null;
+        });
+        await check(async () => {
+            const payload = JSON.parse(f.request.checkpoint.payloadJSON);
+            const ordinary = { id: f.source.id, touchedBase: payload.touchedBase, checklistBase: payload.checklistBase,
+                attachmentsBase: payload.attachmentsBase, attachments: payload.attachments };
+            const refused = await call(f.state, 'taskEditorResumeCheck', ordinary); assert.equal(refused.ok, false); assert.match(refused.error, /INVALID_INPUT/);
+            ordinary.attachments = ordinary.attachmentsBase;
+            assert.equal((await call(f.state, 'taskEditorResumeCheck', ordinary)).ok, true, 'ordinary unchanged file half stays accepted');
+            assert.equal((await call(f.state, 'attachmentDraftResumeCheckV3', f.request)).ok, true);
+            assert.equal(f.writes(), 0);
+        });
+        await check(async () => {
+            let entered, release;
+            const started = new Promise((done) => { entered = done; }), held = new Promise((done) => { release = done; });
+            f.state.onResumeRead = async () => { entered(); await held; };
+            const ticket = f.state.StrideHost.attachmentDraftResumeCheckV3(JSON.stringify(f.request)); await started;
+            f.db.prepare('UPDATE tasks SET title = ? WHERE id = ?').run('Changed during read', f.source.id); release();
+            const result = await poll(f.state, ticket); assert.equal(result.ok, false); assert.match(result.error, /STALE_REVISION/);
+            assert.equal(f.db.prepare('SELECT title FROM tasks WHERE id = ?').get(f.source.id).title, 'Changed during read');
+            f.state.onResumeRead = null; f.db.prepare('UPDATE tasks SET title = ? WHERE id = ?').run('Opening', f.source.id);
+            const secondStarted = new Promise((done) => { entered = done; }), secondHeld = new Promise((done) => { release = done; });
+            f.state.onResumeRead = async () => { entered(); await secondHeld; };
+            const second = f.state.StrideHost.attachmentDraftResumeCheckV3(JSON.stringify(f.request)); await secondStarted;
+            const store = f.state.actualResumeStore; store.setState({ _allTasks: [...store.getState()._allTasks] }); release();
+            const changed = await poll(f.state, second); assert.equal(changed.ok, false); assert.match(changed.error, /SAVE_FAILED/);
+            f.state.onResumeRead = null; assert.equal(f.writes(), 0);
+        });
+    } finally { for (const db of databases) db.close(); }
+    console.log(`Task270: ${cases} private owned resume checks (real bound269 factory + SQLite, exact retained inputs, ordinary sealed and iOS-only; Node VM)`);
+}
+
+
+{
+    const configureLocal = (state) => {
+        state.localAttachmentTest = true;
+        for (const name of ['fileCall', 'installerCall', 'fileAbort', 'fileDeleteNow', 'ioNext', 'ioBody']) state.__strideNative[name] = () => '';
+        state.__strideNative.fileDirectories = () => JSON.stringify({ document: 'file:///library/documents/', cache: 'file:///library/cache/' });
+        state.__strideFileCall = async () => null;
+        state.__strideInstallerCall = async () => null;
+    };
+    const ID = '24400000-0000-4000-8000-000000000001';
+    const TARGET = 'file:///library/documents/attachments/owned-café😀.pdf';
+    const input = JSON.stringify({ version: 1, requestId: ID, targetURI: TARGET });
+    const invalid = 'INVALID_INPUT: Invalid attachment Discard handoff';
+    const unready = 'NOT_READY: Attachment Discard requires settled native storage';
+    let cases = 0;
+    const check = async (name, action) => { await action(); cases++; };
+    const makeLocal = () => makeState(0, [], 'ios', configureLocal);
+    const bootLocal = async (recovery = false) => {
+        const state = makeLocal();
+        assert.equal((await poll(state, recovery ? state.StrideHost.bootRecovery('', '') : state.StrideHost.boot())).ok, true);
+        return state;
+    };
+    const call = (state, json = input, keep = () => '{"outcome":"referenced"}', retire = () => '{"outcome":"removed"}') =>
+        state.StrideHost.attachmentDraftDiscardRetire(json, keep, retire);
+    const refused = (state, json = input, expected = unready) => {
+        let entered = 0;
+        assert.throws(() => call(state, json, () => { entered++; return '{"outcome":"referenced"}'; },
+            () => { entered++; return '{"outcome":"removed"}'; }), (error) => error.message === expected);
+        assert.equal(entered, 0, 'all admission/input failures occur before either native callback');
+    };
+    await check('pure candidate dispatch before boot', async () => {
+        const state = makeState(0, [], 'ios');
+        const payload = JSON.stringify({ version: 2, taskID: 'task244', attachmentsOwned: true, attachmentsBase: [], attachments: [] });
+        const candidateInput = { version: 1, historyVersion: 2, taskID: 'task244', managedDirectoryURI: 'file:///library/documents/attachments/',
+            initialPayloadJSON: payload, checkpointPayloadJSON: payload, operations: [] };
+        const ticket = state.StrideHost.attachmentDraftDiscardCandidates(JSON.stringify(candidateInput));
+        assert.match(ticket, /^[1-9]\d*$/, 'candidate transport retains Promise ticket dispatch');
+        assert.deepEqual(await poll(state, ticket), { ok: true, value: { version: 1, kind: 'owned-add-discard-candidates',
+            taskID: 'task244', historyVersion: 2, candidates: [] } });
+        assert.deepEqual(state.events, [], 'pure candidate admission does not load/flush/write');
+        const bad = await poll(state, state.StrideHost.attachmentDraftDiscardCandidates('{private-content'));
+        assert.deepEqual(bad, { ok: false, error: 'INVALID_INPUT' });
+    });
+    await check('candidate platform gate', async () => {
+        const state = makeState(0);
+        assert.match((await poll(state, state.StrideHost.attachmentDraftDiscardCandidates('{}'))).error, /^NOT_READY:/);
+    });
+    await check('availability-only Discard accepts truthful borrowed retention with sealed historical grammar', async () => {
+        const local = await bootLocal(), raw = JSON.stringify({ version: 2, requestId: ID, targetURI: TARGET });
+        let entered = 0;
+        const keep = () => { entered++; return '{"outcome":"referenced"}'; };
+        const borrowed = () => { entered++; return '{"outcome":"notOwned"}'; };
+        assert.equal(local.StrideHost.attachmentDraftDiscardRetireV5(raw, keep, borrowed), '{"outcome":"notOwned"}');
+        assert.equal(entered, 1);
+        for (const invalidRaw of [input, JSON.stringify({ version: true, requestId: ID, targetURI: TARGET }),
+            JSON.stringify({ version: 2, requestId: ID, targetURI: TARGET, extra: true })]) {
+            assert.throws(() => local.StrideHost.attachmentDraftDiscardRetireV5(invalidRaw, keep, borrowed), /INVALID_INPUT/);
+        }
+        assert.throws(() => call(local, raw, keep, borrowed), /INVALID_INPUT/); assert.equal(entered, 1);
+        assert.throws(() => call(local, input, keep, borrowed), /INVALID_INPUT/); assert.equal(entered, 2);
+        assert.equal(local.StrideHost.attachmentDraftDiscardRetireV5(raw, borrowed, () => '{"outcome":"referenced"}'), '{"outcome":"referenced"}');
+        assert.throws(() => call(local, input, borrowed, () => '{"outcome":"referenced"}'), /INVALID_INPUT/);
+        local.ownerProjects = [{ attachments: [{ kind: 'file', uri: TARGET }] }];
+        assert.equal(local.StrideHost.attachmentDraftDiscardRetireV5(raw, keep, borrowed), '{"outcome":"referenced"}');
+        assert.equal(entered, 3);
+        assert.throws(() => local.StrideHost.attachmentDraftDiscardRetireV5(raw, borrowed, borrowed), /INVALID_INPUT/);
+        const calls = entered;
+        for (const other of [makeLocal(), makeState(0, [], 'android', configureLocal)])
+            assert.throws(() => other.StrideHost.attachmentDraftDiscardRetireV5(raw, keep, borrowed), /NOT_READY/);
+        assert.equal(entered, calls);
+    });
+    await check('before validated boot', () => refused(makeLocal()));
+    await check('normal bootRecovery ready state', async () => {
+        const state = await bootLocal(true);
+        assert.equal(call(state), '{"outcome":"removed"}', 'validated recovery load supports exact native replay handoff');
+    });
+    const state = await bootLocal();
+    const unchanged = JSON.stringify({ events: state.events, data: state.fakeData, fileCalls: state.fileCalls, logOps: state.logOps });
+    for (const outcome of ['removed', 'absent']) await check(`direct ${outcome}`, () => {
+        let keep = 0, retire = 0;
+        const result = call(state, input, () => { keep++; return '{"outcome":"referenced"}'; },
+            () => { retire++; return JSON.stringify({ outcome }); });
+        assert.equal(result, JSON.stringify({ outcome }), 'direct result is final JSON, never a ticket');
+        assert.equal(keep, 0); assert.equal(retire, 1);
+    });
+    await check('callback inside JS before queued microtask', async () => {
+        state.handoffOrder = [];
+        state.handoffInput = input;
+        state.keep244 = () => { state.handoffOrder.push('keep'); return '{"outcome":"referenced"}'; };
+        state.retire244 = () => { state.handoffOrder.push('retire'); return '{"outcome":"absent"}'; };
+        vm.runInNewContext(`Promise.resolve().then(() => handoffOrder.push('microtask'));
+            handoffOrder.push('entered');
+            globalThis.direct244 = StrideHost.attachmentDraftDiscardRetire(handoffInput, keep244, retire244);
+            handoffOrder.push('returned');`, state);
+        assert.deepEqual(state.handoffOrder, ['entered', 'retire', 'returned']);
+        await new Promise((resolveTick) => setImmediate(resolveTick));
+        assert.deepEqual(state.handoffOrder, ['entered', 'retire', 'returned', 'microtask']);
+        assert.equal(state.direct244, '{"outcome":"absent"}');
+    });
+    for (const [name, owners, expected] of [
+        ['live task', [{ attachments: [{ kind: 'file', uri: TARGET }] }], 'referenced'],
+        ['archived readonly task', [{ status: 'archived', readOnly: true, attachments: [{ kind: 'file', uri: TARGET }] }], 'referenced'],
+        ['deleted owner', [{ deletedAt: 'at', attachments: [{ kind: 'file', uri: TARGET }] }], 'removed'],
+        ['deleted attachment', [{ attachments: [{ kind: 'file', uri: TARGET, deletedAt: 'at' }] }], 'removed'],
+        ['link is not a file owner', [{ attachments: [{ kind: 'link', uri: TARGET }] }], 'removed'],
+
+        ['URI equivalent spelling', [{ attachments: [{ kind: 'file', uri: TARGET.replace('café', 'caf%C3%A9') }] }], 'referenced'],
+    ]) await check(name, () => {
+        state.lastLoaded.tasks = owners;
+        assert.equal(call(state), JSON.stringify({ outcome: expected }));
+        state.lastLoaded.tasks = [];
+    });
+    await check('live project', () => {
+        state.ownerProjects = [{ status: 'archived', attachments: [{ kind: 'file', uri: TARGET }] }];
+        assert.equal(call(state), '{"outcome":"referenced"}');
+        state.ownerProjects = [];
+    });
+    let aliasCases276 = 0;
+    const checkAlias276 = async (name, work) => { await check(name, work); aliasCases276++; };
+    const aliasSuffix276 = 'mobile/Containers/Data/Application/27600000-0000-4000-8000-000000000001/Library/attachment-files/documents/attachments/owned.pdf';
+    for (const [prefix, otherPrefix] of [['file:///var/', 'file:///private/var/'], ['file:///private/var/', 'file:///var/']]) {
+        const targetURI = prefix + aliasSuffix276, aliasURI = otherPrefix + aliasSuffix276;
+        const json = JSON.stringify({ version: 1, requestId: ID, targetURI });
+        for (const where of ['task', 'project', 'deletedOwner', 'deletedAttachment']) await checkAlias276(`Discard alias ${where}`, async () => {
+            const local = await bootLocal(), attachment = { kind: 'file', uri: aliasURI,
+                ...(where === 'deletedAttachment' ? { deletedAt: 'at' } : {}) };
+            const owner = { attachments: [attachment], ...(where === 'deletedOwner' ? { deletedAt: 'at' } : {}) };
+            (where === 'project' ? local.ownerProjects : local.lastLoaded.tasks).push(owner);
+            let keep = 0, retire = 0;
+            const result = call(local, json, () => { keep++; return '{"outcome":"referenced"}'; },
+                () => { retire++; return '{"outcome":"removed"}'; });
+            const kept = where === 'task' || where === 'project';
+            assert.equal(result, JSON.stringify({ outcome: kept ? 'referenced' : 'removed' }));
+            assert.equal(keep, kept ? 1 : 0); assert.equal(retire, kept ? 0 : 1);
+        });
+        await checkAlias276('Discard alias generation mutation', async () => {
+            const local = await bootLocal(); local.persistenceStatus = { generation: 0 };
+            let reads = 0, entered = 0;
+            const owner = {};
+            Object.defineProperty(owner, 'attachments', { get() {
+
+                if (++reads === 1) local.persistenceStatus.generation++;
+                return [{ kind: 'file', uri: aliasURI }];
+            } });
+            local.ownerProjects.push(owner);
+            const callback = () => { entered++; return '{"outcome":"referenced"}'; };
+            assert.throws(() => call(local, json, callback, callback), (error) => error.message === unready);
+            assert(reads >= 1, 'mutation occurs during the sibling-alias reference comparison');
+            assert.equal(entered, 0, 'all alias checks retain the same captured generation');
+        });
+    }
+    for (const [prefix, otherPrefix] of [['file:///variant/', 'file:///private/variant/'], ['file:///private/variant/', 'file:///variant/']]) await checkAlias276('Discard unrelated URI prefix', async () => {
+        const local = await bootLocal();
+        local.ownerProjects.push({ attachments: [{ kind: 'file', uri: otherPrefix + aliasSuffix276 }] });
+        assert.equal(call(local, JSON.stringify({ version: 1, requestId: ID, targetURI: prefix + aliasSuffix276 })), '{"outcome":"removed"}',
+            'an unrelated prefix cannot gain a system-alias keep decision');
+    });
+    console.log(`Task276: ${aliasCases276} v1 Discard alias-reference checks (same captured generation; no physical normalization)`);
+    await check('optimistic queued deletion cannot hide a durable live owner', () => {
+        const oldLoaded = state.lastLoaded, oldDurable = state.fakeData;
+        state.fakeData = { ...oldDurable, tasks: [{ attachments: [{ kind: 'file', uri: TARGET }] }] };
+        state.lastLoaded = { ...state.fakeData, tasks: [{ deletedAt: 'optimistic', attachments: [{ kind: 'file', uri: TARGET }] }] };
+        state.persistenceStatus = { generation: 1, queued: 1 };
+        assert.equal(state.persistenceFailure, null, 'failure-only requireSaved would pass');
+        refused(state);
+        assert.equal(state.fakeData.tasks[0].deletedAt, undefined, 'fake durable owner remains live');
+        state.persistenceStatus = null; state.lastLoaded = oldLoaded; state.fakeData = oldDurable;
+    });
+    await check('deleted project with a separate live task retains target', () => {
+        state.ownerProjects = [{ deletedAt: 'at', attachments: [{ kind: 'file', uri: TARGET }] }];
+        assert.equal(call(state), '{"outcome":"removed"}');
+        state.lastLoaded.tasks = [{ attachments: [{ kind: 'file', uri: TARGET }] }];
+        assert.equal(call(state), '{"outcome":"referenced"}');
+        state.lastLoaded.tasks = []; state.ownerProjects = [];
+    });
+    for (const flag of ['queued', 'inFlight', 'immediate', 'retrying', 'failed']) await check(`unsaved ${flag}`, () => {
+        state.persistenceStatus = { generation: 0, [flag]: 1 };
+        refused(state); state.persistenceStatus = null;
+    });
+    for (const [field, value] of [['persistenceFailure', { message: 'private failure' }], ['storeLoading', true],
+        ['storeEditLocks', 1], ['sandbox', true], ['workspaceTransition', true]]) await check(`guard ${field}`, () => {
+        const previous = state[field]; state[field] = value;
+        refused(state); state[field] = previous;
+    });
+    await check('foreign adapter', () => {
+        const previous = state.adapter; state.adapter = {};
+        refused(state); state.adapter = previous;
+    });
+    await check('normal readiness failure', () => {
+        state.backupReadinessResult = { ok: false, error: { code: 'NOT_READY', message: 'private reload' } };
+        refused(state); state.backupReadinessResult = { ok: true, value: {} };
+    });
+    await check('thrown readiness content is redacted', () => {
+        state.onReadiness = () => { throw new Error('private task/path'); };
+        refused(state); state.onReadiness = null;
+    });
+    for (const owner of ['task', 'project']) await check(`changed ${owner} reference`, () => {
+        let reads = 0;
+        state.onStateRead = () => {
+            if (++reads === 2) {
+                if (owner === 'task') state.lastLoaded.tasks = [...state.lastLoaded.tasks];
+                else state.ownerProjects = [...state.ownerProjects];
+            }
+        };
+        refused(state); state.onStateRead = null;
+    });
+    await check('changed generation', () => {
+        let reads = 0;
+        state.persistenceStatus = { generation: 0 };
+        state.onPersistenceStatus = () => { if (++reads === 2) state.persistenceStatus.generation++; };
+        refused(state); state.onPersistenceStatus = null; state.persistenceStatus = null;
+    });
+    for (const field of ['adapter', 'workspaceTransition']) await check(`late ${field} change during readiness`, () => {
+        const previous = state[field]; let reads = 0;
+        state.onReadiness = () => { if (++reads === 2) state[field] = field === 'adapter' ? {} : true; };
+        refused(state); state.onReadiness = null; state[field] = previous;
+    });
+    await check('unfinished direct document work and completed unpolled slot', async () => {
+        let release;
+        state.backupPrepareHold = new Promise((resolveHeld) => { release = resolveHeld; });
+        const ticket = state.StrideHost.backupDocumentPrepare('{}');
+        refused(state);
+        release(); await new Promise((resolveTick) => setImmediate(resolveTick));
+        assert.equal(call(state), '{"outcome":"removed"}', 'a completed slot is not unresolved async work');
+        assert.equal((await poll(state, ticket)).ok, true);
+        state.backupPrepareHold = null;
+    });
+    for (const json of ['{private text', 'null', '[]', 'true', '{}',
+        JSON.stringify({ version: '1', requestId: ID, targetURI: TARGET }),
+        JSON.stringify({ version: 1, requestId: ID.toUpperCase().replace('244', 'ABC'), targetURI: TARGET }),
+        JSON.stringify({ version: 1, requestId: ID, targetURI: '' }),
+        JSON.stringify({ version: 1, requestId: ID, targetURI: '界'.repeat(5_462) }),
+        JSON.stringify({ version: 1, requestId: ID, targetURI: TARGET, proof: 'untrusted' }),
+        ' '.repeat(64 * 1024) + input,
+    ]) await check('invalid exact input', () => refused(state, json, invalid));
+    for (const which of ['keep', 'retire']) await check(`invalid ${which} callback type`, () => {
+        let entered = 0;
+        const callback = () => { entered++; return '{"outcome":"removed"}'; };
+        assert.throws(() => call(state, input, which === 'keep' ? null : callback, which === 'retire' ? null : callback),
+            (error) => error.message === invalid);
+        assert.equal(entered, 0);
+    });
+    for (const result of ['{private result', 'null', '[]', '{}', '{"outcome":"referenced"}',
+        '{"outcome":"removed","proof":"untrusted"}', '界'.repeat(342), 1, Promise.resolve('{"outcome":"removed"}')]) {
+        await check('invalid retire outcome no fallback', () => {
+            let keep = 0, retire = 0;
+            assert.throws(() => call(state, input, () => { keep++; return '{"outcome":"referenced"}'; },
+                () => { retire++; return result; }), (error) => error.message === invalid);
+            assert.equal(keep, 0); assert.equal(retire, 1);
+        });
+    }
+    await check('keep rejects destructive outcome with no fallback', () => {
+        state.ownerProjects = [{ attachments: [{ kind: 'file', uri: TARGET }] }];
+        let keep = 0, retire = 0;
+        assert.throws(() => call(state, input, () => { keep++; return '{"outcome":"removed"}'; },
+            () => { retire++; return '{"outcome":"removed"}'; }), (error) => error.message === invalid);
+        assert.equal(keep, 1); assert.equal(retire, 0); state.ownerProjects = [];
+    });
+    await check('callback exception fixed refusal no fallback', () => {
+        let keep = 0, retire = 0;
+        assert.throws(() => call(state, input, () => { keep++; return '{"outcome":"referenced"}'; },
+            () => { retire++; throw new Error('private source/hash'); }), (error) => error.message === unready);
+        assert.equal(keep, 0); assert.equal(retire, 1);
+    });
+    await check('valid callback string preserved byte for byte', () => {
+        const result = ' \n{"outcome":"absent"} ';
+        assert.equal(call(state, input, () => '{"outcome":"referenced"}', () => result), result);
+    });
+    await check('direct handoff creates no flush/write/file bridge/diagnostic work', () => {
+
+
+        const before = JSON.stringify({ events: state.events, data: state.fakeData, fileCalls: state.fileCalls, logOps: state.logOps });
+        assert.equal(call(state), '{"outcome":"removed"}');
+        assert.equal(JSON.stringify({ events: state.events, data: state.fakeData, fileCalls: state.fileCalls, logOps: state.logOps }), before);
+        assert.equal(JSON.parse(unchanged).data.tasks.length, 0);
+    });
+    for (const variant of ['partial', 'refused', 'android']) await check(`${variant} capability gate`, async () => {
+        const unavailable = makeState(0, [], variant === 'android' ? undefined : 'ios', (state) => {
+            configureLocal(state);
+            if (variant === 'partial') delete state.__strideNative.ioBody;
+            if (variant === 'refused') state.__strideNative.fileDirectories = () => '!StrideNativeError:private capability error';
+        });
+        assert.equal((await poll(unavailable, unavailable.StrideHost.boot())).ok, true);
+        refused(unavailable);
+    });
+    await check('iOS KV presence preserves local attachment authority and does not activate Sync or AI', async () => {
+        let calls = 0;
+        const local = makeState(0, [], 'ios', (state) => {
+            configureLocal(state);
+            for (const name of ['kvMultiGet', 'kvMultiSet', 'kvMultiRemove', 'secretCall', 'cryptoCall', 'netFetch', 'bgSyncSchedule']) {
+                state.__strideNative[name] = () => { calls++; throw new Error('Unexpected device service activation'); };
+            }
+        });
+        assert.deepEqual(Object.keys(local.contractBindings).filter((name) => local.contractBindings[name] !== undefined), ['reminderPlatform', 'attachments']);
+        assert.equal((await poll(local, local.StrideHost.boot())).ok, true);
+        assert.equal(local.localShaInstallCount, 1);
+        assert.equal(call(local), '{"outcome":"removed"}', 'existing synchronous local Discard remains admitted');
+        assert.equal(calls, 0);
+    });
+    await check('nativeSync gate stays explicit with local-only construction', () => {
+        const entry = readFileSync(resolve(app, 'bundle/host-entry.ts'), 'utf8');
+        assert.match(entry, /const localAttachments = nativeSync \? null : createNativeLocalAttachmentsForHost\(\)/);
+        assert.match(entry, /const settledAttachmentDiscardState[\s\S]*?nativeSync !== null/);
+    });
+    await check('existing owned draft acknowledgment pairs and tags remain sealed', async () => {
+        for (const [operation, outcome, tag] of [['add', 'confirmed', 'v1.3.4/ios-attachment-draft-owned'],
+            ['checkpoint', 'replayed', 'v1.3.4/ios-attachment-draft-owned'], ['save', 'confirmed', 'v1.3.5/ios-attachment-owned-save'],
+            ['discard', 'retained', 'v1.3.4/ios-attachment-draft-owned'], ['discard-capacity', 'confirmed', 'v1.3.5/ios-owned-discard-capacity']]) {
+            assert.equal((await poll(state, state.StrideHost.attachmentDraftAcknowledged(operation, outcome))).ok, true);
+            const marker = JSON.parse(state.logText.trim().split('\n').at(-1));
+            assert.deepEqual(marker.context, { releaseCheck: tag, operation, outcome });
+        }
+    });
+    await check('terminal diagnostic after lost optional capability', async () => {
+        const absent = makeState(0, [], 'ios');
+        for (const pair of [['add', 'confirmed'], ['save', 'confirmed'], ['discard-finish', 'replayed'], ['discard-finish', 'retained']]) {
+            assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged(...pair))).ok, true);
+        }
+        assert.equal(absent.logText, null, 'only the exact new terminal pair bypasses capability');
+        assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('discard-finish', 'confirmed'))).ok, true);
+        const marker = JSON.parse(absent.logText.trim());
+        assert.deepEqual(marker.context, { releaseCheck: 'v1.3.5/ios-owned-discard-finish', operation: 'discard-finish', outcome: 'confirmed' });
+        absent.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('discard-finish', 'confirmed'))).ok, true,
+            'diagnostic IO cannot invalidate durable completion');
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('discard-finish', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null, 'terminal capability exception remains iOS-only');
+    });
+    await check('logical unstarted Discard diagnostic stays distinct and exact', async () => {
+        const local = makeState(0, [], 'ios', configureLocal);
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('discard-unstarted', 'confirmed'))).ok, true);
+        const marker = JSON.parse(local.logText.trim());
+        assert.deepEqual(marker.context, { releaseCheck: 'v1.3.5/ios-unstarted-add-discard', operation: 'discard-unstarted', outcome: 'confirmed' });
+        const before = local.logText;
+        for (const outcome of ['replayed', 'retained', 'released', 'discarded', '']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('discard-unstarted', outcome))).ok, true);
+        }
+        assert.equal(local.logText, before, 'no other logical pair can produce an acknowledgment');
+    });
+    await check('logical unstarted Discard terminal diagnostic survives capability and log loss', async () => {
+        const absent = makeState(0, [], 'ios');
+        for (const outcome of ['replayed', 'retained', 'released', 'discarded']) {
+            assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('discard-unstarted', outcome))).ok, true);
+        }
+        assert.equal(absent.logText, null, 'only confirmed may bypass optional capability loss');
+        assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('discard-unstarted', 'confirmed'))).ok, true);
+        assert.deepEqual(JSON.parse(absent.logText.trim()).context,
+            { releaseCheck: 'v1.3.5/ios-unstarted-add-discard', operation: 'discard-unstarted', outcome: 'confirmed' });
+        const before = absent.logText;
+        absent.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('discard-unstarted', 'confirmed'))).ok, true);
+        assert.equal(absent.logText, before, 'diagnostic failure does not fabricate a marker or invalidate completion');
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('discard-unstarted', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null, 'logical terminal capability exception remains iOS-only');
+    });
+    await check('owned Remove acknowledgment is exact and survives optional capability loss', async () => {
+        for (const local of [makeState(0, [], 'ios'), makeState(0, [], 'ios', configureLocal)]) {
+            for (const outcome of ['confirmed', 'replayed']) {
+                assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('remove', outcome))).ok, true);
+                assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+                    { releaseCheck: 'v1.3.5/ios-attachment-draft-remove', operation: 'remove', outcome });
+            }
+            const before = local.logText;
+            for (const outcome of ['retained', 'removed', 'saved', '']) {
+                assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('remove', outcome))).ok, true);
+            }
+            local.logFailure = 'private diagnostics failure';
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('remove', 'confirmed'))).ok, true);
+            assert.equal(local.logText, before);
+        }
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('remove', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null);
+    });
+    await check('mixed Save diagnostic distinguishes domain success from settlement', async () => {
+        const local = makeState(0, [], 'ios');
+        for (const outcome of ['domainSaved', 'settled']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('mixed-save', outcome))).ok, true);
+            assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+                { releaseCheck: 'v1.3.5/ios-attachment-mixed-save', operation: 'mixed-save', outcome });
+        }
+        const before = local.logText;
+        for (const outcome of ['confirmed', 'replayed', 'removed', '']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('mixed-save', outcome))).ok, true);
+        }
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('mixed-save', 'settled'))).ok, true);
+        assert.equal(local.logText, before);
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('mixed-save', 'settled'))).ok, true);
+        assert.equal(android.logText, null);
+    });
+    await check('mixed Discard completion diagnostic survives capability loss without claiming baseline removal', async () => {
+        const local = makeState(0, [], 'ios');
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('discard-mixed', 'confirmed'))).ok, true);
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-attachment-mixed-discard', operation: 'discard-mixed', outcome: 'confirmed' });
+        const before = local.logText;
+        for (const outcome of ['retained', 'replayed', 'removed', 'settled', '']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('discard-mixed', outcome))).ok, true);
+        }
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('discard-mixed', 'confirmed'))).ok, true);
+        assert.equal(local.logText, before);
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('discard-mixed', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null);
+    });
+    await check('mixed Add acknowledgment has fixed outcomes and survives historical capability loss', async () => {
+        const local = makeState(0, [], 'ios');
+        for (const outcome of ['confirmed', 'replayed']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('add-mixed', outcome))).ok, true);
+            assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+                { releaseCheck: 'v1.3.5/ios-attachment-mixed-add', operation: 'add-mixed', outcome });
+        }
+        const before = local.logText;
+        for (const outcome of ['retained', 'removed', 'settled', '']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('add-mixed', outcome))).ok, true);
+        }
+        assert.equal(local.logText, before);
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('add-mixed', 'confirmed'))).ok, true);
+        assert.equal(local.logText, before);
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('add-mixed', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null);
+    });
+    await check('selfhosted availability acknowledgments are fixed, private, iOS-only and best effort', async () => {
+        const local = makeState(0, [], 'ios');
+        for (const operation of ['selfhosted-task-availability', 'selfhosted-project-availability']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, 'confirmed'))).ok, true);
+            const marker = JSON.parse(local.logText.trim().split('\n').at(-1));
+            assert.deepEqual(marker.context, { releaseCheck: 'v1.3.5/ios-selfhosted-file-availability', operation, outcome: 'confirmed' });
+            const before = local.logText;
+            for (const outcome of ['retained', 'replayed', 'removed', 'settled', 'private://credential/task']) {
+                assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, outcome))).ok, true);
+            }
+            assert.equal(local.logText, before);
+            local.logFailure = 'private diagnostics failure';
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, 'confirmed'))).ok, true);
+            assert.equal(local.logText, before); local.logFailure = null;
+            const android = makeState(0);
+            assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged(operation, 'confirmed'))).ok, true);
+            assert.equal(android.logText, null);
+        }
+        const before = local.logText;
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('selfhosted-task-availability/private', 'confirmed'))).ok, true);
+        assert.equal(local.logText, before);
+    });
+    await check('provider Add acknowledgment is iOS-only, fixed, and independent of optional diagnostics', async () => {
+        const local = makeState(0, [], 'ios');
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('provider-add', 'confirmed'))).ok, true);
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-attachment-provider-add', operation: 'provider-add', outcome: 'confirmed' });
+        const before = local.logText;
+        for (const outcome of ['retained', 'replayed', 'removed', 'settled', '']) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('provider-add', outcome))).ok, true);
+        }
+        assert.equal(local.logText, before);
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('provider-add', 'confirmed'))).ok, true);
+        assert.equal(local.logText, before);
+        const android = makeState(0);
+        assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged('provider-add', 'confirmed'))).ok, true);
+        assert.equal(android.logText, null);
+    });
+    await check('complete Save and cancellation Undo acknowledgment pairs are fixed and capability-independent on iOS', async () => {
+        const local = makeState(0, [], 'ios');
+        for (const [operation, outcome] of [['complete-save', 'domainSaved'], ['complete-save', 'settled'], ['complete-cancel-undo', 'confirmed']]) {
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, outcome))).ok, true);
+            assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+                { releaseCheck: 'v1.3.5/ios-attachment-complete-save', operation, outcome });
+        }
+        const rawSaveMarkers = local.logText.trim().split('\n').map(JSON.parse)
+            .filter((entry) => entry.context?.releaseCheck === 'v1.3.5/ios-owned-raw-row-save');
+        assert.deepEqual(rawSaveMarkers.map((entry) => entry.context), [
+            { releaseCheck: 'v1.3.5/ios-owned-raw-row-save', operation: 'complete-save', outcome: 'domainSaved' },
+        ]);
+        const before = local.logText;
+        for (const operation of ['complete-save', 'complete-cancel-undo']) for (const outcome of ['retained', 'replayed', 'removed', '', 'unknown'])
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, outcome))).ok, true);
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('complete-save', 'confirmed'))).ok, true);
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('complete-cancel-undo', 'settled'))).ok, true);
+        assert.equal(local.logText, before);
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('complete-save', 'settled'))).ok, true);
+        assert.equal(local.logText, before);
+        for (const platform of ['android', undefined]) {
+            const absent = makeState(0, [], platform);
+            assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('complete-save', 'domainSaved'))).ok, true);
+            assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('complete-cancel-undo', 'confirmed'))).ok, true);
+            assert.equal(absent.logText, null);
+        }
+    });
+    await check('an extra raw-row marker failure does not suppress the existing complete Save acknowledgment', async () => {
+        const local = makeState(0, [], 'ios'), write = local.__strideNative.logFile;
+        let failOnce = true;
+        local.__strideNative.logFile = (operation, text) => {
+            if (operation === 'append' && failOnce) { failOnce = false; return '!StrideNativeError:injected marker failure'; }
+            return write(operation, text);
+        };
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('complete-save', 'domainSaved'))).ok, true);
+        assert.equal(failOnce, false);
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-attachment-complete-save', operation: 'complete-save', outcome: 'domainSaved' });
+    });
+    await check('Project local planning reuses RN classification without resolving availability or writing metadata', async () => {
+        const local = makeState(0, [], 'ios');
+        const attachments = [
+            { id: 'document', kind: 'file', title: 'Document', uri: 'file:///managed/document.txt', mimeType: 'text/plain', localStatus: 'missing' },
+            { id: 'image', kind: 'file', title: 'Image', uri: 'file:///managed/image.png', mimeType: 'image/png' },
+            { id: 'audio', kind: 'file', title: 'Audio', uri: 'file:///managed/audio.wav', mimeType: 'audio/wav' },
+        ];
+        local.ownerProjects = [{ id: 'p', status: 'active', attachments }];
+        const request = (id) => JSON.stringify({ projectId: 'p', attachmentId: id });
+        const plan = (state, json, available) => poll(state, state.StrideHost.projectLocalFileOpenPlan(json, available));
+        for (const status of ['active', 'archived']) {
+            local.ownerProjects[0].status = status;
+            const before = JSON.stringify(local.ownerProjects);
+            for (const [id, kind] of [['document', 'file'], ['image', 'image'], ['audio', 'file']]) {
+                const result = await plan(local, request(id), true);
+                assert.equal(result.ok, true); assert.equal(result.value.status, 'available');
+                assert.equal(result.value.open.kind, kind); assert.equal(result.value.update, null);
+                assert.equal(result.value.message, null);
+            }
+            assert.deepEqual((await plan(local, request('document'), false)).value,
+                { status: 'unavailable', message: 'attachments.missing', update: null, open: null });
+            assert.equal(JSON.stringify(local.ownerProjects), before);
+        }
+        for (const invalid of [{ projectId: 'p', attachmentId: 'missing' }, { projectId: 'p', attachmentId: 'document', extra: true },
+            { projectId: 'missing', attachmentId: 'document' }, { projectId: 'p', attachmentId: '' }])
+            assert.equal((await plan(local, JSON.stringify(invalid), true)).ok, false);
+        for (const available of [null, 'true', 1]) assert.equal((await plan(local, request('document'), available)).ok, false);
+        attachments[0].deletedAt = '2026-10-06T00:00:00Z';
+        assert.equal((await plan(local, request('document'), true)).ok, false); delete attachments[0].deletedAt;
+        local.ownerProjects[0].deletedAt = '2026-10-06T00:00:00Z';
+        assert.equal((await plan(local, request('document'), true)).ok, false); delete local.ownerProjects[0].deletedAt;
+        attachments.push({ ...attachments[0] });
+        assert.equal((await plan(local, request('document'), true)).ok, false); attachments.pop();
+        assert.deepEqual(local.attachmentInputs, []); assert.deepEqual(local.fileCalls, []);
+        assert.equal(local.saveCount, 0);
+        assert.equal((await plan(makeState(0), request('document'), true)).ok, false);
+    });
+    await check('Task settled local planning preserves original metadata and never resolves availability', async () => {
+        const local = makeState(0, [], 'ios');
+        const attachments = [
+            { id: 'document', kind: 'file', title: 'Document', uri: 'file:///old/document.txt', mimeType: 'text/plain', fileHash: 'a'.repeat(64) },
+            { id: 'image', kind: 'file', title: 'Image', uri: 'file:///old/image.png', mimeType: 'image/png' },
+            { id: 'audio', kind: 'file', title: 'Audio', uri: 'file:///old/audio.wav', mimeType: 'audio/wav' },
+        ];
+        for (const item of attachments) { item.createdAt = '2026-10-06T00:00:00Z'; item.updatedAt = item.createdAt; }
+        const saved = { id: 'task285', attachments };
+        local.ownerTaskMap = new Map([['task285', saved]]);
+        const request = (id, rows = attachments) => JSON.stringify({ owner: { kind: 'task', taskId: 'task285', attachments: rows }, attachmentId: id });
+        const plan = (state, json, available) => poll(state, state.StrideHost.taskLocalFileOpenPlan(json, available));
+        const before = JSON.stringify(saved);
+        for (const readOnly of [false, true]) {
+            local.localTaskReadOnly = readOnly;
+            for (const [id, kind] of [['document', 'file'], ['image', 'image'], ['audio', 'audio']]) {
+                const result = await plan(local, request(id), true);
+                assert.equal(result.ok, true); assert.equal(result.value.status, 'available');
+                assert.equal(result.value.open.kind, kind); assert.equal(result.value.update, null);
+                const selected = attachments.find((item) => item.id === id);
+                assert.equal(kind === 'file' ? result.value.open.uri : result.value.open.attachment.uri, selected.uri);
+                assert.equal('relocatedFrom' in result.value, false, 'Only Swift may produce resolved result authority');
+            }
+        }
+        const hydrated = local.hydrateTaskAttachments285(attachments);
+        assert.equal(Object.hasOwn(hydrated[0], 'cloudKey'), true); assert.equal(hydrated[0].cloudKey, undefined);
+        assert.deepEqual(JSON.parse(JSON.stringify(hydrated)), attachments, 'Actual SQLite hydration serializes to exactly the original wire metadata');
+        saved.attachments = hydrated;
+        for (const [id, kind] of [['document', 'file'], ['image', 'image'], ['audio', 'audio']]) {
+            const result = await plan(local, request(id), true);
+            assert.equal(result.ok, true, 'Hydrated own-undefined fields must not invalidate an exact original JSON selection');
+            assert.equal(result.value.open.kind, kind);
+        }
+        hydrated[0].cloudKey = null;
+        assert.equal((await plan(local, request('document'), true)).ok, false, 'Defined null remains different from an omitted field');
+        hydrated[0].cloudKey = undefined; hydrated[0].pendingContentUpload = false;
+        assert.equal((await plan(local, request('document'), true)).ok, false, 'Defined false is never discarded as undefined');
+        hydrated[0].pendingContentUpload = undefined;
+        assert.deepEqual((await plan(local, request('document'), false)).value,
+            { status: 'unavailable', message: 'attachments.missing', update: null, open: null });
+        saved.attachments = attachments;
+        for (const rows of [[{ ...attachments[0], uri: 'file:///fabricated/current.txt' }],
+            [{ ...attachments[0], fileHash: 'b'.repeat(64) }], [{ ...attachments[0], title: 'Changed' }],
+            [...attachments, { ...attachments[0] }]]) assert.equal((await plan(local, request('document', rows), true)).ok, false);
+        for (const available of [null, 1, 'true']) assert.equal((await plan(local, request('document'), available)).ok, false);
+        assert.equal((await plan(local, request('missing'), true)).ok, false);
+        assert.equal((await plan(local, JSON.stringify({ owner: { kind: 'task', taskId: 'task285', attachments }, attachmentId: 'document', extra: true }), true)).ok, false);
+        for (const field of ['deletedAt', 'purgedAt']) {
+            saved[field] = '2026-10-06T00:00:00Z'; assert.equal((await plan(local, request('document'), true)).ok, false); delete saved[field];
+        }
+        attachments[0].deletedAt = '2026-10-06T00:00:00Z';
+        assert.equal((await plan(local, request('document'), true)).ok, false); delete attachments[0].deletedAt;
+        local.ownerTaskMap = new Map(); assert.equal((await plan(local, request('document'), true)).ok, false);
+        assert.equal((await plan(makeState(0), request('document'), true)).ok, false);
+        assert.equal(JSON.stringify(saved), before);
+        assert.deepEqual(local.attachmentInputs, []); assert.deepEqual(local.fileCalls, []); assert.equal(local.saveCount, 0);
+    });
+    await check('Relocated Open markers are fixed, exportable, best effort and preserve prior markers', async () => {
+        for (const surface of ['task', 'project']) {
+            const operation = `relocated-${surface}-file-open`, local = makeState(0, [], 'ios');
+            local.settings = { diagnostics: { loggingEnabled: false } };
+            const ack = (state, name = operation, outcome = 'prepared') => poll(state, state.StrideHost.attachmentDraftAcknowledged(name, outcome));
+            assert.equal((await ack(local)).ok, true);
+            assert.deepEqual(JSON.parse(local.logText.trim()).context,
+                { releaseCheck: 'v1.3.5/ios-relocated-file-open', operation, outcome: 'prepared', surface });
+            const before = local.logText;
+            for (const name of ['relocated-file-open', `${operation}-extra`, 'relocated-file-open/task']) assert.equal((await ack(local, name)).ok, true);
+            for (const outcome of ['confirmed', 'replayed', '', null]) assert.equal((await ack(local, operation, outcome)).ok, true);
+            assert.equal(local.logText, before);
+            assert.deepEqual((await poll(local, local.StrideHost.logShare())).value, { path: 'files/logs/stride.log' });
+            const exported = local.logText;
+            local.logFailure = 'private diagnostics failure'; assert.equal((await ack(local)).ok, true); assert.equal(local.logText, exported);
+            for (const platform of ['android', undefined]) {
+                const other = makeState(0, [], platform); assert.equal((await ack(other)).ok, true); assert.equal(other.logText, null);
+            }
+        }
+    });
+    await check('availability consumer markers persist only fixed iOS acknowledgment pairs', async () => {
+        const pairs = [['availability-resume', 'validated'], ['availability-checkpoint', 'confirmed'],
+            ['availability-save', 'domainSaved'], ['availability-save', 'settled'], ['availability-discard', 'settled']];
+        for (const [operation, outcome] of pairs) {
+            const local = makeState(0, [], 'ios');
+            local.settings = { diagnostics: { loggingEnabled: false } };
+            const ack = (state, op = operation, result = outcome) => poll(state, state.StrideHost.attachmentDraftAcknowledged(op, result));
+            assert.equal((await ack(local)).ok, true);
+            assert.deepEqual(JSON.parse(local.logText.trim()).context,
+                { releaseCheck: 'v1.3.5/ios-task-availability-consumers', operation, outcome });
+            const before = local.logText;
+            for (const result of ['validated', 'confirmed', 'domainSaved', 'settled', 'prepared', 'downloaded', '', null]) {
+                if (!pairs.some(([op, accepted]) => op === operation && accepted === result))
+                    assert.equal((await ack(local, operation, result)).ok, true);
+            }
+            assert.equal((await ack(local, operation + '-extra')).ok, true);
+            assert.equal(local.logText, before);
+            assert.deepEqual((await poll(local, local.StrideHost.logShare())).value, { path: 'files/logs/stride.log' });
+            const exported = local.logText;
+            local.logFailure = 'private diagnostics failure'; assert.equal((await ack(local)).ok, true); assert.equal(local.logText, exported);
+            for (const platform of ['android', undefined]) {
+                const other = makeState(0, [], platform); assert.equal((await ack(other)).ok, true); assert.equal(other.logText, null);
+            }
+        }
+    });
+    await check('owned resume acknowledgment is iOS-only and fixed without claiming Save or UI hydration', async () => {
+        const local = makeState(0, [], 'ios');
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('owned-resume', 'validated'))).ok, true);
+        assert.deepEqual(JSON.parse(local.logText.trim().split('\n').at(-1)).context,
+            { releaseCheck: 'v1.3.5/ios-owned-editor-resume', operation: 'owned-resume', outcome: 'validated' });
+        const before = local.logText;
+        for (const outcome of ['confirmed', 'replayed', 'domainSaved', 'settled', 'resumed', '', 'unknown'])
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('owned-resume', outcome))).ok, true);
+        assert.equal(local.logText, before);
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('owned-resume', 'validated'))).ok, true);
+        assert.equal(local.logText, before);
+        for (const platform of ['android', undefined]) {
+            const absent = makeState(0, [], platform);
+            assert.equal((await poll(absent, absent.StrideHost.attachmentDraftAcknowledged('owned-resume', 'validated'))).ok, true);
+            assert.equal(absent.logText, null);
+        }
+    });
+    await check('cached Project private bridges refuse boot and non-iOS authority', async () => {
+        const request = JSON.stringify({ projectId: 'cached-410', attachmentId: '41000000-1111-4111-8111-111111111111',
+            revision: 'fixture', managedDirectoryURI: 'file:///documents/attachments/' });
+        for (const platform of ['ios', 'android', undefined]) {
+            const state = makeState(0, [], platform);
+            for (const [name, args] of [
+                ['projectAttachmentCachedAvailabilityPreflight', [request, null]],
+                ['projectAttachmentCachedAvailability', [request, 'file:///documents/attachments/41000000-1111-4111-8111-111111111111.txt']],
+            ]) {
+                const answer = await poll(state, state.StrideHost[name](...args));
+                assert.equal(answer.ok, false); assert.match(answer.error, /^NOT_READY:/);
+            }
+            assert.equal(state.logText, null);
+        }
+    });
+    for (const [operation, releaseCheck, accepted = 'confirmed'] of [
+        ['preexisting-journal-replay', 'v1.3.5/ios-preexisting-attachment-journal-replay'],
+        ['container-relocation', 'v1.3.5/ios-attachment-container-recovery'],
+        ['photo-add', 'v1.3.5/ios-task-photo-add'],
+        ['audio-playback', 'v1.3.5/ios-task-audio-playback', 'started'],
+        ['file-open', 'v1.3.5/ios-local-file-open', 'prepared'],
+        ['project-file-open', 'v1.3.5/ios-project-local-file-open', 'prepared'],
+        ['project-file-remove', 'v1.3.5/ios-project-file-remove', 'saved'],
+        ['project-file-add', 'v1.3.5/ios-project-file-add', 'saved'],
+        ['project-file-add', 'v1.3.5/ios-project-file-add', 'abandoned'],
+        ['cached-project-availability', 'v1.3.5/ios-cached-project-availability'],
+        ...['saved', 'abandoned', 'refused', 'cleanup-pending'].map(outcome => ['selfhosted-project-download', 'v1.3.5/ios-selfhosted-project-download', outcome]),
+        ['project-file-hash', 'v1.3.5/ios-project-file-hash', 'saved'],
+        ['task-file-hash', 'v1.3.5/ios-task-file-hash', 'saved'],
+    ]) await check(`${operation} acknowledgment is fixed, exportable and best effort`, async () => {
+        const local = makeState(0, [], 'ios');
+        local.settings = { diagnostics: { loggingEnabled: false } };
+        const acknowledge = (state, outcome = accepted) => poll(state,
+            state.StrideHost.attachmentDraftAcknowledged(operation, outcome));
+        assert.equal((await acknowledge(local)).ok, true);
+        assert.deepEqual(JSON.parse(local.logText.trim()).context, {
+            releaseCheck, operation, outcome: accepted,
+        });
+        const before = local.logText;
+        for (const outcome of ['replayed', 'settled', '', null]) assert.equal((await acknowledge(local, outcome)).ok, true);
+        assert.equal(local.logText, before);
+        assert.deepEqual((await poll(local, local.StrideHost.logShare())).value, { path: 'files/logs/stride.log' });
+        const exported = local.logText;
+        local.logFailure = 'private diagnostics failure';
+        assert.equal((await acknowledge(local)).ok, true);
+        assert.equal(local.logText, exported);
+        for (const platform of ['android', undefined]) {
+            const other = makeState(0, [], platform);
+            assert.equal((await acknowledge(other)).ok, true);
+            assert.equal(other.logText, null);
+        }
+    });
+    await check('editor acceptance acknowledgment forces five fixed file markers with or without local capability', async () => {
+        for (const local of [makeState(0, [], 'ios'), makeState(0, [], 'ios', configureLocal)]) {
+            local.settings = { diagnostics: { loggingEnabled: false } };
+            for (const operation of ['add', 'remove', 'save', 'discard', 'recover']) {
+                assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(`editor-${operation}`, 'confirmed'))).ok, true);
+                const marker = JSON.parse(local.logText.trim().split('\n').at(-1));
+                assert.deepEqual({ ...marker, ts: '' }, { ts: '', level: 'info', scope: 'native-ios',
+                    message: 'Native iOS attachment draft acknowledged',
+                    context: { releaseCheck: 'v1.3.5/ios-editor-owned-attachments', operation, outcome: 'confirmed' } });
+                assert.match(marker.ts, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+            }
+            assert.equal(local.logOps.filter((operation) => operation === 'append').length, 5);
+            assert.deepEqual(local.events, []); assert.deepEqual(local.fileCalls, []);
+            const exported = await poll(local, local.StrideHost.logShare());
+            assert.equal(exported.ok, true);
+            assert.deepEqual(exported.value, { path: 'files/logs/stride.log' });
+            assert.equal(local.logText.split('\n').filter((line) => line.includes('v1.3.5/ios-editor-owned-attachments')).length, 5,
+                'the same file exported by Diagnostics contains each model acknowledgment');
+        }
+    });
+    await check('editor acceptance acknowledgment rejects every nonselected pair and stays silent on Android', async () => {
+        const local = makeState(0, [], 'ios', configureLocal);
+        for (const operation of ['editor-add', 'editor-remove', 'editor-save', 'editor-discard', 'editor-recover']) {
+            for (const outcome of ['replayed', 'retained', 'domainSaved', 'settled', '', null])
+                assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, outcome))).ok, true);
+        }
+        for (const operation of ['editor-checkpoint', 'editor-delete', 'editor-save ', 'editor-', '', null])
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(operation, 'confirmed'))).ok, true);
+        assert.equal(local.logText, null); assert.deepEqual(local.logOps, []);
+        for (const platform of ['android', undefined]) {
+            const android = makeState(0, [], platform);
+            for (const operation of ['add', 'remove', 'save', 'discard', 'recover'])
+                assert.equal((await poll(android, android.StrideHost.attachmentDraftAcknowledged(`editor-${operation}`, 'confirmed'))).ok, true);
+            assert.equal(android.logText, null); assert.deepEqual(android.logOps, []);
+        }
+    });
+    await check('editor acceptance acknowledgment never fails its caller when the file sink refuses', async () => {
+        const local = makeState(0, [], 'ios');
+        assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged('editor-add', 'confirmed'))).ok, true);
+        const before = local.logText;
+        local.logFailure = 'private diagnostics failure';
+        for (const operation of ['add', 'remove', 'save', 'discard', 'recover'])
+            assert.equal((await poll(local, local.StrideHost.attachmentDraftAcknowledged(`editor-${operation}`, 'confirmed'))).ok, true);
+        assert.equal(local.logText, before, 'no failed append fabricates a marker or changes the acknowledgment');
+        assert(!local.logText.includes('private diagnostics failure'));
+    });
+    console.log(`Task244: ${cases} binding cases; direct callback branch/readiness/transport and real RN live-reference policy (Node VM, not Mac/native retirement proof)`);
+}
+const state = makeState(1);
+const result = await poll(state, state.StrideHost.boot());
+assert.equal(result.ok, false);
+assert.match(result.error, /Incomplete tasks load/);
+assert.equal(state.activationCount, 0);
+assert.equal(state.saveCount, 0);
+assert.equal(state.createCount, 0);
+assert.equal(state.completeCount, 0);
+assert.match((await poll(state, state.StrideHost.languageSaved('', 'en-US'))).error,
+    /Native storage has not been loaded and validated/);
+
+const full = { tasks: [{ id: 'first' }], projects: [], sections: [], areas: [], people: [], settings: {} };
+const partial = { ...full, tasks: [] };
+
+const secondRead = makeState(1, [partial]);
+const secondResult = await poll(secondRead, secondRead.StrideHost.boot());
+assert.equal(secondResult.ok, false);
+assert.match(secondResult.error, /Incomplete tasks load/);
+assert.equal(secondRead.activationCount, 0);
+assert.equal(secondRead.saveCount, 0);
+
+const ready = makeState(0);
+assert.equal((await poll(ready, ready.StrideHost.boot())).ok, true);
+
+
+{
+    const backup = makeState(0, [], 'ios');
+    const metadata = { fileName: 'owned.json', lastModified: 1791115200000, appVersion: '1.3.4' };
+    const metadataJSON = JSON.stringify(metadata);
+    const reference = { id: '11111111-1111-4111-8111-111111111111', sha256: 'a'.repeat(64), byteCount: 420 };
+    const referenceJSON = JSON.stringify(reference);
+    const snapshotName = backup.backupReply.snapshotName;
+    const planJSON = backup.backupPrepared.planJSON;
+    const input = { requestId: reference.id, mode: 'merge', snapshotName, text: 'owned 日本語 🦉', metadata };
+    const gatedCalls = () => [
+        () => backup.StrideHost.backupDocumentInspect(input.text, metadataJSON),
+        () => backup.StrideHost.backupDocumentPrepare(JSON.stringify(input)),
+        () => backup.StrideHost.backupDocumentCommit(referenceJSON, planJSON, snapshotName),
+        () => backup.StrideHost.backupDocumentOutcome(referenceJSON, planJSON, snapshotName),
+    ];
+    for (const call of gatedCalls()) assert.match((await poll(backup, call())).error, /^NOT_READY:/, 'no adapter-bound backup work before boot');
+    assert.deepEqual(backup.backupInputs, []);
+    assert.equal((await poll(backup, backup.StrideHost.boot())).ok, true);
+    assert(backup.receiptScope.includes('backupDocument'), 'iOS bootstrap retains complete-document receipts');
+    const domainBefore = JSON.stringify({ events: backup.events, saves: backup.saveCount, data: backup.fakeData });
+    const inspected = await poll(backup, backup.StrideHost.backupDocumentInspect(input.text, metadataJSON));
+    assert.deepEqual(inspected, { ok: true, value: { valid: true, title: '合并备份', summary: '2 tasks / 1 projects',
+        confirmLabel: 'settings.mergeBackupAction', cancelLabel: 'common.cancel', errorTitle: 'settings.backupMobile.invalidBackup', errorMessage: '' } });
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', input.text, metadata, 'json']), 'owned text and parsed metadata pass unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect('UEsDBA==', metadataJSON, 'csv'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', 'UEsDBA==', metadata, 'csv']), 'CSV binary transport and format pass unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect(input.text, metadataJSON, 'json-restore'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', input.text, metadata, 'json-restore']), 'selected JSON replacement action passes unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect('UEsDBA==', metadataJSON, 'todoist'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', 'UEsDBA==', metadata, 'todoist']), 'Todoist binary transport and action pass unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect('UEsDBA==', metadataJSON, 'ticktick'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', 'UEsDBA==', metadata, 'ticktick']), 'TickTick binary transport and action pass unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect('eyJUQVNL', metadataJSON, 'dgt'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', 'eyJUQVNL', metadata, 'dgt']), 'DGT binary JSON transport and action pass unchanged');
+    assert.equal((await poll(backup, backup.StrideHost.backupDocumentInspect('VHlwZSxOYW1l', metadataJSON, 'omnifocus'))).ok, true);
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['inspect', 'VHlwZSxOYW1l', metadata, 'omnifocus']), 'OmniFocus binary transport and action pass unchanged');
+    const beforeInvalidFormat = backup.backupInputs.length;
+    assert.match((await poll(backup, backup.StrideHost.backupDocumentInspect(input.text, metadataJSON, 'other'))).error, /^INVALID_INPUT:/);
+    assert.equal(backup.backupInputs.length, beforeInvalidFormat, 'unsupported format never reaches service');
+    assert.deepEqual((await poll(backup, backup.StrideHost.backupDocumentResultModel(JSON.stringify(backup.backupReply)))).value,
+        { title: '合并备份', message: '2 added / 1 updated', undoLabel: 'settings.undoImport', doneLabel: 'common.done' });
+    assert.equal((await poll(backup, backup.StrideHost.backupSnapshotRestoreModel(snapshotName))).value.message,
+        `Restore ${snapshotName}; later edits are rolled back`);
+    assert.deepEqual(await poll(backup, backup.StrideHost.backupExportPrepared('json')), { ok: true, value: {} },
+        'completed export callback settles through submit\'s Promise slot');
+    assert.match(backup.logText, /v1\.3\.5\/ios-backup-export/, 'completed export records its fixed marker');
+    assert.equal(JSON.stringify({ events: backup.events, saves: backup.saveCount, data: backup.fakeData }), domainBefore,
+        'inspection and localized result/confirmation reads neither flush nor mutate domain state');
+    let release;
+    backup.backupPrepareHold = new Promise((resolveHeld) => { release = resolveHeld; });
+    const preparedID = backup.StrideHost.backupDocumentPrepare(JSON.stringify(input));
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    assert.equal(backup.StrideHost.poll(preparedID), null, 'held service Promise cannot become a false acknowledgment');
+    release();
+    assert.deepEqual(await poll(backup, preparedID), { ok: true, value: backup.backupPrepared });
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['prepare', true, input]));
+    backup.backupPrepareHold = null;
+    backup.backupReadinessResult = { ok: false, error: { code: 'NOT_READY', message: 'presentation reload unavailable' } };
+    const inputsBeforeRefusal = backup.backupInputs.length;
+    for (const call of gatedCalls().slice(0, 2)) assert.match((await poll(backup, call())).error, /^NOT_READY:/);
+    assert.equal(backup.backupInputs.length, inputsBeforeRefusal, 'normal readiness failure reaches neither inspection nor preparation');
+    const readsBeforeRecovery = backup.backupReadinessChecks;
+    assert.deepEqual(await poll(backup, backup.StrideHost.backupDocumentCommit(referenceJSON, planJSON, snapshotName)),
+        { ok: true, value: backup.backupReply });
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['commit', true, reference, planJSON, snapshotName]));
+    backup.persistenceFailure = { message: 'owed save' };
+    assert.deepEqual(await poll(backup, backup.StrideHost.backupDocumentOutcome(referenceJSON, planJSON, snapshotName)), { ok: true, value: null });
+    backup.backupOutcome = backup.backupReply;
+    assert.deepEqual(await poll(backup, backup.StrideHost.backupDocumentOutcome(referenceJSON, planJSON, snapshotName)), { ok: true, value: backup.backupReply });
+    assert.equal(backup.backupInputs.at(-1), JSON.stringify(['outcome', true, reference, planJSON, snapshotName]));
+    assert.equal(backup.backupReadinessChecks, readsBeforeRecovery, 'recovery dispatch is independent of mutable presentation readiness');
+    assert.equal(JSON.stringify({ events: backup.events, saves: backup.saveCount, data: backup.fakeData }), domainBefore,
+        'terminal outcome dispatch adds no flush or document work');
+    backup.persistenceFailure = null;
+    backup.backupReadinessResult = { ok: true, value: { version: 1 } };
+    backup.persistenceStatus = { queued: true };
+    assert.match((await poll(backup, backup.StrideHost.backupDocumentInspect(input.text, metadataJSON))).error, /^NOT_READY:/);
+    backup.persistenceStatus = null;
+    for (const field of ['sandbox', 'workspaceTransition']) {
+        backup[field] = true;
+        const before = backup.backupInputs.length;
+        for (const call of gatedCalls()) assert.match((await poll(backup, call())).error, /^NOT_READY:/, `${field} blocks adapter-bound backups`);
+        assert.equal(backup.backupInputs.length, before);
+        backup[field] = false;
+    }
+    for (const call of [() => backup.StrideHost.backupDocumentInspect(input.text, '{private-text'),
+        () => backup.StrideHost.backupDocumentPrepare('{private-text'),
+        () => backup.StrideHost.backupDocumentCommit('{private-text', planJSON, snapshotName),
+        () => backup.StrideHost.backupDocumentOutcome('{private-text', planJSON, snapshotName),
+        () => backup.StrideHost.backupDocumentResultModel('{private-text')]) {
+        assert.deepEqual(await poll(backup, call()), { ok: false, error: 'INVALID_INPUT: Invalid backup document input' });
+    }
+}
+
+
+{
+    const tag195 = makeState('auto');
+    assert.equal((await poll(tag195, tag195.StrideHost.boot())).ok, true);
+    for (const [text, count] of [['', 0], [' \n\t', 0], ['###', 0], ['  ###café 🧭  ', 3], ['x'.repeat(2000), 0]]) {
+        assert.deepEqual(await poll(tag195, tag195.StrideHost.referenceBulkTagInput(text, count)),
+            await poll(tag195, tag195.StrideHost.doneBulkTagInput(text, count)));
+    }
+    for (const [text, count] of [['x'.repeat(2001), 0], ['x', -1], ['x', 0.5], ['x', true], ['x', 10001]]) {
+        assert.equal((await poll(tag195, tag195.StrideHost.referenceBulkTagInput(text, count))).ok, false);
+    }
+    const request = { requestId: '19500000-0000-4000-8000-000000000001', taskIds: ['task-cafe\u0301'],
+        taskRevisions: { ['task-cafe\u0301']: 'revision195' }, tag: '  ###café 🧭  ', params: { groupBy: 'none' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 1, changed: true } } };
+    assert.deepEqual(await poll(tag195, tag195.StrideHost.referenceTasksAddTagPrepare(JSON.stringify(request))),
+        { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } });
+    for (const [method, phase] of [['referenceTasksAddTagValidate', 'Validate'], ['referenceTasksAddTagCommit', 'Commit'], ['referenceTasksAddTagOutcome', 'Outcome']]) {
+        assert.deepEqual(await poll(tag195, tag195.StrideHost[method](JSON.stringify(envelope))), { ok: true, value: envelope.prepared.result });
+        assert.deepEqual(JSON.parse(tag195.menuInputs.at(-1)), ['referenceTag' + phase, envelope]);
+        assert.equal((await poll(tag195, tag195.StrideHost[method]('x'.repeat(2000001)))).ok, false);
+    }
+}
+
+
+{
+    const tag741 = makeState('auto');
+    assert.equal((await poll(tag741, tag741.StrideHost.boot())).ok, true);
+    for (const [text, count] of [['', 0], [' \n\t', 0], ['###', 0], ['  ###café 🧭  ', 3], ['x'.repeat(2000), 0]]) {
+        assert.deepEqual(await poll(tag741, tag741.StrideHost.inboxBulkTagInput(text, count)),
+            await poll(tag741, tag741.StrideHost.doneBulkTagInput(text, count)));
+    }
+    for (const [text, count] of [['x'.repeat(2001), 0], ['x', -1], ['x', 0.5], ['x', true], ['x', 10001]]) {
+        assert.equal((await poll(tag741, tag741.StrideHost.inboxBulkTagInput(text, count))).ok, false);
+    }
+    const request = { requestId: '74100000-0000-4000-8000-000000000001', taskIds: ['task-cafe\u0301'],
+        taskRevisions: { ['task-cafe\u0301']: 'revision195' }, tag: '  ###café 🧭  ', source: 'inbox', params: { groupBy: 'none' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 1, changed: true } } };
+    assert.deepEqual(await poll(tag741, tag741.StrideHost.inboxTasksAddTagPrepare(JSON.stringify(request))),
+        { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } });
+    for (const [method, phase] of [['inboxTasksAddTagValidate', 'Validate'], ['inboxTasksAddTagCommit', 'Commit'], ['inboxTasksAddTagOutcome', 'Outcome']]) {
+        assert.deepEqual(await poll(tag741, tag741.StrideHost[method](JSON.stringify(envelope))), { ok: true, value: envelope.prepared.result });
+        assert.deepEqual(JSON.parse(tag741.menuInputs.at(-1)), ['inboxTag' + phase, envelope]);
+        assert.equal((await poll(tag741, tag741.StrideHost[method]('x'.repeat(2000001)))).ok, false);
+    }
+}
+
+{
+    const remove196 = makeState('auto');
+    assert.equal((await poll(remove196, remove196.StrideHost.boot())).ok, true);
+    const tags = ['  ###café 🧭  ', 'cafe\u0301', 'x'.repeat(2001), ...Array.from({length: 101}, (_, i) => 'pick196-' + i)];
+    const request = { requestId: '19600000-0000-4000-8000-000000000001', taskIds: ['task-cafe\u0301'],
+        taskRevisions: { ['task-cafe\u0301']: 'revision196' }, tags, params: { groupBy: 'none' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 1, changed: true } } };
+    assert.deepEqual(await poll(remove196, remove196.StrideHost.referenceTasksRemoveTagPrepare(JSON.stringify(request))),
+        { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } });
+    assert.deepEqual(JSON.parse(remove196.menuInputs.at(-1)), ['referenceRemoveTagPrepare', request]);
+    for (const [method, phase] of [['referenceTasksRemoveTagValidate', 'Validate'], ['referenceTasksRemoveTagCommit', 'Commit'], ['referenceTasksRemoveTagOutcome', 'Outcome']]) {
+        assert.deepEqual(await poll(remove196, remove196.StrideHost[method](JSON.stringify(envelope))), { ok: true, value: envelope.prepared.result });
+        assert.deepEqual(JSON.parse(remove196.menuInputs.at(-1)), ['referenceRemoveTag' + phase, envelope]);
+        assert.equal((await poll(remove196, remove196.StrideHost[method]('x'.repeat(2000001)))).ok, false);
+    }
+}
+{
+    const remove742 = makeState('auto');
+    assert.equal((await poll(remove742, remove742.StrideHost.boot())).ok, true);
+    const tags = ['  ###café 🧭  ', 'cafe\u0301', 'x'.repeat(2001), ...Array.from({length: 101}, (_, i) => 'pick742-' + i)];
+    const request = { requestId: '74200000-0000-4000-8000-000000000001', taskIds: ['task-cafe\u0301'],
+        taskRevisions: { ['task-cafe\u0301']: 'revision742' }, tags, source: 'inbox', params: { groupBy: 'none' } };
+    const envelope = { request, prepared: { version: 1, request, result: { count: 1, changed: true } } };
+    assert.deepEqual(await poll(remove742, remove742.StrideHost.inboxTasksRemoveTagPrepare(JSON.stringify(request))),
+        { ok: true, value: { kind: 'noop', result: { count: 0, changed: false } } });
+    assert.deepEqual(JSON.parse(remove742.menuInputs.at(-1)), ['inboxRemoveTagPrepare', request]);
+    for (const [method, phase] of [['inboxTasksRemoveTagValidate', 'Validate'], ['inboxTasksRemoveTagCommit', 'Commit'], ['inboxTasksRemoveTagOutcome', 'Outcome']]) {
+        assert.deepEqual(await poll(remove742, remove742.StrideHost[method](JSON.stringify(envelope))), { ok: true, value: envelope.prepared.result });
+        assert.deepEqual(JSON.parse(remove742.menuInputs.at(-1)), ['inboxRemoveTag' + phase, envelope]);
+        assert.equal((await poll(remove742, remove742.StrideHost[method]('x'.repeat(2000001)))).ok, false);
+    }
+}
+
+{
+    const organize743 = makeState('auto');
+    assert.equal((await poll(organize743, organize743.StrideHost.boot())).ok, true);
+    const draft = { status: '__KEEP__', projectChoice: '__KEEP__', areaChoice: '__KEEP__', contexts: '@café',
+        tags: '#tag', startDate: '', dueDate: '', reviewDate: '', delegateWho: '' };
+    const apply = { requestId: '74300000-0000-4000-8000-000000000001', source: 'inbox', taskIds: ['task743'],
+        taskRevisions: { task743: 'rev743' }, draft, params: { groupBy: 'none' } };
+    for (const [prefix, request, result] of [
+        ['inboxTasksOrganize', apply, { count: 1, changed: true }],
+        ['inboxOrganizeDestinationCreate', { ...apply, kind: 'area', name: 'Destination743', offerRevision: 'offer743' }, { id: apply.requestId, changed: true }],
+    ]) {
+        const prepared = { version: 1, request, result }, envelope = { request, prepared };
+        assert.deepEqual(await poll(organize743, organize743.StrideHost[prefix + 'Prepare'](JSON.stringify(request))),
+            { ok: true, value: prefix === 'inboxTasksOrganize' ? { kind: 'noop', result: { count: 0, changed: false } } : { kind: 'prepared', prepared } });
+        assert.deepEqual(JSON.parse(organize743.menuInputs.at(-1)), [prefix + 'Prepare', request]);
+        for (const phase of ['Validate', 'Commit', 'Outcome']) {
+            assert.deepEqual(await poll(organize743, organize743.StrideHost[prefix + phase](JSON.stringify(envelope))), { ok: true, value: result });
+            assert.deepEqual(JSON.parse(organize743.menuInputs.at(-1)), [prefix + phase, envelope]);
+        }
+        for (const phase of ['Prepare', 'Validate', 'Commit', 'Outcome']) {
+            const before = organize743.menuInputs.length;
+            assert.equal((await poll(organize743, organize743.StrideHost[prefix + phase]('x'.repeat(2000001)))).ok, false);
+            assert.equal(organize743.menuInputs.length, before);
+        }
+    }
+}
+assert.equal(ready.activationCount, 1);
+
+
+assert.deepEqual(ready.events, ['schema', 'activate', 'load', 'flush', 'baseline']);
+{
+
+    const lost = makeState(2);
+    lost.fakeData = { ...full, tasks: [{ id: 'a' }, { id: 'b' }] };
+    lost.rowBaseline = { ids: { tasks: ['a', 'c'], projects: [], sections: [], areas: [], people: [] }, settings: {} };
+    assert.match((await poll(lost, lost.StrideHost.boot())).error, /Incomplete tasks activation/);
+    const twice = makeState(2);
+    twice.fakeData = { ...full, tasks: [{ id: 'a' }, { id: 'a' }] };
+    twice.rowBaseline = { ids: { tasks: ['a', 'b'], projects: [], sections: [], areas: [], people: [] }, settings: {} };
+    assert.match((await poll(twice, twice.StrideHost.boot())).error, /Incomplete tasks activation/);
+
+    const moved = makeState(0);
+    moved.rowBaselineNull = true;
+    assert.equal((await poll(moved, moved.StrideHost.boot())).ok, true);
+    assert.deepEqual(moved.events, ['schema', 'activate', 'load', 'flush', 'baseline', 'load']);
+
+
+    const stripped = makeState(0);
+    stripped.fakeData = { ...full, tasks: [], settings: { ai: { provider: 'openai', apiKey: 'stored' } } };
+    stripped.settings = { ai: { provider: 'openai' } };
+    assert.equal((await poll(stripped, stripped.StrideHost.boot())).ok, true);
+    const remapped = makeState(0);
+    remapped.fakeData = { ...full, tasks: [], settings: { theme: 'dark' } };
+    remapped.rowBaseline = { ids: { tasks: [], projects: [], sections: [], areas: [], people: [] }, settings: { theme: 'light' } };
+    assert.match((await poll(remapped, remapped.StrideHost.boot())).error, /Incomplete settings load/);
+
+
+    const blank = makeState(0);
+    const three = { savedFilters: [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }] };
+    blank.fakeData = { ...full, tasks: [], settings: three };
+    blank.settings = three;
+    blank.filterCount = 3;
+    blank.rowBaseline = { ids: { tasks: [], projects: [], sections: [], areas: [], people: [] }, settings: { savedFilters: [{ id: 'f1' }, { id: 'f2' }] } };
+    assert.match((await poll(blank, blank.StrideHost.boot())).error, /Incomplete saved filters load/);
+}
+
+
+assert.equal(ready.replayTokens, 'optional');
+assert.equal(ready.receiptsLoadedAt, 0);
+assert.deepEqual([...ready.receiptScope], ['appLock', 'notificationSetting', 'aiRequestTimeout', 'aiReasoningEffort', 'aiGeminiThinkingBudget', 'deviceCalendarSetting', 'calendarSubscriptionSetting', 'calendarSubscriptionAdd', 'reminderComplete', 'reminderSnooze', 'taskCompletion', 'taskCompletionUndo', 'boardTaskCompletion', 'boardTaskCompletionUndo', 'boardTaskReactivate', 'boardTaskOrder', 'archivedTaskRestore', 'archivedTasksRestore', 'trashItemsRestore', 'trashItemsPurge', 'doneTasksMove', 'doneTasksAddTag', 'doneTasksRemoveTag', 'archivedTasksDelete', 'archivedTasksDeleteUndo', 'doneTasksDelete', 'doneTasksDeleteUndo', 'referenceTasksDelete', 'referenceTasksDeleteUndo', 'inboxTasksDelete', 'inboxTasksDeleteUndo', 'referenceTasksMove', 'inboxTasksMove', 'inboxTasksAddTag', 'inboxTasksRemoveTag', 'inboxTasksOrganize', 'inboxOrganizeDestinationCreate', 'inboxPreparedCommit', 'inboxUndo', 'referenceTasksAddTag', 'referenceTasksRemoveTag', 'preparedProjectLifecycle', 'preparedTaskDelete', 'preparedProjectDelete', 'preparedTaskDeleteUndo', 'doneTaskStatus', 'referenceTaskNext', 'referenceTaskStatus', 'referenceTaskCompletion', 'referenceTaskCompletionUndo', 'referenceTaskBackdate', 'referenceTaskDestination', 'referenceProjectNextAction', 'doneTaskCompletedAt', 'archiveTaskCompletedAt', 'data', 'backupDocument', 'pomodoroTransition', 'appleReminderImportItem'], 'the VM array, compared in this realm');
+{
+    const journaled = makeState(0);
+    assert.equal((await poll(journaled, journaled.StrideHost.boot('', '', 'journaled'))).ok, true);
+    assert.equal(journaled.replayTokens, 'required');
+    assert.equal(journaled.receiptsLoadedAt, 0);
+    assert.equal(journaled.receiptScope, null);
+}
+
+for (const [method, call] of [['complete', 'completeTask({ id, taskRevision: taskRevision || undefined })'],
+    ['taskFocus', 'setTaskFocus({ id, focused, taskRevision: taskRevision || undefined })'],
+    ['projectFocus', 'setProjectFocus({ id, focused, projectRevision: projectRevision || undefined })']]) {
+    assert(hostEntry.includes(`contract.${call}`), `${method} sends no revision for ""`);
+}
+assert.deepEqual(await poll(ready, ready.StrideHost.pruneReceipts()), { ok: true, value: { pruned: 3 } });
+
+{
+    const draft = { text: 'Call @phone', options: { addAnother: false } };
+    const submitInput = { ...draft, captureId: '123', openAfterSave: false };
+    assert.equal((await poll(ready, ready.StrideHost.captureSubmit(JSON.stringify(submitInput)))).value.kind, 'saved');
+    assert.equal(ready.createCount, 1);
+    assert.equal((await poll(ready, ready.StrideHost.captureOpen())).ok, true);
+    assert.deepEqual((await poll(ready, ready.StrideHost.captureView(JSON.stringify({ ...draft, picker: { kind: 'project', query: 'h' } })))).value.options, draft.options);
+    assert.equal((await poll(ready, ready.StrideHost.captureEdit(JSON.stringify({ ...draft, edit: { type: 'toggleFocus' } })))).value.notice, null);
+    assert.deepEqual((await poll(ready, ready.StrideHost.captureSnapshot())).value,
+        { snapshot: { fileName: 'data.2026-09-24T10-00-00.000.snapshot.json', contents: '{}' } });
+    ready.snapshotResult = { ok: true, value: null };
+    assert.deepEqual((await poll(ready, ready.StrideHost.captureSnapshot())).value, { snapshot: null });
+    const linesInput = { text: 'a\nb', options: draft.options, captureIds: ['1', '2'], snapshotFileName: null };
+    assert.deepEqual((await poll(ready, ready.StrideHost.captureLines(JSON.stringify(linesInput)))).value, { kind: 'saved', taskIds: ['1', '2'] });
+    const pickerInput = { picker: 'project', query: 'Home', ...draft, requestId: '9' };
+    assert.equal((await poll(ready, ready.StrideHost.capturePicker(JSON.stringify(pickerInput)))).value.created, true);
+    assert.deepEqual(ready.captureInputs, [JSON.stringify(['submit', submitInput]), 'open', JSON.stringify(['view', { ...draft, picker: { kind: 'project', query: 'h' } }]),
+        JSON.stringify(['edit', { ...draft, edit: { type: 'toggleFocus' } }]), 'snapshot', 'snapshot', JSON.stringify(['lines', linesInput]), JSON.stringify(['picker', pickerInput])]);
+    ready.captureInputs.length = 0;
+}
+
+{
+    const params = { initialValue: 'Buy%20milk', project: 'Home' };
+    const draft = { text: 'Buy milk', description: '', showHelp: false, suggestion: null, applied: { tags: [] }, failed: false };
+    const reads = [['captureModalOpen', { params }], ['captureModalView', { params, draft }], ['captureModalEdit', { params, draft, edit: { type: 'toggleHelp' } }],
+        ['captureModalDiscard', { params }]];
+    for (const [name, input] of reads) assert.equal((await poll(ready, ready.StrideHost.menuRead(name, JSON.stringify(input)))).ok, true, `menuRead ${name}`);
+    const submitInput = { params, draft, captureId: '5', openAfterSave: true };
+    assert.equal((await poll(ready, ready.StrideHost.captureModalSubmit(JSON.stringify(submitInput)))).value.taskId, '5');
+    const linesInput = { params, draft: { ...draft, text: 'a\nb' }, captureIds: ['6', '7'] };
+    assert.deepEqual((await poll(ready, ready.StrideHost.captureModalLines(JSON.stringify(linesInput)))).value.taskIds, ['6', '7']);
+    assert.deepEqual(ready.captureInputs, [JSON.stringify(['modalOpen', reads[0][1]]), JSON.stringify(['modalView', reads[1][1]]), JSON.stringify(['modalEdit', reads[2][1]]),
+        JSON.stringify(['modalDiscard', reads[3][1]]),
+        JSON.stringify(['modalSubmit', submitInput]), JSON.stringify(['modalLines', linesInput])]);
+    ready.captureInputs.length = 0;
+}
+
+
+{
+    const key = 'stride:pending-captures:last-applied:v1';
+    ready.queueFiles = { 'a.json': '{"id":"1","title":"Grüße ✓ 😀"}' };
+    ready.kv = { [key]: '{}' };
+    assert.deepEqual(await poll(ready, ready.StrideHost.ingest('r-1')), { ok: true, value: { ingested: 1 } });
+    assert.deepEqual(ready.fileCalls, ['list files/pending-captures', 'read files/pending-captures/a.json', `kvGet ${key}`,
+        `kvSet ${key} {"t":{"tapMs":1,"id":"c","at":2}}`, 'delete files/pending-captures/a.json']);
+    assert.deepEqual(JSON.parse(ready.ingestInputs.pop()), ['r-1', ['a.json'], ['{"id":"1","title":"Grüße ✓ 😀"}'], '{}']);
+    ready.deleteResult = '!StrideNativeError:Cannot delete files/pending-captures/a.json';
+    assert.deepEqual(await poll(ready, ready.StrideHost.ingest('r-2')), { ok: false, error: 'Cannot delete files/pending-captures/a.json' });
+    ready.deleteResult = null;
+    ready.queueFiles = null;
+    ready.kv = {};
+    assert.deepEqual(await poll(ready, ready.StrideHost.ingest('r-3')), { ok: true, value: { ingested: 0 } });
+    assert.deepEqual(JSON.parse(ready.ingestInputs.pop()), ['r-3', null, [], null]);
+
+    const trigger = { action: 'activate', context: '@home' };
+    assert.deepEqual(await poll(ready, ready.StrideHost.contextAutomation(JSON.stringify(trigger))), { ok: true, value: { notification: {
+        title: '@home next action', message: 'Call', channel: 'stride_reminders_v2', data: { kind: 'context-automation', context: '@home' }, channelName: 'Stride reminders' } } });
+    assert.deepEqual(JSON.parse(ready.ingestInputs.pop()), ['context', trigger]);
+    assert.deepEqual(await poll(ready, ready.StrideHost.contextAutomation(JSON.stringify({ ...trigger, action: 'deactivate' }))), { ok: true, value: { notification: null } });
+    ready.sandbox = true;
+    assert.deepEqual(await poll(ready, ready.StrideHost.contextAutomation(JSON.stringify(trigger))), { ok: true, value: { notification: null } });
+    ready.sandbox = false;
+    ready.ingestInputs.length = 0;
+    ready.fileCalls.length = 0;
+}
+
+const updateInput = JSON.stringify({ id: 't', base: { title: 'a', dueDate: null }, patch: { title: 'b', dueDate: '2026-09-15' } });
+assert.deepEqual(await poll(ready, ready.StrideHost.update(updateInput)), { ok: true, value: { id: 't', changed: true } });
+assert.deepEqual(ready.updateInputs, [updateInput]);
+ready.updateResult = { ok: false, error: { code: 'STALE_REVISION', message: 'Task changed while editing: title' } };
+assert.deepEqual(await poll(ready, ready.StrideHost.update(updateInput)),
+    { ok: false, error: 'STALE_REVISION: Task changed while editing: title' });
+assert.deepEqual(await poll(ready, ready.StrideHost.editorModel('t')), { ok: true, value: { version: 1, id: 't' } });
+
+assert.deepEqual(await poll(ready, ready.StrideHost.taskView('{"id":"t"}')),
+    { ok: true, value: { version: 1, id: 't', readOnly: false, rows: [], checklistBase: [{ id: 'c', title: 'Milk', isCompleted: true }] } });
+const checklistInput = { id: 't', draft: { title: 'a' }, checklist: [{ id: 'c', title: 'Milk', isCompleted: true }], edit: { kind: 'toggle', index: 0 } };
+assert.deepEqual((await poll(ready, ready.StrideHost.editChecklist(JSON.stringify(checklistInput)))).value.checklist, checklistInput.checklist);
+assert.deepEqual(await poll(ready, ready.StrideHost.editorSuggestions('t', 'contexts', 'home', 4)),
+    { ok: true, value: { draftValue: '@home', matches: [], quick: [] } });
+const editInput = { id: 't', draft: { title: 'a', dueDate: '' }, edit: { type: 'pickDate', field: 'dueDate', date: '2026-09-17' } };
+assert.deepEqual(await poll(ready, ready.StrideHost.editDraft(JSON.stringify(editInput))), { ok: true, value: { version: 1, id: 't', draft: editInput.draft } });
+assert.deepEqual(ready.editorInputs, ['{"id":"t"}', '["view",{"id":"t"}]', JSON.stringify(['checklist', checklistInput]), '["suggest",{"id":"t","field":"contexts","query":"home","limit":4}]',
+    JSON.stringify(['edit', editInput])]);
+
+
+const draftInput = JSON.stringify({ id: 't', base: { title: 'a', dueDate: '', relativeStartOffset: null }, patch: { title: 'b', dueDate: '2026-09-15T14:05', relativeStartOffset: null } });
+assert.deepEqual(await poll(ready, ready.StrideHost.saveDraft(draftInput)), { ok: true, value: { id: 't', draft: { title: 'b' } } });
+ready.saveDraftResult = { ok: false, error: { code: 'STALE_REVISION', message: 'Task changed while editing: title' } };
+assert.deepEqual(await poll(ready, ready.StrideHost.saveDraft(draftInput)), { ok: false, error: 'STALE_REVISION: Task changed while editing: title' });
+const draftSent = { ...JSON.parse(draftInput), mergeSyncedChanges: true };
+assert.deepEqual(ready.updateInputs.slice(-2), [JSON.stringify(['draft', draftSent]), JSON.stringify(['draft', draftSent])]);
+ready.updateInputs.length = 2;
+ready.saveDraftResult = { ok: true, value: { id: 't', draft: { title: 'b' } } };
+
+assert.deepEqual(await poll(ready, ready.StrideHost.focus(50)), { ok: true, value: { version: 1, revision: 'f', sections: [] } });
+assert.deepEqual(await poll(ready, ready.StrideHost.focusWindow('next', 50, 50, 'f')),
+    { ok: false, error: 'STALE_REVISION: Focus changed; restart paging' });
+assert.deepEqual(ready.focusInputs, ['{"limit":50}', '{"key":"next","offset":50,"limit":50,"revision":"f"}']);
+
+await poll(ready, ready.StrideHost.focus(50, '{"sortBy":"due"}', '{"type":"sort","sortBy":"title"}'));
+await poll(ready, ready.StrideHost.focusWindow('next', 50, 50, 'f', '{"sortBy":"due"}'));
+assert.deepEqual(ready.focusInputs.slice(2), ['{"limit":50,"controls":{"sortBy":"due"},"controlEdit":{"type":"sort","sortBy":"title"}}',
+    '{"key":"next","offset":50,"limit":50,"revision":"f","controls":{"sortBy":"due"}}']);
+
+{
+    const completesBefore = ready.completeCount;
+    const read = ready.StrideHost.focus(50);
+    const command = ready.StrideHost.complete('t');
+    assert.equal((await poll(ready, command)).ok, true);
+    assert.equal(ready.completeCount, completesBefore + 1);
+    assert.equal((await poll(ready, read)).ok, true);
+    ready.focusInputs.pop();
+}
+
+assert.deepEqual(await poll(ready, ready.StrideHost.language('', 'en-US')), { ok: true, value: { language: 'en' } });
+assert.deepEqual(await poll(ready, ready.StrideHost.language('zh', 'en-US')), { ok: true, value: { language: 'zh' } });
+assert.deepEqual(await poll(ready, ready.StrideHost.strings('["tab.inbox"]')),
+    { ok: true, value: { language: 'zh', strings: { 'tab.inbox': '收集箱' }, missing: [] } });
+assert.deepEqual(ready.languageInputs, ['{"storedLanguage":null,"systemLocale":"en-US"}', '{"storedLanguage":"zh","systemLocale":"en-US"}',
+    '{"keys":["tab.inbox"]}']);
+
+
+{
+    const settingsKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/SettingsModel.kt'), 'utf8');
+    const viewModelKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/InboxViewModel.kt'), 'utf8');
+    assert.match(settingsKt, /fun applySyncedChoices\(runtime: CoreHost, prefs: SharedPreferences\) \{[\s\S]*?runtime\.languageSaved\([\s\S]*?ThemeChoice\.load\(runtime\.theme\(/);
+    assert.match(viewModelKt, /applyDeviceChoices\(runtime, prefs\)\s+applySyncedChoices\(runtime, prefs\)/, 'boot applies synced choices after the device ones');
+    assert.match(viewModelKt, /if \(cycles != syncCycles && content != syncContent\) \{[\s\S]{0,400}?refreshAll\(synced = true\)/, 'a finished sync cycle that changed the store content applies synced choices');
+
+    assert.match(viewModelKt, /val content = event\.optInt\("contentRevision", syncContent \+ 1\)/);
+    assert.match(readFileSync(resolve(app, 'bundle/host-sync.ts'), 'utf8'), /if \(contentAfter\.some\(\(reference, index\) => reference !== contentBefore\[index\]\)\) contentRevision \+= 1;/);
+    assert.match(viewModelKt, /if \(synced\) \{\s+background\(Part\.entries, \{ runtime -> applySyncedChoices\(runtime, prefs\);/);
+
+    assert.match(settingsKt, /if \(reply\.optString\("language"\) != Labels\.language\) Labels\.load\(runtime\.strings\(LABEL_KEYS\)\)/);
+    assert.match(coreHost, /fun languageSaved\(stored: String, system: String\): JSONObject = callAsync\("languageSaved", stored, system\)/);
+}
+
+{
+    const savedLanguage = async (stored = 'zh', system = 'en-US') => await poll(ready, ready.StrideHost.languageSaved(stored, system));
+    assert.deepEqual(await savedLanguage(), { ok: true, value: { language: 'zh', deviceWrites: [] } });
+    ready.fakeData.settings = { language: 'fa' };
+    ready.settings = { language: 'fa' };
+    assert.deepEqual(await savedLanguage(), { ok: true, value: { language: 'fa',
+        deviceWrites: [{ key: 'stride-language', value: 'fa' }] } });
+    assert.deepEqual(await poll(ready, ready.StrideHost.language('zh', 'en-US')),
+        { ok: true, value: { language: 'zh' } }, 'legacy Android route ignores synced preference');
+    ready.settings = { language: 'de' };
+    assert.deepEqual((await savedLanguage()).value, { language: 'fa', deviceWrites: [] },
+        'mismatched optimistic memory cannot authorize a mirror');
+    ready.settings = { language: 'fa' };
+    ready.persistenceStatus = { generation: 1, queued: true, inFlight: false, immediate: false, retrying: false, failed: false };
+    assert.deepEqual((await savedLanguage()).value, { language: 'zh', deviceWrites: [] });
+    ready.persistenceStatus = { generation: 1, queued: false, inFlight: false, immediate: false, retrying: false, failed: true };
+    assert.deepEqual((await savedLanguage()).value, { language: 'zh', deviceWrites: [] });
+    ready.persistenceStatus = null;
+    ready.afterLanguage = () => { ready.persistenceStatus = { generation: 2, queued: false, inFlight: false,
+        immediate: false, retrying: false, failed: false }; };
+    assert.deepEqual((await savedLanguage()).value, { language: 'fa', deviceWrites: [] },
+        'an intervening generation cannot authorize a mirror');
+    ready.afterLanguage = null;
+    ready.persistenceStatus = null;
+    for (const raw of ['constructor', '__proto__', null, { code: 'fa' }]) {
+        ready.fakeData.settings = { language: raw };
+        ready.settings = { language: raw };
+        assert.deepEqual((await savedLanguage()).value, { language: 'zh', deviceWrites: [] });
+    }
+    ready.fakeData.settings = [];
+    assert.match((await savedLanguage()).error, /Invalid settings load/);
+    ready.fakeData.settings = { language: 'fa' };
+    ready.settings = { language: 'fa' };
+    ready.settingsReadFailure = true;
+    assert.match((await savedLanguage()).error, /settings storage unavailable/);
+    ready.settingsReadFailure = false;
+    assert.equal((await savedLanguage()).value.deviceWrites[0].value, 'fa', 'a settled Settings read may retry');
+    assert.match((await poll(ready, ready.StrideHost.languageSaved('x'.repeat(501), 'en-US'))).error,
+        /INVALID_INPUT/);
+    ready.settings = undefined;
+    ready.fakeData.settings = {};
+}
+
+{
+    const theme = async (stored) => (await poll(ready, ready.StrideHost.theme(stored))).value;
+    assert.deepEqual(await theme(''), { mode: 'system', deviceWrites: [], preset: 'default', presets: { light: 'default', dark: 'default' }, material: false, scheme: null,
+        status: { light: { done: { bg: '#22C55E20', text: '#22C55E', border: '#22C55E' } }, dark: { done: { bg: '#4ADE8026', text: '#4ADE80', border: '#4ADE80' } } }, priority: { urgent: '#dc2626', low: '#3b82f6' } });
+    assert.deepEqual(await theme('material3-light'), { mode: 'material3-light', deviceWrites: [], preset: 'default', presets: { light: 'default', dark: 'default' }, material: true, scheme: 'light',
+        status: { light: { done: { bg: '#22C55E20', text: '#22C55E', border: '#22C55E' } }, dark: { done: { bg: '#4ADE8026', text: '#4ADE80', border: '#4ADE80' } } }, priority: { urgent: '#dc2626', low: '#3b82f6' } });
+    ready.settings = { theme: 'nord' };
+    ready.fakeData.settings = { theme: 'nord' };
+    assert.deepEqual(await theme('material3-light'), { mode: 'nord', deviceWrites: [
+        { key: '@stride_theme', value: 'nord' }, { key: '@stride_theme_style', value: 'default' }],
+    preset: 'nord', presets: { light: 'nord', dark: 'nord' }, material: false, scheme: 'dark',
+        status: { light: { done: { bg: '#A3BE8C26', text: '#A3BE8C', border: '#A3BE8C' } }, dark: { done: { bg: '#A3BE8C26', text: '#A3BE8C', border: '#A3BE8C' } } }, priority: { urgent: '#dc2626', low: '#3b82f6' } });
+    ready.fakeData.settings = { theme: 'constructor' };
+    ready.settings = { theme: 'constructor' };
+    assert.deepEqual((await theme('')).deviceWrites, []);
+    ready.fakeData.settings = { theme: 'nord' };
+    ready.settings = { theme: 'nord' };
+    ready.persistenceStatus = { generation: 1, queued: true, inFlight: false, immediate: false, retrying: false, failed: false };
+    assert.deepEqual((await theme('')).deviceWrites, [], 'queued settings never authorize an optimistic mirror');
+    ready.persistenceStatus = { generation: 1, queued: false, inFlight: false, immediate: false, retrying: false, failed: true };
+    assert.deepEqual((await theme('')).deviceWrites, [], 'failed settings never authorize an optimistic mirror');
+    ready.persistenceStatus = null;
+    ready.fakeData.settings = { theme: 'dark' };
+    assert.deepEqual((await theme('')).deviceWrites, [], 'a memory/disk mismatch never authorizes a mirror');
+    ready.fakeData.settings = { theme: 'nord' };
+    ready.settingsReadFailure = true;
+    assert.match((await poll(ready, ready.StrideHost.theme(''))).error, /settings storage unavailable/);
+    ready.settingsReadFailure = false;
+    assert.equal((await theme('')).deviceWrites[0].value, 'nord', 'a settled Settings read may retry');
+    ready.settings = undefined;
+}
+
+assert.deepEqual(await poll(ready, ready.StrideHost.projects()),
+    { ok: true, value: { version: 1, revision: 'p', active: [], deferred: [], archived: [] } });
+assert.deepEqual(await poll(ready, ready.StrideHost.projectDetail('p1', 50, 50, 'r')),
+    { ok: false, error: 'STALE_REVISION: Project changed; restart paging from offset zero' });
+ready.projectDetailResult = { ok: true, value: { version: 1, revision: 'r', projectId: 'p1', readOnly: false, total: 0, items: [] } };
+assert.equal((await poll(ready, ready.StrideHost.projectDetail('p1', 0, 50, ''))).ok, true);
+assert.deepEqual(ready.projectInputs, ['projects', '{"projectId":"p1","offset":50,"limit":50,"revision":"r"}', '{"projectId":"p1","offset":0,"limit":50}']);
+
+assert.deepEqual(await poll(ready, ready.StrideHost.taskFocus('t', true, 'rt')), { ok: true, value: { blocked: 'Max 5 focus items.', blockedTitle: 'Focus' } });
+assert.deepEqual(await poll(ready, ready.StrideHost.projectFocus('p', false, 'rp')), { ok: true, value: { blocked: '' } });
+assert.deepEqual(await poll(ready, ready.StrideHost.createProject('New', '', '123')), { ok: true, value: { id: 'p' } });
+assert.equal((await poll(ready, ready.StrideHost.areaFilter())).value.label, 'All');
+assert.equal((await poll(ready, ready.StrideHost.setAreaFilter('{"included":["a"],"excluded":[]}'))).ok, true);
+assert.deepEqual(ready.newInputs, ['["taskFocus",{"id":"t","focused":true,"taskRevision":"rt"}]', '["projectFocus",{"id":"p","focused":false,"projectRevision":"rp"}]',
+    '["createProject",{"title":"New","areaId":null,"requestId":"123"}]', 'areaFilter', '["setAreaFilter",{"included":["a"],"excluded":[]}]']);
+ready.taskFocusResult = { ok: false, error: { code: 'SAVE_FAILED', message: 'disk full' } };
+assert.deepEqual(await poll(ready, ready.StrideHost.taskFocus('t', true)), { ok: false, error: 'SAVE_FAILED: disk full' });
+ready.newInputs.length = 0;
+
+
+{
+    const searchInput = { query: ' milk ', filters: { scope: 'all' }, limit: 50 };
+    const stepInput = { sessionId: 'x', taskId: 't', step: 'actionable', edit: { type: 'set', field: 'title', value: 'a' } };
+    const commitInput = { sessionId: 'x', taskId: 't', step: 'actionable', decision: { choice: 'trash' }, requestId: 'r' };
+    assert.equal((await poll(ready, ready.StrideHost.search(JSON.stringify(searchInput)))).value.query, 'milk');
+    assert.equal((await poll(ready, ready.StrideHost.saveSearch('{"query":"milk","name":"Milk","requestId":"r"}'))).ok, true);
+    assert.equal((await poll(ready, ready.StrideHost.inboxStart('quick'))).value.sessionId, 'x');
+    assert.equal((await poll(ready, ready.StrideHost.inboxStep(JSON.stringify(stepInput)))).ok, true);
+    assert.deepEqual(await poll(ready, ready.StrideHost.inboxCommit(JSON.stringify(commitInput))), { ok: false, error: 'SAVE_FAILED: disk full' });
+    assert.equal((await poll(ready, ready.StrideHost.inboxSkip('{"sessionId":"x","taskId":"t","requestId":"s"}'))).value.view, null);
+    assert.deepEqual(await poll(ready, ready.StrideHost.inboxEnd('x')), { ok: true, value: {} });
+    assert.deepEqual(ready.newInputs, [JSON.stringify(['search', searchInput]), '["saveSearch",{"query":"milk","name":"Milk","requestId":"r"}]',
+        '["inboxStart",{"mode":"quick","mergeSyncedChanges":true}]', JSON.stringify(['inboxStep', stepInput]), JSON.stringify(['inboxCommit', commitInput]),
+        '["inboxSkip",{"sessionId":"x","taskId":"t","requestId":"s"}]', '["inboxEnd",{"sessionId":"x"}]']);
+
+    await poll(ready, ready.StrideHost.search('{"query":"","filters":null,"limit":50}'));
+    assert.deepEqual(ready.newInputs.slice(-1), [JSON.stringify(['search', { query: '', filters: { scope: 'all' }, limit: 50 }])]);
+    ready.newInputs.length = 0;
+}
+
+{
+    const somedayInput = { sortBy: 'title', filters: { tokens: ['#home'] }, filterEdit: { type: 'toggleToken', value: '#home' }, offset: 0, limit: 50 };
+    const moveInput = { taskIds: ['a', 'b'], sectionId: null, requestId: 'r' };
+    assert.equal((await poll(ready, ready.StrideHost.menuRead('more', '{}'))).value.revision, 'm');
+    assert.equal((await poll(ready, ready.StrideHost.menuRead('waiting', '{"person":"","offset":0,"limit":50}'))).ok, true);
+    assert.deepEqual(await poll(ready, ready.StrideHost.menuRead('someday', JSON.stringify(somedayInput))),
+        { ok: false, error: 'STALE_REVISION: Someday changed; restart paging from offset zero' });
+    assert.equal((await poll(ready, ready.StrideHost.menuRead('archive', '{"offset":0,"limit":50}'))).ok, true);
+    assert.deepEqual(await poll(ready, ready.StrideHost.menuCommand('somedayMove', JSON.stringify(moveInput))), { ok: false, error: 'SAVE_FAILED: disk full' });
+    assert.equal((await poll(ready, ready.StrideHost.menuCommand('somedayTask', '{"title":"t","sectionId":null,"captureId":"c"}'))).value.id, 'c');
+    assert.match((await poll(ready, ready.StrideHost.menuRead('nope', '{}'))).error, /^INVALID_INPUT/);
+    assert.match((await poll(ready, ready.StrideHost.menuCommand('nope', '{}'))).error, /^INVALID_INPUT/);
+    assert.deepEqual(ready.menuInputs, ['more', JSON.stringify(['waiting', { person: '', offset: 0, limit: 50 }]), JSON.stringify(['someday', somedayInput]),
+        JSON.stringify(['archive', { offset: 0, limit: 50 }]), JSON.stringify(['somedayMove', moveInput]),
+        JSON.stringify(['somedayTask', { title: 't', sectionId: null, captureId: 'c' }])]);
+    ready.menuInputs.length = 0;
+}
+
+{
+    const reads = [['contexts', { tokens: ['@home'], matchMode: 'all', searchQuery: '', selectedIds: [], offset: 0, limit: 50 }],
+        ['trash', { selected: { taskIds: [], projectIds: [] }, offset: 0, limit: 50 }],
+        ['review', { scope: 'due', selectedIds: [], expansionEdit: { type: 'cycle' }, offset: 0, limit: 50 }],
+        ['weekly', { checkpoint: null, expandedProjectId: null, offset: 0, limit: 50 }],
+        ['weeklyList', { checkpoint: 'c', expandedProjectId: null, list: 'contextTasks', key: '@home', offset: 100, limit: 100, revision: 'w' }],
+        ['daily', { checkpoint: null, offset: 0, limit: 50 }]];
+    for (const [name, input] of reads) assert.equal((await poll(ready, ready.StrideHost.menuRead(name, JSON.stringify(input)))).ok, true, `menuRead ${name}`);
+    const commands = [['contextsAction', { requestId: 'r1', action: { type: 'trashTask', taskId: 't' } }],
+        ['trashAction', { requestId: 'r2', action: { type: 'emptyTrash', revision: 'd' } }],
+        ['reviewTask', { requestId: 'r3', action: { type: 'addProjectTask', projectId: 'p', title: 'x' } }]];
+    for (const [name, input] of commands) assert.equal((await poll(ready, ready.StrideHost.menuCommand(name, JSON.stringify(input)))).ok, true, `menuCommand ${name}`);
+    const mark = { requestId: 'r4', action: { type: 'markReviewedTasks', taskIds: ['t'] } };
+    assert.deepEqual(await poll(ready, ready.StrideHost.menuCommand('reviewAction', JSON.stringify(mark))), { ok: false, error: 'SAVE_FAILED: disk full' });
+    assert.deepEqual(ready.menuInputs, [...reads.map(([name, input]) => JSON.stringify([name, input])),
+        ...commands.map(([name, input]) => JSON.stringify([name === 'reviewTask' ? 'reviewAction' : name, input])), JSON.stringify(['reviewAction', mark])]);
+    ready.menuInputs.length = 0;
+}
+ready.persistenceFailure = { message: 'disk full' };
+
+const readRefusal = { ok: false, error: 'SAVE_FAILED: Previous changes could not be saved; retry before continuing' };
+const queriesBeforeFailure = ready.queryCount;
+const blockedRefresh = await poll(ready, ready.StrideHost.window(0, 50, ''));
+assert.equal(blockedRefresh.ok, false);
+assert.match(blockedRefresh.error, /SAVE_FAILED/);
+assert.equal(ready.queryCount, queriesBeforeFailure);
+
+for (const blocked of [ready.StrideHost.editorModel('t'), ready.StrideHost.taskView('{"id":"t"}'), ready.StrideHost.editChecklist(JSON.stringify(checklistInput)),
+    ready.StrideHost.editorSuggestions('t', 'tags', 'x', 4), ready.StrideHost.editDraft(JSON.stringify(editInput))]) {
+    assert.deepEqual(await poll(ready, blocked), readRefusal);
+}
+assert.equal(ready.editorInputs.length, 5);
+
+for (const blocked of [ready.StrideHost.focus(50), ready.StrideHost.focusWindow('next', 0, 50, 'f')]) {
+    assert.deepEqual(await poll(ready, blocked), readRefusal);
+}
+assert.equal(ready.focusInputs.length, 4);
+
+const commandsBefore = ready.completeCount + ready.createCount + ready.updateInputs.length;
+assert.equal((await poll(ready, ready.StrideHost.complete('t'))).ok, true);
+assert.equal((await poll(ready, ready.StrideHost.captureSubmit('{"text":"Retry","options":{},"captureId":"123"}'))).ok, true);
+
+for (const blocked of [ready.StrideHost.captureOpen(), ready.StrideHost.captureView('{"text":"a","options":{}}'), ready.StrideHost.captureEdit('{"text":"a","options":{},"edit":{}}')]) {
+    assert.deepEqual(await poll(ready, blocked), readRefusal);
+}
+for (const command of [ready.StrideHost.captureLines('{"text":"a\\nb","options":{},"captureIds":["1","2"],"snapshotFileName":null}'),
+    ready.StrideHost.capturePicker('{"picker":"area","query":"x","text":"","options":{},"requestId":"9"}')]) {
+    assert.equal((await poll(ready, command)).ok, true);
+}
+ready.updateResult = { ok: true, value: { id: 't', changed: false } };
+assert.equal((await poll(ready, ready.StrideHost.update(updateInput))).ok, true);
+assert.equal((await poll(ready, ready.StrideHost.saveDraft(draftInput))).ok, true);
+assert.equal(ready.completeCount + ready.createCount + ready.updateInputs.length, commandsBefore + 4);
+
+for (const blocked of [ready.StrideHost.projects(), ready.StrideHost.projectDetail('p1', 0, 50, '')]) {
+    assert.deepEqual(await poll(ready, blocked), readRefusal);
+}
+assert.equal(ready.projectInputs.length, 3);
+
+assert.deepEqual(await poll(ready, ready.StrideHost.areaFilter()), readRefusal);
+ready.taskFocusResult = { ok: true, value: { id: 't', focused: true } };
+for (const command of [ready.StrideHost.taskFocus('t', true), ready.StrideHost.projectFocus('p', true),
+    ready.StrideHost.createProject('New', 'a', '123'), ready.StrideHost.setAreaFilter('{"included":[],"excluded":[]}')]) {
+    assert.equal((await poll(ready, command)).ok, true);
+}
+assert.equal(ready.newInputs.length, 4);
+
+for (const blocked of [ready.StrideHost.search('{"query":"a","filters":{},"limit":50}'), ready.StrideHost.inboxStart('guided'),
+    ready.StrideHost.inboxStep('{"sessionId":"x","taskId":"t","step":"actionable"}')]) {
+    assert.deepEqual(await poll(ready, blocked), readRefusal);
+}
+assert.equal(ready.newInputs.length, 4);
+ready.inboxCommitResult = { ok: true, value: { view: null, notice: null, toast: null } };
+for (const command of [ready.StrideHost.saveSearch('{"query":"a","requestId":"r"}'),
+    ready.StrideHost.inboxCommit('{"sessionId":"x","taskId":"t","step":"actionable","decision":{"choice":"trash"},"requestId":"r"}'),
+    ready.StrideHost.inboxSkip('{"sessionId":"x","taskId":"t","requestId":"s"}')]) {
+    assert.equal((await poll(ready, command)).ok, true);
+}
+assert.equal(ready.newInputs.length, 7);
+
+
+assert.deepEqual(await poll(ready, ready.StrideHost.menuRead('archive', '{"offset":0,"limit":50}')), readRefusal);
+assert.equal(ready.menuInputs.length, 0);
+assert.equal((await poll(ready, ready.StrideHost.menuRead('more', '{}'))).ok, true);
+assert.equal(ready.menuInputs.length, 1);
+assert.equal((await poll(ready, ready.StrideHost.menuCommand('archiveAction', '{"requestId":"r","action":{"type":"moveToInbox","taskId":"t"}}'))).ok, true);
+assert.equal(ready.menuInputs.length, 2);
+assert.equal((await poll(ready, ready.StrideHost.language('', 'zh-CN'))).ok, true);
+assert.equal((await poll(ready, ready.StrideHost.strings('["tab.inbox"]'))).ok, true);
+
+
+const bootBody = hostEntry.slice(hostEntry.indexOf('const boot = '), hostEntry.indexOf('globalThis.StrideHost ='));
+const bootOrder = ['legacyState ? await adapter.getData() : null', 'await importLegacyJson(adapter, loaded,', 'loaded = null;', 'await activateAndVerify(adapter, recoveryLoad)'].map((text) => bootBody.indexOf(text));
+assert(bootOrder.every((index, i) => index > (i ? bootOrder[i - 1] : -1)), `boot order ${bootOrder}`);
+assert.match(hostEntry, /boot\(legacyState: string, legacyBackup: string, writeJournal = '', budgetJSON = ''\): string \{\s*return boot\(legacyState, legacyBackup, false, writeJournal === 'journaled', budgetJSON\);/);
+const importBody = hostEntry.slice(hostEntry.indexOf('const importLegacyJson'), hostEntry.indexOf('// After a failed save'));
+
+assert.doesNotMatch(hostEntry, /latestData/);
+const importOrder = ['planLegacyJsonImport(', 'legacyImportMismatch(plan.merged, loaded)', 'await adapter.saveData(plan.merged)',
+    'legacyImportMismatch(plan.merged, await adapter.getData())', 'Legacy import not confirmed', 'native().rnStateCommit(',
+    "if (rnState === 'failed') throw new Error("].map((text) => importBody.indexOf(text));
+assert(importOrder.every((index, i) => index > (i ? importOrder[i - 1] : -1)), `import order ${importOrder}`);
+
+assert.match(importBody, /catch \(error\) \{\s*rnState = 'failed';\s*rnFailure = [^\n]*\s*\}/);
+assert.equal(importBody.match(/rnState = 'failed'/g).length, 1);
+assert.equal(hostEntry.match(/saveData\(/g).length, 1, 'the import is the host\'s only direct save');
+assert.equal(hostEntry.match(/rnStateCommit\(/g).length, 2, 'bridge type and one call');
+const legacyLine = /extra: Record<string, string> = \{([\s\S]*?)\};/.exec(importBody)?.[1] ?? '';
+assert(legacyLine.includes("releaseCheck: ios ? 'v1.3.3/native-ios-legacy-json-import' : 'v1.3.3/native-android-legacy-json-import'"));
+
+for (const [, name] of legacyLine.matchAll(/(\w+):/g)) assert.doesNotMatch(name, /key|pass|user/i);
+
+const legacyState = (overrides = {}) => JSON.stringify({ jsonAhead: true, reconciled: true, backupVersion: '2', backupPresent: true, ...overrides });
+const current = { tasks: [{ id: 'rn' }], projects: [], sections: [], areas: [], people: [], settings: {} };
+const merged = { ...current, tasks: [{ id: 'rn' }, { id: 'json-only' }] };
+const importPlan = { outcome: 'imported', path: 'json-ahead', merged, clearJsonAhead: true, setReconciled: false,
+    counts: { backupTasks: 2, sqliteTasks: 1, mergedTasks: 2, tasksFromBackup: 1 } };
+const legacyBoot = async ({ plan = importPlan, overrides = {}, backup = '{"tasks":[]}', setup = () => {} } = {}) => {
+    const legacy = makeState('auto', [current]);
+    legacy.plan = plan;
+    setup(legacy);
+    return { legacy, result: await poll(legacy, legacy.StrideHost.boot(legacyState(overrides), backup)) };
+};
+const commitOf = (clearJsonAhead, setReconciled) => `commit:${JSON.stringify({ clearJsonAhead, setReconciled })}`;
+
+assert.equal(ready.events.includes('plan'), false, 'the dev database never plans an import');
+{
+    const { legacy, result } = await legacyBoot();
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(legacy.events.slice(0, 7), ['load', 'plan', 'save', 'load', commitOf(true, false), 'activate', 'load']);
+    assert.deepEqual(JSON.parse(legacy.planInputs[0]), [
+        { jsonAhead: true, reconciled: true, backupVersion: '2', backupJson: '{"tasks":[]}' }, 1, true]);
+}
+{
+    const { legacy } = await legacyBoot({ overrides: { backupPresent: false, backupVersion: null } });
+    assert.deepEqual(JSON.parse(legacy.planInputs[0])[0], { jsonAhead: true, reconciled: true, backupVersion: null, backupJson: null });
+}
+{
+    const failed = makeState(5, [current]);
+    failed.plan = importPlan;
+    const result = await poll(failed, failed.StrideHost.boot(legacyState(), '{}'));
+    assert.match(result.error, /Incomplete tasks load/);
+    assert.deepEqual(failed.events, ['load'], 'a failed validated load plans, saves, and commits nothing');
+}
+{
+    const { legacy, result } = await legacyBoot({ setup: (state) => { state.afterSave = current; } });
+    assert.match(result.error, /Legacy import not confirmed: tasks/);
+    assert.deepEqual(legacy.events, ['load', 'plan', 'save', 'load'], 'an unconfirmed import changes no RN state and never activates');
+}
+{
+
+    const lost = { ...merged, tasks: [{ id: 'rn' }, { id: 'json-only', title: 'lost' }] };
+    const { legacy, result } = await legacyBoot({ setup: (state) => { state.afterSave = lost; } });
+    assert.match(result.error, /Legacy import not confirmed/);
+    assert.deepEqual(legacy.events, ['load', 'plan', 'save', 'load'], 'a content mismatch changes no RN state and never activates');
+}
+{
+
+    const { legacy, result } = await legacyBoot({ setup: (state) => { state.fakeDataSequence = [merged]; state.fakeData = merged; } });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(legacy.events.slice(0, 4), ['load', 'plan', commitOf(true, false), 'activate']);
+}
+{
+    const { legacy, result } = await legacyBoot({ setup: (state) => { state.saveError = 'disk full'; } });
+    assert.match(result.error, /disk full/);
+    assert.deepEqual(legacy.events, ['load', 'plan', 'save']);
+}
+{
+
+    const { legacy, result } = await legacyBoot({ setup: (state) => { state.commitResult = '!StrideNativeError:Cannot create the RN state checkpoint'; } });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /^Cannot update the previous app version's saved state: Cannot create the RN state checkpoint$/);
+    assert.deepEqual(legacy.events, ['load', 'plan', 'save', 'load', commitOf(true, false)], 'no activation after a failed RN state change');
+    assert.equal(legacy.activationCount, 0);
+}
+{
+    const plan = { outcome: 'abandoned', path: 'json-ahead', reason: 'backup-corrupt', clearJsonAhead: true, setReconciled: true };
+    const { legacy, result } = await legacyBoot({ plan, setup: (state) => { state.fakeData = current; } });
+    assert.equal(result.ok, true);
+    assert.deepEqual(legacy.events.slice(0, 3), ['load', 'plan', commitOf(true, true)], 'an abandoned backup saves nothing');
+}
+{
+    const plan = { outcome: 'none', clearJsonAhead: false, setReconciled: false };
+    const { legacy, result } = await legacyBoot({ plan, setup: (state) => { state.fakeData = current; } });
+    assert.equal(result.ok, true);
+    assert.deepEqual(legacy.events.slice(0, 3), ['load', 'plan', 'activate'], 'nothing to import: no save, no RN state change');
+}
+const brokenStorage = makeState(0);
+brokenStorage.__strideNative.sqlAll = () => '!StrideNativeError:disk I/O error';
+const brokenBoot = await poll(brokenStorage, brokenStorage.StrideHost.boot());
+assert.equal(brokenBoot.ok, false);
+assert.match(brokenBoot.error, /disk I\/O error/);
+assert.equal(brokenStorage.activationCount, 0);
+
+
+{
+    const deadlineState = makeState(0);
+    const fetches = [];
+    deadlineState.__strideNative.log = (line) => fetches.push(line);
+    deadlineState.fetch = (url, init) => new Promise((_, reject) => {
+        const refuse = () => reject(Object.assign(new Error(deadlineState.cancelled), { name: 'AbortError' }));
+        fetches.push(`${init?.method ?? 'GET'} ${url}`);
+        if (deadlineState.cancelled) refuse(); else deadlineState.cancelFetch = refuse;
+    });
+    deadlineState.__cancelHostCalls = (message) => { deadlineState.cancelled = message; deadlineState.cancelFetch(); };
+    const id = deadlineState.StrideHost.netDeadline('18765', 'drain');
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    assert.equal(deadlineState.StrideHost.poll(id), null, 'the operation waits on its unanswered request');
+    assert.equal(deadlineState.StrideHost.cancel(id), null);
+    const drained = await poll(deadlineState, id);
+    assert.deepEqual(drained, { ok: true, value: ['signal', 'fetch:AbortError', 'write:AbortError'] });
+    assert.deepEqual(fetches, ['GET http://127.0.0.1:18765/slow/deadline-drain', 'PUT http://127.0.0.1:18765/dav/after-drain.json',
+        'Native Android net deadline drain events=["signal","fetch:AbortError","write:AbortError"]']);
+    assert.equal(deadlineState.cancelled, 'The host operation timed out');
+}
+
+
+{
+    const ai = makeState(0);
+    assert.equal((await poll(ai, ai.StrideHost.boot())).ok, true);
+    let refused = false;
+    ai.__cancelHostCalls = () => { refused = true; };
+    const id = ai.StrideHost.aiRequest('requestTaskEditorClarify', '{"id":"t"}');
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    assert.equal(ai.StrideHost.poll(id), null, 'the request waits on its provider');
+    assert.deepEqual([...ai.aiInputs], ['{"id":"t"}']);
+    assert.equal(ai.StrideHost.abort(id), null);
+    assert.deepEqual(await poll(ai, id), { ok: false, error: 'The AI request was cancelled' });
+    assert.equal(refused, false, 'abort refuses no other host call');
+}
+
+
+{
+    const { spawnSync } = await import('node:child_process');
+    const script = (ending) => `import { cleanupOnExit } from ${JSON.stringify(resolve(app, 'scripts/check-net-device.mjs'))};
+        const cleanup = cleanupOnExit([() => console.log('props'), () => { throw new Error('phone gone'); }, () => console.log('reverse')]);
+        setTimeout(() => {}, 10000);
+        ${ending}`;
+    for (const [ending, status] of [["process.kill(process.pid, 'SIGINT');", 130], ["process.kill(process.pid, 'SIGTERM');", 143], ['cleanup(); cleanup(); process.exit(0);', 0]]) {
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script(ending)], { encoding: 'utf8', timeout: 20_000 });
+        assert.deepEqual([child.status, child.stdout], [status, 'props\nreverse\n'], ending);
+    }
+}
+
+{
+    const log = makeState(0);
+    assert.equal((await poll(log, log.StrideHost.boot())).ok, true);
+    const tick = () => new Promise((resolveTick) => setImmediate(resolveTick));
+    const lines = () => (log.logText ?? '').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    log.logOps.length = 0;
+    log.coreLogger({ level: 'info', message: 'not written' });
+    await tick();
+    assert.deepEqual(log.logOps, [], 'debug logging off: no file work at all');
+    log.coreLogger({ level: 'warn', message: 'forced token=secret-value', scope: 'diagnostics', force: true });
+    await tick();
+    assert.deepEqual(lines().map(({ ts: _ts, ...line }) => line), [{ level: 'warn', scope: 'diagnostics', message: 'forced token=[redacted]' }]);
+
+    log.coreLogger({ level: 'warn', message: 'GET https://alice:p@ss@nas.local/dav failed; GET https://nas.local/dav?token=first&token=second failed', scope: 'sync', force: true });
+    await tick();
+    const sanitized = lines().at(-1).message;
+    assert.match(sanitized, /nas\.local\/dav failed/);
+    for (const secret of ['alice', 'p@ss', 'ss@', 'first', 'second']) assert(!sanitized.includes(secret), `the sanitized line keeps "${secret}": ${sanitized}`);
+    log.settings = { diagnostics: { loggingEnabled: true } };
+    log.coreLogger({ level: 'info', message: 'Native Android task command', category: 'storage', context: { operation: 'complete', password: 'p' } });
+    await tick();
+    const last = lines().at(-1);
+    assert.deepEqual(Object.keys(last), ['ts', 'level', 'scope', 'message', 'context']);
+    assert.deepEqual({ ...last, ts: '' }, { ts: '', level: 'info', scope: 'core', message: 'Native Android task command', context: { operation: 'complete', password: '[redacted]', category: 'storage' } });
+    assert.match(last.ts, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    assert.equal(log.logOps.filter((op) => op === 'append').length, 3, 'one append per line');
+    assert.equal(log.logOps.filter((op) => op === 'write').length, 0, 'no rewrite under the size cap');
+    assert.deepEqual(await poll(log, log.StrideHost.logShare()), { ok: true, value: { path: 'files/logs/stride.log' } });
+    assert.deepEqual(await poll(log, log.StrideHost.logClear()), { ok: true, value: {} });
+    assert.equal(log.logText, null);
+
+    log.logFailure = 'disk full';
+    assert.doesNotThrow(() => log.coreLogger({ level: 'error', message: 'lost', force: true }));
+    await tick();
+    assert.deepEqual(await poll(log, log.StrideHost.logShare()), { ok: true, value: { path: null } });
+}
+
+{
+    const log = makeState(0, [], 'ios');
+    assert.equal((await poll(log, log.StrideHost.boot())).ok, true);
+    assert(log.receiptScope.includes('data'), 'Apple scoped bootstrap durably acknowledges Data toggles');
+    log.persistenceStatus = { generation: 1, queued: true, inFlight: false, immediate: false, retrying: false, failed: true };
+    log.persistenceFailure = { kind: 'save_failed', message: 'owed domain write' };
+    const domainBefore = JSON.stringify({ events: log.events, fakeData: log.fakeData, saves: log.saveCount, menuInputs: log.menuInputs });
+    log.logOps.length = 0;
+    log.coreLogger({ level: 'info', message: 'earlier diagnostic', force: true });
+    assert.deepEqual(await poll(log, log.StrideHost.logShare()), { ok: true, value: { path: 'files/logs/stride.log' } });
+    const lines = log.logText.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.deepEqual(lines.map(({ ts: _ts, ...line }) => line), [
+        { level: 'info', scope: 'core', message: 'earlier diagnostic' },
+        { level: 'info', scope: 'native-ios', message: 'Native iOS diagnostics share requested', context: { releaseCheck: 'v1.3.4/ios-diagnostics', operation: 'share' } },
+    ], 'the forced iOS aggregate marker reaches actual file bytes before the live path is returned');
+    assert.equal(log.logOps.at(-1), 'ensure', 'the final export barrier follows every earlier append');
+    assert.equal(log.logOps.filter((op) => op === 'append').length, 2);
+    log.logOps.length = 0;
+    assert.deepEqual(await poll(log, log.StrideHost.logClearChecked()), { ok: true, value: { outcome: 'cleared' } });
+    assert.equal(log.logText, null);
+    assert.deepEqual(log.logOps, ['delete', 'path', 'isAbsent'], 'checked Clear writes no success line');
+    assert.deepEqual(await poll(log, log.StrideHost.logClearChecked()), { ok: true, value: { outcome: 'alreadyAbsent' } });
+    assert.equal(log.logText, null);
+    assert.equal(JSON.stringify({ events: log.events, fakeData: log.fakeData, saves: log.saveCount, menuInputs: log.menuInputs }), domainBefore, 'file-only calls do not retry or mutate domain work');
+    log.logText = 'retained';
+    log.logDeleteRefused = true;
+    assert.deepEqual(await poll(log, log.StrideHost.logClearChecked()), { ok: true, value: { outcome: 'unconfirmed' } });
+    assert.equal(log.logText, 'retained');
+    log.logDeleteRefused = false;
+    log.logAbsentError = true;
+    assert.deepEqual(await poll(log, log.StrideHost.logClearChecked()), { ok: true, value: { outcome: 'unconfirmed' } });
+    log.logAbsentError = false;
+    log.logUnavailable = true;
+    assert.deepEqual(await poll(log, log.StrideHost.logClearChecked()), { ok: true, value: { outcome: 'unavailable' } });
+}
+console.log('Storage exception rethrown in JS;', 'lifecycle ownership and debug-only fault hooks checked');
+console.log('RN legacy guard runs before the RN database opens and reads RKStorage and the database only as byte copies');
+console.log('Editor: core\'s model and suggestions in, saveTaskDraft out through perform with an exact retry, changed fields only, no Kotlin date parsing');
+console.log('Focus: reads only through CoreHost, core order and flags only, stale windows restart, blocked after a failed save');
+console.log('Labels: every UI word from core getStrings, one key map filled after setLanguage, debug-only language override');
+console.log('Theme: one Kotlin theme object equal to RN\'s palettes, no color elsewhere, core resolves the mode and owns its hues');
+console.log('Accessibility: the failure banner floats over the screen (zIndex, live region, first in traversal); sections expose core\'s text');
+console.log('Projects: reads only through CoreHost, core order and groups only, stale windows restart, blocked after a failed save');
+console.log('RN legacy import: after the validated load, confirmed by a re-read before RN state changes; RKStorage checkpointed first');
+console.log('Search and Process Inbox: core reads in the background with freshness, answers and saves through perform with exact, persisted requests');
+console.log('RN look: rows read core meta (no Kotlin date formatting or coloring); stars, status, new project, and area filter run through perform with exact retries');
+console.log('Menu tab: core\'s menu views through CoreHost, writes through perform with exact requests, Someday creates on disk first, no Kotlin policy');
+console.log('Contexts, Trash, Review and the reviews: core\'s views, core\'s actions through perform, destructive actions behind core\'s question, checkpoints under core\'s keys');
+console.log('Calendar and Board: core\'s views under one revision, core\'s actions through perform, composer and Duplicate on disk first, a drop is one core action, no Kotlin date math or policy');
+console.log('Toolbars and bulk: the Inbox on core\'s view, core\'s bulk bar and Focus controls through perform with exact requests, a saved Focus filter on disk first, stateless Select all, no deprecated Archive fields, no Kotlin policy');
+console.log('Review organize and picker search: row and batch Mark reviewed and Organize\'s Apply carry core\'s task revisions, a stale refusal rereads core\'s view, the Organize sheet is the lists\' dialog on Review\'s bar, the token and Board pickers search through core, and a search hit is highlighted on the list it opened on');
+console.log('Settings and the editor\'s View tab: core\'s settings and task views through CoreHost, writes through perform with exact requests, device writes under RN\'s keys, checklist edits as core\'s edits in the one save');
+console.log('Mind Sweep and saved searches: core\'s views through CoreHost, captures and Bulk organize creates on disk first, stale windows read again whole, Focus picker search, no Kotlin policy');
+console.log('App lock: core\'s General row read at boot and after a failed save, locked on each leave but a rotation, no recents picture while on, AndroidX BiometricPrompt with Expo\'s credential fallback, General\'s switch on only after a yes, a scrolling lock screen in core\'s words, and a phone check that swaps the database atomically and restores loudly');
+console.log('Diagnostics log: core\'s rules on Kotlin\'s file bridge (RN\'s path, gate, force, line, sanitizer), Share through a private FileProvider and the share sheet, Clear, Data\'s card from core');
+
+for (const file of ['device.mjs', 'check-net-device.mjs']) {
+    assert.match(readFileSync(resolve(app, `scripts/${file}`), 'utf8'), /^import '\.\/device-lock\.mjs';$/m, `${file} waits for the phone's lock first`);
+}
+console.log('Entry points: RN\'s alias, links on the build\'s scheme, text shares and Assistant notes read as strings into core\'s resolveNativeEntryPoint, RN\'s shortcuts from RN\'s builder, Import .txt through core');
+
+
+{
+    const remindersKt = source('Reminders.kt');
+    const notificationsKt = source('CoreNotifications.kt');
+    const manifest = readFileSync(resolve(app, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+
+    assert.match(manifest, /<receiver\s+android:name="\.ReminderAlarmReceiver"\s+android:exported="false" \/>/);
+    assert.match(manifest, /<receiver\s+android:name="\.ReminderActionReceiver"\s+android:exported="false" \/>/);
+
+    assert.match(manifest, /<receiver\s+android:name="\.PomodoroAlarmReceiver"\s+android:exported="false" \/>/);
+    const reschedule = manifest.match(/<receiver\s+android:name="\.ReminderRescheduleReceiver"[\s\S]*?<\/receiver>/)[0];
+    assert.deepEqual([...reschedule.matchAll(/<action android:name="([^"]+)"/g)].map((m) => m[1]), ['android.intent.action.BOOT_COMPLETED',
+        'android.intent.action.TIME_SET', 'android.intent.action.TIMEZONE_CHANGED', 'android.intent.action.MY_PACKAGE_REPLACED',
+        'android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED']);
+    assert.doesNotMatch(manifest, /android:process=/, 'one process: two hosts on one database reject each other\'s writes');
+    assert.match(remindersKt, /action == DEBUG_RESCHEDULE && BuildConfig\.DEBUG\)\) return/, 'the debug reschedule only in a debug build');
+
+    assert.doesNotMatch(code(remindersKt + notificationsKt), /postDelayed|Handler\(|Timer\(|"expired"|hashCode\(\)|Random\(/);
+    assert.match(remindersKt, /PendingIntent\.getBroadcast\(context, alarm\.getInt\("id"\), fireIntent\(context\)/);
+    assert.match(notificationsKt, /val id = alarm\.getInt\("id"\)/);
+    for (const text of [remindersKt, notificationsKt]) {
+        for (const call of code(text).matchAll(/PendingIntent\.get(?:Broadcast|Activity)\([\s\S]{0,240}/g)) assert.match(call[0], /^[^]*?FLAG_IMMUTABLE/, 'every PendingIntent is immutable');
+    }
+
+    assert.match(remindersKt, /if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.S \|\| manager\.canScheduleExactAlarms\(\)\) \{\s+manager\.setExactAndAllowWhileIdle\(AlarmManager\.RTC_WAKEUP, at, intent\)\s+\} else \{\s+manager\.setAndAllowWhileIdle\(AlarmManager\.RTC_WAKEUP, at, intent\)/);
+
+    assert.match(remindersKt, /RN_RECEIVER = "com\.emekalites\.react\.alarm\.notification\.AlarmReceiver"/);
+
+    assert.match(remindersKt, /data\.optInt\("alarmId", Int\.MIN_VALUE\)/);
+    assert.match(remindersKt, /PendingIntent\.getBroadcast\(context, id, intent, PendingIntent\.FLAG_NO_CREATE or PendingIntent\.FLAG_IMMUTABLE\)/, 'a candidate that names no RN alarm cancels nothing');
+
+    assert.match(source('CoreWork.kt'), /requestId != null -> work\.enqueueUniqueWork\("stride-core-\$job-\$requestId", ExistingWorkPolicy\.KEEP, request\)/);
+    assert.match(remindersKt, /"requestedAt" to System\.currentTimeMillis\(\)\.toString\(\)/);
+
+    assert.doesNotMatch(code(remindersKt), /CoreWork\.enqueue\(/, 'every reminder receiver queues durably');
+    assert.equal([...code(remindersKt).matchAll(/CoreWork\.enqueueDurably\(this, context,/g)].length, 4, 'Done, Snooze, the reschedule and a repeat that fired');
+
+
+    assert.doesNotMatch(code(remindersKt), /Calendar|TimeZone|nextRepeat/);
+    assert.match(remindersKt, /CoreJob\.REMINDERS, mapOf\("mode" to "fired", "key" to alarm\.getString\("key"\)\)/);
+    assert.match(remindersKt, /synchronized\(ReminderAlarms\.LOCK\) \{\s+ReminderLedger\.of\(context\)\.deliver\(/);
+
+    assert.match(remindersKt, /port\.record\(cancelled = [\s\S]{0,260}\)\s+for \(index in 0 until cancel\.length\(\)\)/);
+    assert.match(remindersKt, /synchronized\(LOCK\) \{ applyLocked\(parsed\) \}/);
+    assert.match(hostEntry, /reminderDone\(requestId: string, taskId: string\): string \{\s+return submit\(async \(\) => taskResult\('reminderDone', await contract\.completeReminderTask\(\{ requestId, taskId \}\)\)\);/);
+
+    assert.match(hostEntry, /reminderSnooze\(json: string\): string \{\s+return submit\(async \(\) => \{\s+const result = await contract\.snoozeReminder\(JSON\.parse\(json\)\);\s+if \(result\.ok\) await requireReminders\(\)\.snooze\(result\.value\);\s+return taskResult\('reminderSnooze', result\);/);
+
+
+    assert.match(notificationsKt, /\.setPriority\(NotificationCompat\.PRIORITY_DEFAULT\)/);
+    assert.match(notificationsKt, /\.setVisibility\(NotificationCompat\.VISIBILITY_PRIVATE\)/);
+    assert.match(notificationsKt, /\.setCategory\(NotificationCompat\.CATEGORY_REMINDER\)/);
+    assert.match(notificationsKt, /if \(details\.optBoolean\("play_sound", true\)\) Settings\.System\.DEFAULT_NOTIFICATION_URI else null/);
+    assert.match(notificationsKt, /NotificationChannel\(id, name, NotificationManager\.IMPORTANCE_DEFAULT\)\.apply \{\s+description = name\s+enableLights\(true\)\s+color\?\.let \{ lightColor = it \}\s+enableVibration\(false\)\s+setSound\(Settings\.System\.DEFAULT_NOTIFICATION_URI, AudioAttributes\.Builder\(\)\s+\.setUsage\(AudioAttributes\.USAGE_NOTIFICATION\)/);
+    assert.doesNotMatch(code(notificationsKt), /setBypassDnd|setOngoing|FLAG_INSISTENT/);
+    assert.match(remindersKt, /override fun clearDelivered\(\) \{\s+for \(shown in notifications\.activeNotifications\) \{\s+if \(NotificationCompat\.getChannelId\(shown\.notification\) == CoreNotifications\.REMINDER_CHANNEL\)/);
+    assert.doesNotMatch(code(remindersKt + notificationsKt), /cancelAll\(\)/, 'nothing clears the whole tray');
+    assert.equal([...code(remindersKt).matchAll(/\), done = dismiss\)/g)].length, 2, 'Done and Snooze dismiss once stored');
+
+    assert.match(source('InboxViewModel.kt'), /suspend fun askNotifications\(\): Boolean \{\s+ProcessCoreHost\.remindersStarted\.await\(\)/);
+    assert.equal([...source('ProcessCoreHost.kt').matchAll(/remindersStarted\.complete\(Unit\)/g)].length, 2, 'a start, or a resume\'s start after a failed one');
+
+    assert.match(remindersKt, /if \(debugProperty\("reminder_stop"\) == point\)/);
+    assert.match(remindersKt, /debugProperty\("snooze_minutes"\)\.toDoubleOrNull\(\)/);
+}
+
+
+{
+    const stand = `
+export const REMINDER_NOTIFICATION_CHANNEL_NAME = 'Stride reminders';
+export const REMINDER_NOTIFICATION_EVENT_RESCHEDULE_DELAY_MS = 5;
+export const REMINDER_STORE_RESCHEDULE_DELAY_MS = 30;
+export const hasActiveMobileNotificationFeature = (settings) => settings.on === true;
+export const isSandboxMode = () => globalThis.reminderSandbox === true;
+export const logInfo = (message, payload) => { (globalThis.reminderInfos ??= []).push([message, payload]); }; export const logWarn = (message, payload) => { (globalThis.reminderWarns ??= []).push([message, payload]); };
+export const nameNotifyListener = (_name, listener) => listener;
+export const shouldRescheduleReminderAlarms = (state, previous) => state.tasks !== previous.tasks;
+const listeners = [];
+let state = { tasks: [], settings: { on: true } };
+export const useTaskStore = { getState: () => state, subscribe: (listener) => { listeners.push(listener); return () => {}; },
+  setState: (next) => { const previous = state; state = { ...state, ...next }; listeners.forEach((listener) => listener(state, previous)); } };
+globalThis.standStore = useTaskStore;
+`;
+    const out = await build({ entryPoints: [resolve(app, 'bundle/host-reminders.ts')], bundle: true, write: false, format: 'esm',
+        plugins: [{ name: 'stand-core', setup(plugin) {
+            plugin.onResolve({ filter: /^@stride\/core$/ }, () => ({ path: 'core', namespace: 'stand' }));
+            plugin.onLoad({ filter: /.*/, namespace: 'stand' }, () => ({ contents: stand, loader: 'js' }));
+        } }] });
+    const mod = await import(`data:text/javascript,${encodeURIComponent(out.outputFiles[0].text)}`);
+    const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+    const calls = [];
+    let stored = '{"task:a":{"id":7,"signature":"s"}}';
+    let cleanupFailure = true;
+    let topUp = null;
+    let storedState = null;
+    let planState = '{}';
+    let lastPlan = null;
+    const applied = [];
+    const reminders = mod.createNativeReminders({
+        plan: async (input) => {
+            calls.push(`plan ${input.storedAlarms} ${input.permissionGranted}${input.remake ? ` remake ${input.remake}` : ''}`);
+            lastPlan = input;
+            await sleep(5);
+            return { ok: true, value: { mode: 'active', cancel: [], schedule: [], alarms: '{}', state: planState, topUpDelayMs: topUp } };
+        },
+        readStored: async () => ({ alarms: stored, state: storedState }),
+        planSnooze: (input) => { calls.push(`snooze ${input.storedState} ${input.alarm.key} ${input.permissionGranted}`); return { ok: true, value: { schedule: [input.alarm], stateAhead: '{"ahead":1}', state: '{"after":1}' } }; },
+        permissionGranted: () => false,
+        apply: (json) => { calls.push(`apply ${JSON.parse(json).channelName}`); applied.push(JSON.parse(json)); },
+        cleanupRn: () => { calls.push('cleanup'); if (cleanupFailure) throw new Error('rnandb locked'); return 2; },
+    });
+    await assert.rejects(reminders.start(), /rnandb locked/);
+    assert.deepEqual(calls, ['cleanup'], 'a failed cleanup plans nothing');
+    cleanupFailure = false;
+    calls.length = 0;
+    const started = await reminders.start();
+    assert.equal(started.rnCancelled, 2);
+    assert.equal(started.ask, true, 'a feature on and no permission: RN asks at start');
+
+
+    assert.deepEqual(calls, ['cleanup', `plan ${stored} false remake all`, 'apply Stride reminders']);
+
+    calls.length = 0;
+    await Promise.all([reminders.cycle(false), reminders.cycle(false)]);
+    assert.deepEqual(calls, [`plan ${stored} false`, 'apply Stride reminders', `plan ${stored} false`, 'apply Stride reminders']);
+
+    calls.length = 0;
+    await reminders.cycle(true);
+    assert.deepEqual(calls, [`plan ${stored} false remake all`, 'apply Stride reminders']);
+
+    calls.length = 0;
+    globalThis.standStore.setState({ tasks: [] });
+    await sleep(10);
+    globalThis.standStore.setState({ tasks: [] });
+    globalThis.standStore.setState({ settings: { on: true } });
+    await sleep(15);
+    assert.deepEqual(calls, [], 'no plan before the delay after the last change');
+    await sleep(40);
+    assert.deepEqual(calls, [`plan ${stored} false`, 'apply Stride reminders'], 'one plan after the last accepted change');
+    globalThis.standStore.setState({ settings: { on: true } });
+    await sleep(50);
+    assert.equal(calls.length, 2, 'a change the rule does not accept plans nothing');
+
+    calls.length = 0;
+    reminders.event();
+    await sleep(40);
+    assert.deepEqual(calls, [`plan ${stored} false`, 'apply Stride reminders'], 'a tap plans again shortly after');
+    calls.length = 0;
+    topUp = 10;
+    await reminders.cycle(false);
+    topUp = null;
+    await sleep(60);
+    assert.deepEqual(calls, [`plan ${stored} false`, 'apply Stride reminders', `plan ${stored} false`, 'apply Stride reminders'], 'the top-up plans once more');
+
+    calls.length = 0;
+    await reminders.fired('digest:morning');
+    assert.deepEqual(calls, [`plan ${stored} false remake digest:morning`, 'apply Stride reminders']);
+
+    applied.length = 0;
+    calls.length = 0;
+    storedState = '{"x":1}';
+    const snoozeAlarm = { key: 'snooze:u', id: 1073741900, fireAtMs: 5, repeat: 'once', details: { title: 'Pay rent' }, replacing: null };
+    await reminders.snooze(snoozeAlarm);
+    assert.deepEqual(calls, ['snooze {"x":1} snooze:u false', 'apply Stride reminders'], 'the Snooze is judged with the permission');
+    assert.deepEqual(applied, [{ mode: 'active', cancel: [], schedule: [snoozeAlarm], writeAhead: null, stateAhead: '{"ahead":1}', alarms: stored,
+        unchanged: true, state: '{"after":1}', topUpDelayMs: null, clearDelivered: false, channelName: 'Stride reminders' }]);
+    storedState = null;
+
+    applied.length = 0;
+    await reminders.cycle(false);
+    storedState = '{"task:b":{"kind":"delivered","id":8,"firedAtMs":1}}';
+    await reminders.cycle(false);
+    assert.equal(lastPlan.storedState, storedState);
+    planState = storedState;
+    await reminders.cycle(false);
+    assert.deepEqual(applied.map((plan) => plan.state), [null, '{}', null], 'the state is stored only when it changed');
+    storedState = null;
+    planState = '{}';
+
+    calls.length = 0;
+    globalThis.reminderSandbox = true;
+
+    assert.deepEqual(await reminders.start(), { mode: 'sandbox', ask: false });
+    await reminders.cycle(false);
+    reminders.event();
+    await sleep(20);
+    assert.deepEqual(calls, []);
+    globalThis.reminderSandbox = false;
+
+    const early = [];
+    const fresh = mod.createNativeReminders({
+        plan: async () => { early.push('plan'); await sleep(20); return { ok: true, value: { mode: 'active', cancel: [], schedule: [], alarms: '{}', state: '{}', topUpDelayMs: null } }; },
+        planSnooze: () => { throw new Error('no snooze here'); },
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => early.push('apply'),
+        cleanupRn: () => 0,
+    });
+
+    const counted = mod.createNativeReminders({
+        plan: async () => ({ ok: true, value: { mode: 'active', cancel: [], schedule: [], alarms: '{}', state: '{}', topUpDelayMs: null } }),
+        planSnooze: () => { throw new Error('no snooze here'); },
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => {},
+        cleanupRn: () => 0,
+        receiverCounts: () => ({ dropped: 2, notQueued: 1 }),
+    });
+    assert.deepEqual(await counted.cycle(false), { mode: 'active', rebuild: true, scheduled: 0, withdrawn: 0, expired: 0, held: 0, dropped: 2, notQueued: 1 });
+
+
+    let partialPlans = 0;
+    const partialRemakes = [];
+    const partial = mod.createNativeReminders({
+        plan: async (input) => { partialPlans += 1; partialRemakes.push(input.remake ?? null); return { ok: true, value: { mode: 'active', cancel: [], schedule: [{}, {}], alarms: '{}', state: '{}', topUpDelayMs: partialPlans === 1 ? 10 : null } }; },
+        planSnooze: () => { throw new Error('no snooze here'); },
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => (partialPlans === 1 ? 1 : 0),
+        cleanupRn: () => 0,
+    });
+
+
+    globalThis.reminderInfos = [];
+    assert.equal((await counted.background('sync')).outcome, 'cycle-completed');
+    const receipt = globalThis.reminderInfos.find(([message]) => message === '[Local Notifications] Background reminder reconciliation');
+    assert.deepEqual([receipt?.[1].context, receipt?.[1].force], [{ releaseCheck: 'v1.3.8/native-background-reminders', reason: 'sync', outcome: 'cycle-completed' }, true]);
+    const failing = mod.createNativeReminders({
+        plan: async () => ({ ok: false, error: { code: 'NOT_READY', message: 'storage' } }),
+        planSnooze: () => { throw new Error('no snooze here'); },
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => 0,
+        cleanupRn: () => 0,
+    });
+    globalThis.reminderWarns = [];
+    assert.equal((await failing.background('capture')).outcome, 'failed', 'a failed plan is reported, never thrown');
+    assert.deepEqual(globalThis.reminderWarns.map(([message, payload]) => [message, payload.context.reason, payload.context.outcome]),
+        [['[Local Notifications] Background reminder reconciliation', 'capture', 'failed']]);
+    globalThis.reminderWarns = [];
+    assert.equal((await partial.cycle(false)).refused, 1, 'the cycle finishes and reports the refused alarm');
+    await sleep(40);
+    assert.equal(partialPlans, 2, 'the top-up still plans again after a refusal');
+
+    assert.deepEqual(partialRemakes, ['all', 'all'], 'the plan after a refusal remakes every alarm');
+
+    const refusedSnooze = mod.createNativeReminders({
+        plan: async () => ({ ok: true, value: { mode: 'active', cancel: [], schedule: [], alarms: '{}', state: '{}', topUpDelayMs: null } }),
+        planSnooze: (input) => ({ ok: true, value: { schedule: [input.alarm], stateAhead: '{"ahead":1}', state: '{"after":1}' } }),
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => 1,
+        cleanupRn: () => 0,
+    });
+    await assert.rejects(refusedSnooze.snooze({ key: 'snooze:u', id: 1073741900, fireAtMs: 5, repeat: 'once', details: {}, replacing: null }), /ALARM_REFUSED/);
+    assert.deepEqual(globalThis.reminderWarns.map(([message, payload]) => [message, payload.context.releaseCheck, payload.context.count]),
+        [['[Local Notifications] Reminder cycle finished with refused alarms', 'v1.3.8/native-reminder-cycle-partial', 1]]);
+
+    const ledgerInputs = [];
+    const withLedger = mod.createNativeReminders({
+        plan: async (input) => { ledgerInputs.push(['plan', input.fired, input.shown]); return { ok: true, value: { mode: 'active', cancel: [], schedule: [], alarms: '{}', state: '{}', topUpDelayMs: null } }; },
+        planSnooze: (input) => { ledgerInputs.push(['snooze', input.fired]); return { ok: true, value: { schedule: [], stateAhead: null, state: null } }; },
+        readStored: async () => ({ alarms: null, state: null }),
+        permissionGranted: () => true,
+        apply: () => {},
+        cleanupRn: () => 0,
+        ledger: () => ({ fired: [7], shown: [7, 9] }),
+    });
+    await withLedger.cycle(false);
+    await withLedger.snooze({ key: 'snooze:u', id: 1073741900, fireAtMs: 5, repeat: 'once', details: {}, replacing: null });
+    assert.deepEqual(ledgerInputs, [['plan', [7], [7, 9]], ['snooze', [7]]]);
+    const starting = fresh.start();
+    await sleep(5);
+    globalThis.standStore.setState({ tasks: [] });
+    await starting;
+    await sleep(80);
+    assert.deepEqual(early, ['plan', 'apply', 'plan', 'apply'], 'a change during the first cycle plans again');
+}
+console.log('Reminders: core plans and times every alarm in the engine, Kotlin applies each plan in core\'s order, the buttons and the reschedule go through CoreWork as core\'s commands, RN\'s alarms cancelled once before the first plan');
+console.log('Runner: CoreWork on the one host after the app\'s boot order, the queue drain after the journal replay, the queue\'s file and RKStorage ports, RN\'s capture intent and context receivers under RN\'s names, RN\'s capture intent Kotlin compiled in, the token only in Kotlin');
+
+
+{
+    const pilot = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+
+    const rawThrowable = /Log\.[weid]\([^\n]*"\s*,\s*(it|failure|error|e|t)\)/;
+    for (const file of ['Attachments.kt', 'SyncSettings.kt', 'SettingsModel.kt', 'AISettings.kt']) {
+        assert.doesNotMatch(readFileSync(resolve(pilot, file), 'utf8'), rawThrowable, `${file} logs no raw throwable`);
+    }
+    const lines = (file) => readFileSync(resolve(pilot, file), 'utf8').split('\n');
+    for (const [file, events] of [['InboxViewModel.kt', ['Core action failed', 'Editor draft not restored']],
+        ['ProcessCoreHost.kt', ['install recovery failed', 'sync start failed', 'sync app state failed']]]) {
+        for (const line of lines(file).filter((text) => events.some((event) => text.includes(event)))) {
+            assert.doesNotMatch(line, rawThrowable, `${file}: ${line.trim()}`);
+        }
+    }
+}
+
+
+{
+    const aborted = [];
+    const answers = [];
+    let ids = 0;
+    const bridge = {
+        log() {}, nowMs: () => 0,
+        fileCall: () => String(++ids),
+        installerCall: () => String(++ids),
+        fileAbort(id) { aborted.push(id); return null; },
+        ioNext: () => answers.shift() ?? '',
+        ioBody: () => '',
+    };
+    const files = vm.createContext({ console: { info() {} }, Intl: undefined, __strideNative: bridge });
+    vm.runInContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), files);
+    const held = vm.runInContext("__strideFileCall({ op: 'copy', uri: 'content://provider/document/1', to: 'file:///data/user/0/app/files/attachments/a.pdf' })", files);
+    const outcome = held.then(() => 'resolved', (error) => `${error.name}: ${error.message}`);
+    files.__cancelHostCalls('The host operation timed out');
+    assert.equal(await outcome, 'AbortError: The host operation timed out', 'a held file call rejects when its operation is cancelled');
+    assert.deepEqual(aborted, ['1'], 'the host is asked to abort the held call');
+    answers.push(JSON.stringify({ id: '1', value: null }));
+    files.__pumpTimers();
+    const refused = await vm.runInContext("__strideFileCall({ op: 'getInfo', uri: 'file:///x' })", files).then(() => 'resolved', (error) => error.name);
+    assert.equal(refused, 'AbortError', 'no new file call starts while the operation drains');
+    files.__resumeHostCalls();
+}
+
+{
+    const polyfills = readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8');
+    const answers = [], aborted = [], submitted = [];
+    let sequence = 0, failure = null;
+    const bridge = {
+        log() { throw new Error('Calendar transport must not log provider exceptions'); }, nowMs: () => 0,
+        calendarCall(text) {
+            if (failure === 'throw') throw new Error('Calendar read unavailable');
+            if (failure === 'native') return '!StrideNativeError:Calendar read unavailable';
+            submitted.push(JSON.parse(text)); return `cal:1:${++sequence}`;
+        },
+        calendarAbort(id) { aborted.push(['calendar', id]); throw new Error('Calendar abort unavailable'); },
+        fileCall: () => 'file:1:1', installerCall: () => 'installer:1:1',
+        fileAbort(id) { aborted.push(['file', id]); },
+        ioNext: () => answers.shift() ?? '',
+        ioBody() { throw new Error('Calendar replies are bodyless'); },
+    };
+    const state = vm.createContext({ __strideNative: bridge });
+    vm.runInContext(polyfills, state);
+    assert.deepEqual(submitted, [], 'installing the calendar capability never reads or prompts');
+    const held = state.__strideCalendarCall({ op: 'events', calendarIds: ['é'], startMs: 0, endMs: 1 });
+    const outcome = held.then(() => 'resolved', (error) => `${error.name}: ${error.message}`);
+    const file = assert.rejects(state.__strideFileCall({ op: 'getInfo' }), { name: 'AbortError' });
+    const installer = assert.rejects(state.__strideInstallerCall({ op: 'install' }), { name: 'AbortError' });
+    state.__cancelHostCalls('Calendar operation cancelled');
+    assert.equal(await outcome, 'AbortError: Calendar operation cancelled', 'cancellation rejects without waiting for native completion');
+    await Promise.all([file, installer]);
+    assert.deepEqual(aborted, [['calendar', 'cal:1:1'], ['file', 'file:1:1'], ['file', 'installer:1:1']],
+        'calendar uses calendarAbort; existing file and installer keep fileAbort');
+    await assert.rejects(state.__strideCalendarCall({ op: 'permissions' }), { name: 'AbortError' });
+    assert.equal(submitted.length, 1, 'cancelled operation cannot start another calendar read');
+    answers.push(...['cal:1:1', 'file:1:1', 'installer:1:1'].map((id) => JSON.stringify({ id, value: [] })));
+    assert.equal(state.__pumpTimers(), 0, 'cancelled late answers are drained without settling promises');
+    state.__resumeHostCalls();
+    const retry = state.__strideCalendarCall({ op: 'permissions' });
+    answers.push(JSON.stringify({ id: 'cal:1:2', value: { status: 'granted' } }));
+    assert.equal(state.__pumpTimers(), 1, 'late cancellation leaves the next read live');
+    assert.equal((await retry).status, 'granted');
+    assert.deepEqual(submitted, [{ op: 'events', calendarIds: ['é'], startMs: 0, endMs: 1 }, { op: 'permissions' }]);
+    const refused = assert.rejects(state.__strideCalendarCall({ op: 'calendars' }), /^Error: Calendar read unavailable$/);
+    answers.push(JSON.stringify({ id: 'cal:1:3', error: 'Calendar read unavailable' }));
+    assert.equal(state.__pumpTimers(), 1); await refused;
+    for (const mode of ['throw', 'native']) {
+        failure = mode;
+        await assert.rejects(state.__strideCalendarCall({ op: 'permissions' }), /^\w*Error: Calendar read unavailable$/);
+        assert.equal(state.__pumpTimers(), 0, 'submission exception does not leave an open pump slot');
+    }
+    for (const native of [undefined, { log() {} }, { log() {}, fileCall() {} }]) {
+        const absent = vm.createContext({ __strideNative: native });
+        vm.runInContext(polyfills, absent);
+        assert.equal(absent.__strideCalendarCall, undefined, 'calendar capability absent stays unavailable');
+    }
+}
+{
+    const answers = [], aborted = [], submitted = [];
+    let sequence = 0;
+    const bridge = {
+        log() {}, nowMs: () => 0,
+        calendarCall(text) { submitted.push(JSON.parse(text).op); return `cal:${++sequence}`; },
+        calendarAbort(id) { aborted.push(id); },
+        ioNext: () => answers.shift() ?? '',
+        ioBody: () => '',
+    };
+    const state = vm.createContext({ __strideNative: bridge });
+    vm.runInContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), state);
+    const writes = ['createCalendar', 'deleteCalendar', 'createEvent', 'updateEvent', 'deleteEvent']
+        .map((op) => state.__strideCalendarCall({ op }).then((value) => value, (error) => `${error.name}: ${error.message}`));
+    const read = state.__strideCalendarCall({ op: 'getCalendars' }).then(() => 'resolved', (error) => error.name);
+    state.__cancelHostCalls('The host operation timed out');
+    assert.equal(await read, 'AbortError', 'a read still cancels');
+    assert.deepEqual(aborted, ['cal:6'], 'no started provider write is aborted');
+    await assert.rejects(state.__strideCalendarCall({ op: 'createEvent' }), { name: 'AbortError' });
+    assert.equal(submitted.length, 6, 'a write asked while the operation drains never reaches Kotlin');
+    answers.push(...[1, 2, 3, 4, 5].map((n) => JSON.stringify({ id: `cal:${n}`, value: `v${n}` })));
+    assert.equal(state.__pumpTimers(), 5, 'each started write settles with its own answer');
+    assert.deepEqual(await Promise.all(writes), ['v1', 'v2', 'v3', 'v4', 'v5'], 'so core gets the event ID and saves its row');
+    state.__resumeHostCalls();
+}
+{
+    const bundled = await build({
+        stdin: { contents: "export { createNativeAttachments } from './host-attachments';", resolveDir: resolve(app, 'bundle'), loader: 'ts' },
+        bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent',
+    });
+    const scratch = mkdtempSync(resolve(tmpdir(), 'host-attachments-'));
+    try {
+        writeFileSync(resolve(scratch, 'host-attachments.mjs'), bundled.outputFiles[0].text);
+        const { createNativeAttachments } = await import(resolve(scratch, 'host-attachments.mjs'));
+        const deleteRace = async (restoreWhileWaiting) => {
+            const document = 'file:///data/user/0/app/files/';
+            let release;
+            const held = new Promise((done) => { release = done; });
+            let waiting = false;
+            const deleted = [];
+            const files = async (request) => {
+                if (request.op === 'getInfo') return { exists: true, isDirectory: true, uri: request.uri };
+                if (request.op === 'barrier') { waiting = true; await held; return null; }
+                if (request.op === 'delete') { deleted.push(request.uri); return null; }
+                if (request.op === 'syncParent') { deleted.push(`synced ${request.uri}`); return null; }
+                return null;
+            };
+            const { contractHost } = createNativeAttachments({
+                storage: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} },
+                getSecureConfigValue: async () => null,
+                log: { info: () => {}, warn: () => {}, sanitize: (text) => text },
+                crypto: {}, encryption: { logSyncEncryptionEvent: () => {}, getSyncEncryptionMaterial: async () => null },
+            }, { files, installer: async () => null, directories: { document, cache: 'file:///data/user/0/app/cache/' },
+                deleteNow: (uri) => { deleted.push(uri); } });
+            let restored = false;
+            const attachment = { id: 'a1', kind: 'file', title: 'a1.pdf', uri: `${document}attachments/a1.pdf`, createdAt: 't', updatedAt: 't' };
+            const outcome = contractHost.deleteManagedAttachmentFile(attachment, { keep: () => restored });
+            for (let step = 0; step < 200 && !waiting; step += 1) await new Promise((done) => setTimeout(done, 1));
+            assert(waiting, 'the delete waits behind the file calls queued before it');
+            if (restoreWhileWaiting) restored = true;
+            release();
+            return { result: await outcome, deleted };
+        };
+        assert.deepEqual(await deleteRace(true), { result: false, deleted: [] }, 'an attachment restored while its delete waited keeps its bytes');
+
+        assert.deepEqual(await deleteRace(false), { result: true, deleted: ['file:///data/user/0/app/files/attachments/a1.pdf',
+            'synced file:///data/user/0/app/files/attachments/a1.pdf'] }, 'an unowned copy is deleted once, then its folder synced');
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
+    }
+}
+
+{
+    const AT = '2026-10-05T00:00:00.000Z', ROOT = 'file:///library/documents/attachments/';
+    const baseline = { id: 'baseline261', kind: 'file', title: 'Retain', uri: ROOT + 'baseline.pdf', createdAt: AT, updatedAt: AT };
+    const initial = JSON.stringify({ version: 2, taskID: 'task261', attachmentsOwned: true,
+        attachmentsBase: [baseline], attachments: [baseline], raw: { notes: 'Opaque 文' } });
+    const after = JSON.stringify({ ...JSON.parse(initial), attachments: [{ ...baseline, deletedAt: AT, updatedAt: AT }] });
+    const removed = { version: 1, kind: 'prepared-file-remove', taskID: 'task261', requestId: '26100000-0000-4000-8000-000000000001',
+        attachmentId: baseline.id, removedAt: AT, beforePayloadJSON: initial, afterPayloadJSON: after };
+    const input = { version: 2, historyVersion: 3, taskID: 'task261', managedDirectoryURI: ROOT, initialPayloadJSON: initial,
+        checkpointPayloadJSON: after, operations: [{ kind: 'remove', phase: 'checkpointed', preparedJSON: JSON.stringify(removed) }] };
+    const expected = { ok: true, value: { version: 2, kind: 'owned-mixed-discard-candidates', taskID: 'task261', historyVersion: 3, candidates: [] } };
+    const historical = makeState(0, [], 'ios'); historical.localTaskReadOnly = true;
+    historical.sandbox = true; historical.workspaceTransition = true; historical.persistenceFailure = { private: 'not a historical gate' };
+    vm.runInNewContext(`globalThis.Date = class extends Date {
+        constructor(...args) { if (!args.length) throw new Error('fresh clock forbidden'); super(...args); }
+    };`, historical);
+    const ticket = historical.StrideHost.attachmentDraftDiscardCandidatesV3(JSON.stringify(input));
+    assert.match(ticket, /^[1-9]\d*$/, 'mixed candidates retain Promise-ticket transport');
+    assert.deepEqual(await poll(historical, ticket), expected, 'before boot and after capability loss, retained baseline Remove grants no cleanup candidate');
+    assert.deepEqual(historical.events, []); assert.deepEqual(historical.fileCalls, []); assert.equal(historical.logText ?? '', '');
+    assert.deepEqual(await poll(historical, historical.StrideHost.attachmentDraftDiscardCandidatesV3('{private-content')), { ok: false, error: 'INVALID_INPUT' });
+    assert.equal((await poll(historical, historical.StrideHost.attachmentDraftDiscardCandidates(JSON.stringify(input)))).ok, false, 'old grammar stays sealed');
+    assert.equal((await poll(historical, historical.StrideHost.attachmentDraftDiscardCandidatesV3(JSON.stringify({ ...input, version: 1, historyVersion: 2 })))).ok, false);
+    const android = makeState(0);
+    assert.match((await poll(android, android.StrideHost.attachmentDraftDiscardCandidatesV3('{}'))).error, /^NOT_READY:/);
+    assert.equal((await poll(historical, historical.StrideHost.attachmentRequest('attachmentDraftDiscardCandidatesV3', JSON.stringify(input)))).ok, false);
+    assert.equal(historical.attachmentInputs.length, 0, 'private mixed candidates do not enter generic attachment commands');
+    console.log('Task261: real pure mixed Discard candidates retain iOS-only historical routing, sealed grammar and no generic file-command admission (NodeVM)');
+}
+
+
+{
+    const { ANDROID_HOST_METHODS, hostTable, kotlinHostCalls, journalReplayMethods } = await import('./android-host-table.mjs');
+    const kotlinFiles = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory()
+        ? (entry.name === 'build' ? [] : kotlinFiles(resolve(dir, entry.name))) : entry.name.endsWith('.kt') ? [resolve(dir, entry.name)] : []));
+    const named = (files, pattern) => [...new Set(files.flatMap((file) => [...readFileSync(file, 'utf8').matchAll(pattern)].map((match) => match[1])))].sort();
+    const sources = kotlinFiles(resolve(app, 'android')).map((path) => ({ path, text: readFileSync(path, 'utf8') }));
+
+
+    const coreHost = sources.find((source) => source.path.endsWith('/core/CoreHost.kt'));
+    const withCoreHost = (text) => sources.map((source) => (source === coreHost ? { ...source, text: source.text + text } : source));
+    const adversarial = kotlinHostCalls(withCoreHost('\nfun inboxView(): JSONObject { val method = "inboxView"; return callAsync(method) }\n'));
+    assert.deepEqual(adversarial.unverified.map((site) => site.site), ['CoreHost.kt: callAsync(method)'], 'a dispatch through a variable fails the guard');
+    assert.deepEqual(kotlinHostCalls(withCoreHost('\nfun forward(name: String) = callLong(name, 1)\n')).unverified.map((site) => site.site),
+        ['CoreHost.kt: callLong(name, 1)'], 'so does one through a parameter');
+    assert.deepEqual(kotlinHostCalls(withCoreHost('\nfun forward(name: String) = answer(name, arrayOf(), 1L)\n')).unverified.map((site) => site.site),
+        ['CoreHost.kt: answer(name, arrayOf(), 1L)'], 'and one more copy of a listed forwarding shape');
+    assert.deepEqual(kotlinHostCalls(withCoreHost('\nfun queue(name: String) = Call(name, arrayOf(), 1L, null, "", CompletableFuture())\n')).unverified.map((site) => site.site),
+        ['CoreHost.kt: Call(name, arrayOf(), 1L, null, "", CompletableFuture())'], 'and a queued write made around begin()');
+    assert.deepEqual(kotlinHostCalls([...sources, { path: 'Other.kt', text: 'val f = engine.globalObject.getJSObject("StrideHost").getJSFunction(name)' }])
+        .unverified.map((site) => site.site), ['Other.kt: reaches "StrideHost" outside CoreHost.kt', 'Other.kt: getJSFunction(name)'], 'and a table reached outside CoreHost.kt');
+    const { names: kotlin, unverified } = kotlinHostCalls(sources);
+    assert.deepEqual(unverified, [], 'every Kotlin host dispatch names its method literally or is a listed forwarding site');
+    const replayed = journalReplayMethods(sources.find((source) => source.path.endsWith('/core/WriteJournal.kt')).text);
+    assert(replayed.length >= 20 && replayed.includes('captureSubmit') && replayed.includes('menuCommand'), 'the journal\'s replayed methods were found');
+    assert.deepEqual(replayed.filter((name) => !ANDROID_HOST_METHODS.includes(name)), [], 'every method the journal replays is in Android\'s host table');
+    const scripts = readdirSync(resolve(app, 'scripts')).filter((name) => name === 'sync-harness.mjs' || /^check-[\w-]+-(device|dry-run)\.mjs$/.test(name));
+    const harness = named(scripts.map((name) => resolve(app, 'scripts', name)), /\bcall\(\s*'([A-Za-z0-9_]+)'/g);
+    assert(kotlin.length > 50 && kotlin.includes('boot') && harness.includes('window'), 'the call sites were found');
+    assert.deepEqual(kotlin.filter((name) => !ANDROID_HOST_METHODS.includes(name)), [], 'Kotlin calls only methods in Android\'s host table (android-host-table.mjs)');
+    assert.deepEqual(harness.filter((name) => !ANDROID_HOST_METHODS.includes(name)), [], 'the harness calls only methods in Android\'s host table');
+    assert.equal(new Set(ANDROID_HOST_METHODS).size, ANDROID_HOST_METHODS.length, 'each Android host method is named once');
+    const { names } = hostTable(readFileSync(resolve(app, 'bundle/host-entry.ts'), 'utf8'));
+    assert.deepEqual(ANDROID_HOST_METHODS.filter((name) => !names.includes(name)), [], 'every Android host method is a host-entry.ts method');
+    const { hostDevice } = await import('./sync-harness.mjs');
+    const filesRoot = mkdtempSync(resolve(tmpdir(), 'android-host-table-'));
+    try {
+        const shipped = await hostDevice({ bundle: resolve(app, 'android/app/src/main/assets/core-host.js'), name: 'table', filesRoot });
+        try {
+            assert.deepEqual([...shipped.methods].sort(), [...ANDROID_HOST_METHODS].sort(), 'the shipped bundle\'s StrideHost is Android\'s table');
+        } finally {
+            shipped.stop();
+        }
+
+        const withGmail = await hostDevice({ bundle: resolve(app, 'android/app/src/main/assets/core-host.js'), name: 'gmail', filesRoot, gmail: true });
+        try {
+            await withGmail.boot('journaled');
+            await withGmail.call('syncAppState', 'background');
+            await withGmail.call('syncAppState', 'active');
+            assert.equal(JSON.stringify(await withGmail.call('gmailRequest', 'config', '{}')),
+                '{"value":{"available":false,"connected":false,"account":null,"accountId":null,"labelId":null,"enabled":false}}');
+            assert.equal(JSON.stringify(await withGmail.call('gmailRequest', 'labels', '{}')), '{"errorKey":"settings.gmailCaptureConfigFailed"}');
+            assert.equal(withGmail.lines.filter((line) => /Gmail capture lifecycle failed/.test(line)).length, 0);
+        } finally {
+            withGmail.stop();
+        }
+    } finally {
+        rmSync(filesRoot, { recursive: true, force: true });
+    }
+    assert.deepEqual(Object.keys(makeState(0, [], 'ios').StrideHost), names, 'host-entry.ts as iOS builds it exposes every method of its table');
+    assert(names.length > ANDROID_HOST_METHODS.length * 4, 'host-entry.ts keeps every platform\'s methods');
+    console.log(`Android host table: ${ANDROID_HOST_METHODS.length} of host-entry.ts's ${names.length} methods, every Kotlin, journal-replay and harness call among them, no unlisted variable dispatch`);
+}
+
+{
+    const prompts = source('StartupPrompts.kt');
+
+    assert.match(prompts, /val skip = \{ if \(!prompts\.seeding\) prompts\.close\("dismiss"\) \}/);
+    assert.match(prompts, /fun handoff\(screen: String\) \{\s+if \(seeding\) return/);
+    assert.match(prompts, /fun startFresh\(\) \{\s+val open = prompt\?\.takeIf \{[^}]*\} \?: return\s+if \(seeding\) return/);
+    assert.equal(prompts.match(/, 0\.58f, busy, "welcome-(sync|import)"|disabled = busy, tag = "welcome-start"/g)?.length, 3, 'the three options are off while seeding');
+    assert.match(prompts, /\.clickable\(enabled = !busy, role = Role\.Button, onClick = skip\)/);
+    assert.match(prompts, /shell\.ui \{\s+seeding = false\s+val projectId = result\.getOrNull\(\)/);
+
+    assert.match(prompts, /val stackFooter = LocalDensity\.current\.fontScale >= 1\.5f/);
+
+    const gradle = readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8');
+    assert.match(gradle, /val rnDonationPrompt = System\.getenv\("DONATION_PROMPT_ENABLED"\) in setOf\("1", "true"\)/);
+    assert.equal(gradle.match(/buildConfigField\("boolean", "DONATION_PROMPT", "false"\)/g)?.length, 2, 'off in defaultConfig and the benchmarks');
+    assert.equal(gradle.match(/buildConfigField\("boolean", "DONATION_PROMPT", rnDonationPrompt\.toString\(\)\)/g)?.length, 1, 'read only in release');
+
+    assert.doesNotMatch([source('ProcessCoreHost.kt'), hostEntry].join('\n'), /recordAboutPromptActivity/);
+
+    const editor = source('TaskEditor.kt'), details = source('ProjectDetails.kt');
+    assert.match(editor, /Text\(guideLink\(help\.getString\("readGuide"\)/);
+    assert.match(details, /Text\(guideLink\(guide\.getString\("label"\)/);
+
+    assert.match(editor, /\.clickable\(role = Role\.Button\) \{ helpOpen = !helpOpen \}\s+\.semantics \{ contentDescription = help\.getString\("label"\); stateDescription = /);
+
+    assert.match(editor, /FieldHeading\(Lucide\.Type, t\("taskEdit\.titleLabel"\)[\s\S]{0,1500}testTag\("task-edit-focus-star"\)[\s\S]{0,400}FocusStar\(focused, !starEnabled, 18, Modifier\)[\s\S]{0,300}val helpLabel = t\("taskEdit\.editorLayoutHelpLabel"\)/);
+    assert.doesNotMatch(editor, /FocusStar\(focused, !starEnabled, 22/);
+
+    assert.match(source('TaskRowView.kt'), /\.heightIn\(min = 44\.dp\)\.clip\(shape\)\.background\(colors\.bg\)\s+\.then\(tap\)/);
+
+
+    const attachmentLink = /if \(plan\.getString\("kind"\) == "link"\) \{([\s\S]*?)\n    \}/.exec(source('Attachments.kt'))?.[1] ?? '';
+    assert.match(attachmentLink, /openExternalLink\(context, uri, t, \{ failure -> Log\.w\(CoreHost\.TAG, attachmentLaunchLog\("link", uri, failure\)\) \}, diagnostic\)/, 'a failed attachment link offers Copy link');
+    assert.doesNotMatch(attachmentLink, /failedMessage/);
+    for (const file of ['TaskEditor.kt', 'ProjectDetails.kt']) {
+        assert.match(source(file), /openExternalLink\(context, target\.getString\("href"\)/, `${file}'s external links offer Copy link`);
+        assert.doesNotMatch(source(file), /runCatching \{ context\.startActivity\(Intent\(Intent\.ACTION_VIEW, (?:original|target\.getString\("href"\))/);
+    }
+
+    const coreList = (file, name) => [.../=\s*\[([^\]]*)\]/.exec(readFileSync(resolve(app, '../../packages/core/src', file), 'utf8')
+        .split(`export const ${name}`)[1])[1].matchAll(/'([\w-]+)'/g)].map((m) => m[1]);
+    const kotlinSet = (name) => [...new RegExp(`val ${name} = setOf\\(([^)]*)\\)`).exec(source('ViewState.kt'))[1].matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(kotlinSet('LIST_VIEW_GROUP_OPTIONS'), coreList('menu-views-model.ts', 'DONE_LIST_GROUP_OPTIONS'));
+    assert.deepEqual(kotlinSet('LIST_VIEW_GROUP_OPTIONS'), coreList('archive-view-model.ts', 'ARCHIVE_TASK_GROUP_OPTIONS'));
+    assert.deepEqual(kotlinSet('LIST_VIEW_SORT_OPTIONS'), [...coreList('task-list-sort-options.ts', 'TASK_LIST_SORT_OPTIONS').filter((option) => option !== 'priority'), 'completed']);
+    assert.match(readFileSync(resolve(app, '../../packages/core/src/task-list-sort-options.ts'), 'utf8'),
+        /DONE_TASK_LIST_SORT_OPTIONS: readonly TaskSortBy\[\] = \[\s+\.\.\.TASK_LIST_SORT_OPTIONS\.filter\(\(option\) => option !== 'priority'\),\s+'completed',\s+\];/);
+    const calendar = source('CalendarSettings.kt');
+    assert.match(calendar, /rememberLauncherForActivityResult\(ActivityResultContracts\.OpenDocument\(\)\) \{ uri -> uri\?\.let \{ screen\.addFile\(it, revision\) \} \}/,
+        'the local .ics picker is OpenDocument, feeding addFile');
+    assert.doesNotMatch(calendar, /ActivityResultContracts\.GetContent/);
+    assert.match(calendar, /fun addFile\(uri: Uri, revision: String\) \{[^}]*keepPickedFileReadable \{ flags -> resolver\.takePersistableUriPermission\(uri, flags\) \}/);
+}
+
+
+{
+    const header = source('ProjectsScreen.kt'), details = source('ProjectDetails.kt');
+    assert.match(header, /ProjectTitleField\([^\n]*\n[\s\S]{0,800}\{ projectDetails\.openActions\(\) \}[\s\S]{0,200}testTag\("project-actions-menu-button"\)/);
+    assert.match(details, /"project-duplicate-button"[\s\S]{0,500}"project-convert-to-section-button"[\s\S]{0,300}"project-reactivate-button"[\s\S]{0,300}"project-archive-button"[\s\S]{0,300}"project-cancel-button"[\s\S]{0,300}"project-delete-button"/);
+    assert.match(details, /deleteId = edit\(id, "delete", refused = [^\n]*answer = \{[\s\S]{0,400}shell\.closeProject\(\)[\s\S]{0,300}edit\(id, "deleteUndo", refused = [^\n]*\) \{ put\("deleteRequestId", deleteId\) \}/);
+
+
+    assert.match(details, /answers\.remove\(action\.id\)\?\.let \{ answer -> shell\.ui \{ shell\.menu\.whenIdle \{ answer\(reply\) \} \} \}/);
+
+
+    assert.match(details, /fun openActions\(\) \{\s+storeTyped\(\)\s+actionsOpen = true/);
+    assert.match(details, /if \(message\.startsWith\("STALE_REVISION"\)\) \{\s+answers\.remove\(action\.id\)\s+refusals\.remove\(action\.id\)\?\.let \{ refused -> shell\.ui \{ refused\(message\.substringAfter\(": "\)\) \} \}/);
+    assert.match(details, /put\("destinationProjectId", destination\)\.put\("title", title\)\.put\("expected", expected\)/);
+
+    assert.match(header, /val listState = remember\(openProjectId\) \{ LazyListState\(\) \}[\s\S]{0,300}listState\.scrollToItem\(0\)[\s\S]{0,2600}LazyColumn\([^\n]*state = listState/);
+
+    assert.match(source('InboxViewModel.kt'), /if \(action != null\) actionTimeout\(shown\) else shown/);
+    assert.match(source('InboxViewModel.kt'), /getRecommendedTimeoutMillis\(shown\.toInt\(\),\s+android\.view\.accessibility\.AccessibilityManager\.FLAG_CONTENT_TEXT or android\.view\.accessibility\.AccessibilityManager\.FLAG_CONTENT_CONTROLS\)/);
+
+
+    assert.match(header, /LaunchedEffect\(highlightTaskId, detail\) \{[\s\S]{0,600}listState\.animateScrollToItem\(/);
+    assert.match(source('DataTransfer.kt'), /else if \(openProject\) \{ menu\.whenIdle \{ menu\.openProjects\(projectId\) \}/);
+    assert.match(source('StartupPrompts.kt'), /shell\.menu\.whenIdle \{ shell\.menu\.openProjects\(projectId\) \}/);
+
+
+    assert.match(header, /\{ openProjectId\?\.let\(::openProjectCapture\) \}[\s\S]{0,200}testTag\("project-add-task-button"\)/);
+    assert.match(source('InboxViewModel.kt'), /fun openProjectCapture\(projectId: String\) \{[\s\S]{0,200}put\("initialProps", JSONObject\(\)\.put\("projectId", projectId\)\.put\("status", "next"\)\.toString\(\)\)\s+\.put\("returnTo", "\/projects-screen\?projectId=\$\{android\.net\.Uri\.encode\(projectId\)\}"\)[\s\S]{0,300}ui \{ closeProject\(\); captureModal\.opened\(params, reply\) \}/);
+    assert.match(source('CaptureModalModel.kt'), /private fun end\(close: JSONObject, leave: Boolean = true\) \{\s+keep\(null\)\s+inFlight = null\s+close\.menuText\("returnToProjectId"\)\?\.let \{ id -> shell\.menu\.whenIdle \{ shell\.openProject\(id\) \} \}/);
+
+    assert.doesNotMatch(source('CaptureScreen.kt') + source('InboxViewModel.kt'), /presetPatch|withPreset|val preset: JSONObject/);
+}
+
+
+{
+    const header = source('ProjectsScreen.kt'), details = source('ProjectDetails.kt');
+    assert.match(header, /\{ projectDetails\.openViewOptions\(\) \}[\s\S]{0,200}testTag\("project-task-view-options-button"\)/);
+    assert.match(header, /val active = projectShowCompleted \|\| projectDetails\.customSort/);
+    assert.match(header, /if \(entry\.collapsible\) CompletedHeading\(entry, enabled = !busy && failedAction == null, toggle = model::toggleProjectCompleted\)/);
+    assert.match(details, /"project-view-sort-option"[\s\S]{0,600}"project-view-completed-option"/);
+    assert.match(details, /edit\(projectId, "sort", answer = \{ readSort\(\) \}\) \{ put\("sortBy", sortBy\) \}/);
+    assert.match(hostEntry, /projectTaskSortOptions: \(input\) => contract\.getProjectTaskSortOptions\(input\)/);
+}
+
+
+{
+    const details = source('ProjectDetails.kt'), header = source('ProjectsScreen.kt'), menuModelKt = source('MenuModel.kt');
+    assert.match(details, /class ProjectDetailsModel\(private val shell: InboxViewModel\) : FilterSheetHost \{/);
+    assert.match(menuModelKt, /class MenuModel\([^)]*\) : FilterSheetHost \{/);
+    assert.match(details, /FilterSheet\(this, view, open\)/);
+    assert.match(details, /runtime\.menuRead\("projectDetailFilterOptions", /);
+    assert.match(details, /fun resetFilters\(\) \{ listFilterState = JSONObject\(\); listFilterSheet = null;/);
+    assert.match(header, /testTag\("project-task-filter-button"\)/);
+    assert.match(details, /"project-view-filter-option"[\s\S]{0,800}"project-view-sort-option"/);
+}
+
+
+{
+    const details = source('ProjectDetails.kt'), header = source('ProjectsScreen.kt');
+    assert.match(details, /runtime\.menuRead\("projectTaskOrderView", /);
+    assert.match(details, /edit\(projectId, "taskOrder", refused = \{ readOrder\(\) \}, answer = \{ readOrder\(\) \}\) \{\s+put\("taskId", taskId\)\.put\("after", after \?: JSONObject\.NULL\)[\s\S]{0,200}\.put\("expectedOrder", token\)/);
+    assert.match(details, /"project-view-completed-option"[\s\S]{0,1200}"project-view-reorder-option"/);
+    assert.match(header, /if \(projectDetails\.reorderMode\) \{[\s\S]{0,400}LazyColumn\([^\n]*userScrollEnabled = false\) \{\s+openProjectId\?\.let \{ id -> projectDetailsItems\(model, id, detail\) \}\s+\}\s+ProjectReorderList\(model, Modifier\.weight\(1f\)\)\s+return@Column/);
+
+
+    assert.match(header, /if \(projectDetails\.reorderMode\) \{\s+LaunchedEffect\(detail\) \{ projectDetails\.readOrder\(\) \}/);
+    assert.doesNotMatch(details, /if \(reorderMode\) readOrder\(\)/);
+    assert.match(details, /customActions = moves/);
+
+
+    assert.match(details, /itemsIndexed\(shown, key = \{ _, item -> reorderKey\(item\) \}\)/);
+    assert.match(details, /SideEffect \{\s+if \(seen\[0\] != null && seen\[0\] !== shown\) listState\.requestScrollToItem\(listState\.firstVisibleItemIndex, listState\.firstVisibleItemScrollOffset\)/);
+    assert.match(details, /val target = if \(dragFrom < 0\) -1 else dropTarget\(listState\.layoutInfo, dragFrom, dragTop, dragSize\)/);
+    assert.match(details, /if \(item\.index > from && top \+ size >= middle\) after\+\+\s+if \(item\.index < from && top < middle\) before\+\+/);
+    assert.match(details, /dragFrom < index && index <= target -> -dragSize\s+target <= index && index < dragFrom -> dragSize/);
+    assert.match(details, /val threshold = with\(LocalDensity\.current\) \{ 80\.dp\.toPx\(\) \}\s+val speed = with\(LocalDensity\.current\) \{ 120\.dp\.toPx\(\) \}/);
+
+    assert.match(details, /\} finally \{\s+dragFrom = -1\s+\}/);
+
+    assert.match(details, /Text\(item\.optInt\("count"\)\.toString\(\), style = rnText\(11, 600\), color = c\.secondaryText\)/);
+    assert.match(details, /val canUp = index > 0 && \(shown\[index - 1\]\.getString\("type"\) == "task" \|\| index - 1 > 0\)/);
+}
+
+{
+
+    assert.doesNotMatch(editorUi, /CompactRow/, 'RN draws no compact date row: every date field is its heading over its box');
+    assert.match(editorUi, /"dueDate", "startTime", "reviewAt" -> FormGroup \{[\s\S]{0,600}FieldHeading\(icon, label\)\s+Row\(verticalAlignment = Alignment\.CenterVertically\) \{\s+DateButton\(part\.label, label, !locked, Modifier\.weight\(1f\)\) \{ pickDate\(id\) \}/);
+
+    assert.match(editorUi, /Row\(Modifier\.fillMaxWidth\(\)\.heightIn\(min = 60\.dp\)\.background\(c\.cardBg\)\.rnBorderBottom\(c\.border\)\.padding\(start = 16\.dp, end = 16\.dp, top = 12\.dp, bottom = 12\.dp\)/);
+
+
+    assert.match(editorUi, /val previewLabel = t\(if \(previewing\) "markdown\.edit" else "markdown\.preview"\)/);
+    assert.match(editorUi, /Icon\(if \(previewing\) Lucide\.Pencil else Lucide\.Eye, null, tint = c\.tint, modifier = Modifier\.size\(18\.dp\)\)/);
+    assert.match(editorUi, /val expandLabel = t\("markdown\.expand"\)[\s\S]{0,300}Icon\(Ionicons\.ExpandOutline, null, tint = c\.tint, modifier = Modifier\.size\(20\.dp\)\)/);
+    assert.match(editorUi, /testTag\("task-description-fullscreen"\)/);
+
+
+    assert.match(editorUi, /Box\(Modifier\.offset\(x = 10\.dp\)\.size\(66\.dp, 38\.dp\)\) \{/);
+    assert.match(editorUi, /val pickerOpen = picker != null \|\| pickDate != null \|\| pickTime != null \|\| descriptionExpanded/);
+}
+
+
+{
+    const menuKt = source('EditorMenu.kt');
+    assert.match(editorUi, /EditorMoreButton\(model, editor\)/);
+    assert.match(menuKt, /Icon\(Lucide\.MoreHorizontal, null, tint = c\.tint, modifier = Modifier\.size\(24\.dp\)\)/);
+
+
+    assert.match(menuKt, /val text = if \(link\) "\$\{BuildConfig\.URL_SCHEME\}:\/\/open\?task=\$\{Uri\.encode\(taskId\)\}" else taskId/);
+    assert.match(menuKt, /EditorMenuAction\.CopyLink -> shell\.copyTaskReference\(context, editor\.id, link = true\)/);
+    assert.match(source('TaskRowView.kt'), /copyTaskReference\(context, task\.id, link = true\)[\s\S]{0,200}copyTaskReference\(context, task\.id, link = false\)/);
+    assert.match(menuKt, /runtime\.menuRead\("taskShare", /);
+    assert.match(menuKt, /Intent\(Intent\.ACTION_SEND\)/);
+    assert.match(menuKt, /shell\.menu\.board\.duplicate\(editor\.id\)/);
+    assert.match(menuKt, /runtime\.menuCommand\("taskEditorAction", input\.toString\(\)\)/);
+    for (const kind of ['promote', 'convertToSection', 'delete', 'deleteUndo', 'cancel', 'cancelUndo', 'skip']) assert.match(menuKt, new RegExp(`"${kind}"`));
+    assert.match(menuKt, /logLine\("Native task converted to a section releaseCheck=v1\.3\.8\/native-convert-to-section"/);
+    assert.match(readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/WriteJournal.kt'), 'utf8'), /"taskEditorAction" to "\{requestId,taskId,kind\}"/);
+    assert.match(model, /in EDITOR_MENU_KINDS -> editorMenu\.run\(action\)/);
+
+    assert.match(model, /editorMenu\.promoteTitle != null/);
+
+
+    assert.match(activity, /else if \(open != null && writable\) Box\(Modifier\.fillMaxSize\(\)\) \{\s+TaskEditorScreen\(model, open\)\s+ToastCard\(model, /);
+    assert.match(menuKt, /shell\.menu\.whenIdle \{ shell\.menu\.openProjects\(projectId\) \}/);
+    assert.match(menuKt, /if \(editor\.patch\.keys\.any \{ it in RECURRENCE_FIELDS \}\) editor\.model\.recurrenceBase/);
+}
+
+
+{
+    const coreHostKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/CoreHost.kt'), 'utf8');
+    const processKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/ProcessCoreHost.kt'), 'utf8');
+    assert.match(coreHostKt, /if \(method != "widgetsRefresh" && method != "saveWarm"\) lastCallAt = SystemClock\.uptimeMillis\(\)/);
+    assert.match(coreHostKt, /if \(callAsync\("saveWarm", SAVE_WARM_SLICE\)\.optBoolean\("done", true\)\) return/);
+    assert.match(processKt, /if \(runtime != null && saveWarmStarted\.compareAndSet\(false, true\)\) Thread\(\{\s+runCatching \{ runtime\.warmFirstSave\(\) \}/);
+}
+
+
+{
+    const header = /private fun CollapsibleSection\([\s\S]*?\n\}\n/.exec(editorUi)?.[0] ?? '';
+    assert.match(header, /Text\(title\.uppercase\(\)[^\n]*\n\s+section\.help\?\.let \{ help ->[\s\S]*?Icon\(Lucide\.CircleHelp, null, tint = c\.secondaryText, modifier = Modifier\.size\(16\.dp\)\)[\s\S]*?Spacer\(Modifier\.weight\(1f\)\)\s+if \(section\.filledCount > 0\)/);
+    assert.match(header, /section\.help\?\.let \{ if \(helpOpen\) ContextualHelpBody\(editorId, section\.id, it\) \}\s+if \(open\) Column/);
+    assert.doesNotMatch(editorUi, /help\.getString\("dismiss"\)/);
+}
+
+
+{
+    const toolbarKt = source('MarkdownToolbar.kt');
+    assert.match(toolbarKt, /LaunchedEffect\(draft, enabled\) \{ if \(enabled\) \{ draft\.focus\.requestFocus\(\); keyboard\?\.show\(\) \} \}/);
+    assert.match(toolbarKt, /runtime\.menuRead\("markdownToolbarActions", "\{\}"\)/);
+    assert.match(toolbarKt, /runtime\.menuRead\("markdownToolbarApply", input\.toString\(\)\)/);
+    assert.match(toolbarKt, /if \(shown == null \|\| !draft\.focused \|\| !WindowInsets\.isImeVisible\) return/);
+    assert.match(toolbarKt, /Icon\(Ionicons\.ArrowUndoOutline, null/);
+    assert.match(editorUi, /if \(editing\) MarkdownToolbar\(model, draft, store\)/);
+    assert.match(projectsUi + source('ProjectDetails.kt'), /MarkdownInput\(draft, store, raw != null[\s\S]*?MarkdownToolbar\(model, draft, store\)/);
+    assert.match(hostEntry, /markdownToolbarActions: \(\) => contract\.getMarkdownToolbarActions\(\),\s+markdownToolbarApply: \(input\) => contract\.applyMarkdownToolbar\(input\),/);
+}
+
+
+{
+    const menuKt = source('EditorMenu.kt');
+    assert.match(menuKt, /runtime\.menuRead\("taskChecklistProjectBlock", input\.toString\(\)\)/);
+    assert.match(menuKt, /afterSaving\(it, if \(expand\) "expandChecklist" else "promote", title\.trim\(\)\)/);
+    assert.match(menuKt, /JSONObject\(\)\.put\("kind", "expandChecklistUndo"\)\.put\("expandRequestId", input\.getString\("requestId"\)\)/);
+    assert.match(menuKt, /logLine\("Native checklist expanded into a project releaseCheck=v1\.3\.8\/native-checklist-to-project"/);
+    assert.match(menuKt, /RnSwitch\(editorMenu\.expand, /);
+
+    assert.match(menuKt, /"expandChecklistUndo" -> shell\.openSavedTask\(taskId, expandedFrom\.remove\(input\.getString\("expandRequestId"\)\)\)/);
+    assert.match(hostEntry, /taskChecklistProjectBlock: \(input\) => contract\.getTaskChecklistProjectBlock\(input\),/);
+}
+
+
+{
+    const coreHostKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/CoreHost.kt'), 'utf8');
+    const processKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/ProcessCoreHost.kt'), 'utf8');
+    assert.match(processKt, /if \(state == "active"\) syncThread\.execute \{\s+resumedRuntime\(\)\?\.let \{ runtime ->\s+val ended = runtime\.awaitQuiet\(resumedAt, quietSince = resumedAt\) \{ appState != "active" \}[\s\S]{0,900}?\}\s+\}\s+runCatching \{ reminders\.resume\(\) \}/);
+
+    assert.match(processKt, /if \(ended != "quiet" \|\| resumeCycleLogged\.compareAndSet\(false, true\)\) \{/);
+
+    assert.match(processKt, /val changed = state != appState\s+appState = state\s+val resumedAt = SystemClock\.uptimeMillis\(\)\s+if \(state == "active"\) syncThread\.execute \{/);
+
+
+    assert.equal(processKt.match(/syncThread\.execute/g)?.length, 5);
+    assert.match(readFileSync(resolve(app, 'bundle/host-sync.ts'), 'utf8'), /useTaskStore\.subscribe\(nameNotifyListener\('auto-sync-trigger'/);
+    assert.match(coreHostKt, /if \(leave\) callAsync\("widgetsRefresh", "leave"\) else \{\s+awaitQuiet\(\)\s+callAsync\("widgetsRefresh"\)/);
+}
+
+
+{
+    const popup = source('CaptureScreen.kt');
+
+    assert.match(popup, /TitleField\(draft\.text, [^\n]*\n\s+MicButton\(voice\.state\) \{ voice\.toggle\(draft\.text, draft\.options\) \}\n\s+\}\n\s+NoteField\(draft, copy\.getString\("notePlaceholder"\), copy\.getString\("noteLabel"\), !locked\)/);
+    assert.doesNotMatch(popup, /Text\(noteLabel, style = rnText\(12, 600\)/);
+    assert.match(popup, /\.padding\(top = 8\.dp\)\.fillMaxWidth\(\)\.heightIn\(min = 44\.dp, max = 96\.dp\)\.clip\(shape\)/);
+}
+
+
+{
+    const projects = source('ProjectsScreen.kt');
+    assert.match(projects, /Row\(Modifier\.fillMaxWidth\(\)\.heightIn\(min = 64\.3\.dp\)\.background\(c\.cardBg\)\.bottomBorder\(c\.border\)\.padding\(horizontal = 8\.dp\),/);
+}
+
+
+{
+    const activity = source('MainActivity.kt');
+    const more = source('MoreSheet.kt');
+    assert.match(activity, /val inset = if \(navigation >= 20\.dp\) navigation - 12\.dp else 0\.dp/);
+    assert.match(activity, /Row\(Modifier\.fillMaxWidth\(\)\.height\(66\.dp \+ inset\)\.background\(c\.cardBg\)\.hairline\(c\.border, top = true\)\.padding\(bottom = inset\)/);
+    assert.match(activity, /windowInsetsPadding\(WindowInsets\.systemBars\.only\(WindowInsetsSides\.Top \+ WindowInsetsSides\.Horizontal\)\)/);
+    assert.match(activity, /internal fun Modifier\.rnTabPress\(selected: Boolean, onClick: \(\) -> Unit\): Modifier/);
+    for (const kt of [activity, more]) assert.match(kt, /fade\(if \((active|open)\) 1f else RN_TAB_ICON_IDLE\)/);
+    assert.match(activity, /fun Modifier\.hairline\(color: Color, top: Boolean\) = drawBehind \{\s+drawRect\(color, Offset\(0f, if \(top\) 0f else size\.height - 1f\), Size\(size\.width, 1f\)\)/);
+}
+
+
+{
+    const theme = source('Theme.kt');
+    assert.match(theme, /fun Modifier\.rnBorderBottom\(color: Color\): Modifier = drawBehind \{[\s\S]{0,200}\}\.padding\(bottom = 1\.dp\)/);
+    assert.match(theme, /fun Modifier\.rnBorderTop\(color: Color\): Modifier = drawBehind \{[\s\S]{0,200}\}\.padding\(top = 1\.dp\)/);
+    assert.match(source('ProjectsScreen.kt'), /Row\(Modifier\.fillMaxWidth\(\)\.heightIn\(min = 56\.dp\)\.background\(c\.cardBg\)\.rnBorderBottom\(c\.border\)\.padding\(horizontal = 12\.dp, vertical = 8\.dp\)/);
+}
+
+
+{
+    const { readdirSync } = await import('node:fs');
+    const dir = resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot');
+    const all = readdirSync(dir).filter((file) => file.endsWith('.kt')).map((file) => readFileSync(resolve(dir, file), 'utf8')).join('\n');
+    assert.equal(all.match(/\.hairline\(/g)?.length, 18 + 1, 'the 17 hairline sites, the Gmail section\'s body (G4), and the helper itself');
+    assert.ok((all.match(/\.rnBorder(Bottom|Top)\(/g)?.length ?? 0) >= 68, 'RN\'s borderWidth 1 lines are rnBorderBottom / rnBorderTop');
+}
+
+
+{
+    const activity = source('MainActivity.kt');
+    assert.match(activity, /fun FailureBannerCard\(message: String, action: @Composable RowScope\.\(\) -> Unit\) \{[\s\S]{0,900}\.shadow\(8\.dp, shape\)\.clip\(shape\)\.background\(c\.cardBg\)\.rnBorder\(1\.dp, c\.danger, shape\)/);
+    assert.match(activity, /fun RetryButton\(onClick: \(\) -> Unit, enabled: Boolean, tag: String\? = null\)/);
+    const all = ['MainActivity.kt', 'DailyReviewScreen.kt', 'MenuWidgets.kt', 'MindSweep.kt', 'TaskEditor.kt', 'WeeklyReviewScreen.kt'].map(source).join('\n');
+    assert.doesNotMatch(all, /TextButton\([^\n]*\) \{ Text\(t\("common\.retry"\)\) \}/);
+}
+
+
+{
+    const gmailTs = readFileSync(resolve(app, 'bundle/host-gmail.ts'), 'utf8');
+    const play = readFileSync(resolve(app, 'android/app/src/play/java/com/ishaanpilar/stride/pilot/GmailAuthorization.kt'), 'utf8');
+    const foss = readFileSync(resolve(app, 'android/app/src/foss/java/com/ishaanpilar/stride/pilot/GmailAuthorization.kt'), 'utf8');
+    const receiptsKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/HostGmailReceipts.kt'), 'utf8');
+    const gradle = readFileSync(resolve(app, 'android/app/build.gradle.kts'), 'utf8');
+    assert.match(gmailTs, /flushPendingSave: async \(\) => \{\s*await bindings\.flushPendingSave\(\);\s*bindings\.requireSaved\(\);\s*\},/, 'the flush throws on a failed save');
+    assert.match(gmailTs, /initialDelayMs: 1_000,/);
+    assert.match(gmailTs, /if \(controller \|\| bindings\.sandbox\(\)\) return;/);
+    assert.match(gmailTs, /const stop = \(\) => \{\s*runtime\.registerGmailCaptureController\(null\);\s*controller\?\.pause\(\);\s*controller\?\.dispose\(\);/);
+    assert.match(gmailTs, /if \(next === 'active'\) start\(\);\s*else stop\(\);/);
+    assert.doesNotMatch(gmailTs.replace(/\/\*\*[\s\S]*?\*\/|\/\/[^\n]*/g, ''), /setTimer: setTimeout|setTimeout\(/, 'the controller runs on the polyfill\'s timers');
+    assert.match(coreHost, /val delay = \(global\(engine, "__nextTimerDelay"\)\.call\(\) as\? Number\)\?\.toLong\(\) \?: return/, 'the idle pump wakes for the next timer');
+    const gmailBlock = hostEntry.slice(hostEntry.indexOf('const nativeGmail = '), hostEntry.indexOf('const gmailLifecycle = '));
+    for (const line of ['addTasks: (items) => useTaskStore.getState().addTasks(items),', 'flushPendingSave,', 'requireSaved: () => requireSaved(),', 'sandbox: isSandboxMode,']) {
+        assert(gmailBlock.includes(line), `host-entry binds Gmail's ${line}`);
+    }
+    assert.match(hostEntry, /const state = requireSync\(\)\.start\(appState\);\s*gmailLifecycle\(\(\) => nativeGmail\?\.start\(appState\)\);/);
+    assert.match(hostEntry, /gmailLifecycle\(\(\) => nativeGmail\?\.appState\(appState\)\);\s*return requireSync\(\)\.appState\(appState\);/);
+    assert.match(coreHost, /fun gmailRequest\(name: String, json: String\): JSONObject = callLong\("gmailRequest", name, json\)/);
+
+    assert.match(source('InboxViewModel.kt'), /"gmailStatus" -> event\.optJSONObject\("status"\)\?\.let \{ status ->\s*menu\.settings\.gmail\.statusChanged\(status\)\s*gmailCycleToShow\(gmailShown, status\)\?\.let \{ at -> gmailShown = at; menu\.whenIdle \{ if \(writable\) refreshAll\(synced = true\) \} \}/);
+    assert.match(hostEntry, /statusChanged: \(status\) => \{ checked\(native\(\)\.hostEvent\(JSON\.stringify\(\{ type: 'gmailStatus', status \}\)\)\); \},/);
+
+    const answers = [];
+    const sent = [];
+    const bridge = { log() {}, nowMs: () => 0, gmailCall: (text) => { sent.push(JSON.parse(text)); return String(sent.length); }, ioNext: () => answers.shift() ?? '', ioBody: () => '' };
+    const state = vm.createContext({ __strideNative: bridge });
+    vm.runInContext(readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8'), state);
+    const read = state.__strideGmailCall({ op: 'get', path: 'labels' });
+    const refused = state.__strideGmailCall({ op: 'status' }).then(() => 'resolved', (error) => error.message);
+    answers.push(JSON.stringify({ id: '1', value: { labels: [] } }), JSON.stringify({ id: '2', error: 'E_GMAIL_AUTH' }));
+    state.__pumpTimers();
+    assert.equal(JSON.stringify(await read), '{"labels":[]}');
+    assert.equal(await refused, 'E_GMAIL_AUTH');
+
+
+    const connecting = state.__strideGmailCall({ op: 'connect' }).then((value) => JSON.stringify(value), (error) => `${error.name}: ${error.message}`);
+    state.__cancelHostCalls('Core netCheck timed out');
+    const whileDraining = state.__strideGmailCall({ op: 'status' }).then(() => 'resolved', (error) => error.name);
+    answers.push(JSON.stringify({ id: '3', value: { connected: true } }), JSON.stringify({ id: '4', value: { connected: false } }));
+    state.__pumpTimers();
+    assert.equal(await connecting, '{"connected":true}', 'a pending Connect is not failed by another call\'s timeout');
+    assert.equal(await whileDraining, 'resolved');
+    state.__resumeHostCalls();
+
+    vm.runInContext('setTimeout(() => {}, 300000)', state);
+    assert.equal(state.__nextTimerDelay(), 300000);
+
+    for (const [name, text] of [['GmailAuthorization.kt (Play)', play], ['GmailAuthorization.kt (FOSS)', foss], ['HostGmailReceipts.kt', receiptsKt]]) {
+        assert.doesNotMatch(text, /\bLog\.|logLine|SecretStore|println/, `${name} logs nothing and stores no secret`);
+    }
+    assert.match(play, /private fun reject\(reply: \(Result<Any\?>\) -> Unit, failure: Throwable\) \{\s*reply\(Result\.failure\(IllegalStateException\(gmailFailureCode\(failure\)\)\)\)/, 'every Play failure replies with its fixed code');
+    assert.equal(play.match(/Result\.failure\(/g).length, 1, 'no other failure reply');
+    assert.match(foss, /put\("available", false\)/);
+    assert.match(foss, /Result\.failure\(IllegalStateException\("E_GMAIL_CONFIG"\)\)/);
+    assert.doesNotMatch(foss, /^import com\.google/m);
+
+    assert.match(gradle, /"playImplementation"\("com\.google\.android\.gms:play-services-auth:22\.0\.0"\)/);
+    assert.doesNotMatch(gradle, /(?<!")implementation\("com\.google\.android\.gms/);
+    assert.match(gradle, /getByName\("play"\)\.java\.srcDir\(layout\.buildDirectory\.dir\("generated\/rnGmail\/main\/java"\)\)/);
+    assert.match(gradle, /getByName\("testPlay"\)\.java\.srcDir\(layout\.buildDirectory\.dir\("generated\/rnGmail\/test\/java"\)\)/);
+
+    assert.match(source('ProcessCoreHost.kt'), /gmailReceipts = HostGmailReceipts\(File\(app\.filesDir, "GmailCapture"\)\)/);
+    assert.match(receiptsKt, /BundledSQLiteDriver\(\)\.open\(file\.path\)/);
+
+
+    for (const [name, text] of [['GmailAuthorization.kt (Play)', play], ['GmailAuthorization.kt (FOSS)', foss], ['HostGmailReceipts.kt', receiptsKt],
+        ['GmailConsentPrompt.kt', readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/core/GmailConsentPrompt.kt'), 'utf8')],
+        ['GmailCapture.kt', source('GmailCapture.kt')]]) {
+        assert.doesNotMatch(text, /java\.nio\.file|java\.time|\.toPath\(\)/, `${name} calls no API 26 class on a minSdk 24 build`);
+    }
+    assert.match(receiptsKt, /"rename" -> named\(to\)\.let \{ target -> check\(!target\.exists\(\) && file\.renameTo\(target\)\)/);
+    assert.doesNotMatch(receiptsKt, /android\.database/);
+    const gmailTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-gmail.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(gmailTested.status, 0, `bundle/host-gmail.test.ts: ${gmailTested.stderr.slice(-1500)}`);
+}
+
+
+{
+    const gmailKt = source('GmailCapture.kt');
+    const rnSection = readFileSync(resolve(app, '../mobile/components/settings/gmail-capture-section.tsx'), 'utf8');
+    const coreGmail = readFileSync(resolve(app, '../../packages/core/src/gmail-capture.ts'), 'utf8');
+    const rnKeys = new Set([...rnSection.matchAll(/'(settings\.gmailCapture[A-Za-z]*)'/g), ...coreGmail.matchAll(/'(settings\.gmailCapture[A-Za-z]*)'/g)].map((m) => m[1]));
+    const nativeKeys = new Set([...gmailKt.matchAll(/"(settings\.gmailCapture[A-Za-z]*)"/g)].map((m) => m[1]));
+    const errorKeys = [...coreGmail.matchAll(/'(settings\.gmailCapture[A-Za-z]*Failed|settings\.gmailCaptureCancelled)'/g)].map((m) => m[1]);
+    assert.equal(rnKeys.size, 30, 'RN\'s section and core\'s failure keys were read');
+
+    assert.deepEqual([...rnKeys].filter((key) => !nativeKeys.has(key) && !errorKeys.includes(key)).sort(), [], 'every RN key the section shows is GmailCapture.kt\'s');
+    assert.deepEqual([...nativeKeys].filter((key) => !rnKeys.has(key)).sort(), [], 'GmailCapture.kt shows no key RN\'s section lacks');
+    for (const key of rnKeys) assert(labelKeys.includes(key), `LABEL_KEYS lacks ${key}`);
+    const shown = gmailKt.replace(/\/\*\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+    for (const [, literal] of shown.matchAll(/Text\("([^"$]*)"/g)) assert.fail(`GmailCapture.kt draws the literal "${literal}"`);
+    assert.match(shown, /Text\(if \(gmail\.open\) "▾" else "▸"/, 'RN\'s disclosure glyphs');
+
+    const order = ['settings.gmailCaptureDisclosure', 'settings.gmailCaptureUnavailable', 'settings.gmailCaptureAccount', 'settings.gmailCaptureLabelHint',
+        'settings.gmailCaptureActive', 'settings.gmailCaptureConnecting', 'settings.gmailCaptureCancel"', 'settings.gmailCaptureDisconnect"',
+        'settings.gmailCaptureChecking', 'settings.gmailCaptureSaving', 'settings.gmailCaptureLastChecked', 'gmail.shownError', 'gmail.notice?.let'].map((text) => shown.indexOf(text));
+    assert(order.every((index, i) => index > (i ? order[i - 1] : -1)), `the Gmail section's order ${order}`);
+    const settingsKt = source('SettingsScreen.kt');
+    assert.match(settingsKt, /capture\.optJSONObject\("captureIntent"\)\?\.let \{ CaptureIntentCard\(model, it\) \}\s*GmailCaptureSection\(model\)/);
+    assert.match(settingsKt, /if \(settings\.screen == "gtd-capture"\) GmailLabelPicker\(model\)/);
+
+    assert.match(source('SettingsModel.kt'), /if \(screen == "gtd-capture"\) gmail\.leave\(\)/);
+}
+
+
+{
+    const viewModelKt = readFileSync(resolve(app, 'android/app/src/main/java/com/ishaanpilar/stride/pilot/InboxViewModel.kt'), 'utf8');
+    assert.match(viewModelKt, /private fun showFocus\(view: FocusView\?\) \{\s+focusRevision = view\?\.revision\.orEmpty\(\)\s+if \(view != null && focus\?\.sameShown\(view\) == true\) return/);
+    assert.match(viewModelKt, /val view = focus\?\.copy\(revision = focusRevision\) \?: return/);
+    for (const name of ['FocusControls.kt', 'FocusModel.kt', 'Pomodoro.kt', 'InboxViewModel.kt']) {
+        assert.doesNotMatch(readFileSync(resolve(app, `android/app/src/main/java/com/ishaanpilar/stride/pilot/${name}`), 'utf8'), /focus\?\.revision(?!\.orEmpty\(\)\s*$)/m, `${name} pages at focusRevision`);
+    }
+}
+
+
+{
+    const audioTs = readFileSync(resolve(app, 'bundle/host-widget-audio.ts'), 'utf8');
+    const processHost = source('ProcessCoreHost.kt');
+    assert.match(coreHost, /fun ingestPendingAudio\(\): JSONObject = callLong\("ingestAudio"\)/);
+    assert.match(hostEntry, /ingestAudio\(\): string \{\s*return submit\(async \(\) => \{\s*if \(!widgetAudioPort\) return \{ ingested: 0 \};\s*const result = unwrap\(await contract\.ingestPendingAudio\(\{ queue: pendingCaptureQueue, lastApplied: lastAppliedRecord, audio: widgetAudioPort \}\)\);/);
+
+    assert.match(hostEntry, /contract\.ingestPendingCaptures\(\{ requestId, queue: pendingCaptureQueue, lastApplied: lastAppliedRecord \}\)/);
+    assert.match(processHost, /syncHost = runtime\s*network\.start\(\)\s*drainAudio\(app, runtime, SystemClock\.uptimeMillis\(\)\)/);
+    assert.match(processHost, /if \(state == "active"\) application\?\.let \{ drainAudio\(it, runtime, resumedAt, quietSince = resumedAt\) \{ appState != "active" \} \}/);
+
+
+    assert.match(processHost, /private fun drainAudio\(app: Application, runtime: CoreHost, askedAt: Long, quietSince: Long = 0, stop: \(\) -> Boolean = \{ false \}\)/);
+
+
+    assert.match(processHost, /audioDrainQueued\.set\(false\)\s*WidgetAudioDrain\.run\(\{ WidgetAudioDrain\.hasQueuedRecording\(queue\(app\)\) \}, \{ runtime\.awaitQuiet\(askedAt, quietSince, stop\) \},\s*\{\s*Log\.i\(CoreHost\.TAG, "Native Android widget audio drain after its quiet wait waitedMs=[^"]*"\)\s*runCatching \{ runtime\.ingestPendingAudio\(\) \}/);
+    assert.match(source('core/WidgetAudioDrain.kt'), /val ended = awaitQuiet\(\)\s*if \(ended != "left"\) ingest\(\)/);
+    assert.match(source('core/WidgetAudioDrain.kt'), /queue\.listFiles \{ file -> file\.name\.endsWith\(".json"\) \}\s*\?\.any \{ item -> runCatching \{ JSONObject\(item\.readText\(\)\)\.optString\("kind"\) == "audio" \}/);
+    assert.doesNotMatch(processHost, /AUDIO_DIRECTORY/, 'the WAV folder never starts a drain');
+
+    assert.match(audioTs, /const runtime = resolveSpeechToTextRuntimeSettings\(settings\.ai\?\.speechToText, \{ isFossBuild: bindings\.isFossBuild \}\);/);
+    assert.match(audioTs, /if \(runtime\.provider === 'whisper'\) \{ bindings\.logWaiting\('provider-unsupported'\); return null; \}/);
+    assert.doesNotMatch(audioTs, /speech\?\.provider \?\? 'gemini'|provider !== 'parakeet'/, 'no inline provider resolution');
+    assert.doesNotMatch(audioTs.replace(/\/\*\*[\s\S]*?\*\/|\/\/[^\n]*/g, ''), /logWaiting\([^)]*transcript/, 'no transcript text in a log line');
+    const audioTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-widget-audio.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(audioTested.status, 0, `bundle/host-widget-audio.test.ts: ${audioTested.stderr.slice(-1500)}`);
+}
+
+
+{
+    const hostEntrySource = readFileSync(resolve(app, 'bundle/host-entry.ts'), 'utf8');
+    const polyfills = readFileSync(resolve(app, 'bundle/host-polyfills.js'), 'utf8');
+    const voiceTs = readFileSync(resolve(app, 'bundle/host-voice.ts'), 'utf8');
+    assert.match(coreHost, /voice\?\.let \{ call -> bridge\.setProperty\("voiceCall", guarded \{ args -> io\.voice\(args\[0\] as String, call\) \}\) \}/);
+    assert.match(coreHost, /fun voiceRequest\(name: String, json: String\): JSONObject = callLong\("voiceRequest", name, json\)/);
+    assert.match(source('ProcessCoreHost.kt'), /voice = HostVoice\.forApp\(app\)::call\)/);
+    assert.match(hostEntrySource, /voiceRequest\(name: string, json: string\): string \{\s*return submit\(async \(\) => \{\s*if \(!nativeVoice\) throw new Error\('Voice capture is not available on this host'\);\s*return nativeVoice\.request\(name, JSON\.parse\(json\) as Record<string, unknown>\);/);
+    assert.match(hostEntrySource, /whisperModelReady: \(\) => false,/);
+    assert.match(hostEntrySource, /submit: \(input\) => contract\.submitQuickCaptureAudio\(input\),/);
+
+
+    assert.match(hostEntrySource, /const managed = managedAttachmentsDirectory\(documents\);/);
+    assert.match(hostEntrySource, /persistAttachment: \(attachment\) => persistIntoManagedStorage\(attachment, \{\s*persist: \(entry\) => host\.persistAttachmentLocally\(entry\),/);
+    assert.match(voiceTs, /export const managedAttachmentsDirectory = \(documents: string\): string => `\$\{documents\}\$\{ATTACHMENTS_DIR_NAME\}\/`;/);
+    assert.equal((hostEntrySource.match(/createAIKeyStore\(\{/g) ?? []).length, 1, 'one AI key store for speech');
+
+    assert.match(hostEntrySource, /const force = failed \|\| line\.outcome === 'saved' \|\| line\.outcome === 'applied' \|\| line\.outcome === 'kept';/);
+    const voiceCallBlock = polyfills.slice(polyfills.indexOf('global.__strideVoiceCall = function'), polyfills.indexOf('__strideCalendarPushCall'));
+    assert(voiceCallBlock.includes("native().voiceCall(JSON.stringify(request))") && !voiceCallBlock.includes('refuseIfCancelled'), 'a microphone call is never refused by a host deadline');
+    assert.doesNotMatch(voiceTs, /whisperModelPath/, 'no stored Whisper model path counts as ready');
+    const voiceLine = hostEntrySource.slice(hostEntrySource.indexOf('const voiceLine = '), hostEntrySource.indexOf('return createNativeVoice({'));
+    assert.deepEqual([...new Set([...voiceLine.matchAll(/\b(\w+): line\.\w+/g)].map((m) => m[1]))].sort(), ['copied', 'durationMs', 'errorKind', 'outcome', 'provider'], 'a voice line holds fixed fields only');
+    const voiceTested = spawnSync('bun', ['test', 'apps/android-native/bundle/host-voice.test.ts', 'apps/android-native/bundle/host-multipart.test.ts'], { cwd: resolve(app, '../..'), encoding: 'utf8' });
+    assert.equal(voiceTested.status, 0, `bundle/host-voice.test.ts: ${voiceTested.stderr.slice(-1500)}`);
+}
+
+
+{
+    const popup = source('CaptureScreen.kt');
+    const viewModel = source('InboxViewModel.kt');
+    assert.match(popup, /Box\(Modifier\.fade\(if \(state\.busy\) 0\.6f else 1f\)\.size\(40\.dp\)\.clip\(shape\)\.background\(if \(state\.recording\) c\.danger else c\.filterBg\)\s*\.rnBorder\(1\.dp, c\.border, shape\)\.clickable\(enabled = !state\.busy, role = Role\.Button\)/);
+    assert.match(popup, /Icon\(if \(state\.recording\) Lucide\.Square else Lucide\.Mic, null, tint = if \(state\.recording\) c\.onTint else c\.text, modifier = Modifier\.size\(16\.dp\)\)/);
+    assert.match(popup, /val label = t\(if \(state\.recording\) "quickAdd\.audioStop" else "quickAdd\.audioRecord"\)/);
+    assert.match(popup, /Box\(Modifier\.size\(8\.dp\)\.clip\(CircleShape\)\.background\(c\.danger\)\)\s*Text\(t\("quickAdd\.audioRecording"\), style = rnText\(12, 600\), color = c\.danger, maxLines = 1\)/);
+    assert.match(popup, /Text\(t\("quickAdd\.audioProcessing"\), style = rnText\(12, 600\), color = c\.secondaryText, maxLines = 2\)/);
+    assert.match(viewModel, /if \(value == null && capture != null\) voice\.closed\(\)/);
+    assert.match(viewModel, /keepCapture\(CaptureDraft\.opened\(view\)\.copy\(text = text\)\)\s*voice\.opened\(auto\)/);
+
+
+    assert.match(popup, /val voiceBusy = voice\.state\.busy\s+val locked = busy \|\| failed \|\| voiceBusy\s+val canSave = [^\n]*&& !busy && !voiceBusy &&/);
+    assert.match(popup, /val closable = !busy && !failed && !voiceBusy/);
+    assert.match(popup, /BackHandler\(enabled = !failed\) \{\s+if \(busy \|\| voiceBusy\) return@BackHandler/);
+    assert.match(viewModel, /fun saveCapture\(openAfterSave: Boolean\) \{\s+val current = capture \?: return\s+if \(voice\.state\.busy\) return\s+if \(current\.requests\.isNotEmpty\(\) \|\| captureInFlight != null\) \{[\s\S]*?return\s+\}\s+if \(voice\.state\.held && !busy\) \{\s+keepCapture\(current\.copy\(queuedSave = null\), persist = false\)\s+if \(voice\.saveHeld\(current\.text, current\.options, openAfterSave\)\) return/);
+    assert.match(viewModel, /saved = \{ reply -> finishCapture\(/);
+    assert.match(activity, /val label = t\(if \(model\.voice\.defaultAudio\) "quickAdd\.audioCaptureLabel" else "nav\.addTask"\)/);
+    assert.match(activity, /if \(event == Lifecycle\.Event\.ON_STOP && !isChangingConfigurations\) \{ VoiceCapture\.recorder\?\.leave\(\); model\.voice\.left\(\) \}/);
+    assert.match(source('EntryPoints.kt'), /openedCapture\(it, capture\.getString\("text"\), AutoRecord\.forCaptureLink\(url\)\)/);
+}
+console.log('Boot gates, second-read failure, failed-save refresh and editor read, and diagnostic acknowledgment passed');

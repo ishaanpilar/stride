@@ -1,0 +1,4 @@
+- Las tareas repetidas muestran todas sus apariciones en el calendario visible.
+- Enfoque y Siguiente ocultan tareas hasta su hora exacta de inicio.
+- Listas más rápidas, arrastre estable, mejor accesibilidad y regreso correcto al proyecto.
+- La sincronización valida datos y adjuntos antes de cambiar.

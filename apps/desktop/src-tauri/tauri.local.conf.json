@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "targets": ["app"],
+    "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "./Entitlements.local.plist"
+    }
+  }
+}

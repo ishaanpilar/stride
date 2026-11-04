@@ -1,0 +1,4 @@
+- Native SQLite keeps large libraries responsive and makes saves and sync faster.
+- Projects remember task sorting; Focus ordering, filters, and completion-date grouping are richer.
+- Repeating reminders fire at their set time, with better widgets, large-text layouts, and keyboard handling.
+- Backups, restores, secure sync credentials, and recurring-task continuity are more reliable.

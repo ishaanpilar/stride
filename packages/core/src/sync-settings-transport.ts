@@ -1,0 +1,1639 @@
+
+
+
+import { CLOCK_SKEW_THRESHOLD_MS as CORE_CLOCK_SKEW_THRESHOLD_MS, type MergeStats } from './sync-types';
+import { runSerializedSyncDocumentOperation } from './data-transfer-transaction';
+import { cloudGetJson, isValidCloudSyncToken } from './cloud';
+import { isDropboxUnauthorizedError as isCoreDropboxUnauthorizedError } from './dropbox';
+import type { DropboxAccessTokenResolution, DropboxAuthTokens } from './dropbox-auth-tokens';
+import type { I18nTemplateValues } from './i18n';
+import {
+    commitProvenMobileSyncConfiguration,
+    MobileSyncConfigurationTransactionError,
+    type MobileSyncConfigurationTransactionDependencies,
+} from './mobile-sync-configuration-transaction';
+import type { MobileDropboxSyncCredentials, MobileSyncConfigOverride } from './mobile-sync-service';
+import { NativeAttachmentCleanupUnconfirmedError } from './native-attachment-cleanup';
+import {
+    coerceSupportedBackend,
+    getMobileCloudRequestOptions,
+    getMobileWebDavRequestOptions,
+    getSyncConflictCount,
+    getSyncMaxClockSkewMs,
+    getSyncTimestampAdjustments,
+    hasSameUserFacingSyncConflictSummary,
+} from './mobile-sync-utils';
+import { isConnectionAllowed, SYNC_LOCAL_INSECURE_URL_OPTIONS } from './http-utils';
+import { addBreadcrumb } from './log-breadcrumbs';
+import { isSandboxMode } from './sandbox';
+import { SyncEncryptionRemoteVersionUnavailableError, SyncEncryptionTransitionIncompleteError, isSyncEncryptionRemoteVersionUnavailableError, type SyncEncryptionTransitionKind } from './sync-encryption';
+import { normalizeCloudUrl, normalizeWebdavUrl } from './sync-helpers';
+import type { ActivationMissingAttachment, SyncRunResult } from './sync-run-ports';
+import { isLikelyOfflineSyncError } from './sync-service-utils';
+import { formatSyncClockSkew, isValidSyncHttpUrl, redactSyncText, type CloudKitAccountStatus, type SyncSettingsBackend, type SyncSettingsCloudProvider } from './sync-settings-model';
+import {
+    CLOUD_ALLOW_INSECURE_HTTP_KEY,
+    CLOUD_PROVIDER_KEY,
+    CLOUD_TOKEN_KEY,
+    CLOUD_URL_KEY,
+    SYNC_BACKEND_KEY,
+    SYNC_PATH_BOOKMARK_KEY,
+    SYNC_PATH_KEY,
+    WEBDAV_ALLOW_INSECURE_HTTP_KEY,
+    WEBDAV_PASSWORD_KEY,
+    WEBDAV_URL_KEY,
+    WEBDAV_USERNAME_KEY,
+} from './sync-storage-keys';
+import type { AppSettings } from './types';
+import { probeWebdavSyncCompatibility } from './webdav';
+
+export type SyncSettingsWebDavFields = {
+    allowInsecureHttp: boolean;
+    password: string;
+    url: string;
+    username: string;
+};
+
+export type SyncSettingsSelfHostedFields = {
+    allowInsecureHttp: boolean;
+    token: string;
+    url: string;
+};
+
+export type SyncSettingsActionOptions = {
+    backend?: 'file' | 'webdav' | 'cloud' | 'cloudkit';
+    cloud?: SyncSettingsSelfHostedFields;
+    cloudProvider?: SyncSettingsCloudProvider;
+
+
+    syncPath?: string | null;
+    syncPathBookmark?: string | null;
+    webdav?: SyncSettingsWebDavFields;
+};
+
+export type SyncSettingsToastTone = 'warning' | 'error' | 'success' | 'info';
+export type SyncSettingsToast = { durationMs?: number; message: string; title: string; tone: SyncSettingsToastTone };
+
+
+export type SyncSettingsTransportParams = {
+    dropboxAppKey: string;
+    dropboxConfigured: boolean;
+    getCloudKitStatusDetails: (status: CloudKitAccountStatus) => { helpText: string; syncEnabled: boolean };
+    getSyncFailureToastMessage: (error: unknown) => string;
+    isExpoGo: boolean;
+    isFossBuild: boolean;
+    lastSyncStats: AppSettings['lastSyncStats'] | null | undefined;
+    lastSyncStatus: AppSettings['lastSyncStatus'] | undefined;
+    tr: (key: string, values?: I18nTemplateValues) => string;
+    resetSyncStatusForBackendSwitch: () => void;
+    showSettingsErrorToast: (title: string, message: string, durationMs?: number) => void;
+    showSettingsWarning: (title: string, message: string, durationMs?: number) => void;
+    showToast: (toast: SyncSettingsToast) => void;
+    supportsNativeICloudSync: boolean;
+    t: (key: string) => string;
+
+
+    confirmActivationWithoutFiles?: (files: ActivationMissingAttachment[]) => Promise<boolean>;
+};
+
+export type SyncSettingsSyncResult = SyncRunResult & {
+    offlineCause?: 'network' | 'request';
+    activationProof?: 'remote-encrypted-no-key';
+};
+
+type StorageEntry = readonly [string, string];
+
+
+export class SyncSettingsWriteError extends Error {
+
+    constructor(message: string) {
+        super(message);
+        this.name = 'SyncSettingsWriteError';
+    }
+}
+
+
+export type SyncSettingsCancel = (() => void) & { done: Promise<void> };
+
+
+export type SyncSettingsTransportCoreFunctions = {
+    addBreadcrumb: (message: string) => void;
+    CLOCK_SKEW_THRESHOLD_MS: number;
+    cloudGetJson: typeof cloudGetJson;
+    isConnectionAllowed: typeof isConnectionAllowed;
+    isSyncEncryptionRemoteVersionUnavailableError: (error: unknown) => boolean;
+    isValidCloudSyncToken: (token: string) => boolean;
+    normalizeCloudUrl: (url: string) => string;
+    normalizeWebdavUrl: (url: string) => string;
+    probeWebdavSyncCompatibility: typeof probeWebdavSyncCompatibility;
+    SyncEncryptionRemoteVersionUnavailableError: new (target: string) => Error;
+    SYNC_LOCAL_INSECURE_URL_OPTIONS: typeof SYNC_LOCAL_INSECURE_URL_OPTIONS;
+    coerceSupportedBackend: (backend: SyncSettingsBackend, allowCloudKit: boolean) => SyncSettingsBackend;
+    getSyncConflictCount: (stats?: MergeStats | null) => number;
+    getSyncMaxClockSkewMs: (stats?: MergeStats | null) => number;
+    getSyncTimestampAdjustments: (stats?: MergeStats | null) => number;
+    hasSameUserFacingSyncConflictSummary: (current?: MergeStats | null, previous?: MergeStats | null) => boolean;
+    isLikelyOfflineSyncError: (errorOrMessage: unknown) => boolean;
+    formatClockSkew: (ms: number) => string;
+    formatError: (error: unknown) => string;
+    isDropboxUnauthorizedError: (error: unknown) => boolean;
+};
+
+const CORE_FUNCTIONS: SyncSettingsTransportCoreFunctions = {
+    addBreadcrumb,
+    CLOCK_SKEW_THRESHOLD_MS: CORE_CLOCK_SKEW_THRESHOLD_MS,
+    cloudGetJson,
+    isConnectionAllowed,
+    isSyncEncryptionRemoteVersionUnavailableError,
+    isValidCloudSyncToken,
+    normalizeCloudUrl,
+    normalizeWebdavUrl,
+    probeWebdavSyncCompatibility,
+    SyncEncryptionRemoteVersionUnavailableError,
+    SYNC_LOCAL_INSECURE_URL_OPTIONS,
+    coerceSupportedBackend,
+    getSyncConflictCount,
+    getSyncMaxClockSkewMs,
+    getSyncTimestampAdjustments,
+    hasSameUserFacingSyncConflictSummary,
+    isLikelyOfflineSyncError,
+    formatClockSkew: formatSyncClockSkew,
+    formatError: (error) => (error instanceof Error ? error.message : String(error)),
+    isDropboxUnauthorizedError: isCoreDropboxUnauthorizedError,
+};
+
+
+export type SyncSettingsDropboxPort = {
+    authorize(clientId: string): Promise<DropboxAuthTokens>;
+    redirectUri(): string;
+    isConnected(): Promise<boolean>;
+    disconnect(clientId: string): Promise<void>;
+    clearTokens(): Promise<void>;
+    revokeTokens(clientId: string, tokens: DropboxAuthTokens): Promise<void>;
+    getStoredTokens(): Promise<DropboxAuthTokens | null>;
+    saveTokens(tokens: DropboxAuthTokens): Promise<void>;
+    getValidAccessToken(clientId: string): Promise<string>;
+    forceRefreshAccessToken(clientId: string): Promise<string>;
+    getValidAccessTokenForTokens(clientId: string, tokens: DropboxAuthTokens): Promise<DropboxAccessTokenResolution>;
+    forceRefreshAccessTokenForTokens(clientId: string, tokens: DropboxAuthTokens): Promise<DropboxAccessTokenResolution>;
+    testAccess(accessToken: string): Promise<unknown>;
+};
+
+export type SyncSettingsTransportHost = {
+    params(): SyncSettingsTransportParams;
+
+    storage: {
+        multiGet(keys: string[]): Promise<readonly (readonly [string, string | null])[]>;
+        setItem(key: string, value: string): Promise<void>;
+        multiSet(entries: StorageEntry[]): Promise<void>;
+        removeItem(key: string): Promise<void>;
+    };
+
+    secrets: {
+        get(key: string): Promise<string | null>;
+        set(key: string, value: string): Promise<void>;
+        delete(key: string): Promise<void>;
+    };
+    platform: { os(): string };
+    logInfo(message: string, context: { scope: string; force?: boolean; extra: Record<string, string> }): unknown;
+    logSettingsError(error: unknown): void;
+    performSync(syncPathOverride: string | undefined, options: {
+        manual?: boolean;
+        activationProbe?: boolean;
+        acceptMissingAttachmentIds?: readonly string[];
+        ignorePendingRemoteWriteBackoff?: boolean;
+        configOverride?: MobileSyncConfigOverride;
+    }): Promise<SyncSettingsSyncResult>;
+    clearSyncConfigCache(): void;
+    reconcileBackgroundSync(): Promise<unknown>;
+
+
+    pickSyncFolder(): Promise<unknown>;
+    getCloudKitAccountStatus(): Promise<CloudKitAccountStatus>;
+    rememberWebdavCapabilityProof(config: SyncSettingsWebDavFields): Promise<void>;
+    encryption: {
+        getStatus(): Promise<{ state: string; incompleteTransition?: unknown }>;
+        getIncompleteTransition(): Promise<SyncEncryptionTransitionKind | null>;
+    };
+    dropbox: SyncSettingsDropboxPort;
+    core?: Partial<SyncSettingsTransportCoreFunctions>;
+};
+
+export type SyncSettingsTransportState = {
+    cloudKitAccountStatus: CloudKitAccountStatus;
+    cloudAllowInsecureHttp: boolean;
+    cloudProvider: SyncSettingsCloudProvider;
+    cloudToken: string;
+    cloudUrl: string;
+    dropboxBusy: boolean;
+    dropboxConnected: boolean;
+    isSyncing: boolean;
+    isTestingConnection: boolean;
+    syncBackend: SyncSettingsBackend;
+    syncPath: string | null;
+    syncPathBookmark: string | null;
+    webdavAllowInsecureHttp: boolean;
+    webdavPassword: string;
+    webdavUrl: string;
+    webdavUsername: string;
+};
+
+const INITIAL_STATE: SyncSettingsTransportState = {
+    cloudKitAccountStatus: 'unknown',
+    cloudAllowInsecureHttp: false,
+    cloudProvider: 'selfhosted',
+    cloudToken: '',
+    cloudUrl: '',
+    dropboxBusy: false,
+    dropboxConnected: false,
+    isSyncing: false,
+    isTestingConnection: false,
+    syncBackend: 'off',
+    syncPath: null,
+    syncPathBookmark: null,
+    webdavAllowInsecureHttp: false,
+    webdavPassword: '',
+    webdavUrl: '',
+    webdavUsername: '',
+};
+
+export function createSyncSettingsTransport(host: SyncSettingsTransportHost) {
+    const core: SyncSettingsTransportCoreFunctions = { ...CORE_FUNCTIONS, ...host.core };
+    let state = INITIAL_STATE;
+
+
+    let backendWrites = 0;
+    let offWriteStarted = 0;
+    const listeners = new Set<() => void>();
+    const set = (patch: Partial<SyncSettingsTransportState>) => {
+        if ('syncBackend' in patch || 'cloudProvider' in patch) backendWrites += 1;
+        state = { ...state, ...patch };
+        for (const listener of listeners) listener();
+    };
+
+    let provenSyncBackend: SyncSettingsBackend = 'off';
+    let provenCloudProvider: SyncSettingsCloudProvider = 'selfhosted';
+    let hasPendingSyncConfiguration = false;
+    let stagedDropboxCredentials: MobileDropboxSyncCredentials | null = null;
+
+    const reconcileBackgroundSyncRegistration = () => {
+        void host.reconcileBackgroundSync().catch((error) => {
+            if (!(error instanceof NativeAttachmentCleanupUnconfirmedError)) logError(error);
+        });
+    };
+
+    const probeWebdavCompatibilityForCurrentEncryptionPosture = async (
+        documentUrl: string,
+        options: Parameters<typeof probeWebdavSyncCompatibility>[1],
+    ): Promise<'strong-etag' | 'legacy-plaintext'> => {
+        let phase = 'encryption-status';
+        let requireStrongEtag: boolean | undefined;
+        let compatibility: 'strong-etag' | 'legacy-plaintext' | undefined;
+        let failure: unknown;
+        try {
+            const status = await host.encryption.getStatus();
+            requireStrongEtag = status.state !== 'off' || Boolean(status.incompleteTransition);
+            phase = 'compatibility';
+            compatibility = await core.probeWebdavSyncCompatibility(documentUrl, options, { requireStrongEtag });
+            if (compatibility === 'legacy-plaintext' && requireStrongEtag) {
+                throw new core.SyncEncryptionRemoteVersionUnavailableError('WebDAV data.json');
+            }
+            return compatibility;
+        } catch (error) {
+            failure = error;
+            compatibility = undefined;
+            throw error;
+        } finally {
+            try {
+                const status = (failure as { status?: unknown } | null)?.status;
+                const httpStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+                    ? String(status) : undefined;
+                const reason = compatibility ?? (phase === 'encryption-status' ? 'encryption-status-unavailable'
+                    : httpStatus ? 'http'
+                    : core.isSyncEncryptionRemoteVersionUnavailableError(failure) ? 'strong-etag-required'
+                    : failure instanceof Error && failure.message.startsWith('WebDAV GET failed: invalid JSON (') ? 'invalid-json'
+                    : core.isLikelyOfflineSyncError(failure) ? 'network' : 'unknown');
+                void Promise.resolve(host.logInfo('WebDAV setup compatibility probe', {
+                    scope: 'sync-settings', force: !isSandboxMode(), extra: {
+                        releaseCheck: 'v1.3.5/webdav-setup-probe', phase,
+                        outcome: compatibility ? 'completed' : 'failed', reason,
+                        requireStrongEtag: requireStrongEtag === undefined ? 'unknown' : String(requireStrongEtag),
+                        ...(httpStatus ? { httpStatus } : {}),
+                    },
+                })).catch(() => undefined);
+            } catch {                                                                            }
+        }
+    };
+
+
+    const persistSyncConfigItem = (key: string, value: string, afterSave?: () => void): Promise<void> => (
+        host.storage.setItem(key, value)
+            .then(() => {
+                host.clearSyncConfigCache();
+                afterSave?.();
+            })
+            .catch(logError)
+    );
+
+    const isManualInsecureOverride = (url: string, allowInsecureHttp: boolean): boolean => {
+        if (!allowInsecureHttp) return false;
+        try {
+            if (new URL(url).protocol !== 'http:') return false;
+        } catch {
+            return false;
+        }
+        return !core.isConnectionAllowed(url, core.SYNC_LOCAL_INSECURE_URL_OPTIONS);
+    };
+
+    const urlPassword = (url: string): string | null => {
+        try {
+            return decodeURIComponent(new URL(url).password) || null;
+        } catch {
+            return null;
+        }
+    };
+
+
+    const known = new Set<string>();
+    const remember = (...secrets: (string | null | undefined)[]) => {
+        for (const secret of secrets) if (secret) known.add(secret);
+    };
+    const rememberUrl = (url: string | null | undefined) => remember(url ? urlPassword(url) : null);
+    const rememberTokens = (tokens: DropboxAuthTokens | null | undefined) => remember(tokens?.accessToken, tokens?.refreshToken);
+
+    const rememberStoredDropboxTokens = async () => {
+        try {
+            rememberTokens(await host.dropbox.getStoredTokens());
+        } catch {
+
+        }
+    };
+
+
+    const redact = (text: string) => redactSyncText(text, [
+        state.webdavPassword,
+        state.cloudToken,
+        urlPassword(state.webdavUrl),
+        urlPassword(state.cloudUrl),
+        stagedDropboxCredentials?.tokens.accessToken,
+        stagedDropboxCredentials?.tokens.refreshToken,
+        ...known,
+    ]);
+
+
+    const redactError = (error: unknown): Error => {
+        const redacted = new Error(redact(error instanceof Error ? error.message : String(error)));
+        redacted.name = error instanceof Error ? redact(error.name) : 'Error';
+        return redacted;
+    };
+    const logError = (error: unknown) => host.logSettingsError(redactError(error));
+    const logInfo = (message: string, context: { scope: string; force?: boolean; extra: Record<string, string> }) => host.logInfo(redact(message), {
+        scope: context.scope,
+        ...(context.force ? { force: true } : {}),
+        extra: Object.fromEntries(Object.entries(context.extra).map(([key, entry]) => [key, redact(entry)])),
+    });
+
+    const formatText = (p: SyncSettingsTransportParams, key: string, replacements: Record<string, string | number>) => {
+        let text = p.t(key);
+        Object.entries(replacements).forEach(([name, value]) => {
+            text = text.split(`{${name}}`).join(String(value));
+        });
+        return text;
+    };
+
+    const runDropboxConnectionTest = async (p: SyncSettingsTransportParams) => {
+        const stagedCredentials = stagedDropboxCredentials;
+        let accessToken: string;
+        if (stagedCredentials) {
+            const resolution = await host.dropbox.getValidAccessTokenForTokens(
+                p.dropboxAppKey,
+                stagedCredentials.tokens,
+            );
+            stagedCredentials.tokens = resolution.tokens;
+            accessToken = resolution.accessToken;
+            rememberTokens(resolution.tokens);
+        } else {
+            accessToken = await host.dropbox.getValidAccessToken(p.dropboxAppKey);
+        }
+        remember(accessToken);
+        try {
+            await host.dropbox.testAccess(accessToken);
+        } catch (error) {
+            if (!core.isDropboxUnauthorizedError(error)) {
+                throw error;
+            }
+            if (stagedCredentials) {
+                const resolution = await host.dropbox.forceRefreshAccessTokenForTokens(
+                    p.dropboxAppKey,
+                    stagedCredentials.tokens,
+                );
+                stagedCredentials.tokens = resolution.tokens;
+                accessToken = resolution.accessToken;
+                rememberTokens(resolution.tokens);
+            } else {
+                accessToken = await host.dropbox.forceRefreshAccessToken(p.dropboxAppKey);
+            }
+            remember(accessToken);
+            await host.dropbox.testAccess(accessToken);
+        }
+    };
+
+
+    const validateSyncHttpUrl = (
+        p: SyncSettingsTransportParams,
+        url: string,
+        allowInsecureHttp: boolean,
+        label: 'WebDAV' | 'self-hosted',
+        warnInsecure = true,
+    ): boolean => {
+        if (!url || !isValidSyncHttpUrl(url)) {
+            p.showSettingsWarning(
+                p.tr('settings.syncMobile.invalidUrl'),
+                label === 'WebDAV'
+                    ? p.tr('settings.syncMobile.pleaseEnterAValidWebdavUrlHttpHttps')
+                    : p.tr('settings.syncMobile.pleaseEnterAValidSelfHostedUrlHttpHttps')
+            );
+            return false;
+        }
+        if (!core.isConnectionAllowed(url, {
+            ...core.SYNC_LOCAL_INSECURE_URL_OPTIONS,
+            allowInsecureHttp,
+        })) {
+            p.showSettingsWarning(
+                p.tr('settings.syncMobile.httpsRequired'),
+                p.tr('settings.syncMobile.publicHttpSyncUrlsAreBlockedUseHttpsOrEnable'),
+                6500
+            );
+            return false;
+        }
+        if (warnInsecure && isManualInsecureOverride(url, allowInsecureHttp)) {
+            p.showSettingsWarning(
+                p.tr('settings.syncMobile.insecureHttpEnabled'),
+                p.tr('settings.syncMobile.onlyUseThisOnTrustedNetworksSyncDataWillBe'),
+                6500
+            );
+        }
+        return true;
+    };
+
+
+    const validateCloudToken = (p: SyncSettingsTransportParams, token: string): boolean => {
+        if (!token || core.isValidCloudSyncToken(token)) return true;
+        p.showSettingsWarning(
+            p.tr('settings.syncMobile.error'),
+            p.tr('settings.cloudTokenInvalid')
+        );
+        return false;
+    };
+
+
+    const load = (): SyncSettingsCancel => {
+        let cancelled = false;
+        const p = host.params();
+        const { dropboxConfigured, supportsNativeICloudSync } = p;
+
+        const done = Promise.all([
+            host.storage.multiGet([
+                SYNC_PATH_KEY,
+                SYNC_PATH_BOOKMARK_KEY,
+                SYNC_BACKEND_KEY,
+                WEBDAV_URL_KEY,
+                WEBDAV_USERNAME_KEY,
+                WEBDAV_ALLOW_INSECURE_HTTP_KEY,
+                CLOUD_URL_KEY,
+                CLOUD_ALLOW_INSECURE_HTTP_KEY,
+                CLOUD_PROVIDER_KEY,
+            ]),
+            host.secrets.get(WEBDAV_PASSWORD_KEY),
+            host.secrets.get(CLOUD_TOKEN_KEY),
+        ]).then(async ([entries, storedWebDavPassword, storedCloudToken]) => {
+            if (cancelled) return;
+
+            const entryMap = new Map(entries);
+            const path = entryMap.get(SYNC_PATH_KEY);
+            const pathBookmark = entryMap.get(SYNC_PATH_BOOKMARK_KEY);
+            const storedBackend = entryMap.get(SYNC_BACKEND_KEY);
+            const storedWebDavUrl = entryMap.get(WEBDAV_URL_KEY);
+            const storedWebDavUsername = entryMap.get(WEBDAV_USERNAME_KEY);
+            const storedWebDavAllowInsecureHttp = entryMap.get(WEBDAV_ALLOW_INSECURE_HTTP_KEY);
+            const storedCloudUrl = entryMap.get(CLOUD_URL_KEY);
+            const storedCloudAllowInsecureHttp = entryMap.get(CLOUD_ALLOW_INSECURE_HTTP_KEY);
+            const storedCloudProvider = entryMap.get(CLOUD_PROVIDER_KEY);
+
+            const resolvedBackend = storedBackend === 'webdav'
+                || storedBackend === 'cloud'
+                || storedBackend === 'off'
+                || storedBackend === 'file'
+                || storedBackend === 'cloudkit'
+                ? storedBackend
+                : 'off';
+
+
+            const unsupportedDropboxBackend = resolvedBackend === 'cloud'
+                && storedCloudProvider === 'dropbox'
+                && !dropboxConfigured;
+            const supportedBackend = unsupportedDropboxBackend
+                ? 'off'
+                : core.coerceSupportedBackend(resolvedBackend, supportsNativeICloudSync);
+            provenSyncBackend = supportedBackend;
+
+            const resolvedCloudProvider: SyncSettingsCloudProvider = (
+                (resolvedBackend === 'cloudkit' || storedCloudProvider === 'cloudkit') && supportsNativeICloudSync
+            )
+                ? 'cloudkit'
+                : storedCloudProvider === 'dropbox' && dropboxConfigured
+                    ? 'dropbox'
+                    : 'selfhosted';
+            provenCloudProvider = resolvedCloudProvider;
+
+            set({
+                syncPath: path || null,
+                syncPathBookmark: pathBookmark || null,
+                webdavUrl: storedWebDavUrl || '',
+                webdavUsername: storedWebDavUsername || '',
+                webdavPassword: storedWebDavPassword || '',
+                webdavAllowInsecureHttp: storedWebDavAllowInsecureHttp === 'true',
+                cloudUrl: storedCloudUrl || '',
+                cloudToken: storedCloudToken || '',
+                cloudAllowInsecureHttp: storedCloudAllowInsecureHttp === 'true',
+                syncBackend: supportedBackend,
+                cloudProvider: resolvedCloudProvider,
+            });
+
+            const corrections: Promise<void>[] = [];
+            if (resolvedBackend !== supportedBackend) {
+                corrections.push(persistSyncConfigItem(SYNC_BACKEND_KEY, supportedBackend));
+            }
+            if (!dropboxConfigured && storedCloudProvider === 'dropbox') {
+                corrections.push(persistSyncConfigItem(CLOUD_PROVIDER_KEY, 'selfhosted'));
+            }
+            if (!supportsNativeICloudSync && storedCloudProvider === 'cloudkit') {
+                corrections.push(persistSyncConfigItem(CLOUD_PROVIDER_KEY, 'selfhosted'));
+            }
+            reconcileBackgroundSyncRegistration();
+            await Promise.all(corrections);
+        }).catch(logError);
+
+        return Object.assign(() => {
+            cancelled = true;
+        }, { done });
+    };
+
+    const refreshCloudKitAccountStatus = async () => {
+        if (!host.params().supportsNativeICloudSync) {
+            set({ cloudKitAccountStatus: 'unknown' });
+            return;
+        }
+        set({ cloudKitAccountStatus: await host.getCloudKitAccountStatus() });
+    };
+
+
+    const loadDropboxState = (): SyncSettingsCancel => {
+        let cancelled = false;
+        const { dropboxConfigured } = host.params();
+
+        const run = async () => {
+            if (!dropboxConfigured) {
+                if (!cancelled) set({ dropboxConnected: false });
+                return;
+            }
+            try {
+                const connected = await host.dropbox.isConnected();
+                if (!cancelled) set({ dropboxConnected: connected });
+                if (connected) await rememberStoredDropboxTokens();
+            } catch {
+                if (!cancelled) set({ dropboxConnected: false });
+            }
+        };
+
+        const done = run();
+        return Object.assign(() => {
+            cancelled = true;
+        }, { done });
+    };
+
+
+    const isSyncTargetComplete = (backend: SyncSettingsBackend, provider: SyncSettingsCloudProvider): boolean => {
+        if (backend === 'off') return false;
+        if (backend === 'cloudkit') return true;
+        if (backend === 'webdav') return state.webdavUrl.trim().length > 0;
+        if (backend === 'file') return Boolean(state.syncPath);
+        if (provider === 'dropbox') return state.dropboxConnected || stagedDropboxCredentials !== null;
+        return state.cloudUrl.trim().length > 0 && state.cloudToken.trim().length > 0;
+    };
+
+    const currentSyncTargetOptions = (): Omit<SyncSettingsActionOptions, 'backend'> => ({
+        cloud: { allowInsecureHttp: state.cloudAllowInsecureHttp, token: state.cloudToken, url: state.cloudUrl },
+        webdav: {
+            allowInsecureHttp: state.webdavAllowInsecureHttp,
+            password: state.webdavPassword,
+            url: state.webdavUrl,
+            username: state.webdavUsername,
+        },
+    });
+
+
+    const handleSelectSyncBackend = (backend: 'off' | 'file' | 'webdav' | 'cloud'): Promise<void> | undefined => {
+        const p = host.params();
+        const { cloudProvider } = state;
+        const nextBackend = backend === 'cloud'
+            ? (cloudProvider === 'cloudkit' ? 'cloudkit' : 'cloud')
+            : backend;
+        core.addBreadcrumb(`settings:syncBackend:${nextBackend}`);
+        if (nextBackend === 'off') {
+            const sequence = ++backendWrites;
+            const superseded = () => new Error('A newer sync backend selection replaced this Off request');
+            const write = runSerializedSyncDocumentOperation(async () => {
+                if (sequence !== backendWrites) throw superseded();
+                let incomplete: SyncEncryptionTransitionKind | null;
+                try {
+                    const status = await host.encryption.getStatus();
+                    incomplete = await host.encryption.getIncompleteTransition();
+                    if (Boolean(status.incompleteTransition) !== Boolean(incomplete)) {
+                        throw new Error('Sync encryption transition state is inconsistent');
+                    }
+                } catch (error) {
+                    if (error instanceof NativeAttachmentCleanupUnconfirmedError) throw error;
+                    logError(error);
+                    p.showSettingsErrorToast(p.tr('settings.syncMobile.error'), p.tr('settings.syncEncryptionErrorTransitionIncomplete'));
+                    throw new SyncSettingsWriteError(redact(error instanceof Error ? error.message : String(error)));
+                }
+                if (sequence !== backendWrites) throw superseded();
+                if (incomplete) {
+                    p.showSettingsWarning(p.tr('common.notice'), p.tr('settings.syncEncryptionErrorTransitionIncomplete'));
+                    try {
+                        await Promise.resolve(logInfo('Sync Off refused during incomplete encryption transition', {
+                            scope: 'sync-settings', force: true, extra: {
+                                releaseCheck: 'v1.3.5/sync-encryption-off-guard', operation: 'select-off', outcome: 'refused',
+                            },
+                        }));
+                    } catch {
+
+                    }
+                    throw new SyncEncryptionTransitionIncompleteError(incomplete);
+                }
+                offWriteStarted += 1;
+                try {
+                    await host.storage.setItem(SYNC_BACKEND_KEY, nextBackend);
+                } catch (error) {
+                    if (error instanceof NativeAttachmentCleanupUnconfirmedError) throw error;
+                    logError(error);
+                    throw new SyncSettingsWriteError(redact(error instanceof Error ? error.message : String(error)));
+                } finally {
+                    offWriteStarted -= 1;
+                }
+                const stillSelected = sequence === backendWrites;
+                provenSyncBackend = 'off';
+                hasPendingSyncConfiguration = !stillSelected && state.syncBackend !== 'off';
+                if (stillSelected) {
+                    p.resetSyncStatusForBackendSwitch();
+                    set({ syncBackend: 'off' });
+                }
+                host.clearSyncConfigCache();
+                reconcileBackgroundSyncRegistration();
+                if (!stillSelected) throw superseded();
+            });
+
+            write.catch(() => undefined);
+            return write;
+        }
+        set({ syncBackend: nextBackend });
+        if (nextBackend !== provenSyncBackend || offWriteStarted > 0) {
+            hasPendingSyncConfiguration = true;
+            if (isSyncTargetComplete(nextBackend, cloudProvider)) {
+                return handleSync({
+                    ...currentSyncTargetOptions(),
+                    backend: nextBackend,
+                    cloudProvider,
+                });
+            }
+        }
+        return undefined;
+    };
+
+
+    const handleSelectCloudProvider = (provider: SyncSettingsCloudProvider): Promise<void> | undefined => {
+        const p = host.params();
+        if (provider === 'cloudkit' && !p.supportsNativeICloudSync) return undefined;
+        if (provider === 'dropbox' && !p.dropboxConfigured) return undefined;
+
+        const nextBackend: SyncSettingsBackend = provider === 'cloudkit' ? 'cloudkit' : 'cloud';
+        const isNewSelection = (
+            provider !== provenCloudProvider
+            || nextBackend !== provenSyncBackend
+            || offWriteStarted > 0
+        );
+        if (isNewSelection) {
+            hasPendingSyncConfiguration = true;
+        }
+        set({ cloudProvider: provider, syncBackend: nextBackend });
+        if (isNewSelection && isSyncTargetComplete(nextBackend, provider)) {
+            return handleSync({
+                ...currentSyncTargetOptions(),
+                backend: nextBackend,
+                cloudProvider: provider,
+            });
+        }
+        return undefined;
+    };
+
+    const handleSetSyncPath = async () => {
+        const p = host.params();
+        try {
+            const result = await host.pickSyncFolder();
+            if (!result) return;
+            const fileUri = (result as { __fileUri: string }).__fileUri;
+            const fileBookmark = (result as { __fileBookmark?: string }).__fileBookmark?.trim() ?? null;
+            if (!fileUri) return;
+
+            hasPendingSyncConfiguration = true;
+            core.addBreadcrumb('settings:syncBackend:file');
+            set({ syncPath: fileUri, syncPathBookmark: fileBookmark, syncBackend: 'file' });
+
+
+            await handleSync({
+                backend: 'file',
+                syncPath: fileUri,
+                syncPathBookmark: fileBookmark,
+            });
+        } catch (error) {
+            const message = String(error);
+            if (/Selected JSON file is not a Stride backup/i.test(message)) {
+                p.showSettingsWarning(
+                    p.tr('settings.syncMobile.invalidSyncFile'),
+                    p.tr('settings.syncMobile.pleaseChooseAStrideBackupJsonFileInTheTarget'),
+                    5200
+                );
+                return;
+            }
+            if (/temporary Inbox location|re-select a folder in Settings -> (?:Data & Sync|Sync)/i.test(message)) {
+                p.showSettingsWarning(
+                    p.tr('settings.syncMobile.unsupportedCloudProviderOnIos'),
+                    p.tr('settings.syncMobile.theSelectedFileCameFromATemporaryIosFilesCopy'),
+                    5600
+                );
+                return;
+            }
+            if (/read-only|read only|not writable|isn't writable|permission denied|EACCES/i.test(message)) {
+                p.showSettingsWarning(
+                    p.tr('settings.syncMobile.syncFolderIsReadOnly'),
+                    host.platform.os() === 'ios'
+                        ? p.tr('settings.syncMobile.theSelectedFolderIsReadOnlyChooseAWritableLocation')
+                        : p.tr('settings.syncMobile.theSelectedFolderIsReadOnlyPleaseChooseAWritable'),
+                    5600
+                );
+                return;
+            }
+            p.showSettingsErrorToast(p.tr('settings.syncMobile.error'), p.tr('settings.syncMobile.failedToSetSyncPath'));
+        }
+    };
+
+    const handleDisconnectDropbox = async () => {
+        const p = host.params();
+        set({ dropboxBusy: true });
+        try {
+            const stagedCredentials = stagedDropboxCredentials;
+            const disconnectingProvenDropbox = (
+                provenSyncBackend === 'cloud'
+                && provenCloudProvider === 'dropbox'
+            );
+            if (
+                disconnectingProvenDropbox
+            ) {
+                backendWrites += 1;
+                await host.storage.setItem(SYNC_BACKEND_KEY, 'off');
+                host.clearSyncConfigCache();
+                const [[, persistedBackend]] = await host.storage.multiGet([SYNC_BACKEND_KEY]);
+                if (persistedBackend !== 'off') {
+                    throw new Error('Dropbox sync could not be disabled before disconnecting');
+                }
+                provenSyncBackend = 'off';
+                hasPendingSyncConfiguration = false;
+                set({ syncBackend: 'off' });
+                reconcileBackgroundSyncRegistration();
+            }
+            if (stagedCredentials && p.dropboxConfigured) {
+                await host.dropbox.revokeTokens(p.dropboxAppKey, stagedCredentials.tokens);
+            }
+            stagedDropboxCredentials = null;
+            if (p.dropboxConfigured) {
+                await host.dropbox.disconnect(p.dropboxAppKey);
+            } else {
+
+
+                await host.dropbox.clearTokens();
+            }
+            if (!disconnectingProvenDropbox) {
+
+
+                hasPendingSyncConfiguration = false;
+                set({ syncBackend: provenSyncBackend, cloudProvider: provenCloudProvider });
+            }
+            set({ dropboxConnected: false });
+            p.resetSyncStatusForBackendSwitch();
+            reconcileBackgroundSyncRegistration();
+            p.showToast({
+                title: p.tr('settings.syncMobile.disconnected'),
+                message: p.tr('settings.syncMobile.dropboxConnectionRemoved'),
+                tone: 'success',
+            });
+        } catch (error) {
+            await rememberStoredDropboxTokens();
+            p.showSettingsErrorToast(p.tr('settings.syncMobile.disconnectFailed'), redact(core.formatError(error)), 5200);
+        } finally {
+            set({ dropboxBusy: false });
+        }
+    };
+
+    const handleTestDropboxConnection = async () => {
+        const p = host.params();
+        if (p.isFossBuild) {
+            p.showSettingsWarning(p.tr('settings.syncMobile.dropboxUnavailable'), p.tr('settings.syncMobile.dropboxIsDisabledInFossBuilds'));
+            return;
+        }
+        if (!p.dropboxConfigured) {
+            p.showSettingsWarning(p.tr('settings.syncMobile.dropboxUnavailable'), p.tr('settings.syncMobile.dropboxAppKeyIsNotConfiguredInThisBuild'));
+            return;
+        }
+        set({ isTestingConnection: true });
+        try {
+            await runDropboxConnectionTest(p);
+            set({ dropboxConnected: true });
+            p.showToast({
+                title: p.tr('settings.syncMobile.connectionOk'),
+                message: p.tr('settings.syncMobile.dropboxAccountIsReachable'),
+                tone: 'success',
+            });
+        } catch (error) {
+            if (core.isDropboxUnauthorizedError(error)) {
+                set({ dropboxConnected: false });
+                p.showSettingsWarning(
+                    p.tr('settings.syncMobile.connectionFailed'),
+                    p.tr('settings.syncMobile.dropboxTokenIsInvalidOrRevokedPleaseTapConnectDropbox'),
+                    5200
+                );
+            } else {
+                await rememberStoredDropboxTokens();
+                p.showSettingsErrorToast(p.tr('settings.syncMobile.connectionFailed'), redact(core.formatError(error)), 5200);
+            }
+        } finally {
+            set({ isTestingConnection: false });
+        }
+    };
+
+    const handleSaveWebDavSettings = async (nextSettings: SyncSettingsWebDavFields) => {
+        const p = host.params();
+        const trimmedUrl = nextSettings.url.trim();
+        if (!validateSyncHttpUrl(p, trimmedUrl, nextSettings.allowInsecureHttp, 'WebDAV')) {
+            return;
+        }
+        const trimmedUsername = nextSettings.username.trim();
+        set({
+            webdavUrl: trimmedUrl,
+            webdavUsername: trimmedUsername,
+            webdavPassword: nextSettings.password,
+            webdavAllowInsecureHttp: nextSettings.allowInsecureHttp,
+            syncBackend: 'webdav',
+        });
+        hasPendingSyncConfiguration = true;
+
+        await runSync(p, {
+            backend: 'webdav',
+            webdav: {
+                allowInsecureHttp: nextSettings.allowInsecureHttp,
+                password: nextSettings.password,
+                url: trimmedUrl,
+                username: trimmedUsername,
+            },
+        }, { insecureWarned: true });
+    };
+
+    const handleSaveSelfHostedSettings = async (nextSettings: SyncSettingsSelfHostedFields) => {
+        const p = host.params();
+        const trimmedUrl = nextSettings.url.trim();
+        if (!validateSyncHttpUrl(p, trimmedUrl, nextSettings.allowInsecureHttp, 'self-hosted')) {
+            return;
+        }
+        if (!validateCloudToken(p, nextSettings.token.trim())) {
+            return;
+        }
+        set({
+            cloudUrl: trimmedUrl,
+            cloudToken: nextSettings.token,
+            cloudAllowInsecureHttp: nextSettings.allowInsecureHttp,
+            cloudProvider: 'selfhosted',
+            syncBackend: 'cloud',
+        });
+        hasPendingSyncConfiguration = true;
+
+
+        if (!nextSettings.token.trim()) {
+            p.showToast({
+                title: p.tr('common.notice'),
+                message: p.tr('settings.sync.readyToVerify'),
+                tone: 'info',
+            });
+            return;
+        }
+        await runSync(p, {
+            backend: 'cloud',
+            cloudProvider: 'selfhosted',
+            cloud: {
+                allowInsecureHttp: nextSettings.allowInsecureHttp,
+                token: nextSettings.token,
+                url: trimmedUrl,
+            },
+        }, { insecureWarned: true });
+    };
+
+    const commitProvenSyncConfiguration = async (p: SyncSettingsTransportParams, config: MobileSyncConfigOverride) => {
+        try {
+            const dependencies: MobileSyncConfigurationTransactionDependencies = {
+                clearConfigCache: () => host.clearSyncConfigCache(),
+                clearDropboxTokens: () => host.dropbox.clearTokens(),
+                deleteSecret: (key) => host.secrets.delete(key),
+                getDropboxTokens: async () => {
+                    const tokens = await host.dropbox.getStoredTokens();
+                    rememberTokens(tokens);
+                    return tokens;
+                },
+                getIncompleteSyncEncryptionTransition: () => host.encryption.getIncompleteTransition(),
+                getSecret: (key) => host.secrets.get(key),
+                multiGet: (keys) => host.storage.multiGet(keys),
+                multiSet: (entries) => host.storage.multiSet(entries),
+                removeItem: (key) => host.storage.removeItem(key),
+                saveDropboxTokens: (tokens) => host.dropbox.saveTokens(tokens),
+                setItem: (key, value) => host.storage.setItem(key, value),
+                setSecret: (key, value) => host.secrets.set(key, value),
+            };
+            backendWrites += 1;
+            await commitProvenMobileSyncConfiguration(config, dependencies);
+        } catch (error) {
+            if (
+                error instanceof MobileSyncConfigurationTransactionError
+                && error.syncRemainsDisabled
+            ) {
+                provenSyncBackend = 'off';
+                set({ syncBackend: 'off' });
+                p.resetSyncStatusForBackendSwitch();
+                reconcileBackgroundSyncRegistration();
+            }
+            throw error;
+        }
+
+        provenSyncBackend = config.backend;
+        if (config.backend === 'cloudkit') {
+            provenCloudProvider = 'cloudkit';
+        } else if (config.backend === 'cloud') {
+            provenCloudProvider = config.cloudProvider ?? 'selfhosted';
+        }
+        if (config.cloudProvider === 'dropbox' && config.dropbox) {
+            stagedDropboxCredentials = null;
+        }
+        hasPendingSyncConfiguration = false;
+        reconcileBackgroundSyncRegistration();
+    };
+
+    const handleSync = (options?: SyncSettingsActionOptions): Promise<void> => runSync(host.params(), options);
+
+    const discardSupersededActivationProof = (sequence: number): boolean => {
+        if (sequence === backendWrites) return false;
+        try {
+            void Promise.resolve(logInfo('Sync activation proof superseded by a later backend selection', {
+                scope: 'sync-settings', extra: {
+                    releaseCheck: 'v1.3.5/sync-setup-stale-proof', outcome: 'superseded',
+                },
+            })).catch(() => undefined);
+        } catch {                                                                  }
+        return true;
+    };
+
+
+    const runSync = async (p: SyncSettingsTransportParams, options?: SyncSettingsActionOptions, flags: { insecureWarned?: boolean } = {}) => {
+        const { t, tr, showToast, showSettingsWarning, showSettingsErrorToast } = p;
+        remember(options?.webdav?.password, options?.cloud?.token);
+        rememberUrl(options?.webdav?.url);
+        rememberUrl(options?.cloud?.url);
+        const dropboxInPlay = (options?.cloudProvider ?? state.cloudProvider) === 'dropbox';
+        const {
+            syncBackend, cloudAllowInsecureHttp, cloudToken, cloudUrl, cloudProvider, syncPath, syncPathBookmark,
+            webdavAllowInsecureHttp, webdavPassword, webdavUrl, webdavUsername,
+        } = state;
+        core.addBreadcrumb('sync:manual');
+        set({ isSyncing: true });
+        let cleanupUnconfirmed = false;
+        let activationCleanupDeferred: 'remote' | 'file' | null = null;
+        const showRemoteFenceFeedback = (deferred: 'busy' | 'cleanup') => {
+            showSettingsWarning(
+                tr('common.notice'),
+                tr(deferred === 'busy'
+                    ? 'settings.syncRemoteBusy'
+                    : 'settings.syncRemoteCleanupDeferred'),
+                6000,
+            );
+        };
+        const showFileSyncLockFeedback = (
+            outcome: 'busy' | 'cleanup' | 'unavailable',
+            activationBusy = false,
+        ) => {
+            showToast({
+                title: outcome === 'unavailable' ? tr('settings.syncMobile.error') : tr('common.notice'),
+                message: tr(outcome === 'busy'
+                    ? activationBusy
+                        ? 'settings.syncFileLockActivationBusy'
+                        : 'settings.syncFileLockBusy'
+                    : outcome === 'cleanup'
+                        ? 'settings.syncFileLockCleanupDeferred'
+                        : 'settings.syncFileLockUnavailable'),
+                tone: outcome === 'unavailable' ? 'error' : 'warning',
+                durationMs: 6000,
+            });
+        };
+        try {
+            const previousLastSyncStatus = p.lastSyncStatus;
+            const previousLastSyncStats = p.lastSyncStats ?? null;
+            const effectiveBackend = options?.backend ?? syncBackend;
+            const configOverride: MobileSyncConfigOverride = { backend: effectiveBackend };
+            const effectiveCloud = options?.cloud ?? {
+                allowInsecureHttp: cloudAllowInsecureHttp,
+                token: cloudToken,
+                url: cloudUrl,
+            };
+            const effectiveCloudProvider = options?.cloudProvider ?? cloudProvider;
+            const effectiveSyncPath = options?.syncPath ?? syncPath;
+            const effectiveSyncPathBookmark = options?.syncPathBookmark ?? syncPathBookmark;
+            const effectiveWebdav = options?.webdav ?? {
+                allowInsecureHttp: webdavAllowInsecureHttp,
+                password: webdavPassword,
+                url: webdavUrl,
+                username: webdavUsername,
+            };
+
+            if (effectiveBackend === 'off') return;
+            if (effectiveBackend === 'webdav') {
+                const trimmedWebDavUrl = effectiveWebdav.url.trim();
+                if (!trimmedWebDavUrl) {
+                    showSettingsWarning(tr('common.notice'), tr('settings.syncMobile.pleaseSetAWebdavUrlFirst'));
+                    return;
+                }
+                if (!validateSyncHttpUrl(p, trimmedWebDavUrl, effectiveWebdav.allowInsecureHttp, 'WebDAV', !flags.insecureWarned)) {
+                    return;
+                }
+                const trimmedWebDavUsername = effectiveWebdav.username.trim();
+                configOverride.webdav = {
+                    allowInsecureHttp: effectiveWebdav.allowInsecureHttp,
+                    password: effectiveWebdav.password,
+                    url: trimmedWebDavUrl,
+                    username: trimmedWebDavUsername,
+                };
+                set({
+                    webdavUrl: trimmedWebDavUrl,
+                    webdavUsername: trimmedWebDavUsername,
+                    webdavPassword: effectiveWebdav.password,
+                    webdavAllowInsecureHttp: effectiveWebdav.allowInsecureHttp,
+                    syncBackend: 'webdav',
+                });
+            } else if (effectiveBackend === 'cloudkit') {
+                const accountStatus = await host.getCloudKitAccountStatus();
+                set({ cloudKitAccountStatus: accountStatus });
+                const statusDetails = p.getCloudKitStatusDetails(accountStatus);
+                if (!statusDetails.syncEnabled) {
+                    showSettingsWarning(tr('settings.syncMobile.icloudUnavailable'), statusDetails.helpText, 5200);
+                    return;
+                }
+                set({ cloudProvider: 'cloudkit', syncBackend: 'cloudkit' });
+            } else if (effectiveBackend === 'cloud') {
+                if (effectiveCloudProvider === 'dropbox') {
+                    if (p.isFossBuild) {
+                        showSettingsWarning(tr('settings.syncMobile.dropboxUnavailable'), tr('settings.syncMobile.dropboxIsDisabledInFossBuilds'));
+                        return;
+                    }
+                    if (!p.dropboxConfigured) {
+                        showSettingsWarning(tr('settings.syncMobile.dropboxUnavailable'), tr('settings.syncMobile.dropboxAppKeyIsNotConfiguredInThisBuild'));
+                        return;
+                    }
+                    const stagedCredentials = stagedDropboxCredentials;
+                    const connected = Boolean(stagedCredentials) || await host.dropbox.isConnected();
+                    if (!connected) {
+                        showSettingsWarning(tr('common.notice'), tr('settings.syncMobile.pleaseConnectDropboxFirst'));
+                        return;
+                    }
+                    configOverride.cloudProvider = 'dropbox';
+                    if (stagedCredentials) {
+                        configOverride.dropbox = stagedCredentials;
+                    }
+                    set({ cloudProvider: 'dropbox', syncBackend: 'cloud' });
+                } else {
+                    const trimmedCloudUrl = effectiveCloud.url.trim();
+                    if (!trimmedCloudUrl) {
+                        showSettingsWarning(tr('common.notice'), tr('settings.syncMobile.pleaseSetASelfHostedUrlFirst'));
+                        return;
+                    }
+                    if (!validateSyncHttpUrl(p, trimmedCloudUrl, effectiveCloud.allowInsecureHttp, 'self-hosted', !flags.insecureWarned)) {
+                        return;
+                    }
+                    if (!validateCloudToken(p, effectiveCloud.token.trim())) {
+                        return;
+                    }
+                    configOverride.cloudProvider = 'selfhosted';
+                    configOverride.cloud = {
+                        allowInsecureHttp: effectiveCloud.allowInsecureHttp,
+                        token: effectiveCloud.token,
+                        url: trimmedCloudUrl,
+                    };
+                    set({
+                        cloudUrl: trimmedCloudUrl,
+                        cloudToken: effectiveCloud.token,
+                        cloudAllowInsecureHttp: effectiveCloud.allowInsecureHttp,
+                        cloudProvider: 'selfhosted',
+                        syncBackend: 'cloud',
+                    });
+                }
+            } else {
+                if (!effectiveSyncPath) {
+                    showSettingsWarning(tr('common.notice'), tr('settings.syncMobile.pleaseSetASyncFolderFirst'));
+                    return;
+                }
+                configOverride.syncPath = effectiveSyncPath;
+                configOverride.syncPathBookmark = effectiveSyncPathBookmark;
+                set({ syncPath: effectiveSyncPath, syncPathBookmark: effectiveSyncPathBookmark, syncBackend: 'file' });
+            }
+
+
+            const formChanged = configOverride.webdav
+                ? configOverride.webdav.url !== webdavUrl
+                    || configOverride.webdav.username !== webdavUsername
+                    || configOverride.webdav.password !== webdavPassword
+                    || configOverride.webdav.allowInsecureHttp !== webdavAllowInsecureHttp
+                : configOverride.cloud
+                    ? configOverride.cloud.url !== cloudUrl
+                        || configOverride.cloud.token !== cloudToken
+                        || configOverride.cloud.allowInsecureHttp !== cloudAllowInsecureHttp
+                    : configOverride.syncPath !== undefined && (
+                        configOverride.syncPath !== syncPath
+                        || (configOverride.syncPathBookmark ?? null) !== syncPathBookmark
+                    );
+            if (formChanged || configOverride.dropbox) {
+                hasPendingSyncConfiguration = true;
+            }
+            const needsActivationProbe = hasPendingSyncConfiguration
+                || effectiveBackend !== provenSyncBackend
+                || (
+                    effectiveBackend === 'cloud'
+                    && effectiveCloudProvider !== provenCloudProvider
+                )
+                || (
+                    effectiveBackend === 'cloudkit'
+                    && provenCloudProvider !== 'cloudkit'
+            );
+            if (needsActivationProbe) {
+                const activationSequence = backendWrites;
+                void logInfo('Sync backend selected; running the verification sync to activate it', {
+                    scope: 'sync',
+                    extra: {
+                        releaseCheck: 'v1.2.7/sync-settings-activation-mobile',
+                        backend: effectiveBackend,
+                        cloudProvider: effectiveCloudProvider,
+                    },
+                });
+                if (configOverride.backend === 'webdav' && configOverride.webdav) {
+                    const compatibility = await probeWebdavCompatibilityForCurrentEncryptionPosture(
+                        core.normalizeWebdavUrl(configOverride.webdav.url),
+                        {
+                        ...getMobileWebDavRequestOptions(configOverride.webdav.allowInsecureHttp),
+                        username: configOverride.webdav.username,
+                        password: configOverride.webdav.password,
+                        timeoutMs: 10_000,
+                        },
+                    );
+                    if (compatibility === 'strong-etag') {
+                        await host.rememberWebdavCapabilityProof(configOverride.webdav as SyncSettingsWebDavFields);
+                    }
+                }
+                const probeSyncPath = effectiveBackend === 'file' ? effectiveSyncPath || undefined : undefined;
+                let probeResult = await host.performSync(
+                    probeSyncPath,
+                    { activationProbe: true, manual: true, configOverride }
+                );
+                if (discardSupersededActivationProof(activationSequence)) return;
+                const missingAttachments = probeResult.success ? undefined : probeResult.activationMissingAttachments;
+                if (missingAttachments?.length && p.confirmActivationWithoutFiles) {
+
+                    if (!await p.confirmActivationWithoutFiles(missingAttachments)) return;
+                    if (discardSupersededActivationProof(activationSequence)) return;
+                    probeResult = await host.performSync(probeSyncPath, {
+                        activationProbe: true,
+                        manual: true,
+                        configOverride,
+                        acceptMissingAttachmentIds: missingAttachments.map((attachment) => attachment.id),
+                    });
+                    if (discardSupersededActivationProof(activationSequence)) return;
+                }
+                if (probeResult.skipped === 'offline' || core.isLikelyOfflineSyncError(probeResult.error)) {
+                    const serverUnreachable = probeResult.skipped === 'offline' && probeResult.offlineCause === 'request';
+                    showToast({
+                        title: serverUnreachable ? t('common.notice') : t('common.offline'),
+                        message: serverUnreachable ? t('settings.syncServerUnreachable') : t('settings.syncSkippedOffline'),
+                        tone: 'warning',
+                    });
+                    return;
+                }
+                if (probeResult.skipped === 'requeued') {
+                    showSettingsWarning(
+                        tr('common.notice'),
+                        tr('settings.syncActivationRequeuedBody'),
+                        4200,
+                    );
+                    return;
+                }
+                if (probeResult.success && probeResult.remoteFenceDeferred === 'busy') {
+                    showRemoteFenceFeedback('busy');
+                    return;
+                }
+                if (probeResult.success && probeResult.fileSyncLockDeferred === 'busy') {
+                    showFileSyncLockFeedback('busy', true);
+                    return;
+                }
+                if (probeResult.fileSyncLockUnavailable) {
+                    showFileSyncLockFeedback('unavailable');
+                    return;
+                }
+                if (probeResult.fileGenerationCorrupt) {
+                    showSettingsErrorToast(
+                        tr('settings.syncMobile.error'),
+                        tr('settings.syncFileGenerationCorrupt'),
+                    );
+                    return;
+                }
+                if (probeResult.fileAttachmentUploadBlocked === 'too-large') {
+                    showSettingsErrorToast(
+                        tr('settings.syncMobile.error'),
+                        tr('settings.syncFileAttachmentTooLarge'),
+                    );
+                    return;
+                }
+                const probeRemoteCleanupDeferred = probeResult.success
+                    && probeResult.remoteFenceDeferred === 'cleanup';
+                const probeFileCleanupDeferred = probeResult.success
+                    && probeResult.fileSyncLockDeferred === 'cleanup';
+                activationCleanupDeferred = probeFileCleanupDeferred
+                    ? 'file'
+                    : probeRemoteCleanupDeferred
+                        ? 'remote'
+                        : null;
+                if (
+                    !probeResult.success
+                    || probeResult.remoteWriteDeferred
+                    || (probeResult.remoteFenceDeferred && !probeRemoteCleanupDeferred)
+                    || (probeResult.fileSyncLockDeferred && !probeFileCleanupDeferred)
+                    || probeResult.skipped === 'pendingRemoteWriteBackoff'
+                ) {
+
+
+                    if (
+                        !probeResult.success
+                        && probeResult.activationProof === 'remote-encrypted-no-key'
+                    ) {
+                        await commitProvenSyncConfiguration(p, configOverride);
+                        showSettingsWarning(
+                            tr('common.notice'),
+                            tr('settings.syncEncryptionRemoteEncrypted'),
+                            6000,
+                        );
+                        return;
+                    }
+                    throw new Error(probeResult.error || 'Sync setup could not be verified');
+                }
+                await commitProvenSyncConfiguration(p, configOverride);
+
+                if (discardSupersededActivationProof(activationSequence + 1)) return;
+                if (activationCleanupDeferred) {
+                    if (activationCleanupDeferred === 'file') showFileSyncLockFeedback('cleanup');
+                    else showRemoteFenceFeedback('cleanup');
+                    return;
+                }
+            }
+
+            const result = await host.performSync(undefined, {
+                manual: true,
+                ignorePendingRemoteWriteBackoff: needsActivationProbe,
+            });
+            if (result.skipped === 'offline' || core.isLikelyOfflineSyncError(result.error)) {
+
+
+                const serverUnreachable = result.skipped === 'offline' && result.offlineCause === 'request';
+                showToast({
+                    title: serverUnreachable ? t('common.notice') : t('common.offline'),
+                    message: serverUnreachable ? t('settings.syncServerUnreachable') : t('settings.syncSkippedOffline'),
+                    tone: 'warning',
+                });
+                return;
+            }
+            if (result.skipped === 'requeued') {
+                showToast({
+                    title: t('settings.syncQueued'),
+                    message: t('settings.syncQueuedBody'),
+                    tone: 'info',
+                    durationMs: 4200,
+                });
+                return;
+            }
+            if (result.success && result.fileSyncLockDeferred) {
+                showFileSyncLockFeedback(
+                    activationCleanupDeferred === 'file' ? 'cleanup' : result.fileSyncLockDeferred,
+                );
+                return;
+            }
+            if (result.fileSyncLockUnavailable) {
+                showFileSyncLockFeedback('unavailable');
+                return;
+            }
+            if (result.fileGenerationCorrupt) {
+                showSettingsErrorToast(
+                    tr('settings.syncMobile.error'),
+                    tr('settings.syncFileGenerationCorrupt'),
+                );
+                return;
+            }
+            if (
+                result.success
+                && !result.remoteWriteDeferred
+                && result.fileAttachmentUploadBlocked === 'too-large'
+            ) {
+                showSettingsWarning(
+                    tr('common.notice'),
+                    tr('settings.syncFileAttachmentTooLarge'),
+                    6000,
+                );
+                return;
+            }
+            if (result.success && result.remoteFenceDeferred) {
+                showRemoteFenceFeedback(activationCleanupDeferred === 'remote' ? 'cleanup' : result.remoteFenceDeferred);
+                return;
+            }
+            if (
+                result.success
+                && result.attachmentWriteDeferred
+                && !result.remoteWriteDeferred
+            ) {
+                if (activationCleanupDeferred) {
+                    if (activationCleanupDeferred === 'file') showFileSyncLockFeedback('cleanup');
+                    else showRemoteFenceFeedback('cleanup');
+                    return;
+                }
+                showSettingsWarning(
+                    tr('common.notice'),
+                    tr('settings.syncAttachmentWriteDeferred'),
+                    6000,
+                );
+                return;
+            }
+            if (
+                result.success
+                && !result.remoteWriteDeferred
+                && result.skipped !== 'pendingRemoteWriteBackoff'
+            ) {
+                if (activationCleanupDeferred) {
+                    if (activationCleanupDeferred === 'file') showFileSyncLockFeedback('cleanup');
+                    else showRemoteFenceFeedback('cleanup');
+                    return;
+                }
+                const conflictCount = core.getSyncConflictCount(result.stats);
+                const maxResultClockSkewMs = core.getSyncMaxClockSkewMs(result.stats);
+                const resultTimestampAdjustments = core.getSyncTimestampAdjustments(result.stats);
+                const shouldSuppressDuplicateConflictNotice = (
+                    (previousLastSyncStatus === 'success' || previousLastSyncStatus === 'conflict')
+                    && core.hasSameUserFacingSyncConflictSummary(result.stats, previousLastSyncStats)
+                );
+                const warningDetails = [
+                    maxResultClockSkewMs > core.CLOCK_SKEW_THRESHOLD_MS
+                        ? formatText(p, 'settings.syncClockSkewWarning', {
+                            skew: core.formatClockSkew(maxResultClockSkewMs),
+                        })
+                        : null,
+                    resultTimestampAdjustments > 0
+                        ? formatText(p, 'settings.syncAdjustedTimestamps', {
+                            count: resultTimestampAdjustments,
+                        })
+                        : null,
+                ].filter(Boolean);
+                showToast({
+                    title: t('common.success'),
+                    message: [
+                        conflictCount > 0 && !shouldSuppressDuplicateConflictNotice
+                            ? formatText(p, 'settings.syncCompletedWithConflicts', { count: conflictCount })
+                            : t('settings.syncCompleted'),
+                        ...warningDetails,
+                    ].join('\n\n'),
+                    tone: conflictCount > 0 || warningDetails.length > 0 ? 'warning' : 'success',
+                    durationMs: warningDetails.length > 0 || conflictCount > 0 ? 5200 : 3600,
+                });
+            } else if (
+                result.success
+                && (result.remoteWriteDeferred || result.skipped === 'pendingRemoteWriteBackoff')
+            ) {
+                showToast({
+                    title: tr('common.notice'),
+                    message: tr('settings.sync.remoteWriteDeferred'),
+                    tone: 'info',
+                });
+            } else {
+                throw new Error(result.error || 'Unknown error');
+            }
+        } catch (error) {
+            if (error instanceof NativeAttachmentCleanupUnconfirmedError) {
+                cleanupUnconfirmed = true;
+                throw error;
+            }
+            const message = String(error);
+            if (/temporary Inbox location|re-select a folder in Settings -> (?:Data & Sync|Sync)|Cannot access the selected sync file/i.test(message)) {
+                showSettingsWarning(
+                    tr('settings.syncMobile.unsupportedCloudProviderOnIos'),
+                    tr('settings.syncMobile.theSelectedFileCameFromATemporaryIosFilesCopy2'),
+                    5600
+                );
+                return;
+            }
+            if (dropboxInPlay) await rememberStoredDropboxTokens();
+            showSettingsErrorToast(
+                tr('settings.syncMobile.error'),
+                core.isSyncEncryptionRemoteVersionUnavailableError(error)
+                    ? tr('settings.syncEncryptionErrorBackendIncompatible')
+                    : redact(p.getSyncFailureToastMessage(error)),
+            );
+        } finally {
+            if (!cleanupUnconfirmed) set({ isSyncing: false });
+        }
+    };
+
+    const handleConnectDropbox = async () => {
+        const p = host.params();
+        if (p.isFossBuild) {
+            p.showSettingsWarning(p.tr('settings.syncMobile.dropboxUnavailable'), p.tr('settings.syncMobile.dropboxIsDisabledInFossBuilds'));
+            return;
+        }
+        if (!p.dropboxConfigured) {
+            p.showSettingsWarning(p.tr('settings.syncMobile.dropboxUnavailable'), p.tr('settings.syncMobile.dropboxAppKeyIsNotConfiguredInThisBuild'));
+            return;
+        }
+        if (p.isExpoGo) {
+            p.showSettingsWarning(
+                p.tr('settings.syncMobile.dropboxUnavailableInExpoGo'),
+                `${p.tr('settings.syncMobile.dropboxOauthRequiresADevelopmentReleaseBuildExpoGoUses')}\n\n${p.tr('settings.syncMobile.useRedirectUri')}: ${host.dropbox.redirectUri()}`,
+                6000
+            );
+            return;
+        }
+        set({ dropboxBusy: true });
+        try {
+            const tokens = await host.dropbox.authorize(p.dropboxAppKey);
+            rememberTokens(tokens);
+            stagedDropboxCredentials = { tokens };
+            hasPendingSyncConfiguration = true;
+            set({ cloudProvider: 'dropbox' });
+            core.addBreadcrumb('settings:syncBackend:cloud');
+            set({ syncBackend: 'cloud', dropboxConnected: true });
+            p.showToast({
+                title: p.tr('common.success'),
+                message: p.tr('settings.syncMobile.connectedToDropbox'),
+                tone: 'success',
+            });
+
+
+            await runSync(p, { backend: 'cloud', cloudProvider: 'dropbox' });
+        } catch (error) {
+            const message = String(error);
+            if (/redirect[_\s-]?uri/i.test(message)) {
+                p.showSettingsWarning(
+                    p.tr('settings.syncMobile.invalidRedirectUri'),
+                    `${p.tr('settings.syncMobile.addThisExactRedirectUriInDropboxOauthSettings')}\n\n${host.dropbox.redirectUri()}`,
+                    6000
+                );
+            } else {
+                await rememberStoredDropboxTokens();
+                p.showSettingsErrorToast(p.tr('settings.syncMobile.connectionFailed'), redact(core.formatError(error)), 5200);
+            }
+        } finally {
+            set({ dropboxBusy: false });
+        }
+    };
+
+    const handleTestConnection = async (backend: 'webdav' | 'cloud', options?: Omit<SyncSettingsActionOptions, 'backend'>) => {
+        const p = host.params();
+        set({ isTestingConnection: true });
+        const effectiveCloud = options?.cloud ?? {
+            allowInsecureHttp: state.cloudAllowInsecureHttp,
+            token: state.cloudToken,
+            url: state.cloudUrl,
+        };
+        const effectiveCloudProvider = options?.cloudProvider ?? state.cloudProvider;
+        const effectiveWebdav = options?.webdav ?? {
+            allowInsecureHttp: state.webdavAllowInsecureHttp,
+            password: state.webdavPassword,
+            url: state.webdavUrl,
+            username: state.webdavUsername,
+        };
+        remember(effectiveWebdav.password, effectiveCloud.token);
+        rememberUrl(effectiveWebdav.url);
+        rememberUrl(effectiveCloud.url);
+        try {
+            if (backend === 'webdav') {
+                const trimmedWebDavUrl = effectiveWebdav.url.trim();
+                if (!validateSyncHttpUrl(p, trimmedWebDavUrl, effectiveWebdav.allowInsecureHttp, 'WebDAV')) {
+                    return;
+                }
+                const compatibility = await probeWebdavCompatibilityForCurrentEncryptionPosture(core.normalizeWebdavUrl(trimmedWebDavUrl), {
+                    ...getMobileWebDavRequestOptions(effectiveWebdav.allowInsecureHttp),
+                    username: effectiveWebdav.username.trim(),
+                    password: effectiveWebdav.password,
+                    timeoutMs: 10_000,
+                });
+                if (compatibility === 'strong-etag') {
+                    await host.rememberWebdavCapabilityProof(effectiveWebdav);
+                }
+                p.showToast({
+                    title: p.tr('settings.syncMobile.connectionOk'),
+                    message: p.tr('settings.syncMobile.webdavEndpointIsReachable'),
+                    tone: 'success',
+                });
+                return;
+            }
+
+            if (effectiveCloudProvider === 'dropbox') {
+                if (p.isFossBuild) {
+                    p.showSettingsWarning(p.tr('settings.syncMobile.dropboxUnavailable'), p.tr('settings.syncMobile.dropboxIsDisabledInFossBuilds'));
+                    return;
+                }
+                await runDropboxConnectionTest(p);
+                set({ dropboxConnected: true });
+                p.showToast({
+                    title: p.tr('settings.syncMobile.connectionOk'),
+                    message: p.tr('settings.syncMobile.dropboxAccountIsReachable'),
+                    tone: 'success',
+                });
+                return;
+            }
+
+            const trimmedCloudUrl = effectiveCloud.url.trim();
+            if (!validateSyncHttpUrl(p, trimmedCloudUrl, effectiveCloud.allowInsecureHttp, 'self-hosted')) {
+                return;
+            }
+            await core.cloudGetJson<unknown>(core.normalizeCloudUrl(trimmedCloudUrl), {
+                ...getMobileCloudRequestOptions(effectiveCloud.allowInsecureHttp),
+                token: effectiveCloud.token,
+                timeoutMs: 10_000,
+            });
+            p.showToast({
+                title: p.tr('settings.syncMobile.connectionOk'),
+                message: p.tr('settings.syncMobile.selfHostedEndpointIsReachable'),
+                tone: 'success',
+            });
+        } catch (error) {
+            if (effectiveCloudProvider === 'dropbox' && core.isDropboxUnauthorizedError(error)) {
+                set({ dropboxConnected: false });
+            }
+            if (effectiveCloudProvider === 'dropbox') await rememberStoredDropboxTokens();
+            p.showSettingsErrorToast(
+                p.tr('settings.syncMobile.connectionFailed'),
+                effectiveCloudProvider === 'dropbox' && core.isDropboxUnauthorizedError(error)
+                    ? p.tr('settings.syncMobile.dropboxTokenIsInvalidOrRevokedPleaseTapConnectDropbox')
+                    : backend === 'webdav' && core.isSyncEncryptionRemoteVersionUnavailableError(error)
+                        ? p.tr('settings.syncEncryptionErrorBackendIncompatible')
+                    : redact(core.formatError(error)),
+                5200
+            );
+        } finally {
+            set({ isTestingConnection: false });
+        }
+    };
+
+    return {
+        getState: (): SyncSettingsTransportState => state,
+        subscribe(listener: () => void): () => void {
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        },
+        load,
+        loadDropboxState,
+        refreshCloudKitAccountStatus,
+        handleConnectDropbox,
+        handleDisconnectDropbox,
+        handleSaveSelfHostedSettings,
+        handleSaveWebDavSettings,
+        handleSelectCloudProvider,
+        handleSelectSyncBackend,
+        handleSetSyncPath,
+        handleSync,
+        handleTestConnection,
+        handleTestDropboxConnection,
+
+        redactText: (text: string): string => redact(text),
+        redactError,
+
+        getProven: () => ({ backend: provenSyncBackend, cloudProvider: provenCloudProvider, pending: hasPendingSyncConfiguration }),
+    };
+}
+
+export type SyncSettingsTransport = ReturnType<typeof createSyncSettingsTransport>;

@@ -1,0 +1,297 @@
+{
+  "Id": "__STRIDE_MS_STORE_PRODUCT_ID__",
+  "ApplicationCategory": "UtilitiesAndTools",
+  "Pricing": {
+    "TrialPeriod": "NoFreeTrial",
+    "MarketSpecificPricings": {
+      "LB": "NotAvailable",
+      "EH": "NotAvailable"
+    },
+    "PriceId": "Free",
+    "IsAdvancedPricingModel": true
+  },
+  "Visibility": "Public",
+  "TargetPublishMode": "Immediate",
+  "TargetPublishDate": "1601-01-01T00:00:00Z",
+  "Listings": {
+    "zh": {
+      "BaseListing": {
+        "Keywords": [
+          "GTD 待办事项管理",
+          "本地优先任务管理",
+          "轻量级任务管理器",
+          "隐私保护任务应用"
+        ],
+        "Description": "Stride 是一款 AI 驱动的个人效率助手。想到什么随手记下，用 AI 晨间简报开启一天，还能让内置助手帮你做计划。\n\n功能一览\n\n- 快速记录：通过快速添加、小组件、从其他应用分享或语音，几秒钟记下任务和笔记。\n- AI 晨间简报：根据你自己的任务，生成今天重点的简短摘要。\n- 助手对话：询问任务、项目和日程，或让助手帮你规划一天。使用你自己的 AI 服务商账号。\n- 菜单栏面板：在 Mac 上无需打开完整应用，即可在菜单栏查看和添加任务。\n- GTD 清单：收件箱、下一步、等待中、将来/也许、项目、领域和情境，以及引导式每周回顾。\n- 番茄钟：内置专注计时器，帮你推进下一步行动。\n- 提醒、重复任务、检查清单、Markdown 笔记和附件。\n- 列表、日历和看板视图。\n\n你的数据，由你决定\n\n可离线使用，无需账号。任务保存在你的设备上。同步为可选：Dropbox、你自己的文件夹、WebDAV、自己的服务器，或 Apple 设备上的 iCloud。AI 功能为可选，仅在你配置服务商后才会运行。\n\n免费开源，采用 AGPL-3.0 许可。\n\n注意：运行需要 Microsoft Visual C++ Redistributable。",
+        "Features": [
+          "快速记录任务和笔记",
+          "AI 晨间简报和助手对话（使用你自己的 AI 服务商）",
+          "GTD 清单、引导式每周回顾和番茄钟专注计时器",
+          "列表、日历和看板视图，支持提醒与重复任务",
+          "可离线使用，免费开源"
+        ],
+        "ReleaseNotes": "项目新增「按分区」流程模式。可设置默认任务提醒、勾选参考清单、按优先级排序、为项目设置颜色，并新增 Gruvbox 主题。单击情境即可切换，Ctrl 单击可组合；嵌套情境按组显示。弹出式编辑器空间更大，任务子菜单悬停即开，时间线行可重新排序。可按任务日期筛选。MCP 可分别授权编辑、归档和删除，可设置端口并复制 Codex 配置。同步期间编辑会保留其他设备的更改。",
+        "Images": [
+          {
+            "FileName": "2026-01-27_22-59-40.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023692880",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "2026-01-27_23-00-37.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693372",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "StoreLogo_300.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693373",
+            "ImageType": "Icon"
+          }
+        ],
+        "RecommendedHardware": [],
+        "MinimumHardware": [],
+        "Title": "Stride",
+        "LicenseTerms": "AGPL-3.0 license",
+        "CopyrightAndTrademarkInfo": "AGPL-3.0 license",
+        "ShortDescription": null,
+        "ShortTitle": null,
+        "VoiceTitle": null,
+        "DevStudio": "Ishaan Pilar"
+      },
+      "PlatformOverrides": {}
+    },
+    "en-us": {
+      "BaseListing": {
+        "Keywords": [
+          "GTD task manager",
+          "todo-app",
+          "productivity",
+          "task-management",
+          "getting-things-done",
+          "gtd-applications",
+          "cross-platform"
+        ],
+        "Description": "Stride is an AI-powered personal organiser. Capture tasks and ideas the moment they appear, start the day with an AI morning briefing, and ask the built-in assistant to help you plan.\n\nWHAT YOU GET\n\n- Capture: add tasks and notes in seconds with quick add, widgets, sharing from other apps, or voice.\n- AI morning briefing: a short summary of what matters today, built from your own tasks.\n- Assistant chat: ask questions about your tasks, projects, and schedule, or get help planning your day. Uses your own AI provider account.\n- Menu bar panel: on Mac, see and add tasks from the menu bar without opening the full app.\n- GTD lists: Inbox, Next, Waiting For, Someday/Maybe, Projects, Areas, and Contexts, plus a guided weekly review.\n- Pomodoro: a built-in focus timer for working through your Next actions.\n- Reminders, repeating tasks, checklists, Markdown notes, and attachments.\n- List, calendar, and kanban board views.\n\nYOUR DATA, YOUR CALL\n\nWorks offline with no account required. Your tasks stay on your device. Sync is optional: choose Dropbox, a folder you control, WebDAV, your own server, or iCloud on Apple devices. AI features are optional and only run if you set up a provider.\n\nFree and open source under AGPL-3.0.\n\nNote: Requires the Microsoft Visual C++ Redistributable to run.",
+        "Features": [
+          "Quick capture of tasks and notes",
+          "AI morning briefing and assistant chat (bring your own AI provider)",
+          "GTD lists, guided weekly review, and a Pomodoro focus timer",
+          "List, calendar, and kanban views with reminders and repeating tasks",
+          "Works offline, free and open source"
+        ],
+        "ReleaseNotes": "Projects get a Per section flow mode. Set default task reminders, tick Reference checklists, sort by Priority, give projects a color and try Gruvbox themes. Click a context to switch to it, Ctrl-click to combine; nested contexts show as groups. The pop-up editor has more room, task submenus open on hover, and Timeline rows can be reordered. Filter by task dates. MCP gets separate edit, archive and delete permissions, a port setting and Copy for Codex. Editing during a sync keeps other devices' changes.",
+        "Images": [
+          {
+            "FileName": "2026-01-27_22-59-40.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693422",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "2026-01-27_23-00-37.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023694463",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "StoreLogo_300.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693371",
+            "ImageType": "Icon"
+          }
+        ],
+        "RecommendedHardware": [],
+        "MinimumHardware": [],
+        "Title": "Stride",
+        "LicenseTerms": "AGPL-3.0 license",
+        "CopyrightAndTrademarkInfo": "AGPL-3.0 license",
+        "ShortDescription": null,
+        "ShortTitle": null,
+        "VoiceTitle": null,
+        "DevStudio": "Ishaan Pilar"
+      },
+      "PlatformOverrides": {}
+    },
+    "de": {
+      "BaseListing": {
+        "Keywords": [
+          "GTD Aufgabenverwaltung",
+          "lokaler Aufgabenmanager",
+          "Produktivitaet",
+          "Datenschutz Aufgaben App"
+        ],
+        "Description": "Stride ist ein persönlicher Organizer mit KI. Erfasse Aufgaben und Ideen sofort, starte den Tag mit einem KI-Morgenbriefing und lass dir vom integrierten Assistenten bei der Planung helfen.\n\nDAS BIETET STRIDE\n\n- Erfassen: Aufgaben und Notizen in Sekunden hinzufügen, per Schnellerfassung, Widgets, Teilen aus anderen Apps oder Sprache.\n- KI-Morgenbriefing: eine kurze Zusammenfassung dessen, was heute zählt, aus deinen eigenen Aufgaben.\n- Assistenten-Chat: Fragen zu Aufgaben, Projekten und Terminen stellen oder Hilfe bei der Tagesplanung bekommen. Nutzt dein eigenes KI-Anbieter-Konto.\n- Menüleisten-Panel: auf dem Mac Aufgaben in der Menüleiste ansehen und hinzufügen, ohne die ganze App zu öffnen.\n- GTD-Listen: Inbox, Next, Warten, Irgendwann/Vielleicht, Projekte, Bereiche und Kontexte plus geführter Wochenrückblick.\n- Pomodoro: ein integrierter Fokus-Timer für deine nächsten Aktionen.\n- Erinnerungen, Wiederholungen, Checklisten, Markdown-Notizen und Anhänge.\n- Listen-, Kalender- und Kanban-Ansichten.\n\nDEINE DATEN, DEINE ENTSCHEIDUNG\n\nFunktioniert offline, kein Konto nötig. Deine Aufgaben bleiben auf deinem Gerät. Sync ist optional: Dropbox, ein eigener Ordner, WebDAV, dein eigener Server oder iCloud auf Apple-Geräten. KI-Funktionen sind optional und laufen nur, wenn du einen Anbieter einrichtest.\n\nKostenlos und Open Source unter AGPL-3.0.\n\nHinweis: Zum Ausführen wird die Microsoft Visual C++ Redistributable benötigt.",
+        "Features": [
+          "Schnelle Erfassung von Aufgaben und Notizen",
+          "KI-Morgenbriefing und Assistenten-Chat (eigener KI-Anbieter)",
+          "GTD-Listen, geführter Wochenrückblick und Pomodoro-Fokus-Timer",
+          "Listen-, Kalender- und Kanban-Ansichten mit Erinnerungen und Wiederholungen",
+          "Funktioniert offline, kostenlos und Open Source"
+        ],
+        "ReleaseNotes": "Projekte erhalten den Ablauf „Pro Abschnitt“. Standard-Erinnerungen, abhakbare Referenzlisten, Sortierung nach Priorität, Projektfarben und Gruvbox-Designs. Klick wechselt den Kontext, Strg-Klick kombiniert; verschachtelte Kontexte erscheinen als Gruppen. Größerer Pop-up-Editor, Untermenüs per Hover und Sortieren in Timeline. Filter nach Aufgabendaten. MCP mit getrennten Rechten für Bearbeiten, Archivieren und Löschen, Port-Einstellung und Kopieren für Codex. Bearbeiten während der Synchronisierung behält Änderungen anderer Geräte.",
+        "Images": [],
+        "RecommendedHardware": [],
+        "MinimumHardware": [],
+        "Title": "Stride",
+        "LicenseTerms": "AGPL-3.0 license",
+        "CopyrightAndTrademarkInfo": "AGPL-3.0 license",
+        "ShortDescription": null,
+        "ShortTitle": null,
+        "VoiceTitle": null,
+        "DevStudio": "Ishaan Pilar"
+      },
+      "PlatformOverrides": {}
+    },
+    "fr": {
+      "BaseListing": {
+        "Keywords": [
+          "gestionnaire de tâches GTD",
+          "liste de tâches hors ligne",
+          "productivité",
+          "application tâches privée"
+        ],
+        "Description": "Stride est un organiseur personnel doté d'IA. Notez vos tâches et idées dès qu'elles surgissent, commencez la journée avec un briefing matinal par IA et demandez à l'assistant intégré de vous aider à planifier.\n\nCE QUE VOUS OBTENEZ\n\n- Saisie : ajoutez tâches et notes en quelques secondes via l'ajout rapide, les widgets, le partage depuis d'autres apps ou la voix.\n- Briefing matinal IA : un court résumé de l'essentiel du jour, construit à partir de vos propres tâches.\n- Chat avec l'assistant : posez des questions sur vos tâches, projets et agenda, ou demandez de l'aide pour planifier votre journée. Utilise votre propre compte de fournisseur d'IA.\n- Panneau dans la barre des menus : sur Mac, consultez et ajoutez des tâches depuis la barre des menus sans ouvrir l'app complète.\n- Listes GTD : Inbox, Next, En attente, Un jour/Peut-être, Projets, Domaines et Contextes, avec une revue hebdomadaire guidée.\n- Pomodoro : un minuteur de concentration intégré pour avancer sur vos prochaines actions.\n- Rappels, tâches répétées, listes de contrôle, notes Markdown et pièces jointes.\n- Vues liste, calendrier et kanban.\n\nVOS DONNÉES, VOTRE CHOIX\n\nFonctionne hors ligne, sans compte. Vos tâches restent sur votre appareil. La synchronisation est optionnelle : Dropbox, un dossier à vous, WebDAV, votre propre serveur ou iCloud sur les appareils Apple. Les fonctions IA sont optionnelles et ne s'activent que si vous configurez un fournisseur.\n\nGratuit et open source sous licence AGPL-3.0.\n\nRemarque : nécessite Microsoft Visual C++ Redistributable pour fonctionner.",
+        "Features": [
+          "Saisie rapide des tâches et notes",
+          "Briefing matinal IA et chat avec l'assistant (votre propre fournisseur d'IA)",
+          "Listes GTD, revue hebdomadaire guidée et minuteur Pomodoro",
+          "Vues liste, calendrier et kanban, rappels et tâches répétées",
+          "Fonctionne hors ligne, gratuit et open source"
+        ],
+        "ReleaseNotes": "Les projets ont le flux Par section. Rappels par défaut, listes Référence à cocher, tri par Priorité, couleurs de projet et thèmes Gruvbox. Cliquez sur un contexte pour changer, Ctrl+clic pour combiner ; les contextes imbriqués sont groupés. Éditeur contextuel plus spacieux, sous-menus au survol et lignes réordonnables dans Timeline. Filtre par dates. MCP avec droits séparés pour modifier, archiver et supprimer, port réglable et Copier pour Codex. Modifier pendant une synchro garde les changements des autres appareils.",
+        "Images": [],
+        "RecommendedHardware": [],
+        "MinimumHardware": [],
+        "Title": "Stride",
+        "LicenseTerms": "AGPL-3.0 license",
+        "CopyrightAndTrademarkInfo": "AGPL-3.0 license",
+        "ShortDescription": null,
+        "ShortTitle": null,
+        "VoiceTitle": null,
+        "DevStudio": "Ishaan Pilar"
+      },
+      "PlatformOverrides": {}
+    },
+    "es": {
+      "BaseListing": {
+        "Keywords": [
+          "gestor de tareas",
+          "gestor GTD",
+          "aplicación GTD privacidad"
+        ],
+        "Description": "Stride es un organizador personal con IA. Captura tareas e ideas en cuanto aparecen, empieza el día con un resumen matinal con IA y pide ayuda al asistente integrado para planificar.\n\nQUÉ INCLUYE\n\n- Captura: añade tareas y notas en segundos con la entrada rápida, widgets, compartiendo desde otras apps o por voz.\n- Resumen matinal con IA: un breve resumen de lo importante de hoy, creado a partir de tus propias tareas.\n- Chat con asistente: pregunta por tus tareas, proyectos y agenda, o pide ayuda para planificar tu día. Usa tu propia cuenta de proveedor de IA.\n- Panel en la barra de menús: en Mac, consulta y añade tareas desde la barra de menús sin abrir la app completa.\n- Listas GTD: Bandeja de entrada, Siguiente, En espera, Algún día/Quizá, Proyectos, Áreas y Contextos, más una revisión semanal guiada.\n- Pomodoro: un temporizador de enfoque integrado para avanzar en tus próximas acciones.\n- Recordatorios, tareas repetidas, listas de verificación, notas Markdown y adjuntos.\n- Vistas de lista, calendario y tablero kanban.\n\nTUS DATOS, TU DECISIÓN\n\nFunciona sin conexión y sin cuenta. Tus tareas se quedan en tu dispositivo. La sincronización es opcional: Dropbox, una carpeta tuya, WebDAV, tu propio servidor o iCloud en dispositivos Apple. Las funciones de IA son opcionales y solo se activan si configuras un proveedor.\n\nGratis y de código abierto bajo AGPL-3.0.\n\nNota: requiere Microsoft Visual C++ Redistributable para funcionar.",
+        "Features": [
+          "Captura rápida de tareas y notas",
+          "Resumen matinal con IA y chat con asistente (con tu propio proveedor de IA)",
+          "Listas GTD, revisión semanal guiada y temporizador Pomodoro",
+          "Vistas de lista, calendario y kanban, con recordatorios y tareas repetidas",
+          "Funciona sin conexión, gratis y de código abierto"
+        ],
+        "ReleaseNotes": "Los proyectos tienen el flujo Por sección. Recordatorios por defecto, listas de Referencia marcables, orden por Prioridad, colores de proyecto y temas Gruvbox. Haz clic en un contexto para cambiar y Ctrl+clic para combinar; los contextos anidados se agrupan. Editor emergente más amplio, submenús al pasar el ratón y filas reordenables en Timeline. Filtra por fechas. MCP con permisos separados para editar, archivar y eliminar, puerto configurable y Copiar para Codex. Editar durante la sincronización conserva cambios de otros dispositivos.",
+        "Images": [
+          {
+            "FileName": "2026-01-27_22-59-40.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023692914",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "2026-01-27_23-00-37.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693375",
+            "ImageType": "Screenshot"
+          },
+          {
+            "FileName": "StoreLogo_300.png",
+            "FileStatus": "Uploaded",
+            "Id": "1152922700023693374",
+            "ImageType": "Icon"
+          }
+        ],
+        "RecommendedHardware": [],
+        "MinimumHardware": [],
+        "Title": "Stride",
+        "LicenseTerms": "AGPL-3.0 license",
+        "CopyrightAndTrademarkInfo": "AGPL-3.0 license",
+        "ShortDescription": null,
+        "ShortTitle": null,
+        "VoiceTitle": null,
+        "DevStudio": "Ishaan Pilar"
+      },
+      "PlatformOverrides": {}
+    }
+  },
+  "HardwarePreferences": [],
+  "AutomaticBackupEnabled": true,
+  "CanInstallOnRemovableMedia": true,
+  "IsGameDvrEnabled": false,
+  "GamingOptions": [
+    {
+      "Genres": [],
+      "IsLocalMultiplayer": false,
+      "IsLocalCooperative": false,
+      "IsOnlineMultiplayer": false,
+      "IsOnlineCooperative": false,
+      "IsBroadcastingPrivilegeGranted": true,
+      "IsCrossPlayEnabled": false,
+      "KinectDataForExternal": "Disabled"
+    }
+  ],
+  "HasExternalInAppProducts": false,
+  "MeetAccessibilityGuidelines": false,
+  "NotesForCertification": "",
+  "Status": "Certification",
+  "StatusDetails": {
+    "Errors": [],
+    "Warnings": [
+      {
+        "Code": "SalesUnsupportedWarning",
+        "Details": "The sales resource is no longer supported. To view or edit \nthe sales data for this submission, use the Dev Center dashboard."
+      }
+    ],
+    "CertificationReports": []
+  },
+  "FileUploadUrl": null,
+  "ApplicationPackages": [
+    {
+      "FileName": "stride_0.6.4_x64.msix",
+      "FileStatus": "Uploaded",
+      "Id": "2000000000092778818",
+      "Version": "0.6.4.0",
+      "Architecture": "neutral",
+      "Languages": [
+        "en-US"
+      ],
+      "Capabilities": [
+        "Microsoft.storeFilter.core.notSupported_8wekyb3d8bbwe",
+        "runFullTrust"
+      ],
+      "MinimumDirectXVersion": "None",
+      "MinimumSystemRam": "None"
+    }
+  ],
+  "PackageDeliveryOptions": {
+    "PackageRollout": {
+      "IsPackageRollout": false,
+      "PackageRolloutPercentage": 0,
+      "PackageRolloutStatus": "PackageRolloutNotStarted",
+      "FallbackSubmissionId": "0"
+    },
+    "IsMandatoryUpdate": false,
+    "MandatoryUpdateEffectiveDate": "1601-01-01T00:00:00Z"
+  },
+  "EnterpriseLicensing": "Online",
+  "AllowMicrosoftDecideAppAvailabilityToFutureDeviceFamilies": true,
+  "AllowTargetFutureDeviceFamilies": {
+    "Desktop": true,
+    "Mobile": false,
+    "Xbox": false,
+    "Team": false,
+    "Holographic": false
+  },
+  "FriendlyName": "Submission 3",
+  "Trailers": []
+}

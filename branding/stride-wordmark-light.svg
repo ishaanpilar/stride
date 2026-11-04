@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1581" height="610" viewBox="335 207 1581 610">
+  <defs><linearGradient id="wm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFC857"/><stop offset="1" stop-color="#FF7847"/></linearGradient></defs>
+  <path d="M 605.5 350 A 108 108 0 1 0 512 512" fill="none" stroke="#2A44D8" stroke-width="98" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 512 512 A 108 108 0 1 1 418.5 674" fill="none" stroke="url(#wm)" stroke-width="98" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 805 360 V 652 A 76 76 0 0 0 881 728" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 745 508 H 881" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 995 508 V 728" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 995 600 A 92 92 0 0 1 1087 508" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1200 508 V 728" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1532 296 V 728" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1644 618 H 1864 A 110 110 0 1 0 1838.3 688.7" fill="none" stroke="#0E1126" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="1200" cy="404" r="38" fill="#0E1126"/>
+  <circle cx="1422" cy="618" r="110" fill="none" stroke="#0E1126" stroke-width="64"/>
+</svg>

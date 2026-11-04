@@ -1,0 +1,4 @@
+- Suchergebnisse bleiben beim Tippen stabil.
+- Speichern & bearbeiten kehrt zum richtigen Projekt zurück, die Sortierung endet am Ablageort und Rückgängig bleibt über der Tableiste.
+- Dropbox startet nach der Anmeldung den ersten Sync und stellt bei Fehlern die letzte geprüfte Einrichtung wieder her.
+- Checklisten verwerfen Leerzeilen, Bereiche erhalten sechs Farben und die japanische Übersetzung ist vollständig.

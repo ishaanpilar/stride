@@ -1,0 +1,4 @@
+- Les tâches répétées affichent toutes leurs occurrences dans le calendrier visible.
+- Focus et Suivant masquent les tâches jusqu’à leur heure de début exacte.
+- Listes plus rapides, glisser stable, accessibilité claire et meilleur retour au projet.
+- La synchro valide données et pièces jointes avant le changement.

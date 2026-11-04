@@ -1,0 +1,5 @@
+- Suivi du temps optionnel : les sessions Pomodoro liees ajoutent des minutes a un champ synchronise.
+- Annuler remplace les confirmations de suppression et d'archivage ; la semaine suit votre region.
+- Capture avec le jeton %personne, partage de fichiers et notification de capture rapide epinglee.
+- Synchronisation plus rapide et listes plus fluides sur les grandes bibliotheques ; checklists separees des notes.
+- Conflits de sync plus clairs et protections contre la perte de donnees.

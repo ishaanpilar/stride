@@ -1,0 +1,15 @@
+<en-US>
+- Mobile attachments now persist for file-based sync and open reliably on other devices.
+- Inbox Processing layout is more consistent across platforms.
+- General stability improvements in task editing and selection.
+</en-US>
+<zh-CN>
+- 移动端附件现在会保存在同步目录中，文件同步在其他设备上可正常打开。
+- 收件箱处理界面在不同平台上更加一致。
+- 任务编辑与选择流程稳定性提升。
+</zh-CN>
+<es-ES>
+- Los adjuntos en móvil ahora se conservan para la sincronización por archivos y se abren bien en otros dispositivos.
+- El diseño de procesamiento de la bandeja es más consistente entre plataformas.
+- Mejoras generales de estabilidad al editar y seleccionar tareas.
+</es-ES>

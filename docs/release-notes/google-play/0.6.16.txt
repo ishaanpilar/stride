@@ -1,0 +1,18 @@
+<en-US>
+- Improved Android task flows with bulk-action progress/restore and better keyboard-safe quick-add/task-edit behavior.
+- Faster Android list performance through task list layout optimization and reduced heavy modal re-renders.
+- Stronger sync reliability and cloud security: safer attachment handling, stricter token validation, and race-condition fixes.
+- Better day-to-day GTD UX with richer markdown task rendering and expanded inbox/waiting workflows.
+</en-US>
+<zh-CN>
+- 改进 Android 任务流程：批量操作新增进度/恢复反馈，并优化 quick-add 与任务编辑的键盘安全显示。
+- 提升 Android 列表性能：任务列表布局优化，减少大型编辑弹窗不必要重渲染。
+- 增强同步与云端安全：附件处理更安全、令牌校验更严格，并修复多处并发竞态问题。
+- 日常 GTD 体验提升：任务描述 Markdown 渲染更完善，收件箱与等待事项流程更顺畅。
+</zh-CN>
+<es-ES>
+- Mejoramos los flujos de tareas en Android con progreso/restauracion en acciones masivas y mejor comportamiento de teclado en quick-add/edicion.
+- Mayor rendimiento en listas Android mediante optimizacion de layout y menos re-render en modales pesados.
+- Sync mas fiable y nube mas segura: manejo de adjuntos mas seguro, validacion de token mas estricta y correcciones de condiciones de carrera.
+- Mejor UX GTD diaria con renderizado Markdown mas completo y mejoras en flujos de bandeja/espera.
+</es-ES>

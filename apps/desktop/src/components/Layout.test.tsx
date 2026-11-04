@@ -1,0 +1,1407 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useTaskStore, type MergeStats } from '@stride/core';
+
+import { LanguageProvider } from '../contexts/language-context';
+import { KeybindingProvider } from '../contexts/keybinding-context';
+import { useUiStore } from '../store/ui-store';
+import { useObsidianStore } from '../store/obsidian-store';
+import { SyncService } from '../lib/sync-service';
+import { CALENDAR_TASK_DRAG_MIME } from '../lib/calendar-task-drag';
+import { Layout } from './Layout';
+
+const initialTaskState = useTaskStore.getState();
+const initialUiState = useUiStore.getState();
+const initialObsidianState = useObsidianStore.getState();
+const onNavigate = vi.fn();
+const syncStatusListeners = new Set<Parameters<typeof SyncService.subscribeSyncStatus>[0]>();
+const emitSyncStatus = (update: Partial<ReturnType<typeof SyncService.getSyncStatus>>) => act(() => {
+    const status = { ...SyncService.getSyncStatus(), ...update };
+    vi.mocked(SyncService.getSyncStatus).mockReturnValue(status);
+    for (const listener of syncStatusListeners) listener(status);
+});
+
+const dispatchDrag = (type: string, withTaskData: boolean) => act(() => {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperty(event, 'dataTransfer', {
+        value: { types: withTaskData ? [CALENDAR_TASK_DRAG_MIME] : ['text/plain'], getData: () => '' },
+    });
+    document.dispatchEvent(event);
+});
+
+
+const dispatchDragStartFromRow = (withTaskData: boolean) => act(() => {
+    const source = document.createElement('div');
+    document.body.appendChild(source);
+    const types: string[] = [];
+    source.addEventListener('dragstart', () => {
+        if (withTaskData) types.push(CALENDAR_TASK_DRAG_MIME);
+    });
+    const event = new Event('dragstart', { bubbles: true });
+    Object.defineProperty(event, 'dataTransfer', { value: { types, getData: () => '' } });
+    source.dispatchEvent(event);
+    source.remove();
+});
+
+const createMergeStats = (conflictIds: string[] = []): MergeStats => {
+    const emptyStats = {
+        localTotal: 0,
+        incomingTotal: 0,
+        mergedTotal: 0,
+        localOnly: 0,
+        incomingOnly: 0,
+        conflicts: 0,
+        resolvedUsingLocal: 0,
+        resolvedUsingIncoming: 0,
+        deletionsWon: 0,
+        conflictIds: [],
+        maxClockSkewMs: 0,
+        invalidTimestamps: 0,
+        timestampAdjustments: 0,
+        timestampAdjustmentIds: [],
+        futureTimestampClamps: 0,
+        futureTimestampClampIds: [],
+        conflictReasonCounts: {},
+        conflictSamples: [],
+    };
+    return {
+        tasks: {
+            ...emptyStats,
+            conflicts: conflictIds.length,
+            conflictIds,
+            conflictSamples: conflictIds.map((id) => ({
+                id,
+                winner: 'local',
+                reasons: ['content'],
+                hasRevision: true,
+                timeDiffMs: 0,
+                localUpdatedAt: '2026-04-22T12:00:00.000Z',
+                incomingUpdatedAt: '2026-04-22T12:00:00.000Z',
+                localRev: 1,
+                incomingRev: 1,
+                localComparableHash: `local-${id}`,
+                incomingComparableHash: `incoming-${id}`,
+                diffKeys: ['title'],
+            })),
+        },
+        projects: { ...emptyStats },
+        sections: { ...emptyStats },
+        areas: { ...emptyStats },
+    };
+};
+
+const renderLayout = (
+    currentView = 'inbox',
+    onViewChange = vi.fn(),
+    contentView?: string,
+) => render(
+    <LanguageProvider>
+        <KeybindingProvider currentView={currentView} onNavigate={onNavigate}>
+            <Layout currentView={currentView} contentView={contentView} onViewChange={onViewChange}>
+                <div>Main content</div>
+            </Layout>
+        </KeybindingProvider>
+    </LanguageProvider>
+);
+
+const resetStores = () => {
+    act(() => {
+        useTaskStore.setState(initialTaskState, true);
+        useUiStore.setState(initialUiState, true);
+        useObsidianStore.setState(initialObsidianState, true);
+    });
+};
+
+describe('Layout shared view actions', () => {
+    it('uses More for secondary navigation without the obsolete CSV action', () => {
+        renderLayout('next');
+
+        expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+        expect(screen.queryByRole('button', { name: 'Export CSV' })).not.toBeInTheDocument();
+    });
+});
+
+beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class {
+        observe() {}
+        disconnect() {}
+    });
+    window.localStorage.clear();
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 256, 800));
+    resetStores();
+
+
+    vi.spyOn(SyncService, 'refreshSyncBackendStatus').mockResolvedValue();
+    syncStatusListeners.clear();
+    vi.spyOn(SyncService, 'subscribeSyncStatus').mockImplementation((listener) => {
+        syncStatusListeners.add(listener);
+        return () => { syncStatusListeners.delete(listener); };
+    });
+    vi.spyOn(SyncService, 'getSyncStatus').mockReturnValue({
+        inFlight: false,
+        queued: false,
+        step: null,
+        lastResult: null,
+        lastResultAt: null,
+        backend: 'file',
+    });
+    act(() => {
+        useTaskStore.setState((state) => ({
+            ...state,
+            _allTasks: [],
+            _allProjects: [],
+            _allAreas: [],
+            settings: {
+                ...state.settings,
+                sidebarCollapsed: false,
+                filters: {
+                    ...(state.settings?.filters ?? {}),
+                    areaId: 'all',
+                },
+            },
+            error: null,
+        }));
+        useUiStore.setState((state) => ({
+            ...state,
+            isFocusMode: false,
+        }));
+        useObsidianStore.setState((state) => ({
+            ...state,
+            config: {
+                ...state.config,
+                enabled: false,
+            },
+            isInitialized: true,
+        }));
+    });
+});
+
+afterEach(() => {
+    cleanup();
+    resetStores();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+});
+
+describe('Layout content width', () => {
+    it('keeps navigation usable when resize observation is unavailable', () => {
+        vi.stubGlobal('ResizeObserver', undefined);
+        const { container, getByRole } = renderLayout('projects');
+        expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
+        expect(getByRole('button', { name: 'Add Task (Inbox)' })).toBeInTheDocument();
+    });
+
+    it.each(['projects', 'contexts'])('keeps the %s submenu standalone when the sidebar cannot fit both panes', (view) => {
+        vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 256, 400));
+        const { container, queryByRole } = renderLayout(view);
+        expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
+        expect(queryByRole('separator')).not.toBeInTheDocument();
+    });
+
+    it('resizes the navigation/submenu split with the keyboard, clamps it, and remembers it', () => {
+        const view = renderLayout('projects');
+        const separator = view.getByRole('separator', { name: 'Resize navigation and submenu' });
+        expect(separator).toHaveAttribute('aria-valuenow', '60');
+        fireEvent.keyDown(separator, { key: 'ArrowUp' });
+        expect(separator).toHaveAttribute('aria-valuenow', '55');
+        fireEvent.keyDown(separator, { key: 'Home' });
+        fireEvent.keyDown(separator, { key: 'ArrowUp' });
+        expect(separator).toHaveAttribute('aria-valuenow', '20');
+        fireEvent.keyDown(separator, { key: 'End' });
+        fireEvent.keyDown(separator, { key: 'ArrowDown' });
+        expect(separator).toHaveAttribute('aria-valuenow', '80');
+        view.unmount();
+        const next = renderLayout('contexts');
+        expect(next.getByRole('separator')).toHaveAttribute('aria-valuenow', '80');
+        fireEvent.doubleClick(next.getByRole('separator'));
+        expect(next.getByRole('separator')).toHaveAttribute('aria-valuenow', '60');
+    });
+
+    it('resizes the submenu by dragging the separator inside its available height', () => {
+        const view = renderLayout('projects');
+        const separator = view.getByRole('separator') as HTMLDivElement;
+        separator.setPointerCapture = vi.fn();
+        separator.hasPointerCapture = vi.fn(() => true);
+        separator.releasePointerCapture = vi.fn();
+        const split = view.container.querySelector('[data-sidebar-split]')!;
+        vi.spyOn(split, 'getBoundingClientRect').mockReturnValue({ top: 100, height: 400 } as DOMRect);
+        fireEvent.pointerDown(separator, { button: 0, pointerId: 1, clientY: 300 });
+        expect(separator).toHaveAttribute('aria-valuenow', '50');
+        fireEvent.pointerMove(separator, { pointerId: 1, clientY: 200 });
+        expect(separator).toHaveAttribute('aria-valuenow', '25');
+        fireEvent.pointerUp(separator, { pointerId: 1 });
+        expect(separator.releasePointerCapture).toHaveBeenCalledWith(1);
+    });
+
+    it.each(['projects', 'contexts'])('preserves navigation sections and capture while hosting the %s submenu', (view) => {
+        const { container, rerender, getByRole } = renderLayout(view);
+        expect(container.querySelector('[data-view-sidebar-slot]')).not.toBeNull();
+        expect(container.querySelector('aside')).toHaveClass('w-64');
+        expect(container.querySelectorAll('[data-sidebar-section-toggle]')).toHaveLength(4);
+        expect(getByRole('button', { name: 'More' })).toBeInTheDocument();
+        expect(getByRole('button', { name: 'Add Task (Inbox)' })).toBeInTheDocument();
+        rerender(<LanguageProvider><KeybindingProvider currentView="inbox" onNavigate={onNavigate}><Layout currentView="inbox" onViewChange={vi.fn()}><div /></Layout></KeybindingProvider></LanguageProvider>);
+        expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
+    });
+
+    it('sizes rendered content independently from the requested sidebar view', () => {
+        const { container, getByRole } = renderLayout('settings', vi.fn(), 'calendar');
+        const content = container.querySelector('[data-main-content] > div');
+
+        expect(getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
+        expect(content).toHaveClass('w-full', 'max-w-screen-2xl');
+        expect(content).not.toHaveClass('max-w-none');
+    });
+
+    it.each([
+        ['savedSearch:one', 'max-w-4xl'],
+        ['next', 'max-w-6xl'],
+        ['calendar', 'max-w-screen-2xl'],
+        ['settings', 'max-w-none'],
+    ])('uses the %s rendered-view width class', (contentView, expectedClass) => {
+        const { container } = renderLayout('inbox', vi.fn(), contentView);
+        const content = container.querySelector('[data-main-content] > div');
+
+        expect(content).toHaveClass(expectedClass);
+    });
+
+    it('keeps focus mode narrower than the rendered view geometry', () => {
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, isFocusMode: true }));
+        });
+
+        const { container } = renderLayout('settings', vi.fn(), 'calendar');
+        const content = container.querySelector('[data-main-content] > div');
+
+        expect(content).toHaveClass('max-w-[800px]');
+        expect(content).not.toHaveClass('max-w-screen-2xl', 'max-w-none');
+    });
+
+
+    it('gives the calendar a wider cap than list views without going edge-to-edge', () => {
+        const { container } = renderLayout('calendar');
+        const content = container.querySelector('[data-main-content] > div');
+
+        expect(content).toHaveClass('w-full', 'max-w-screen-2xl');
+        expect(content).not.toHaveClass('max-w-none');
+        expect(content).not.toHaveClass('max-w-6xl');
+    });
+
+    it('leaves list views on the narrower cap', () => {
+        const { container } = renderLayout('next');
+        const content = container.querySelector('[data-main-content] > div');
+
+        expect(content).toHaveClass('max-w-6xl');
+        expect(content).not.toHaveClass('max-w-screen-2xl');
+    });
+
+
+    it('keeps bottom padding off the shared content wrapper', () => {
+        const { container } = renderLayout('next');
+        const content = container.querySelector('[data-main-content] > div');
+        const classNames = (content?.className ?? '').split(/\s+/).filter(Boolean);
+
+        expect(classNames.filter((name) => /^(lg:|2xl:)?p-\d/.test(name))).toEqual([]);
+        expect(classNames.filter((name) => /^(lg:|2xl:)?p[by]-/.test(name))).toEqual([]);
+        expect(content).toHaveClass('px-4', 'pt-4', 'lg:px-6', 'lg:pt-6');
+    });
+});
+
+describe('Layout secondary history navigation', () => {
+    it('collapses secondary navigation by default on a fresh sidebar', () => {
+        const { container, getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+        expect(container.querySelector('#sidebar-section-secondary')).toHaveClass('hidden');
+        fireEvent.click(getByRole('button', { name: 'More' }));
+        expect(getByRole('button', { name: 'History' })).toBeInTheDocument();
+    });
+
+    it('expands secondary navigation when the active view lives there', async () => {
+        const { container, getByRole } = renderLayout('trash');
+
+        await waitFor(() => {
+            expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'true');
+            expect(container.querySelector('#sidebar-section-secondary')).not.toHaveClass('hidden');
+        });
+        expect(getByRole('button', { name: 'Trash' })).toHaveAttribute('aria-current', 'page');
+    });
+
+    it('respects a stored collapsed archive preference', () => {
+        window.localStorage.setItem('stride:sidebar:collapsedSections', JSON.stringify(['archive']));
+
+        const { container, getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+        expect(container.querySelector('#sidebar-section-secondary')).toHaveClass('hidden');
+    });
+
+    it('uses the full More header row as the expansion target', () => {
+        const { container, getByRole } = renderLayout();
+        const archiveHeader = getByRole('button', { name: 'More' });
+
+        expect(archiveHeader).toHaveAttribute('aria-controls', 'sidebar-section-secondary');
+        fireEvent.click(archiveHeader);
+
+        expect(archiveHeader).toHaveAttribute('aria-expanded', 'true');
+        expect(container.querySelector('#sidebar-section-secondary')).not.toHaveClass('hidden');
+    });
+});
+
+describe('Layout Obsidian nav visibility', () => {
+    it('opens global inbox capture from the visible Add Task button', () => {
+        const quickAddListener = vi.fn();
+        window.addEventListener('stride:quick-add', quickAddListener);
+        const { getByRole } = renderLayout();
+        const addTaskButton = getByRole('button', { name: 'Add Task (Inbox)' });
+
+        expect(addTaskButton).toHaveAttribute('title', 'Add Task (Inbox)');
+        expect(addTaskButton).toHaveClass('bg-primary/5');
+        expect(addTaskButton).toHaveClass('text-primary');
+
+        fireEvent.click(addTaskButton);
+
+        expect(quickAddListener).toHaveBeenCalledTimes(1);
+        expect(quickAddListener.mock.calls[0][0]).toMatchObject({
+            detail: { initialProps: { status: 'inbox' } },
+        });
+
+        window.removeEventListener('stride:quick-add', quickAddListener);
+    });
+
+    it('hides Obsidian when the integration is disabled', () => {
+        const { queryByRole } = renderLayout();
+
+        expect(queryByRole('button', { name: 'Obsidian' })).not.toBeInTheDocument();
+    });
+
+    it('shows Obsidian when the integration is enabled', () => {
+        act(() => {
+            useObsidianStore.setState((state) => ({
+                ...state,
+                config: {
+                    ...state.config,
+                    enabled: true,
+                },
+            }));
+        });
+
+        const { getByRole, queryByRole } = renderLayout();
+
+        expect(queryByRole('button', { name: 'Obsidian' })).not.toBeInTheDocument();
+        fireEvent.click(getByRole('button', { name: 'More' }));
+        expect(getByRole('button', { name: 'Obsidian' })).toBeInTheDocument();
+    });
+});
+
+describe('Layout sync conflict surface', () => {
+
+
+    it('keeps the footer busy while a follow-up sync is queued but not yet in flight', () => {
+        const statusSpy = vi.spyOn(SyncService, 'getSyncStatus').mockReturnValue({
+            inFlight: false,
+            queued: true,
+            step: null,
+            lastResult: null,
+            lastResultAt: null,
+        } as ReturnType<typeof SyncService.getSyncStatus>);
+        const subscribeSpy = vi
+            .spyOn(SyncService, 'subscribeSyncStatus')
+            .mockImplementation(() => () => undefined);
+
+        const { container, getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: /Sync now/i })).toBeDisabled();
+        expect(container.querySelector('[data-sidebar-sync-dot]')).toHaveClass('animate-pulse');
+
+
+        expect(container.querySelector('.animate-spin')?.parentElement).toHaveClass('overflow-hidden');
+
+        statusSpy.mockRestore();
+        subscribeSpy.mockRestore();
+    });
+
+    it('keeps Settings, sync status, and manual sync on one compact footer row', () => {
+        const { container, getByRole } = renderLayout();
+
+        const footer = container.querySelector('[data-sidebar-footer]');
+        const settingsButton = getByRole('button', { name: 'Settings' });
+        const syncStatusButton = container.querySelector('[data-sidebar-sync-status]');
+        const syncButton = getByRole('button', { name: /Sync now/i });
+
+        expect(footer).toHaveClass('py-1.5');
+        expect(settingsButton).toHaveClass('h-9');
+        expect(syncStatusButton).toHaveClass('h-9');
+        expect(syncButton).toHaveClass('h-9');
+        expect(settingsButton.parentElement).toBe(syncStatusButton?.parentElement);
+        expect(syncButton.parentElement).toBe(syncStatusButton?.parentElement);
+    });
+
+    it('uses a colored dot for sync freshness without squeezing status text into the footer', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-04-22T12:10:00.000Z'));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:05:00.000Z',
+                    lastSyncStatus: 'success',
+                },
+            }));
+        });
+
+        const { container, getByRole, getByText } = renderLayout();
+        const syncStatusButton = getByRole('button', { name: /Synced\..*Last sync/i });
+        const syncStatusDot = container.querySelector('[data-sidebar-sync-dot]');
+
+        expect(syncStatusButton).toBeInTheDocument();
+        expect(syncStatusDot).toHaveClass('bg-success');
+        expect(getByText('Synced')).toHaveClass('sr-only');
+    });
+
+    it('runs manual sync from the sidebar sync button', async () => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+        });
+
+        const { getByRole } = renderLayout();
+
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledTimes(1));
+        expect(performSyncSpy).toHaveBeenCalledWith({ manual: true });
+        expect(showToast).toHaveBeenCalledWith('Sync completed', 'success');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it('shows attachment recovery guidance instead of reporting a completed manual sync', async () => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+            attachmentWriteDeferred: true,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(
+            'Some attachment changes could not finish. Restore any missing local files or remove the affected attachments, then sync again.',
+            'info',
+            6000,
+        );
+        expect(showToast).not.toHaveBeenCalledWith('Sync completed', 'success');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it.each([
+        {
+            outcome: 'failed',
+            result: { success: false, error: 'Document sync failed.' },
+        },
+        {
+            outcome: 'deferred',
+            result: {
+                success: true,
+                remoteWriteDeferred: true,
+                error: 'Remote write failed. Retrying in the background.',
+            },
+        },
+    ])('prioritizes a $outcome document sync result over deferred attachment feedback', async ({ result }) => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            ...result,
+            attachmentWriteDeferred: true,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(result.error, 'error');
+        expect(showToast).not.toHaveBeenCalledWith(
+            'Some attachment changes could not finish. Restore any missing local files or remove the affected attachments, then sync again.',
+            'info',
+            6000,
+        );
+
+        performSyncSpy.mockRestore();
+    });
+
+    it('shows the File Sync size guidance instead of reporting a completed manual sync', async () => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+            fileAttachmentUploadBlocked: 'too-large',
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(
+            'Stride kept the local attachment. File Sync can only sync attachments under 100 MB. Replace it with a smaller file or remove the attachment, then sync again.',
+            'info',
+            6000,
+        );
+        expect(showToast).not.toHaveBeenCalledWith('Sync completed', 'success');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it.each([
+        {
+            outcome: 'failed',
+            result: { success: false, error: 'Document sync failed.' },
+        },
+        {
+            outcome: 'deferred',
+            result: {
+                success: true,
+                remoteWriteDeferred: true,
+                error: 'Remote write failed. Retrying in the background.',
+            },
+        },
+    ])('prioritizes a $outcome document sync result over File attachment size guidance', async ({ result }) => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            ...result,
+            fileAttachmentUploadBlocked: 'too-large',
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(result.error, 'error');
+        expect(showToast).not.toHaveBeenCalledWith(
+            'Stride kept the local attachment. File Sync can only sync attachments under 100 MB. Replace it with a smaller file or remove the attachment, then sync again.',
+            'info',
+            6000,
+        );
+
+        performSyncSpy.mockRestore();
+    });
+
+    it.each([
+        {
+            deferred: 'busy' as const,
+            message: 'Another Stride device is holding this sync location for a moment. Sync will retry on its own.',
+        },
+        {
+            deferred: 'cleanup' as const,
+            message: 'The sync operation completed. Stride could not remove the temporary sync lock, but it expires automatically. No retry is needed.',
+        },
+    ])('explains a $deferred remote fence without reporting false success or failure', async ({ deferred, message }) => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+            remoteFenceDeferred: deferred,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(message, 'info', 6000);
+        expect(showToast).not.toHaveBeenCalledWith('Sync completed', 'success');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it.each([
+        {
+            deferred: 'busy' as const,
+            message: 'Another Stride operation is using File Sync. Wait for it to finish; Stride will retry automatically.',
+        },
+        {
+            deferred: 'cleanup' as const,
+            message: 'Sync completed, but Stride could not release the File Sync lock. Restart Stride before syncing again. No retry is needed.',
+        },
+    ])('explains a $deferred File Sync lock without reporting false success or failure', async ({ deferred, message }) => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+            fileSyncLockDeferred: deferred,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledWith({ manual: true }));
+        expect(showToast).toHaveBeenCalledWith(message, 'info', 6000);
+        expect(showToast).not.toHaveBeenCalledWith('Sync completed', 'success');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it('shows localized recovery guidance when safe File Sync locking is unavailable', async () => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: false,
+            fileSyncLockUnavailable: true,
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({ ...state, showToast }));
+        });
+
+        const { getByRole } = renderLayout();
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+            'Stride cannot safely lock this File Sync location. Re-select the folder, restart or update Stride, or use WebDAV.',
+            'error',
+            6000,
+        ));
+        performSyncSpy.mockRestore();
+    });
+
+    it('shows an error toast when the remote write was deferred despite success:true', async () => {
+        const showToast = vi.fn();
+        const performSyncSpy = vi.spyOn(SyncService, 'performSync').mockResolvedValue({
+            success: true,
+            remoteWriteDeferred: true,
+            error: 'Remote write failed. Retrying in the background.',
+        } as Awaited<ReturnType<typeof SyncService.performSync>>);
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+        });
+
+        const { getByRole } = renderLayout();
+
+        fireEvent.click(getByRole('button', { name: /Sync now/i }));
+
+        await waitFor(() => expect(performSyncSpy).toHaveBeenCalledTimes(1));
+        expect(showToast).toHaveBeenCalledWith('Remote write failed. Retrying in the background.', 'error');
+
+        performSyncSpy.mockRestore();
+    });
+
+    it('does not announce a persisted conflict on mount or backend hydration', () => {
+        const showToast = vi.fn();
+        vi.mocked(SyncService.getSyncStatus).mockReturnValue({
+            ...SyncService.getSyncStatus(), backend: null,
+        });
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:00:00.000Z',
+                    lastSyncStatus: 'conflict',
+                },
+            }));
+        });
+
+        renderLayout();
+
+        emitSyncStatus({ backend: 'webdav' });
+        expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('shows a toast when a fresh sync completes with a conflict', () => {
+        const showToast = vi.fn();
+        act(() => { useUiStore.setState({ showToast }); });
+        renderLayout();
+        act(() => {
+            useTaskStore.setState((state) => ({
+                settings: { ...state.settings, lastSyncAt: '2026-04-22T12:00:00.000Z', lastSyncStatus: 'conflict' },
+            }));
+        });
+        expect(showToast).not.toHaveBeenCalled();
+        emitSyncStatus({ inFlight: true });
+        expect(showToast).not.toHaveBeenCalled();
+        emitSyncStatus({ inFlight: false, lastResult: 'success', lastResultAt: '2026-04-22T12:00:00.000Z' });
+
+        expect(showToast).toHaveBeenCalledWith(
+            'Sync conflict resolved with last-write-wins. Open Settings → Sync to review the details.',
+            'info',
+            6000,
+        );
+    });
+
+    it('does not reannounce a completed conflict when Layout remounts', () => {
+        const showToast = vi.fn();
+        act(() => { useUiStore.setState({ showToast }); });
+        const first = renderLayout();
+        act(() => {
+            useTaskStore.setState((state) => ({
+                settings: { ...state.settings, lastSyncAt: '2026-04-22T12:00:00.000Z', lastSyncStatus: 'conflict' },
+            }));
+        });
+        emitSyncStatus({ lastResult: 'success', lastResultAt: '2026-04-22T12:00:00.000Z' });
+        expect(showToast).toHaveBeenCalledTimes(1);
+        first.unmount();
+        showToast.mockClear();
+        renderLayout();
+        expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('does not repeat the same conflict toast when only the sync timestamp changes', async () => {
+        const showToast = vi.fn();
+        act(() => { useUiStore.setState({ showToast }); });
+        renderLayout();
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:00:00.000Z',
+                    lastSyncStatus: 'conflict',
+                    lastSyncStats: createMergeStats(['task-1']),
+                },
+            }));
+        });
+
+        emitSyncStatus({ lastResult: 'success', lastResultAt: '2026-04-22T12:00:00.000Z' });
+
+        expect(showToast).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:01:00.000Z',
+                    lastSyncStatus: 'conflict',
+                    lastSyncStats: createMergeStats(['task-1']),
+                },
+            }));
+        });
+        emitSyncStatus({ lastResult: 'success', lastResultAt: '2026-04-22T12:01:00.000Z' });
+
+        await waitFor(() => expect(showToast).toHaveBeenCalledTimes(1));
+
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:02:00.000Z',
+                    lastSyncStatus: 'conflict',
+                    lastSyncStats: createMergeStats(['task-2']),
+                },
+            }));
+        });
+        emitSyncStatus({ lastResult: 'success', lastResultAt: '2026-04-22T12:02:00.000Z' });
+
+        await waitFor(() => expect(showToast).toHaveBeenCalledTimes(2));
+    });
+
+    it('stays quiet about a stale persisted conflict when sync is turned off', () => {
+        const showToast = vi.fn();
+        vi.spyOn(SyncService, 'getSyncStatus').mockReturnValue({
+            inFlight: false,
+            queued: false,
+            step: null,
+            lastResult: null,
+            lastResultAt: null,
+            backend: 'off',
+        });
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    lastSyncAt: '2026-04-22T12:00:00.000Z',
+                    lastSyncStatus: 'conflict',
+                },
+            }));
+        });
+
+        renderLayout();
+
+        expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('hides the footer sync controls while sync is turned off', () => {
+        vi.spyOn(SyncService, 'getSyncStatus').mockReturnValue({
+            inFlight: false,
+            queued: false,
+            step: null,
+            lastResult: null,
+            lastResultAt: null,
+            backend: 'off',
+        });
+
+        const { queryByRole, container } = renderLayout();
+
+        expect(queryByRole('button', { name: /Sync now/i })).toBeNull();
+        expect(container.querySelector('[data-sidebar-sync-status]')).toBeNull();
+    });
+
+    it('reports "sync is turned off" instead of a fake completed sync', async () => {
+        const showToast = vi.fn();
+        const performSpy = vi
+            .spyOn(SyncService, 'performSync')
+            .mockResolvedValue({ success: true, skipped: 'disabled' });
+        act(() => {
+            useUiStore.setState((state) => ({
+                ...state,
+                showToast,
+            }));
+        });
+
+        const { getByRole } = renderLayout();
+
+        await act(async () => {
+            fireEvent.click(getByRole('button', { name: /Sync now/i }));
+        });
+
+        expect(performSpy).toHaveBeenCalledWith({ manual: true });
+        expect(showToast).toHaveBeenCalledWith('Sync is turned off', 'info');
+        expect(showToast).not.toHaveBeenCalledWith('Sync completed', 'success');
+    });
+});
+
+describe('Layout collapsed sidebar area filter', () => {
+    it('keeps the area filter available when the sidebar is collapsed', () => {
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                _allAreas: [
+                    { id: 'area-work', name: 'Work', color: '#3b82f6', order: 0, createdAt: '', updatedAt: '' },
+                ],
+                settings: {
+                    ...state.settings,
+                    sidebarCollapsed: true,
+                    filters: {
+                        ...(state.settings?.filters ?? {}),
+                        areaId: 'area-work',
+                    },
+                },
+            }));
+        });
+
+        const { getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: 'Area filter: Work' })).toBeInTheDocument();
+    });
+
+    it('uses distinct collapsed icons for board navigation and area filtering', () => {
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    sidebarCollapsed: true,
+                },
+            }));
+        });
+
+        const { container, getByRole } = renderLayout();
+        const boardIcon = container.querySelector('[data-view="board"] svg');
+        const areaFilterIcon = getByRole('button', { name: 'Area filter: All areas' }).querySelector('svg');
+
+        expect(boardIcon).toHaveClass('lucide-kanban');
+        expect(areaFilterIcon).toHaveClass('lucide-layers');
+    });
+});
+
+describe('Layout sync security warning', () => {
+    it('dismisses only the current destination across refresh and remount, without changing HTTP permission', async () => {
+        const backend = vi.spyOn(SyncService, 'getSyncBackend').mockResolvedValue('webdav');
+        const webdav = vi.spyOn(SyncService, 'getWebDavConfig').mockResolvedValue({
+            url: 'http://192.168.1.50/dav', username: '', hasPassword: false, allowInsecureHttp: true,
+        });
+        const setWebdav = vi.spyOn(SyncService, 'setWebDavConfig');
+        const setCloud = vi.spyOn(SyncService, 'setCloudConfig');
+        const settings = useTaskStore.getState().settings;
+        const first = renderLayout();
+        expect(await first.findByText(/WebDAV sync is using HTTP/)).toBeInTheDocument();
+        fireEvent.click(first.getByRole('button', { name: 'Dismiss for this sync destination' }));
+        expect(first.queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+        first.unmount();
+
+
+        webdav.mockResolvedValue({ url: 'http://192.168.1.50:80/dav/data.json', username: '', hasPassword: false, allowInsecureHttp: true });
+        const next = renderLayout();
+        await waitFor(() => expect(webdav).toHaveBeenCalledTimes(2));
+        expect(next.queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+
+        webdav.mockResolvedValue({ url: 'http://192.168.1.50/other', username: '', hasPassword: false, allowInsecureHttp: true });
+        fireEvent.focus(window);
+        expect(await next.findByText(/WebDAV sync is using HTTP/)).toBeInTheDocument();
+        fireEvent.click(next.getByRole('button', { name: 'Dismiss for this sync destination' }));
+
+
+        backend.mockResolvedValue('cloud');
+        vi.spyOn(SyncService, 'getCloudProvider').mockResolvedValue('selfhosted');
+        vi.spyOn(SyncService, 'getCloudConfig').mockResolvedValue({ url: 'http://192.168.1.50/other', token: '', allowInsecureHttp: true });
+        fireEvent.focus(window);
+        expect(await next.findByText(/Self-hosted sync is using HTTP/)).toBeInTheDocument();
+        expect(setWebdav).not.toHaveBeenCalled();
+        expect(setCloud).not.toHaveBeenCalled();
+        expect(useTaskStore.getState().settings).toBe(settings);
+        expect((await SyncService.getCloudConfig()).allowInsecureHttp).toBe(true);
+    });
+
+    it('keeps a dismissed warning hidden for this mount if local persistence fails', async () => {
+        vi.spyOn(SyncService, 'getSyncBackend').mockResolvedValue('webdav');
+        vi.spyOn(SyncService, 'getWebDavConfig').mockResolvedValue({
+            url: 'http://192.168.1.50/dav', username: '', hasPassword: false, allowInsecureHttp: true,
+        });
+        const layout = renderLayout();
+        expect(await layout.findByText(/WebDAV sync is using HTTP/)).toBeInTheDocument();
+        vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
+        fireEvent.click(layout.getByRole('button', { name: 'Dismiss for this sync destination' }));
+        await act(async () => { fireEvent.focus(window); });
+        expect(layout.queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+    });
+
+    it('clears the HTTP warning when sync is switched Off without a focus event', async () => {
+
+
+        vi.mocked(SyncService.refreshSyncBackendStatus).mockRestore();
+        vi.mocked(SyncService.subscribeSyncStatus).mockRestore();
+        vi.mocked(SyncService.getSyncStatus).mockRestore();
+        window.localStorage.setItem('stride-sync-backend', 'webdav');
+        window.localStorage.setItem('stride-webdav-url', 'http://192.168.1.50/dav');
+        window.localStorage.setItem('stride-webdav-allow-insecure-http', 'true');
+        await SyncService.getPersistedSyncConfigurationSnapshot();
+
+        const { findByText, queryByText } = renderLayout();
+        expect(await findByText(/WebDAV sync is using HTTP/)).toBeInTheDocument();
+
+        await act(async () => {
+            await SyncService.setSyncBackend('off');
+        });
+
+        expect(window.localStorage.getItem('stride-sync-backend')).toBe('off');
+        expect(SyncService.getSyncStatus().backend).toBe('off');
+        expect(queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+    });
+
+    it('shows a cleartext HTTP banner for WebDAV sync', async () => {
+        const backendSpy = vi.spyOn(SyncService, 'getSyncBackend').mockResolvedValue('webdav');
+        const webdavSpy = vi.spyOn(SyncService, 'getWebDavConfig').mockResolvedValue({
+            url: 'http://192.168.1.50/dav',
+            username: '',
+            hasPassword: false,
+            allowInsecureHttp: true,
+        });
+
+        try {
+            const { findByText } = renderLayout();
+
+            expect(await findByText(/WebDAV sync is using HTTP/)).toBeInTheDocument();
+        } finally {
+            backendSpy.mockRestore();
+            webdavSpy.mockRestore();
+        }
+    });
+
+    it('shows a cleartext HTTP banner for active self-hosted sync', async () => {
+        const backendSpy = vi.spyOn(SyncService, 'getSyncBackend').mockResolvedValue('cloud');
+        const webdavSpy = vi.spyOn(SyncService, 'getWebDavConfig').mockResolvedValue({
+            url: 'http://192.168.1.50/dav',
+            username: '',
+            hasPassword: false,
+            allowInsecureHttp: true,
+        });
+        const providerSpy = vi.spyOn(SyncService, 'getCloudProvider').mockResolvedValue('selfhosted');
+        const cloudSpy = vi.spyOn(SyncService, 'getCloudConfig').mockResolvedValue({
+            url: 'http://192.168.1.50:3000',
+            token: '',
+            allowInsecureHttp: true,
+        });
+
+        try {
+            const { findByText, queryByText } = renderLayout();
+
+            expect(await findByText(/Self-hosted sync is using HTTP/)).toBeInTheDocument();
+            expect(queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+        } finally {
+            backendSpy.mockRestore();
+            webdavSpy.mockRestore();
+            providerSpy.mockRestore();
+            cloudSpy.mockRestore();
+        }
+    });
+
+
+    it('shows no cleartext banner for loopback HTTP WebDAV sync', async () => {
+        const configurationSpy = vi.spyOn(
+            SyncService,
+            'getPersistedSyncConfigurationSnapshot',
+        ).mockResolvedValue({
+            backend: 'webdav',
+            syncPath: '',
+            webdav: {
+                url: 'http://127.0.0.1:9328/Stride',
+                username: '',
+                password: null,
+                passwordAuthority: 'opaque',
+                hasPassword: false,
+                allowInsecureHttp: false,
+                allowWeakFingerprint: false,
+            },
+            cloudProvider: 'selfhosted',
+            cloud: {
+                url: '',
+                token: null,
+                tokenAuthority: 'opaque',
+                allowInsecureHttp: false,
+                rememberToken: false,
+            },
+        });
+
+        try {
+            const { queryByText } = renderLayout();
+
+            await waitFor(() => expect(configurationSpy).toHaveBeenCalledTimes(1));
+            expect(queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+        } finally {
+            configurationSpy.mockRestore();
+        }
+    });
+
+    it('ignores stale cleartext WebDAV settings while file sync is active', async () => {
+        const configurationSpy = vi.spyOn(
+            SyncService,
+            'getPersistedSyncConfigurationSnapshot',
+        ).mockResolvedValue({
+            backend: 'file',
+            syncPath: '/tmp/sync',
+            webdav: {
+                url: 'http://192.168.1.50/dav',
+                username: '',
+                password: null,
+                passwordAuthority: 'opaque',
+                hasPassword: false,
+                allowInsecureHttp: true,
+                allowWeakFingerprint: false,
+            },
+            cloudProvider: 'selfhosted',
+            cloud: {
+                url: 'http://192.168.1.50:3000',
+                token: null,
+                tokenAuthority: 'opaque',
+                allowInsecureHttp: true,
+                rememberToken: false,
+            },
+        });
+
+        try {
+            const { queryByText } = renderLayout();
+
+            await waitFor(() => expect(configurationSpy).toHaveBeenCalledTimes(1));
+            expect(queryByText(/WebDAV sync is using HTTP/)).not.toBeInTheDocument();
+            expect(queryByText(/Self-hosted sync is using HTTP/)).not.toBeInTheDocument();
+        } finally {
+            configurationSpy.mockRestore();
+        }
+    });
+
+
+    it('does not poll the persisted sync configuration on a timer, but a focus event still refreshes it', async () => {
+        const configurationSpy = vi.spyOn(
+            SyncService,
+            'getPersistedSyncConfigurationSnapshot',
+        ).mockResolvedValue({
+            backend: 'file',
+            syncPath: '/tmp/sync',
+            webdav: {
+                url: '',
+                username: '',
+                password: null,
+                passwordAuthority: 'opaque',
+                hasPassword: false,
+                allowInsecureHttp: false,
+                allowWeakFingerprint: false,
+            },
+            cloudProvider: 'selfhosted',
+            cloud: {
+                url: '',
+                token: null,
+                tokenAuthority: 'opaque',
+                allowInsecureHttp: false,
+                rememberToken: false,
+            },
+        });
+
+        try {
+
+
+            vi.useFakeTimers();
+            renderLayout();
+
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(configurationSpy).toHaveBeenCalledTimes(1);
+
+            act(() => {
+
+                vi.advanceTimersByTime(2 * 60_000);
+            });
+            expect(configurationSpy).toHaveBeenCalledTimes(1);
+
+            await act(async () => {
+                window.dispatchEvent(new Event('focus'));
+                await Promise.resolve();
+            });
+            expect(configurationSpy).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+            configurationSpy.mockRestore();
+        }
+    });
+
+
+    it('lights up every drop target while a task drag is in flight', () => {
+        const { container, getByRole } = renderLayout();
+        const calendarItem = getByRole('button', { name: 'Calendar' });
+        const somedayItem = container.querySelector('[data-view="someday"]')!;
+        const historyItem = container.querySelector('[data-view="history"]')!;
+        const projectsItem = container.querySelector('[data-view="projects"]')!;
+        expect(calendarItem.className).not.toContain('outline-dashed');
+
+        dispatchDragStartFromRow(true);
+
+
+        expect(calendarItem.className).toContain('outline-dashed');
+        expect(somedayItem.className).toContain('outline-dashed');
+        expect(historyItem.className).toContain('outline-dashed');
+
+        expect(projectsItem.className).not.toContain('outline-dashed');
+
+        dispatchDrag('dragend', true);
+        expect(calendarItem.className).not.toContain('outline-dashed');
+
+
+        dispatchDragStartFromRow(false);
+        expect(calendarItem.className).not.toContain('outline-dashed');
+    });
+
+    it('reclassifies a task dropped on a status list, with undo', async () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        const task = { id: 'task-1', title: 'Buy milk', status: 'inbox' };
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: new Map([[task.id, task]]),
+            moveTask,
+            settings: {},
+        } as never);
+
+        const { container } = renderLayout();
+        const dataTransfer = {
+            types: [CALENDAR_TASK_DRAG_MIME],
+            getData: (type: string) => (type === CALENDAR_TASK_DRAG_MIME ? 'task-1' : ''),
+            dropEffect: 'none',
+        };
+
+        fireEvent.drop(container.querySelector('[data-view="waiting"]')!, { dataTransfer });
+
+        await waitFor(() => expect(moveTask).toHaveBeenCalledWith('task-1', 'waiting'));
+        const latestToast = () => {
+            const toasts = useUiStore.getState().toasts;
+            return toasts[toasts.length - 1];
+        };
+        await waitFor(() => expect(latestToast()?.action?.label).toBe('Undo'));
+
+
+        latestToast()!.action!.onClick();
+        expect(moveTask).toHaveBeenLastCalledWith('task-1', 'inbox');
+    });
+
+
+    it('marks a task done when it is dropped on History', async () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        const task = { id: 'task-1', title: 'Buy milk', status: 'inbox' };
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: new Map([[task.id, task]]),
+            moveTask,
+            settings: {},
+        } as never);
+
+        const { container } = renderLayout();
+        fireEvent.drop(container.querySelector('[data-view="history"]')!, {
+            dataTransfer: {
+                types: [CALENDAR_TASK_DRAG_MIME],
+                getData: (type: string) => (type === CALENDAR_TASK_DRAG_MIME ? 'task-1' : ''),
+                dropEffect: 'none',
+            },
+        });
+
+        await waitFor(() => expect(moveTask).toHaveBeenCalledWith('task-1', 'done'));
+    });
+
+
+    it('undoes a History drop the way a completion is undone', async () => {
+        const stamp = '2026-01-01T00:00:00.000Z';
+        const task = {
+            id: 'task-1',
+            title: 'Water plants',
+            status: 'next',
+            tags: [],
+            contexts: [],
+            recurrence: { rule: 'daily', strategy: 'strict' },
+            isFocusedToday: true,
+            createdAt: stamp,
+            updatedAt: stamp,
+        };
+        act(() => {
+            useTaskStore.setState({
+                tasks: [task],
+                _allTasks: [task],
+                _tasksById: new Map([[task.id, task]]),
+                settings: {},
+            } as never);
+        });
+
+        const { container } = renderLayout();
+        fireEvent.drop(container.querySelector('[data-view="history"]')!, {
+            dataTransfer: {
+                types: [CALENDAR_TASK_DRAG_MIME],
+                getData: (type: string) => (type === CALENDAR_TASK_DRAG_MIME ? 'task-1' : ''),
+                dropEffect: 'none',
+            },
+        });
+
+        const liveTasks = () => useTaskStore.getState()._allTasks.filter((entry) => !entry.deletedAt);
+
+        await waitFor(() => expect(liveTasks()).toHaveLength(2));
+
+        const latestToast = () => {
+            const toasts = useUiStore.getState().toasts;
+            return toasts[toasts.length - 1];
+        };
+        await waitFor(() => expect(latestToast()?.action?.label).toBe('Undo'));
+        act(() => latestToast()!.action!.onClick());
+
+        await waitFor(() => {
+            expect(liveTasks()).toHaveLength(1);
+            expect(liveTasks()[0].status).toBe('next');
+            expect(liveTasks()[0].isFocusedToday).toBe(true);
+        });
+    });
+
+
+    it('opens a folded group while a task is dragged over its header', () => {
+        const { container } = renderLayout();
+        const panel = container.querySelector('#sidebar-section-secondary')!;
+        const toggle = panel.previousElementSibling as HTMLElement;
+        expect(panel).toHaveAttribute('hidden');
+
+        dispatchDragStartFromRow(true);
+        fireEvent.dragEnter(toggle, { dataTransfer: { types: [CALENDAR_TASK_DRAG_MIME], getData: () => '' } });
+        expect(panel).not.toHaveAttribute('hidden');
+
+        dispatchDrag('dragend', true);
+        expect(panel).toHaveAttribute('hidden');
+
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    });
+
+
+    it('ignores a task dropped on Trash', () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        useTaskStore.setState({
+            _tasksById: new Map([['task-1', { id: 'task-1', title: 'Buy milk', status: 'inbox' }]]),
+            moveTask,
+            settings: {},
+        } as never);
+
+        const { container } = renderLayout();
+        fireEvent.drop(container.querySelector('[data-view="trash"]')!, {
+            dataTransfer: {
+                types: [CALENDAR_TASK_DRAG_MIME],
+                getData: () => 'task-1',
+                dropEffect: 'none',
+            },
+        });
+
+        expect(moveTask).not.toHaveBeenCalled();
+    });
+
+
+    it('clears the calendar highlight when a drag ends with no drop or dragend', () => {
+        const { getByRole } = renderLayout();
+        const calendarItem = getByRole('button', { name: 'Calendar' });
+
+        dispatchDragStartFromRow(true);
+        expect(calendarItem.className).toContain('outline-dashed');
+
+        vi.useFakeTimers();
+        try {
+
+            dispatchDrag('dragover', true);
+            act(() => { vi.advanceTimersByTime(5_000); });
+            expect(calendarItem.className).not.toContain('outline-dashed');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
+describe('Sidebar hidden views (#1115)', () => {
+    it('omits hidden entries and drops fully hidden sections, keeping structural items', () => {
+        act(() => {
+            useUiStore.getState().setSidebarViewHidden('someday', true);
+            useUiStore.getState().setSidebarViewHidden('done', true);
+            useUiStore.getState().setSidebarViewHidden('archived', true);
+            useUiStore.getState().setSidebarViewHidden('trash', true);
+        });
+        const { container } = renderLayout();
+        const ids = Array.from(container.querySelectorAll('[data-sidebar-item]'))
+            .map((el) => el.getAttribute('data-view'));
+        expect(ids).not.toContain('someday');
+        expect(ids).not.toContain('done');
+        expect(ids).toContain('inbox');
+        expect(ids).toContain('waiting');
+
+        expect(ids).not.toContain('history');
+        expect(ids).not.toContain('trash');
+        expect(container.querySelector('#sidebar-section-lists')).not.toBeNull();
+    });
+});

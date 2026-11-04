@@ -1,0 +1,1276 @@
+
+
+
+#import <CloudKit/CloudKit.h>
+#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
+#import <Security/Security.h>
+#include <dispatch/dispatch.h>
+
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#include <stdlib.h>
+#include <string.h>
+
+
+static NSString *const kContainerID    = @"iCloud.com.ishaanpilar.stride";
+static NSString *const kZoneName       = @"StrideZone";
+static NSString *const kSubscriptionID = @"StrideZoneSubscription";
+static NSString *const kAttachmentNotFoundErrorCode = @"ERR_CLOUDKIT_ATTACHMENT_NOT_FOUND";
+static const NSInteger kBatchSize      = 400;
+
+
+static const NSInteger kSaveBatchSize  = 100;
+static const NSInteger kMinSaveBatchSize = 25;
+static const double    kMaxInlineRetryWaitSec = 120;
+static const int64_t   kTimeoutSec     = 60;
+
+
+static CKContainer    *_ckContainer = nil;
+static CKDatabase     *_ckPrivateDB = nil;
+static CKRecordZoneID *_ckZoneID    = nil;
+
+static _Atomic(int) _pendingRemoteChange = 0;
+
+// CloudKit traps (SIGTRAP) the moment a container is created in a process that lacks the iCloud
+// entitlement for it, e.g. an unsigned dev build or a fork signed with another team. Check the
+// running binary's entitlements first so iCloud reports "unavailable" instead of killing the app.
+static BOOL stride_ck_has_container_entitlement(void) {
+    static BOOL hasEntitlement = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+        if (!task) return;
+        CFTypeRef value = SecTaskCopyValueForEntitlement(
+            task, CFSTR("com.apple.developer.icloud-container-identifiers"), NULL);
+        if (value) {
+            if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+                hasEntitlement = [(__bridge NSArray *)value containsObject:kContainerID];
+            }
+            CFRelease(value);
+        }
+        CFRelease(task);
+    });
+    return hasEntitlement;
+}
+
+#define STRIDE_CK_UNAVAILABLE_JSON \
+    strdup("{\"error\":\"iCloud sync is not available in this build: the app is not signed with the iCloud entitlement. Use Dropbox, WebDAV or a self-hosted server instead.\",\"errorCode\":-1}")
+
+static BOOL stride_ck_ensure_container(void) {
+    if (!stride_ck_has_container_entitlement()) return NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        _ckContainer = [CKContainer containerWithIdentifier:kContainerID];
+        _ckPrivateDB = [_ckContainer privateCloudDatabase];
+        _ckZoneID    = [[CKRecordZoneID alloc] initWithZoneName:kZoneName
+                                                      ownerName:CKCurrentUserDefaultName];
+    });
+    return YES;
+}
+
+
+static char *ck_copy_json(id object) {
+    if (!object || ![NSJSONSerialization isValidJSONObject:object]) {
+        return strdup("{\"error\":\"invalid-json\"}");
+    }
+    NSError *err = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:&err];
+    if (!data || err) return strdup("{\"error\":\"json-encode-failed\"}");
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!json) return strdup("{\"error\":\"json-encode-failed\"}");
+    const char *utf8 = [json UTF8String];
+    return utf8 ? strdup(utf8) : strdup("{\"error\":\"json-encode-failed\"}");
+}
+
+
+static NSNumber *ck_retry_after_seconds_at_depth(NSError *error, NSUInteger depth) {
+    if (!error || depth >= 8) return nil;
+    id retryAfter = [error userInfo][CKErrorRetryAfterKey];
+    NSNumber *longest = [retryAfter isKindOfClass:[NSNumber class]] ? (NSNumber *)retryAfter : nil;
+    id underlying = [error userInfo][NSUnderlyingErrorKey];
+    if ([underlying isKindOfClass:[NSError class]]) {
+        NSNumber *nested = ck_retry_after_seconds_at_depth((NSError *)underlying, depth + 1);
+        if (nested && (!longest || nested.doubleValue > longest.doubleValue)) longest = nested;
+    }
+    id partial = [error userInfo][CKPartialErrorsByItemIDKey];
+    if ([partial isKindOfClass:[NSDictionary class]]) {
+        for (id value in [(NSDictionary *)partial allValues]) {
+            if (![value isKindOfClass:[NSError class]]) continue;
+            NSNumber *nested = ck_retry_after_seconds_at_depth((NSError *)value, depth + 1);
+            if (nested && (!longest || [nested doubleValue] > [longest doubleValue])) {
+                longest = nested;
+            }
+        }
+    }
+    return longest;
+}
+
+static NSNumber *ck_retry_after_seconds(NSError *error) {
+    return ck_retry_after_seconds_at_depth(error, 0);
+}
+
+static char *ck_error_json(NSError *error) {
+    NSString *msg = [error localizedDescription] ?: @"unknown error";
+
+
+    NSNumber *retryAfter = ck_retry_after_seconds(error);
+    if (retryAfter) {
+        msg = [NSString stringWithFormat:@"%@ [retryAfter=%@]", msg, retryAfter];
+    }
+    return ck_copy_json(@{@"error": msg, @"errorCode": @([error code])});
+}
+
+static BOOL ck_error_is_only_unknown_item(NSError *error) {
+    if (!error || ![error.domain isEqualToString:CKErrorDomain]) return NO;
+    if (error.code == CKErrorUnknownItem) return YES;
+    if (error.code != CKErrorPartialFailure) return NO;
+
+    NSDictionary *partials = error.userInfo[CKPartialErrorsByItemIDKey];
+    if (![partials isKindOfClass:[NSDictionary class]] || partials.count == 0) return NO;
+    for (id value in partials.allValues) {
+        if (![value isKindOfClass:[NSError class]]) return NO;
+        NSError *partial = (NSError *)value;
+        if (![partial.domain isEqualToString:CKErrorDomain] ||
+            partial.code != CKErrorUnknownItem) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+static char *ck_success_json(void) {
+    return strdup("{\"ok\":true}");
+}
+
+
+static const NSInteger kCKServerErrorUnknownRecordType = 2003;
+
+
+static BOOL ck_is_unknown_record_type(NSError *error) {
+    NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
+    if ([underlying isKindOfClass:[NSError class]] &&
+        underlying.code == kCKServerErrorUnknownRecordType) {
+        return YES;
+    }
+    return NO;
+}
+
+
+typedef NS_ENUM(NSInteger, MWFieldKind) {
+    MWFieldKindString,
+    MWFieldKindInt,
+    MWFieldKindBool,
+    MWFieldKindStringArray,
+    MWFieldKindJsonString,
+    MWFieldKindDate,
+};
+
+typedef struct {
+    const char *jsKey;
+    const char *ckKey;
+    MWFieldKind kind;
+} MWFieldSpec;
+
+static const MWFieldSpec kTaskFields[] = {
+    {"title",          "title",           MWFieldKindString},
+    {"status",         "status",          MWFieldKindString},
+    {"priority",       "priority",        MWFieldKindString},
+    {"energyLevel",    "energyLevel",     MWFieldKindString},
+    {"assignedTo",     "assignedTo",      MWFieldKindString},
+    {"taskMode",       "taskMode",        MWFieldKindString},
+    {"startTime",      "startTime",       MWFieldKindDate},
+    {"relativeStartOffset", "relativeStartOffset", MWFieldKindJsonString},
+    {"dueDate",        "dueDate",         MWFieldKindDate},
+    {"recurrence",     "recurrence",      MWFieldKindJsonString},
+    {"showFutureRecurrence", "showFutureRecurrence", MWFieldKindBool},
+    {"pushCount",      "pushCount",       MWFieldKindInt},
+    {"tags",           "tags",            MWFieldKindStringArray},
+    {"contexts",       "contexts",        MWFieldKindStringArray},
+    {"checklist",      "checklist",       MWFieldKindJsonString},
+    {"description",    "taskDescription", MWFieldKindString},
+    {"textDirection",  "textDirection",   MWFieldKindString},
+    {"attachments",    "attachments",     MWFieldKindJsonString},
+    {"location",       "location",        MWFieldKindString},
+    {"projectId",      "projectId",       MWFieldKindString},
+    {"sectionId",      "sectionId",       MWFieldKindString},
+    {"viewSectionIds", "viewSectionIds",  MWFieldKindJsonString},
+    {"areaId",         "areaId",          MWFieldKindString},
+    {"isFocusedToday", "isFocusedToday",  MWFieldKindBool},
+    {"timeEstimate",   "timeEstimate",    MWFieldKindString},
+    {"timeSpentMinutes", "timeSpentMinutes", MWFieldKindInt},
+    {"focusOrder",       "focusOrder",       MWFieldKindInt},
+    {"suppressStrideReminders", "suppressStrideReminders", MWFieldKindBool},
+    {"reminderPolicy", "reminderPolicy", MWFieldKindString},
+    {"repeatReminderMinutes", "repeatReminderMinutes", MWFieldKindInt},
+    {"dueReminderLeadMinutes", "dueReminderLeadMinutes", MWFieldKindInt},
+    {"startReminderLeadMinutes", "startReminderLeadMinutes", MWFieldKindInt},
+    {"reviewAt",       "reviewAt",        MWFieldKindDate},
+    {"completedAt",    "completedAt",     MWFieldKindDate},
+    {"cancelledAt",    "cancelledAt",     MWFieldKindDate},
+    {"archivedAt",     "archivedAt",      MWFieldKindDate},
+    {"statusBeforeProjectArchive", "statusBeforeProjectArchive", MWFieldKindString},
+    {"completedAtBeforeProjectArchive", "completedAtBeforeProjectArchive", MWFieldKindDate},
+    {"isFocusedTodayBeforeProjectArchive", "isFocusedTodayBeforeProjectArchive", MWFieldKindBool},
+    {"projectArchivedAt", "projectArchivedAt", MWFieldKindDate},
+    {"rev",            "rev",             MWFieldKindInt},
+    {"revBy",          "revBy",           MWFieldKindString},
+    {"createdAt",      "createdAt",       MWFieldKindDate},
+    {"updatedAt",      "updatedAt",       MWFieldKindDate},
+    {"deletedAt",      "deletedAt",       MWFieldKindDate},
+    {"purgedAt",       "purgedAt",        MWFieldKindDate},
+    {"order",          "sortOrder",       MWFieldKindInt},
+    {"orderNum",       "orderNum",        MWFieldKindInt},
+};
+static const size_t kTaskFieldsCount = sizeof(kTaskFields) / sizeof(kTaskFields[0]);
+
+static const MWFieldSpec kProjectFields[] = {
+    {"title",        "title",        MWFieldKindString},
+    {"status",       "status",       MWFieldKindString},
+    {"color",        "color",        MWFieldKindString},
+    {"colorOverride", "colorOverride", MWFieldKindString},
+    {"order",        "sortOrder",    MWFieldKindInt},
+    {"tagIds",       "tagIds",       MWFieldKindStringArray},
+    {"isSequential", "isSequential", MWFieldKindBool},
+    {"sequentialScope", "sequentialScope", MWFieldKindString},
+    {"perSectionFlow", "perSectionFlow", MWFieldKindBool},
+    {"taskSortBy",   "taskSortBy",   MWFieldKindString},
+    {"isFocused",    "isFocused",    MWFieldKindBool},
+    {"supportNotes", "supportNotes", MWFieldKindString},
+    {"attachments",  "attachments",  MWFieldKindJsonString},
+    {"dueDate",      "dueDate",      MWFieldKindDate},
+    {"reviewAt",     "reviewAt",     MWFieldKindDate},
+    {"cancelledAt",  "cancelledAt",  MWFieldKindDate},
+    {"archivedAt",   "archivedAt",   MWFieldKindDate},
+    {"areaId",       "areaId",       MWFieldKindString},
+    {"areaTitle",    "areaTitle",    MWFieldKindString},
+    {"viewSectionIds", "viewSectionIds", MWFieldKindJsonString},
+    {"rev",          "rev",          MWFieldKindInt},
+    {"revBy",        "revBy",        MWFieldKindString},
+    {"createdAt",    "createdAt",    MWFieldKindDate},
+    {"updatedAt",    "updatedAt",    MWFieldKindDate},
+    {"deletedAt",    "deletedAt",    MWFieldKindDate},
+    {"purgedAt",     "purgedAt",     MWFieldKindDate},
+    {"startDate",    "startDateText", MWFieldKindDate},
+};
+static const size_t kProjectFieldsCount = sizeof(kProjectFields) / sizeof(kProjectFields[0]);
+
+static const MWFieldSpec kSectionFields[] = {
+    {"projectId",   "projectId",          MWFieldKindString},
+    {"title",       "title",              MWFieldKindString},
+    {"description", "sectionDescription", MWFieldKindString},
+    {"order",       "sortOrder",          MWFieldKindInt},
+    {"isCollapsed", "isCollapsed",        MWFieldKindBool},
+    {"isSequential", "isSequential",      MWFieldKindBool},
+    {"rev",         "rev",                MWFieldKindInt},
+    {"revBy",       "revBy",              MWFieldKindString},
+    {"createdAt",   "createdAt",          MWFieldKindDate},
+    {"updatedAt",   "updatedAt",          MWFieldKindDate},
+    {"deletedAt",   "deletedAt",          MWFieldKindDate},
+    {"deletedAtBeforeProjectArchive", "deletedAtBeforeProjectArchive", MWFieldKindDate},
+    {"projectArchivedAt", "projectArchivedAt", MWFieldKindDate},
+};
+static const size_t kSectionFieldsCount = sizeof(kSectionFields) / sizeof(kSectionFields[0]);
+
+static const MWFieldSpec kAreaFields[] = {
+    {"name",      "name",      MWFieldKindString},
+    {"color",     "color",     MWFieldKindString},
+    {"icon",      "icon",      MWFieldKindString},
+    {"order",     "sortOrder", MWFieldKindInt},
+    {"rev",       "rev",       MWFieldKindInt},
+    {"revBy",     "revBy",     MWFieldKindString},
+    {"createdAt", "createdAt", MWFieldKindDate},
+    {"updatedAt", "updatedAt", MWFieldKindDate},
+    {"deletedAt", "deletedAt", MWFieldKindDate},
+};
+static const size_t kAreaFieldsCount = sizeof(kAreaFields) / sizeof(kAreaFields[0]);
+
+static const MWFieldSpec kPersonFields[] = {
+    {"name",          "name",          MWFieldKindString},
+    {"note",          "note",          MWFieldKindString},
+    {"referenceLink", "referenceLink", MWFieldKindString},
+    {"rev",           "rev",           MWFieldKindInt},
+    {"revBy",         "revBy",         MWFieldKindString},
+    {"createdAt",     "createdAt",     MWFieldKindDate},
+    {"updatedAt",     "updatedAt",     MWFieldKindDate},
+    {"deletedAt",     "deletedAt",     MWFieldKindDate},
+};
+static const size_t kPersonFieldsCount = sizeof(kPersonFields) / sizeof(kPersonFields[0]);
+
+static const MWFieldSpec kSettingsFields[] = {
+    {"payload",   "payload",   MWFieldKindJsonString},
+    {"updatedAt", "updatedAt", MWFieldKindDate},
+};
+static const size_t kSettingsFieldsCount = sizeof(kSettingsFields) / sizeof(kSettingsFields[0]);
+
+static void ck_get_field_specs(NSString *recordType,
+                               const MWFieldSpec **outSpecs,
+                               size_t *outCount) {
+    if ([recordType isEqualToString:@"StrideTask"]) {
+        *outSpecs = kTaskFields; *outCount = kTaskFieldsCount;
+    } else if ([recordType isEqualToString:@"StrideProject"]) {
+        *outSpecs = kProjectFields; *outCount = kProjectFieldsCount;
+    } else if ([recordType isEqualToString:@"StrideSection"]) {
+        *outSpecs = kSectionFields; *outCount = kSectionFieldsCount;
+    } else if ([recordType isEqualToString:@"StrideArea"]) {
+        *outSpecs = kAreaFields; *outCount = kAreaFieldsCount;
+    } else if ([recordType isEqualToString:@"StridePerson"]) {
+        *outSpecs = kPersonFields; *outCount = kPersonFieldsCount;
+    } else if ([recordType isEqualToString:@"StrideSettings"]) {
+        *outSpecs = kSettingsFields; *outCount = kSettingsFieldsCount;
+    } else {
+        *outSpecs = NULL; *outCount = 0;
+    }
+}
+
+
+static void ck_set_field(CKRecord *record, NSString *key, id value) {
+    id current = record[key];
+    if ((!current && !value) || [current isEqual:value]) return;
+    record[key] = value;
+}
+
+static void ck_set_json_field(CKRecord *record, NSString *key, NSString *value) {
+    NSString *old = record[key];
+    if ([old isKindOfClass:[NSString class]] && ![old isEqualToString:value]) {
+        id oldJSON = [NSJSONSerialization JSONObjectWithData:[old dataUsingEncoding:NSUTF8StringEncoding]
+                                                    options:0 error:nil];
+        id newJSON = [NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding]
+                                                    options:0 error:nil];
+        NSData *oldCanonical = oldJSON ? [NSJSONSerialization dataWithJSONObject:oldJSON options:NSJSONWritingSortedKeys error:nil] : nil;
+        NSData *newCanonical = newJSON ? [NSJSONSerialization dataWithJSONObject:newJSON options:NSJSONWritingSortedKeys error:nil] : nil;
+        if (oldCanonical && [oldCanonical isEqualToData:newCanonical]) return;
+    }
+    ck_set_field(record, key, value);
+}
+
+static void ck_apply_fields(NSDictionary *json, CKRecord *record, NSString *recordType) {
+    const MWFieldSpec *specs; size_t count;
+    ck_get_field_specs(recordType, &specs, &count);
+
+    for (size_t i = 0; i < count; i++) {
+        NSString *jsKey = [NSString stringWithUTF8String:specs[i].jsKey];
+        NSString *ckKey = [NSString stringWithUTF8String:specs[i].ckKey];
+        id value = json[jsKey];
+
+        if (!value || [value isKindOfClass:[NSNull class]]) {
+            ck_set_field(record, ckKey, nil);
+            continue;
+        }
+        switch (specs[i].kind) {
+            case MWFieldKindString:
+            case MWFieldKindDate:
+                if ([value isKindOfClass:[NSString class]]) ck_set_field(record, ckKey, value);
+                break;
+            case MWFieldKindInt:
+                if ([value isKindOfClass:[NSNumber class]]) ck_set_field(record, ckKey, @([value longLongValue]));
+                break;
+            case MWFieldKindBool:
+                if ([value isKindOfClass:[NSNumber class]]) ck_set_field(record, ckKey, @([value boolValue] ? 1LL : 0LL));
+                break;
+            case MWFieldKindStringArray:
+                if ([value isKindOfClass:[NSArray class]]) ck_set_field(record, ckKey, value);
+                break;
+            case MWFieldKindJsonString:
+                if ([value isKindOfClass:[NSString class]]) {
+                    ck_set_json_field(record, ckKey, value);
+                } else if ([NSJSONSerialization isValidJSONObject:value]) {
+                    NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
+                    if (data) {
+                        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                        if (str) ck_set_json_field(record, ckKey, str);
+                    }
+                }
+                break;
+        }
+    }
+}
+
+static NSDictionary *ck_json_from_record(CKRecord *record) {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"id"] = record.recordID.recordName;
+
+    NSString *recordType = record.recordType;
+    const MWFieldSpec *specs; size_t count;
+    ck_get_field_specs(recordType, &specs, &count);
+
+    for (size_t i = 0; i < count; i++) {
+        NSString *ckKey = [NSString stringWithUTF8String:specs[i].ckKey];
+        NSString *jsKey = [NSString stringWithUTF8String:specs[i].jsKey];
+        id value = record[ckKey];
+        if (!value) continue;
+
+        switch (specs[i].kind) {
+            case MWFieldKindString:
+            case MWFieldKindDate:
+                if ([value isKindOfClass:[NSString class]]) result[jsKey] = value;
+                break;
+            case MWFieldKindInt:
+                if ([value isKindOfClass:[NSNumber class]]) result[jsKey] = value;
+                break;
+            case MWFieldKindBool:
+
+
+                if ([value isKindOfClass:[NSNumber class]]) result[jsKey] = ([value longLongValue] == 1) ? @YES : @NO;
+                break;
+            case MWFieldKindStringArray:
+                if ([value isKindOfClass:[NSArray class]]) result[jsKey] = value;
+                break;
+            case MWFieldKindJsonString:
+                if ([value isKindOfClass:[NSString class]]) {
+                    NSData *data = [(NSString *)value dataUsingEncoding:NSUTF8StringEncoding];
+                    if (data) {
+                        id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                        result[jsKey] = parsed ?: value;
+                    } else {
+                        result[jsKey] = value;
+                    }
+                }
+                break;
+        }
+    }
+    return result;
+}
+
+#if defined(STRIDE_NATIVE_MAPPER_FIXTURE_CHECK)
+
+
+char *stride_cloudkit_round_trip_task_json(const char *json_utf8) {
+    @autoreleasepool {
+        if (!json_utf8) return NULL;
+
+        NSData *data = [NSData dataWithBytes:json_utf8 length:strlen(json_utf8)];
+        NSError *error = nil;
+        id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+        if (error || ![parsed isKindOfClass:[NSDictionary class]]) return NULL;
+
+        NSDictionary *json = (NSDictionary *)parsed;
+        NSString *taskID = json[@"id"];
+        if (![taskID isKindOfClass:[NSString class]] || taskID.length == 0) return NULL;
+
+        CKRecordZoneID *zoneID = [[CKRecordZoneID alloc] initWithZoneName:@"StrideFixtureZone"
+                                                                ownerName:CKCurrentUserDefaultName];
+        CKRecordID *recordID = [[CKRecordID alloc] initWithRecordName:taskID zoneID:zoneID];
+        CKRecord *record = [[CKRecord alloc] initWithRecordType:@"StrideTask" recordID:recordID];
+        ck_apply_fields(json, record, @"StrideTask");
+        return ck_copy_json(ck_json_from_record(record));
+    }
+}
+#endif
+
+
+static NSString *ck_serialize_token(CKServerChangeToken *token) {
+    if (!token) return nil;
+    NSError *err = nil;
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:token
+                                         requiringSecureCoding:YES
+                                                         error:&err];
+    if (!data || err) {
+        NSLog(@"[Stride] Failed to serialize change token: %@", err);
+        return nil;
+    }
+    return [data base64EncodedStringWithOptions:0];
+}
+
+static CKServerChangeToken *ck_deserialize_token(NSString *base64) {
+    if (!base64 || [base64 length] == 0) return nil;
+    NSData *data = [[NSData alloc] initWithBase64EncodedString:base64 options:0];
+    if (!data) return nil;
+    NSError *err = nil;
+    CKServerChangeToken *token = [NSKeyedUnarchiver unarchivedObjectOfClass:[CKServerChangeToken class]
+                                                                   fromData:data
+                                                                      error:&err];
+    if (err) {
+        NSLog(@"[Stride] Failed to deserialize change token: %@", err);
+        return nil;
+    }
+    return token;
+}
+
+
+char *stride_cloudkit_account_status(void) {
+    @autoreleasepool {
+        if (!stride_ck_ensure_container()) return ck_copy_json(@{@"status": @"unsupported"});
+
+        __block CKAccountStatus status = CKAccountStatusCouldNotDetermine;
+        __block NSError *opError = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+        [_ckContainer accountStatusWithCompletionHandler:^(CKAccountStatus s, NSError *error) {
+            status = s;
+            opError = error;
+            dispatch_semaphore_signal(sem);
+        }];
+
+        long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+        if (waited != 0) return ck_copy_json(@{@"status": @"timeout"});
+        if (opError) return ck_error_json(opError);
+
+        NSString *str;
+        switch (status) {
+            case CKAccountStatusAvailable:              str = @"available"; break;
+            case CKAccountStatusNoAccount:              str = @"noAccount"; break;
+            case CKAccountStatusRestricted:             str = @"restricted"; break;
+            case CKAccountStatusTemporarilyUnavailable: str = @"temporarilyUnavailable"; break;
+            default:                                    str = @"unknown"; break;
+        }
+        return ck_copy_json(@{@"status": str});
+    }
+}
+
+char *stride_cloudkit_ensure_zone(void) {
+    @autoreleasepool {
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+        CKRecordZone *zone = [[CKRecordZone alloc] initWithZoneID:_ckZoneID];
+        CKModifyRecordZonesOperation *op =
+            [[CKModifyRecordZonesOperation alloc] initWithRecordZonesToSave:@[zone]
+                                                   recordZoneIDsToDelete:nil];
+        op.qualityOfService = NSQualityOfServiceUserInitiated;
+
+        __block NSError *opError = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+        op.modifyRecordZonesCompletionBlock = ^(NSArray *saved __unused,
+                                                 NSArray *deleted __unused,
+                                                 NSError *error) {
+            opError = error;
+            dispatch_semaphore_signal(sem);
+        };
+        [_ckPrivateDB addOperation:op];
+
+        long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+        if (waited != 0) return ck_copy_json(@{@"error": @"timeout"});
+        if (opError) return ck_error_json(opError);
+        return ck_success_json();
+    }
+}
+
+char *stride_cloudkit_ensure_subscription(void) {
+    @autoreleasepool {
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+
+        __block BOOL alreadyExists = NO;
+        dispatch_semaphore_t fetchSem = dispatch_semaphore_create(0);
+        [_ckPrivateDB fetchSubscriptionWithID:kSubscriptionID
+                            completionHandler:^(CKSubscription *sub, NSError *error __unused) {
+            if (sub) alreadyExists = YES;
+            dispatch_semaphore_signal(fetchSem);
+        }];
+        dispatch_semaphore_wait(fetchSem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+        if (alreadyExists) return ck_success_json();
+
+
+        CKRecordZoneSubscription *sub =
+            [[CKRecordZoneSubscription alloc] initWithZoneID:_ckZoneID
+                                              subscriptionID:kSubscriptionID];
+        CKNotificationInfo *notifInfo = [[CKNotificationInfo alloc] init];
+        notifInfo.shouldSendContentAvailable = YES;
+        sub.notificationInfo = notifInfo;
+
+        CKModifySubscriptionsOperation *op =
+            [[CKModifySubscriptionsOperation alloc] initWithSubscriptionsToSave:@[sub]
+                                                       subscriptionIDsToDelete:nil];
+        op.qualityOfService = NSQualityOfServiceUtility;
+
+        __block NSError *opError = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        op.modifySubscriptionsCompletionBlock = ^(NSArray *saved __unused,
+                                                   NSArray *deleted __unused,
+                                                   NSError *error) {
+            opError = error;
+            dispatch_semaphore_signal(sem);
+        };
+        [_ckPrivateDB addOperation:op];
+
+        long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+        if (waited != 0) return ck_copy_json(@{@"error": @"subscription-timeout"});
+        if (opError) return ck_error_json(opError);
+        return ck_success_json();
+    }
+}
+
+char *stride_cloudkit_fetch_all_records(const char *record_type_cstr) {
+    @autoreleasepool {
+        if (!record_type_cstr) return strdup("[]");
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+        NSString *recordType = [NSString stringWithUTF8String:record_type_cstr];
+        NSMutableArray<NSDictionary *> *allResults = [NSMutableArray array];
+
+        CKQuery *query = [[CKQuery alloc] initWithRecordType:recordType
+                                                   predicate:[NSPredicate predicateWithValue:YES]];
+        __block CKQueryCursor *nextCursor = nil;
+        BOOL firstPass = YES;
+
+        do {
+            CKQueryOperation *op;
+            if (firstPass) {
+                op = [[CKQueryOperation alloc] initWithQuery:query];
+                firstPass = NO;
+            } else {
+                op = [[CKQueryOperation alloc] initWithCursor:nextCursor];
+            }
+            op.zoneID = _ckZoneID;
+            op.qualityOfService = NSQualityOfServiceUserInitiated;
+
+            __block NSMutableArray<CKRecord *> *batchRecords = [NSMutableArray array];
+            __block CKQueryCursor *batchCursor = nil;
+            __block NSError *batchError = nil;
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+            op.recordFetchedBlock = ^(CKRecord *record) {
+                @synchronized (batchRecords) {
+                    [batchRecords addObject:record];
+                }
+            };
+            op.queryCompletionBlock = ^(CKQueryCursor *cursor, NSError *error) {
+                batchCursor = cursor;
+                batchError = error;
+                dispatch_semaphore_signal(sem);
+            };
+            [_ckPrivateDB addOperation:op];
+
+            long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+            if (waited != 0) {
+                [op cancel];
+                return ck_copy_json(@{@"error": @"fetch-timeout"});
+            }
+            if (batchError) {
+
+
+                if (batchError.code == CKErrorUnknownItem ||
+                    (batchError.code == CKErrorServerRejectedRequest &&
+                     ck_is_unknown_record_type(batchError))) {
+                    return strdup("[]");
+                }
+                return ck_error_json(batchError);
+            }
+
+            for (CKRecord *r in batchRecords) {
+                [allResults addObject:ck_json_from_record(r)];
+            }
+            nextCursor = batchCursor;
+        } while (nextCursor != nil);
+
+        return ck_copy_json(allResults);
+    }
+}
+
+char *stride_cloudkit_fetch_changes(const char *change_token_base64_cstr) {
+    @autoreleasepool {
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+        NSString *tokenB64 = change_token_base64_cstr
+            ? [NSString stringWithUTF8String:change_token_base64_cstr]
+            : nil;
+        CKServerChangeToken *previousToken = ck_deserialize_token(tokenB64);
+
+        CKFetchRecordZoneChangesOptions *options =
+            [[CKFetchRecordZoneChangesOptions alloc] init];
+        options.previousServerChangeToken = previousToken;
+
+        CKFetchRecordZoneChangesOperation *op =
+            [[CKFetchRecordZoneChangesOperation alloc]
+                initWithRecordZoneIDs:@[_ckZoneID]
+                optionsByRecordZoneID:@{_ckZoneID: options}];
+        op.fetchAllChanges = YES;
+        op.qualityOfService = NSQualityOfServiceUserInitiated;
+
+        dispatch_queue_t cbQueue = dispatch_queue_create("com.ishaanpilar.stride.ckchanges", DISPATCH_QUEUE_SERIAL);
+
+        __block NSMutableDictionary<NSString *, NSMutableArray *> *recordsByType = [NSMutableDictionary dictionary];
+        __block NSMutableDictionary<NSString *, NSMutableArray *> *deletedByType = [NSMutableDictionary dictionary];
+        __block NSString *newTokenB64 = nil;
+        __block BOOL tokenExpired = NO;
+        __block NSError *zoneError = nil;
+
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+        op.recordChangedBlock = ^(CKRecord *record) {
+            dispatch_sync(cbQueue, ^{
+                NSString *type = record.recordType;
+                if (!recordsByType[type]) recordsByType[type] = [NSMutableArray array];
+                [recordsByType[type] addObject:ck_json_from_record(record)];
+            });
+        };
+
+        op.recordWithIDWasDeletedBlock = ^(CKRecordID *recordID, NSString *recordType) {
+            dispatch_sync(cbQueue, ^{
+                if (!deletedByType[recordType]) deletedByType[recordType] = [NSMutableArray array];
+                [deletedByType[recordType] addObject:recordID.recordName];
+            });
+        };
+
+        op.recordZoneFetchCompletionBlock = ^(CKRecordZoneID *zoneID __unused,
+                                               CKServerChangeToken *serverChangeToken,
+                                               NSData *clientTokenData __unused,
+                                               BOOL moreComing __unused,
+                                               NSError *error) {
+            dispatch_sync(cbQueue, ^{
+                if (error) {
+                    if ([error.domain isEqualToString:CKErrorDomain] &&
+                        error.code == CKErrorChangeTokenExpired) {
+                        tokenExpired = YES;
+                    } else {
+                        zoneError = error;
+                    }
+                } else {
+                    newTokenB64 = ck_serialize_token(serverChangeToken);
+                }
+            });
+        };
+
+        op.fetchRecordZoneChangesCompletionBlock = ^(NSError *error __unused) {
+            dispatch_semaphore_signal(sem);
+        };
+
+        [_ckPrivateDB addOperation:op];
+        long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+
+        if (waited != 0) {
+            [op cancel];
+            return ck_copy_json(@{@"error": @"timeout"});
+        }
+        if (tokenExpired) return ck_copy_json(@{@"tokenExpired": @YES, @"records": @{}, @"deletedIDs": @{}});
+        if (zoneError) return ck_error_json(zoneError);
+
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        result[@"records"] = recordsByType;
+        result[@"deletedIDs"] = deletedByType;
+        result[@"tokenExpired"] = @NO;
+        if (newTokenB64) result[@"changeToken"] = newTokenB64;
+
+        return ck_copy_json(result);
+    }
+}
+
+
+static NSMutableDictionary<CKRecordID *, CKRecord *> *
+ck_fetch_records_by_id(NSArray<CKRecordID *> *ids, NSError **outError) {
+    NSMutableDictionary<CKRecordID *, CKRecord *> *results = [NSMutableDictionary dictionary];
+    if (ids.count == 0) return results;
+
+    CKFetchRecordsOperation *op = [[CKFetchRecordsOperation alloc] initWithRecordIDs:ids];
+    op.qualityOfService = NSQualityOfServiceUserInitiated;
+
+    __block NSMutableArray<NSError *> *perRecordErrors = [NSMutableArray array];
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    op.fetchRecordsCompletionBlock = ^(NSDictionary<CKRecordID *, CKRecord *> *recordsByID,
+                                       NSError *error) {
+
+        if (recordsByID) {
+            [results addEntriesFromDictionary:recordsByID];
+        }
+        if (error) {
+            if ([error.domain isEqualToString:CKErrorDomain] &&
+                error.code == CKErrorPartialFailure) {
+
+                NSDictionary *partials = error.userInfo[CKPartialErrorsByItemIDKey];
+                for (CKRecordID *failedID in partials) {
+                    NSError *perErr = partials[failedID];
+                    if ([perErr.domain isEqualToString:CKErrorDomain] &&
+                        perErr.code == CKErrorUnknownItem) {
+                        continue;
+                    }
+                    [perRecordErrors addObject:perErr];
+                }
+            } else {
+                [perRecordErrors addObject:error];
+            }
+        }
+        dispatch_semaphore_signal(sem);
+    };
+    [_ckPrivateDB addOperation:op];
+    long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+
+    if (waited != 0) {
+        [op cancel];
+        if (outError) *outError = [NSError errorWithDomain:CKErrorDomain code:CKErrorNetworkFailure
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"fetch-by-id-timeout"}];
+        return nil;
+    }
+    if (perRecordErrors.count > 0) {
+        if (outError) {
+            NSError *primary = perRecordErrors.firstObject;
+            NSMutableDictionary *details = [primary.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+            for (NSError *candidate in perRecordErrors) {
+                NSNumber *delay = ck_retry_after_seconds(candidate);
+                NSNumber *longest = details[CKErrorRetryAfterKey];
+                if (delay && (!longest || delay.doubleValue > longest.doubleValue)) {
+                    details[CKErrorRetryAfterKey] = delay;
+                }
+            }
+            *outError = [NSError errorWithDomain:primary.domain code:primary.code userInfo:details];
+        }
+        return nil;
+    }
+    return results;
+}
+
+static NSString * const kStrideAttachmentRecordType = @"StrideAttachment";
+static NSString * const kStrideAttachmentAssetField = @"asset";
+
+static NSURL *ck_file_url_from_path(NSString *path) {
+    if (!path || path.length == 0) return nil;
+    NSURL *url = [NSURL URLWithString:path];
+    if (url && url.isFileURL) return url;
+    return [NSURL fileURLWithPath:path];
+}
+
+static NSDictionary *ck_attachment_metadata_from_record(CKRecord *record) {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"recordName"] = record.recordID.recordName;
+    NSArray<NSString *> *stringFields = @[
+        @"attachmentId",
+        @"ownerType",
+        @"ownerId",
+        @"title",
+        @"mimeType",
+        @"fileHash",
+        @"updatedAt",
+        @"deletedAt",
+    ];
+    for (NSString *field in stringFields) {
+        id value = record[field];
+        if ([value isKindOfClass:[NSString class]]) result[field] = value;
+    }
+    id size = record[@"size"];
+    if ([size isKindOfClass:[NSNumber class]]) result[@"size"] = size;
+    return result;
+}
+
+static void ck_apply_attachment_metadata(NSDictionary *metadata, CKRecord *record) {
+    NSArray<NSString *> *stringFields = @[
+        @"attachmentId",
+        @"ownerType",
+        @"ownerId",
+        @"title",
+        @"mimeType",
+        @"fileHash",
+        @"updatedAt",
+        @"deletedAt",
+    ];
+    for (NSString *field in stringFields) {
+        id value = metadata[field];
+        if ([value isKindOfClass:[NSString class]] && [value length] > 0) record[field] = value;
+        else record[field] = nil;
+    }
+    id size = metadata[@"size"];
+    if ([size isKindOfClass:[NSNumber class]]) record[@"size"] = size;
+    else record[@"size"] = nil;
+}
+
+static char *ck_save_single_record(CKRecord *record, NSString *timeoutName) {
+    CKModifyRecordsOperation *op =
+        [[CKModifyRecordsOperation alloc] initWithRecordsToSave:@[record] recordIDsToDelete:nil];
+    op.savePolicy = CKRecordSaveChangedKeys;
+    op.qualityOfService = NSQualityOfServiceUserInitiated;
+    __block NSError *saveError = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    op.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *saved __unused,
+                                        NSArray<CKRecordID *> *deleted __unused,
+                                        NSError *error) {
+        saveError = error;
+        dispatch_semaphore_signal(sem);
+    };
+    [_ckPrivateDB addOperation:op];
+    long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+    if (waited != 0) return ck_copy_json(@{@"error": timeoutName ?: @"save-timeout"});
+    if (saveError) return ck_error_json(saveError);
+    return NULL;
+}
+
+char *stride_cloudkit_save_attachment_asset(const char *record_name_cstr,
+                                             const char *file_path_cstr,
+                                             const char *metadata_json_cstr) {
+    @autoreleasepool {
+        if (!record_name_cstr || !file_path_cstr || !metadata_json_cstr) {
+            return ck_copy_json(@{@"error": @"invalid-attachment-input"});
+        }
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+        NSString *recordName = [NSString stringWithUTF8String:record_name_cstr];
+        NSString *filePath = [NSString stringWithUTF8String:file_path_cstr];
+        NSData *jsonData = [[NSString stringWithUTF8String:metadata_json_cstr] dataUsingEncoding:NSUTF8StringEncoding];
+        if (!jsonData) return ck_copy_json(@{@"error": @"invalid-attachment-metadata"});
+        NSDictionary *metadata = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil];
+        if (![metadata isKindOfClass:[NSDictionary class]]) {
+            return ck_copy_json(@{@"error": @"invalid-attachment-metadata"});
+        }
+        NSURL *fileURL = ck_file_url_from_path(filePath);
+        if (!fileURL) return ck_copy_json(@{@"error": @"invalid-attachment-file"});
+
+        CKRecordID *recordID = [[CKRecordID alloc] initWithRecordName:recordName zoneID:_ckZoneID];
+        NSError *fetchError = nil;
+        NSDictionary *fetched = ck_fetch_records_by_id(@[recordID], &fetchError);
+        if (!fetched && fetchError) {
+            return ck_error_json(fetchError);
+        }
+        CKRecord *record = fetched[recordID] ?: [[CKRecord alloc] initWithRecordType:kStrideAttachmentRecordType recordID:recordID];
+        ck_apply_attachment_metadata(metadata, record);
+        record[kStrideAttachmentAssetField] = [[CKAsset alloc] initWithFileURL:fileURL];
+
+        char *saveError = ck_save_single_record(record, @"attachment-save-timeout");
+        if (saveError) return saveError;
+        return ck_copy_json(ck_attachment_metadata_from_record(record));
+    }
+}
+
+char *stride_cloudkit_fetch_attachment_asset(const char *record_name_cstr,
+                                              const char *target_path_cstr) {
+    @autoreleasepool {
+        if (!record_name_cstr || !target_path_cstr) {
+            return ck_copy_json(@{@"error": @"invalid-attachment-input"});
+        }
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+        NSString *recordName = [NSString stringWithUTF8String:record_name_cstr];
+        NSString *targetPath = [NSString stringWithUTF8String:target_path_cstr];
+        CKRecordID *recordID = [[CKRecordID alloc] initWithRecordName:recordName zoneID:_ckZoneID];
+        NSError *fetchError = nil;
+        NSDictionary *fetched = ck_fetch_records_by_id(@[recordID], &fetchError);
+        if (!fetched) {
+            if (ck_error_is_only_unknown_item(fetchError)) {
+                return ck_copy_json(@{
+                    @"error": @"attachment-record-not-found",
+                    @"errorCode": kAttachmentNotFoundErrorCode
+                });
+            }
+            return ck_error_json(fetchError);
+        }
+        CKRecord *record = fetched[recordID];
+        if (!record) {
+            return ck_copy_json(@{
+                @"error": @"attachment-record-not-found",
+                @"errorCode": kAttachmentNotFoundErrorCode
+            });
+        }
+        CKAsset *asset = record[kStrideAttachmentAssetField];
+        if (![asset isKindOfClass:[CKAsset class]] || !asset.fileURL) {
+            return ck_copy_json(@{
+                @"error": @"attachment-asset-missing",
+                @"errorCode": kAttachmentNotFoundErrorCode
+            });
+        }
+        NSURL *targetURL = ck_file_url_from_path(targetPath);
+        if (!targetURL) return ck_copy_json(@{@"error": @"invalid-attachment-target"});
+
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSError *fileError = nil;
+        [fm createDirectoryAtURL:[targetURL URLByDeletingLastPathComponent]
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:&fileError];
+        if (fileError) return ck_copy_json(@{@"error": fileError.localizedDescription ?: @"attachment-target-directory-failed"});
+        if ([fm fileExistsAtPath:targetURL.path]) {
+            [fm removeItemAtURL:targetURL error:nil];
+        }
+        if (![fm copyItemAtURL:asset.fileURL toURL:targetURL error:&fileError]) {
+            return ck_copy_json(@{@"error": fileError.localizedDescription ?: @"attachment-copy-failed"});
+        }
+
+        NSMutableDictionary *metadata = [ck_attachment_metadata_from_record(record) mutableCopy];
+        metadata[@"filePath"] = targetURL.path;
+        return ck_copy_json(metadata);
+    }
+}
+
+static NSNumber *ck_longest_retry_after(NSArray<NSError *> *errors) {
+    NSNumber *longest = nil;
+    for (NSError *candidate in errors) {
+        NSNumber *delay = ck_retry_after_seconds(candidate);
+        if (delay && (!longest || delay.doubleValue > longest.doubleValue)) longest = delay;
+    }
+    return longest;
+}
+
+
+static BOOL ck_wait_for_retry(NSNumber *delay, double *waitedSec) {
+    if (!delay || delay.doubleValue <= 0) return NO;
+    if (*waitedSec + delay.doubleValue > kMaxInlineRetryWaitSec) return NO;
+    [NSThread sleepForTimeInterval:delay.doubleValue];
+    *waitedSec += delay.doubleValue;
+    return YES;
+}
+
+
+static NSString *ck_step_detail(NSString *step, NSUInteger batchNumber, NSUInteger batchRecords,
+                                NSUInteger batchBytes, NSUInteger elapsedMs, double waitedSec) {
+    return [NSString stringWithFormat:@"[step=%@ batch=%lu records=%lu bytes=%lu ms=%lu waited=%.0f]",
+            step, (unsigned long)batchNumber, (unsigned long)batchRecords, (unsigned long)batchBytes,
+            (unsigned long)elapsedMs, waitedSec];
+}
+
+static NSString *ck_failure_message(NSArray<NSError *> *errors, NSString *fallback) {
+    NSError *primary = errors.firstObject;
+    for (NSError *candidate in errors) {
+        if (primary.code == CKErrorBatchRequestFailed && candidate.code != CKErrorBatchRequestFailed) {
+            primary = candidate;
+        }
+    }
+    NSString *message = primary.localizedDescription ?: fallback;
+    NSNumber *retryAfter = ck_longest_retry_after(errors);
+    return retryAfter ? [NSString stringWithFormat:@"%@ [retryAfter=%@]", message, retryAfter] : message;
+}
+
+char *stride_cloudkit_save_records(const char *record_type_cstr, const char *records_json_cstr, bool assume_new) {
+    @autoreleasepool {
+        if (!record_type_cstr || !records_json_cstr) {
+            return ck_copy_json(@{@"conflictIDs": @[]});
+        }
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+        NSString *recordType = [NSString stringWithUTF8String:record_type_cstr];
+        NSData *jsonData = [[NSString stringWithUTF8String:records_json_cstr] dataUsingEncoding:NSUTF8StringEncoding];
+        if (!jsonData) return ck_copy_json(@{@"error": @"invalid-json-input"});
+
+        NSArray<NSDictionary *> *jsonRecords = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil];
+        if (!jsonRecords || ![jsonRecords isKindOfClass:[NSArray class]] || jsonRecords.count == 0) {
+            return ck_copy_json(@{@"conflictIDs": @[]});
+        }
+
+
+        NSMutableArray<CKRecordID *> *recordIDs = [NSMutableArray array];
+        NSMutableDictionary<NSString *, NSNumber *> *bytesByID = [NSMutableDictionary dictionary];
+        for (NSDictionary *json in jsonRecords) {
+            NSString *rid = json[@"id"];
+            if ([rid isKindOfClass:[NSString class]] && rid.length > 0) {
+                [recordIDs addObject:[[CKRecordID alloc] initWithRecordName:rid zoneID:_ckZoneID]];
+                NSData *encoded = [NSJSONSerialization isValidJSONObject:json]
+                    ? [NSJSONSerialization dataWithJSONObject:json options:0 error:nil] : nil;
+                bytesByID[rid] = @(encoded.length);
+            }
+        }
+        double waitedSec = 0;
+
+
+        NSMutableDictionary<CKRecordID *, CKRecord *> *existingByID = [NSMutableDictionary dictionary];
+        for (NSUInteger i = 0; !assume_new && i < recordIDs.count; i += kBatchSize) {
+            NSUInteger end = MIN(i + kBatchSize, recordIDs.count);
+            NSArray<CKRecordID *> *batch = [recordIDs subarrayWithRange:NSMakeRange(i, end - i)];
+            NSUInteger batchBytes = 0;
+            for (CKRecordID *rid in batch) batchBytes += bytesByID[rid.recordName].unsignedIntegerValue;
+            NSError *fetchError = nil;
+            NSDate *started = [NSDate date];
+            NSDictionary *fetched = ck_fetch_records_by_id(batch, &fetchError);
+            if (!fetched && ck_wait_for_retry(ck_retry_after_seconds(fetchError), &waitedSec)) {
+                fetchError = nil;
+                started = [NSDate date];
+                fetched = ck_fetch_records_by_id(batch, &fetchError);
+            }
+            if (!fetched) {
+                NSUInteger ms = (NSUInteger)([[NSDate date] timeIntervalSinceDate:started] * 1000);
+                NSString *message = fetchError ? ck_failure_message(@[fetchError], @"fetch-failed") : @"fetch-failed";
+                return ck_copy_json(@{
+                    @"error": [NSString stringWithFormat:@"%@ %@", message,
+                               ck_step_detail(@"fetch", i / kBatchSize + 1, batch.count, batchBytes, ms, waitedSec)],
+                    @"errorCode": @(fetchError.code),
+                });
+            }
+            [existingByID addEntriesFromDictionary:fetched];
+        }
+
+
+        NSMutableArray<CKRecord *> *recordsToSave = [NSMutableArray array];
+        for (NSDictionary *json in jsonRecords) {
+            NSString *rid = json[@"id"];
+            if (![rid isKindOfClass:[NSString class]] || rid.length == 0) continue;
+
+            CKRecordID *recordID = [[CKRecordID alloc] initWithRecordName:rid zoneID:_ckZoneID];
+            CKRecord *existing = existingByID[recordID];
+            if (existing) {
+                ck_apply_fields(json, existing, recordType);
+                if (existing.changedKeys.count > 0) {
+                    [recordsToSave addObject:existing];
+                }
+            } else {
+                CKRecord *newRecord = [[CKRecord alloc] initWithRecordType:recordType recordID:recordID];
+                ck_apply_fields(json, newRecord, recordType);
+                [recordsToSave addObject:newRecord];
+            }
+        }
+
+        if (recordsToSave.count == 0) return ck_copy_json(@{@"conflictIDs": @[], @"savedCount": @0});
+
+
+        NSMutableArray<NSString *> *conflictIDs = [NSMutableArray array];
+        NSMutableArray<NSError *> *nonConflictErrors = [NSMutableArray array];
+        NSString *failedStep = nil;
+
+        NSUInteger savedCount = 0;
+        NSUInteger batchSize = kSaveBatchSize;
+        NSUInteger batchNumber = 1;
+        BOOL retriedThisBatch = NO;
+        NSUInteger i = 0;
+        while (i < recordsToSave.count) {
+            NSUInteger end = MIN(i + batchSize, recordsToSave.count);
+            NSArray<CKRecord *> *batch = [recordsToSave subarrayWithRange:NSMakeRange(i, end - i)];
+            NSUInteger batchBytes = 0;
+            for (CKRecord *record in batch) batchBytes += bytesByID[record.recordID.recordName].unsignedIntegerValue;
+
+            CKModifyRecordsOperation *saveOp =
+                [[CKModifyRecordsOperation alloc] initWithRecordsToSave:batch recordIDsToDelete:nil];
+            saveOp.savePolicy = CKRecordSaveChangedKeys;
+            saveOp.qualityOfService = NSQualityOfServiceUserInitiated;
+
+            __block NSMutableArray<NSString *> *batchConflicts = [NSMutableArray array];
+            __block NSMutableArray<NSError *> *batchErrors = [NSMutableArray array];
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+            saveOp.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *saved __unused,
+                                                     NSArray<CKRecordID *> *deleted __unused,
+                                                     NSError *error) {
+                if (error) {
+                    if ([error.domain isEqualToString:CKErrorDomain] &&
+                        error.code == CKErrorPartialFailure) {
+
+                        NSDictionary *partialErrors = error.userInfo[CKPartialErrorsByItemIDKey];
+                        for (CKRecordID *failedID in partialErrors) {
+                            NSError *perRecordError = partialErrors[failedID];
+                            if ([perRecordError.domain isEqualToString:CKErrorDomain] &&
+                                perRecordError.code == CKErrorServerRecordChanged) {
+                                [batchConflicts addObject:failedID.recordName];
+                            } else {
+                                [batchErrors addObject:perRecordError];
+                            }
+                        }
+                    } else {
+                        [batchErrors addObject:error];
+                    }
+                }
+                dispatch_semaphore_signal(sem);
+            };
+
+            NSDate *started = [NSDate date];
+            [_ckPrivateDB addOperation:saveOp];
+            long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+            NSUInteger ms = (NSUInteger)([[NSDate date] timeIntervalSinceDate:started] * 1000);
+            if (waited != 0) {
+                [saveOp cancel];
+                return ck_copy_json(@{@"error": [NSString stringWithFormat:@"save-timeout %@ [saved=%lu/%lu]",
+                    ck_step_detail(@"save", batchNumber, batch.count, batchBytes, ms, waitedSec),
+                    (unsigned long)savedCount, (unsigned long)recordsToSave.count]});
+            }
+
+            if (batchErrors.count == 0) {
+                [conflictIDs addObjectsFromArray:batchConflicts];
+                savedCount += batch.count - batchConflicts.count;
+                i = end;
+                batchNumber += 1;
+                retriedThisBatch = NO;
+                continue;
+            }
+
+            NSNumber *delay = ck_longest_retry_after(batchErrors);
+            if (!retriedThisBatch && ck_wait_for_retry(delay, &waitedSec)) {
+                retriedThisBatch = YES;
+                continue;
+            }
+            if (retriedThisBatch && batchSize > kMinSaveBatchSize && ck_wait_for_retry(delay, &waitedSec)) {
+                batchSize = MAX(kMinSaveBatchSize, batchSize / 2);
+                continue;
+            }
+
+
+            [conflictIDs addObjectsFromArray:batchConflicts];
+            [nonConflictErrors addObjectsFromArray:batchErrors];
+            failedStep = ck_step_detail(@"save", batchNumber, batch.count, batchBytes, ms, waitedSec);
+            break;
+        }
+
+        if (nonConflictErrors.count > 0) {
+            NSMutableDictionary *result = [NSMutableDictionary dictionary];
+            result[@"error"] = [NSString stringWithFormat:@"%@ %@ [saved=%lu/%lu]",
+                ck_failure_message(nonConflictErrors, @"save-failed"), failedStep,
+                (unsigned long)savedCount, (unsigned long)recordsToSave.count];
+            result[@"errorCount"] = @(nonConflictErrors.count);
+            result[@"conflictIDs"] = conflictIDs;
+            return ck_copy_json(result);
+        }
+
+        return ck_copy_json(@{@"conflictIDs": conflictIDs, @"savedCount": @(savedCount)});
+    }
+}
+
+char *stride_cloudkit_delete_records(const char *record_type_cstr __unused,
+                                      const char *record_ids_json_cstr) {
+    @autoreleasepool {
+        if (!record_ids_json_cstr) return ck_success_json();
+        if (!stride_ck_ensure_container()) return STRIDE_CK_UNAVAILABLE_JSON;
+
+        NSData *jsonData = [[NSString stringWithUTF8String:record_ids_json_cstr] dataUsingEncoding:NSUTF8StringEncoding];
+        if (!jsonData) return ck_success_json();
+        NSArray<NSString *> *ids = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil];
+        if (!ids || ![ids isKindOfClass:[NSArray class]] || ids.count == 0) return ck_success_json();
+
+        NSMutableArray<CKRecordID *> *ckIDs = [NSMutableArray arrayWithCapacity:ids.count];
+        for (NSString *rid in ids) {
+            if ([rid isKindOfClass:[NSString class]] && rid.length > 0) {
+                [ckIDs addObject:[[CKRecordID alloc] initWithRecordName:rid zoneID:_ckZoneID]];
+            }
+        }
+
+        for (NSUInteger i = 0; i < ckIDs.count; i += kBatchSize) {
+            NSUInteger end = MIN(i + kBatchSize, ckIDs.count);
+            NSArray<CKRecordID *> *batch = [ckIDs subarrayWithRange:NSMakeRange(i, end - i)];
+
+            CKModifyRecordsOperation *op =
+                [[CKModifyRecordsOperation alloc] initWithRecordsToSave:nil recordIDsToDelete:batch];
+            op.qualityOfService = NSQualityOfServiceUtility;
+
+            __block NSError *opError = nil;
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+            op.modifyRecordsCompletionBlock = ^(NSArray *saved __unused,
+                                                 NSArray *deleted __unused,
+                                                 NSError *error) {
+                if (error) {
+                    if ([error.domain isEqualToString:CKErrorDomain] &&
+                        error.code == CKErrorPartialFailure) {
+
+
+                        NSDictionary *partials = error.userInfo[CKPartialErrorsByItemIDKey];
+                        for (CKRecordID *failedID in partials) {
+                            NSError *perErr = partials[failedID];
+                            if ([perErr.domain isEqualToString:CKErrorDomain] &&
+                                perErr.code == CKErrorUnknownItem) {
+                                continue;
+                            }
+                            opError = perErr;
+                            break;
+                        }
+                    } else {
+                        opError = error;
+                    }
+                }
+                dispatch_semaphore_signal(sem);
+            };
+
+            [_ckPrivateDB addOperation:op];
+            long waited = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, kTimeoutSec * NSEC_PER_SEC));
+            if (waited != 0) return ck_copy_json(@{@"error": @"delete-timeout"});
+            if (opError) return ck_error_json(opError);
+        }
+
+        return ck_success_json();
+    }
+}
+
+void stride_cloudkit_register_for_remote_notifications(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSApplication sharedApplication] registerForRemoteNotifications];
+    });
+}
+
+void stride_cloudkit_set_pending_remote_change(void) {
+    __c11_atomic_store(&_pendingRemoteChange, 1, __ATOMIC_SEQ_CST);
+}
+
+int stride_cloudkit_consume_pending_remote_change(void) {
+    return __c11_atomic_exchange(&_pendingRemoteChange, 0, __ATOMIC_SEQ_CST);
+}
+
+void stride_cloudkit_free_string(char *ptr) {
+    if (ptr) free(ptr);
+}

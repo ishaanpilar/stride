@@ -1,0 +1,18 @@
+<en-US>
+- Android widget now adapts task count to widget size and keeps task rows readable.
+- Improved Android startup transition to remove the brief route flash on launch.
+- Added sync reliability safeguards (pending-write retry and attachment validation).
+- Hardened cloud auth handling and failed-auth throttling.
+</en-US>
+<zh-CN>
+- Android 小组件现在会根据尺寸自适应显示任务数量，并保持任务行可读。
+- 优化 Android 启动过渡，移除启动时短暂的中间页面闪现。
+- 新增同步可靠性保护（远端写入重试与附件校验）。
+- 加强云端鉴权处理与失败请求限流。
+</zh-CN>
+<es-ES>
+- El widget de Android ahora adapta la cantidad de tareas al tamano del widget y mantiene filas legibles.
+- Mejoramos la transicion de inicio en Android para eliminar el parpadeo breve de ruta al abrir.
+- Añadimos protecciones de fiabilidad de sincronizacion (reintento de escritura pendiente y validacion de adjuntos).
+- Reforzamos el manejo de autenticacion cloud y el limite de intentos fallidos.
+</es-ES>

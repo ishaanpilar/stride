@@ -1,0 +1,1710 @@
+import React, { memo, useState, useMemo, useDeferredValue, useEffect, useRef, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, HelpCircle, Sparkles } from 'lucide-react';
+import { buildProjectOrderMap,
+    buildProjectViewSectionUpdate,
+    buildQuickAddParseOptions,
+    buildQuickAddPreviewEntries,
+    compareTasksByProjectThenOrder,
+    createReferenceSearchPredicate,
+    createTaskFilterPredicate,
+    DEFAULT_AREA_COLOR,
+    executeCaptureTransaction,
+    formatTimeEstimateLabel,
+    getListSearchChipLabel,
+    getQuickAddProjectInitialProps,
+    getTaskMetadataFilterVisibility,
+    getWaitingPerson,
+    groupProjectsByViewSection,
+    hasActiveFilterCriteria,
+    isTaskInActiveProject,
+    isTaskSequenceBlocked,
+    isReferenceInVisibleProject,
+    parseQuickAdd,
+    getDefaultTaskAreaMode,
+    getPersonOptionNames,
+    getRetainedTaskContexts,
+    getSavedTaxonomyTokens,
+    getUsedTaskTokens,
+    resolveDefaultNewTaskAreaId,
+    formatQuickAddHelp,
+    resolveFeatureFlags,
+    resolveTaskGroupByForFeatures,
+    runStoreCommand,
+    selectDeferredProjects,
+    sortViewSectionDefinitions,
+    shallow,
+    shouldShowTaskForStart,
+    sortTasksBy,
+    TaskPriority,
+    TimeEstimate,
+    TIME_ESTIMATE_OPTIONS,
+    resolveI18nText,
+    useTaskStore, tFallback,
+    baseTextCollator,
+    formatI18nTemplate,
+} from '@stride/core';
+import type { FilterCriteria, Project, Task, TaskStatus } from '@stride/core';
+import type { BulkOrganizeTaskUpdateInput } from '@stride/core';
+import type { TaskSortBy } from '@stride/core';
+import { ErrorBoundary } from '../ErrorBoundary';
+import { ListEmptyState } from './list/ListEmptyState';
+import { ListHeader } from './list/ListHeader';
+import { BulkSelectionToolbar } from './list/BulkSelectionToolbar';
+import { ListBulkActions } from './list/ListBulkActions';
+import { ListFiltersPanel } from './list/ListFiltersPanel';
+import type { DesktopActiveFilterChip } from './list/FilterDisclosure';
+import { ListQuickAdd } from './list/ListQuickAdd';
+import { QuickAddPreview } from '../QuickAddPreview';
+import { PromptModal } from '../PromptModal';
+import { SomedaySectionMoveDialog } from './list/SomedaySectionMoveDialog';
+import { DeferredProjectRow } from './list/DeferredProjectRow';
+import { TokenPickerModal } from '../TokenPickerModal';
+import { InboxProcessor } from './InboxProcessor';
+import { MindSweepModal, MindSweepTrigger } from '../MindSweepModal';
+import { QuickCaptureTrigger } from '../QuickCaptureTrigger';
+import { TaskBulkOrganizeModal } from './list/TaskBulkOrganizeModal';
+import { useLanguage } from '../../contexts/language-context';
+import { useKeybindings } from '../../contexts/keybinding-context';
+import { useListCopilot } from './list/useListCopilot';
+import { useUiStore } from '../../store/ui-store';
+import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
+import { checkBudget } from '../../config/performanceBudgets';
+import { useListViewOptimizations } from '../../hooks/useListViewOptimizations';
+import { dispatchNavigateEvent } from '../../lib/navigation-events';
+import { reportError } from '../../lib/report-error';
+import { logInfo } from '../../lib/app-log';
+import { registerUndoableAction } from '../../lib/undo-registry';
+import { createSomedaySection } from '../../lib/someday-section-actions';
+import {
+    retryPendingSomedaySectionMove,
+    saveSomedaySectionMove,
+    SomedaySectionUndoSaveError,
+    undoSomedaySectionMove,
+    type SomedaySectionMove,
+} from '../../lib/someday-section-move';
+import { AREA_FILTER_ALL, AREA_FILTER_NONE, areaFilterSelectionToValue, isTaskVisibleInArea, isTaskVisibleInInbox, taskMatchesAreaFilterSelection } from '@stride/core';
+import { useAreaVisibility } from '../../hooks/useVisibleTaskContext';
+import { sortDoneTasksForListView } from './list/done-sort';
+import { DONE_TASK_LIST_SORT_OPTIONS, LIST_END_GAP, VIEW_FILTER_INPUT } from './list/list-toolbar';
+import {
+    DONE_AXES,
+    FOCUS_AXES,
+    groupTasks,
+    LIST_AXES,
+    REFERENCE_AXES,
+    SOMEDAY_AXES,
+    type DoneGroupBy,
+    type NextGroupBy,
+    type ReferenceGroupBy,
+    type SomedayGroupBy,
+    type TaskGroup,
+    type TaskListGroupBy,
+} from './list/next-grouping';
+import { GroupedTaskList } from './list/GroupedTaskSections';
+import { useCollapsedGroupsViewState, useTaskGroupCollapse } from './list/useTaskGroupCollapse';
+import {
+    PRIORITY_FILTER_OPTIONS,
+    useListFilterControls,
+} from './list/list-filter-controls';
+import { buildActiveFilterChips, type ActiveFilterChipDeps } from './list/active-filter-chips';
+import { useListSelection } from './list/useListSelection';
+import { StoreTaskItem } from './list/StoreTaskItem';
+import {
+    LIST_VIRTUALIZATION_THRESHOLD,
+    LIST_VIRTUAL_HEADER_ESTIMATE,
+    LIST_VIRTUAL_OVERSCAN_ROWS,
+    LIST_VIRTUAL_ROW_ESTIMATE,
+} from './list/virtual-list';
+import { QuickAddSyntaxHint } from '../ui/QuickAddSyntaxHint';
+import { useFutureStartRevealTick, useLocalDayKey } from '../../hooks/useLocalDayKey';
+import { resolveDoneTaskSortBy, resolveNonDoneTaskSortBy } from '@stride/core';
+
+
+interface ListViewProps {
+    title: string;
+    statusFilter: TaskStatus | 'all';
+}
+
+const EMPTY_PRIORITIES: TaskPriority[] = [];
+const EMPTY_ESTIMATES: TimeEstimate[] = [];
+const NEXT_WARNING_THRESHOLD = 15;
+
+const SOMEDAY_NO_SECTION_GROUP_ID = 'view-section:someday:';
+
+
+const getListViewStateStorageKey = (statusFilter: string) => (
+    statusFilter === 'reference' ? 'stride:view:reference:v1' : `stride:view:list:${statusFilter}:v1`
+);
+
+
+const LIST_GROUP_BY_KEYS = {
+    inbox: 'inboxGroupBy',
+    next: 'nextGroupBy',
+    waiting: 'waitingGroupBy',
+    someday: 'somedayGroupBy',
+} as const;
+const getListGroupByKey = (statusFilter: string) => (
+    LIST_GROUP_BY_KEYS[statusFilter as keyof typeof LIST_GROUP_BY_KEYS] ?? 'nextGroupBy'
+);
+type ShowToast = (
+    message: string,
+    tone?: 'success' | 'error' | 'info',
+    durationMs?: number,
+    action?: { label: string; onClick: () => void }
+) => void;
+
+
+export function reportArchivedTaskQueryFailure(error: unknown, showToast: ShowToast, message: string): void {
+    reportError('Failed to load archived tasks', error);
+    showToast(message, 'error');
+}
+
+export const ListView = memo(function ListView({ title, statusFilter }: ListViewProps) {
+    const perf = usePerformanceMonitor('ListView');
+    const {
+        tasks,
+        projects,
+        areas,
+        people,
+        lastDataChangeAt,
+        highlightTaskId,
+    } = useTaskStore((state) => ({
+        tasks: state.tasks,
+        projects: state.projects,
+        areas: state.areas,
+        people: state.people,
+        lastDataChangeAt: state.lastDataChangeAt,
+        highlightTaskId: state.highlightTaskId,
+    }), shallow);
+    const settings = useTaskStore((state) => state.settings);
+    const retainedQuickAddTasks = useTaskStore((state) => statusFilter === 'inbox' ? state._allTasks : null);
+    const {
+        updateSettings,
+        addTask,
+        addProject,
+        updateTask,
+        updateProject,
+        deleteTask,
+        restoreTask,
+        batchMoveTasks,
+        batchDeleteTasks,
+        batchUpdateTasks,
+        queryTasks,
+        getDerivedState,
+        setHighlightTask,
+    } = useTaskStore((state) => ({
+        updateSettings: state.updateSettings,
+        addTask: state.addTask,
+        addProject: state.addProject,
+        updateTask: state.updateTask,
+        updateProject: state.updateProject,
+        deleteTask: state.deleteTask,
+        restoreTask: state.restoreTask,
+        batchMoveTasks: state.batchMoveTasks,
+        batchDeleteTasks: state.batchDeleteTasks,
+        batchUpdateTasks: state.batchUpdateTasks,
+        queryTasks: state.queryTasks,
+        getDerivedState: state.getDerivedState,
+        setHighlightTask: state.setHighlightTask,
+    }), shallow);
+    const { t, language } = useLanguage();
+    const { registerTaskListScope } = useKeybindings();
+    const globalSortBy = (settings?.taskSortBy ?? 'default') as TaskSortBy;
+    const density = settings?.appearance?.density ?? 'comfortable';
+    const densityMode: 'comfortable' | 'compact' | 'condensed' =
+        density === 'condensed' ? 'condensed' : density === 'compact' ? 'compact' : 'comfortable';
+
+
+    const { areaById, resolvedAreaFilter } = useAreaVisibility();
+    const [newTaskTitle, setNewTaskTitle] = useState('');
+    const [collapsedProjectLists, setCollapsedProjectLists] = useState<Partial<Record<TaskStatus, boolean>>>({});
+    const [quickAddSyntaxOpen, setQuickAddSyntaxOpen] = useState(false);
+    const [mindSweepOpen, setMindSweepOpen] = useState(false);
+    const [somedayMoveTargetIds, setSomedayMoveTargetIds] = useState<string[] | null>(null);
+    const [somedayMoveProjectId, setSomedayMoveProjectId] = useState<string | null>(null);
+    const [newSomedaySectionOpen, setNewSomedaySectionOpen] = useState(false);
+    const [newSomedaySectionBusy, setNewSomedaySectionBusy] = useState(false);
+    const [newSomedaySectionError, setNewSomedaySectionError] = useState<string | null>(null);
+    const newSomedaySectionBusyRef = useRef(false);
+    const {
+        criteria: listFilterCriteria,
+        filtersOpen,
+        selectedTokens,
+        excludedTokens,
+        selectedPriorities,
+        selectedTimeEstimates,
+        contextMatchMode,
+        tagMatchMode,
+        toggleToken: toggleTokenFilter,
+        togglePriority: togglePriorityFilter,
+        toggleEstimate: toggleTimeFilter,
+        setMatchMode,
+        removeFilterChip,
+        clearFilters,
+        setFiltersOpen,
+        setListFilters,
+    } = useListFilterControls();
+    const showToast = useUiStore((state) => state.showToast);
+    const resolveText = useCallback((key: string, fallback: string) => {
+        return resolveI18nText(t, key, { fallback });
+    }, [t]);
+    const showListDetails = useUiStore((state) => state.listOptions.showDetails);
+    const groupByKey = getListGroupByKey(statusFilter);
+    const nextGroupBy = useUiStore((state) => state.listOptions[groupByKey]);
+    const referenceGroupBy = useUiStore((state) => state.listOptions.referenceGroupBy);
+    const doneGroupBy = useUiStore((state) => state.listOptions.doneGroupBy);
+    const doneSortBy = useUiStore((state) => state.listOptions.doneSortBy);
+    const setListOptions = useUiStore((state) => state.setListOptions);
+    const sortBy: TaskSortBy = statusFilter === 'done'
+        ? resolveDoneTaskSortBy(globalSortBy, doneSortBy, settings)
+        : resolveNonDoneTaskSortBy(globalSortBy, settings);
+    const collapseAllTaskDetails = useUiStore((state) => state.collapseAllTaskDetails);
+    const setProjectView = useUiStore((state) => state.setProjectView);
+    const [baseTasks, setBaseTasks] = useState<Task[]>(() => (statusFilter === 'archived' ? [] : tasks));
+    const queryCacheRef = useRef<Map<string, Task[]>>(new Map());
+    const [selectedWaitingPerson, setSelectedWaitingPerson] = useState('');
+    const [searchQuery, setSearchQuery] = useState('');
+    const [includeArchivedReferenceProjects, setIncludeArchivedReferenceProjects] = useState(false);
+    const addInputRef = useRef<HTMLInputElement>(null);
+    const listScrollRef = useRef<HTMLDivElement>(null);
+    const { collapsedGroups, setCollapsedGroups } = useCollapsedGroupsViewState(
+        getListViewStateStorageKey(statusFilter),
+        LIST_AXES,
+    );
+    const { priorities: prioritiesEnabled, timeEstimates: timeEstimatesEnabled } = resolveFeatureFlags(settings);
+    const isReferenceView = statusFilter === 'reference';
+    const {
+        allContexts,
+        allTags,
+        projectMap,
+        sequencing,
+        sequentialProjectFirstTasks,
+        tasksById,
+        tokenCounts,
+        nextCount,
+    } = useListViewOptimizations(
+        tasks,
+        baseTasks,
+        statusFilter,
+        perf,
+        includeArchivedReferenceProjects,
+    );
+    const undoNotificationsEnabled = settings?.undoNotificationsEnabled !== false;
+    const showQuickDone = statusFilter !== 'done' && statusFilter !== 'archived';
+    const readOnly = statusFilter === 'done';
+    const showViewFilterInput = statusFilter !== 'inbox';
+    const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+    const referenceSearchPredicate = useMemo(
+        () => createReferenceSearchPredicate(searchQuery),
+        [searchQuery],
+    );
+    const listFilterableTasks = useMemo(() => {
+        const allowDeferredProjectTasks = statusFilter === 'done' || statusFilter === 'archived';
+        return baseTasks.filter((task) => {
+            if (task.deletedAt) return false;
+            if (statusFilter !== 'all' && task.status !== statusFilter) return false;
+            if (isReferenceView) {
+                if (!isReferenceInVisibleProject(task, projectMap, includeArchivedReferenceProjects)) return false;
+            } else if (!allowDeferredProjectTasks && !isTaskInActiveProject(task, projectMap)) return false;
+            if (statusFilter === 'inbox') {
+                if (!isTaskVisibleInInbox(task, { projectById: projectMap })) return false;
+            } else if (!taskMatchesAreaFilterSelection(task, resolvedAreaFilter, projectMap, areaById)) return false;
+            return true;
+        });
+    }, [
+        areaById,
+        baseTasks,
+        includeArchivedReferenceProjects,
+        isReferenceView,
+        projectMap,
+        resolvedAreaFilter,
+        statusFilter,
+    ]);
+    const metadataFilterVisibility = useMemo(() => getTaskMetadataFilterVisibility(listFilterableTasks, {
+        prioritiesEnabled,
+        timeEstimatesEnabled,
+    }), [listFilterableTasks, prioritiesEnabled, timeEstimatesEnabled]);
+    const showPriorityFilters = !isReferenceView && metadataFilterVisibility.priority;
+    const showTimeEstimateFilters = !isReferenceView && metadataFilterVisibility.timeEstimate;
+    const activePriorities = showPriorityFilters ? selectedPriorities : EMPTY_PRIORITIES;
+    const activeTimeEstimates = showTimeEstimateFilters ? selectedTimeEstimates : EMPTY_ESTIMATES;
+    const activeSelectedTokens = useMemo(
+        () => isReferenceView ? selectedTokens.filter((token) => token.trim().startsWith('#')) : selectedTokens,
+        [isReferenceView, selectedTokens],
+    );
+    const activeExcludedTokens = useMemo(
+        () => isReferenceView ? excludedTokens.filter((token) => token.trim().startsWith('#')) : excludedTokens,
+        [excludedTokens, isReferenceView],
+    );
+    const activeListFilterCriteria = useMemo<FilterCriteria>(() => ({
+        ...listFilterCriteria,
+        contexts: isReferenceView ? undefined : listFilterCriteria.contexts,
+        excludedContexts: isReferenceView ? undefined : listFilterCriteria.excludedContexts,
+        contextMatchMode: isReferenceView ? undefined : listFilterCriteria.contextMatchMode,
+        priority: showPriorityFilters ? activePriorities : undefined,
+        timeEstimates: showTimeEstimateFilters ? activeTimeEstimates : undefined,
+        timeEstimateRange: showTimeEstimateFilters ? listFilterCriteria.timeEstimateRange : undefined,
+    }), [
+        activePriorities,
+        activeTimeEstimates,
+        isReferenceView,
+        listFilterCriteria,
+        showPriorityFilters,
+        showTimeEstimateFilters,
+    ]);
+    const defaultAreaMode = getDefaultTaskAreaMode(settings);
+    const activeAreaFilterValue = areaFilterSelectionToValue(resolvedAreaFilter);
+    const activeNewTaskAreaId = activeAreaFilterValue !== AREA_FILTER_ALL && activeAreaFilterValue !== AREA_FILTER_NONE
+        ? activeAreaFilterValue
+        : undefined;
+    const defaultNewTaskAreaId = defaultAreaMode === 'active'
+        ? activeNewTaskAreaId
+        : resolveDefaultNewTaskAreaId(settings, areas);
+
+    useEffect(() => {
+        if (!perf.enabled) return;
+        const timer = window.setTimeout(() => {
+            checkBudget('ListView', perf.metrics, 'complex');
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [perf.enabled]);
+
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [bulkOrganizeOpen, setBulkOrganizeOpen] = useState(false);
+    const allTokens = useMemo(() => {
+        const offered = isReferenceView
+            ? listFilterableTasks.flatMap((task) => task.tags)
+            : [...allContexts, ...allTags];
+
+
+        return Array.from(new Set([...offered, ...selectedTokens, ...excludedTokens])).sort();
+    }, [allContexts, allTags, excludedTokens, isReferenceView, listFilterableTasks, selectedTokens]);
+    const filterTokens = useMemo(() => Array.from(new Set([
+        ...getUsedTaskTokens(listFilterableTasks, (task) => isReferenceView
+            ? task.tags
+            : [...(task.contexts ?? []), ...(task.tags ?? [])], { includeAncestors: true }),
+        ...selectedTokens,
+        ...excludedTokens,
+    ])).sort(), [excludedTokens, isReferenceView, listFilterableTasks, selectedTokens]);
+    const personOptionNames = useMemo(
+        () => getPersonOptionNames(people, tasks),
+        [people, tasks],
+    );
+    const quickAddContextHistory = useMemo(
+        () => retainedQuickAddTasks ? Array.from(new Set([...getRetainedTaskContexts(retainedQuickAddTasks), ...getSavedTaxonomyTokens(settings, 'context')])) : [],
+        [retainedQuickAddTasks, settings],
+    );
+    const quickAddParseOptions = useMemo(
+        () => buildQuickAddParseOptions(settings, { tasks, _allTasks: retainedQuickAddTasks ?? undefined, people }),
+        [people, retainedQuickAddTasks, tasks, settings],
+    );
+
+    const {
+        aiEnabled,
+        copilotContext,
+        copilotTags,
+        pendingCopilotParts,
+        applyCopilotPart,
+        applyCopilotSuggestion,
+        resetCopilot,
+    } = useListCopilot({
+        language,
+        settings,
+        newTaskTitle,
+        allContexts,
+        allTags,
+    });
+
+    const projectOrderMap = useMemo(() => buildProjectOrderMap(projects), [projects]);
+
+    const sortByProjectOrder = useCallback(
+        (items: Task[]) => [...items].sort(compareTasksByProjectThenOrder(projectOrderMap)),
+        [projectOrderMap],
+    );
+
+
+    useEffect(() => {
+        perf.trackUseEffect();
+        let cancelled = false;
+        const status = statusFilter === 'all' ? undefined : statusFilter;
+        const cacheKey = `${statusFilter}-${lastDataChangeAt}`;
+        const cached = queryCacheRef.current.get(cacheKey);
+        if (statusFilter !== 'archived') {
+            const { activeTasksByStatus } = getDerivedState();
+            const indexedTasks = statusFilter === 'all'
+                ? tasks
+                : activeTasksByStatus.get(statusFilter) ?? [];
+            setBaseTasks(indexedTasks);
+            queryCacheRef.current.set(cacheKey, indexedTasks);
+            if (queryCacheRef.current.size > 10) {
+                const firstKey = queryCacheRef.current.keys().next().value;
+                if (firstKey) queryCacheRef.current.delete(firstKey);
+            }
+        } else if (cached) {
+            setBaseTasks(cached);
+            return;
+        }
+        if (statusFilter === 'archived') {
+            queryTasks({
+                status,
+                includeArchived: status === 'archived',
+                includeDeleted: false,
+            }).then((result) => {
+                if (cancelled) return;
+                setBaseTasks(result);
+                queryCacheRef.current.set(cacheKey, result);
+                if (queryCacheRef.current.size > 10) {
+                    const firstKey = queryCacheRef.current.keys().next().value;
+                    if (firstKey) queryCacheRef.current.delete(firstKey);
+                }
+            }).catch((error) => {
+                if (!cancelled) {
+                    reportArchivedTaskQueryFailure(error, showToast, resolveText('archive.loadFailed', 'Failed to load archived tasks'));
+                    setBaseTasks([]);
+                }
+            });
+        }
+        return () => {
+            cancelled = true;
+        };
+    }, [statusFilter, queryTasks, getDerivedState, lastDataChangeAt, showToast, tasks]);
+
+    useEffect(() => {
+        setSearchQuery('');
+        setIncludeArchivedReferenceProjects(false);
+    }, [statusFilter]);
+
+
+    const waitingVisibility = useMemo(
+        () => ({ areaById, projectById: projectMap, resolvedAreaFilter }),
+        [areaById, projectMap, resolvedAreaFilter],
+    );
+    const waitingPeople = useMemo(() => {
+        if (statusFilter !== 'waiting') return [];
+        const people = new Map<string, string>();
+        for (const task of baseTasks) {
+            if (task.status !== 'waiting') continue;
+            if (!isTaskVisibleInArea(task, waitingVisibility)) continue;
+            const person = getWaitingPerson(task);
+            if (!person) continue;
+            const key = person.toLowerCase();
+            if (!people.has(key)) people.set(key, person);
+        }
+        return [...people.values()].sort((a, b) => baseTextCollator.compare(a, b));
+    }, [baseTasks, statusFilter, waitingVisibility]);
+
+    useEffect(() => {
+        if (statusFilter !== 'waiting' && selectedWaitingPerson) {
+            setSelectedWaitingPerson('');
+            return;
+        }
+        if (!selectedWaitingPerson) return;
+        const selectedKey = selectedWaitingPerson.toLowerCase();
+        const exists = waitingPeople.some((person) => person.toLowerCase() === selectedKey);
+        if (!exists) setSelectedWaitingPerson('');
+    }, [selectedWaitingPerson, statusFilter, waitingPeople]);
+
+
+    const filterFeedbackKey = useMemo(() => JSON.stringify({
+        statusFilter,
+        filterCriteria: activeListFilterCriteria,
+        resolvedAreaFilter,
+        selectedWaitingPerson,
+        normalizedSearchQuery,
+        includeArchivedReferenceProjects,
+    }), [
+        statusFilter,
+        activeListFilterCriteria,
+        resolvedAreaFilter,
+        selectedWaitingPerson,
+        normalizedSearchQuery,
+        includeArchivedReferenceProjects,
+    ]);
+    const deferredFilterFeedbackKey = useDeferredValue(filterFeedbackKey);
+    const isFiltering = deferredFilterFeedbackKey !== filterFeedbackKey;
+
+    const filterInputs = useMemo(() => ({
+        baseTasks,
+        statusFilter,
+        filterCriteria: activeListFilterCriteria,
+        sequencing,
+        sequentialProjectFirstTasks,
+        projectMap,
+        projects,
+        sortBy,
+        sortByProjectOrder,
+        resolvedAreaFilter,
+        areaById,
+        selectedWaitingPerson,
+        includeArchivedReferenceProjects,
+    }), [
+        baseTasks,
+        statusFilter,
+        activeListFilterCriteria,
+        sequencing,
+        sequentialProjectFirstTasks,
+        projectMap,
+        projects,
+        sortBy,
+        sortByProjectOrder,
+        resolvedAreaFilter,
+        areaById,
+        selectedWaitingPerson,
+        includeArchivedReferenceProjects,
+    ]);
+    const deferredFilterInputs = useDeferredValue(filterInputs);
+    const nextVisibilityEnabled = statusFilter === 'next';
+    const nextVisibilityDayKey = useLocalDayKey(nextVisibilityEnabled);
+    const nextVisibilityTick = useFutureStartRevealTick(baseTasks, nextVisibilityEnabled);
+
+    const filteredTasks = useMemo(() => {
+        perf.trackUseMemo();
+        return perf.measure('filteredTasks', () => {
+            const now = new Date();
+            const allowDeferredProjectTasks =
+                deferredFilterInputs.statusFilter === 'done'
+                || deferredFilterInputs.statusFilter === 'archived';
+            const criteriaPredicate = hasActiveFilterCriteria(deferredFilterInputs.filterCriteria)
+                ? createTaskFilterPredicate(deferredFilterInputs.filterCriteria, {
+                    projects: deferredFilterInputs.projects,
+                    tokenMatchMode: 'all',
+                })
+                : null;
+            const filtered = deferredFilterInputs.baseTasks.filter(t => {
+
+                if (t.deletedAt) return false;
+
+                if (deferredFilterInputs.statusFilter !== 'all' && t.status !== deferredFilterInputs.statusFilter) return false;
+
+                if (deferredFilterInputs.statusFilter === 'reference') {
+                    if (!isReferenceInVisibleProject(
+                        t,
+                        deferredFilterInputs.projectMap,
+                        deferredFilterInputs.includeArchivedReferenceProjects,
+                    )) return false;
+                } else if (!allowDeferredProjectTasks && !isTaskInActiveProject(t, deferredFilterInputs.projectMap)) return false;
+                if (deferredFilterInputs.statusFilter === 'inbox') {
+                    if (!isTaskVisibleInInbox(t, { projectById: deferredFilterInputs.projectMap })) return false;
+                } else if (!taskMatchesAreaFilterSelection(
+                    t,
+                    deferredFilterInputs.resolvedAreaFilter,
+                    deferredFilterInputs.projectMap,
+                    deferredFilterInputs.areaById
+                )) return false;
+
+
+                if (deferredFilterInputs.statusFilter === 'next'
+                    && isTaskSequenceBlocked(t, deferredFilterInputs.sequencing, deferredFilterInputs.sequentialProjectFirstTasks)) {
+                    return false;
+                }
+
+
+                if (criteriaPredicate && !criteriaPredicate(t)) return false;
+                if (deferredFilterInputs.statusFilter === 'waiting' && deferredFilterInputs.selectedWaitingPerson) {
+                    const person = getWaitingPerson(t);
+                    if (!person || person.toLowerCase() !== deferredFilterInputs.selectedWaitingPerson.toLowerCase()) return false;
+                }
+                if (showViewFilterInput && normalizedSearchQuery) {
+                    if (deferredFilterInputs.statusFilter === 'reference') {
+                        if (!referenceSearchPredicate(t)) return false;
+                    } else if (!t.title.toLowerCase().includes(normalizedSearchQuery)) {
+                        return false;
+                    }
+                }
+
+
+                if (
+                    deferredFilterInputs.statusFilter === 'next'
+                    && !shouldShowTaskForStart(t, { now, granularity: 'time' })
+                ) {
+                    return false;
+                }
+                return true;
+            });
+
+            if (deferredFilterInputs.statusFilter === 'next' && deferredFilterInputs.sortBy === 'default') {
+                return deferredFilterInputs.sortByProjectOrder(filtered);
+            }
+            if (deferredFilterInputs.statusFilter === 'done' && deferredFilterInputs.sortBy === 'default') {
+                return sortDoneTasksForListView(filtered);
+            }
+
+            return sortTasksBy(filtered, deferredFilterInputs.sortBy);
+        });
+    }, [deferredFilterInputs, nextVisibilityDayKey, nextVisibilityTick, normalizedSearchQuery, referenceSearchPredicate, showViewFilterInput]);
+    const activeNextGroupBy: NextGroupBy = statusFilter !== 'reference' && statusFilter !== 'done' && statusFilter !== 'someday'
+        ? nextGroupBy as NextGroupBy
+        : 'none';
+    const activeSomedayGroupBy: SomedayGroupBy = statusFilter === 'someday'
+        ? nextGroupBy as SomedayGroupBy
+        : 'none';
+    const activeReferenceGroupBy: ReferenceGroupBy = statusFilter === 'reference' ? (referenceGroupBy ?? 'area') : 'none';
+    const activeDoneGroupBy: DoneGroupBy = statusFilter === 'done' ? (doneGroupBy ?? 'none') : 'none';
+    const activeGroupBy: TaskListGroupBy = resolveTaskGroupByForFeatures(
+        statusFilter === 'reference'
+            ? activeReferenceGroupBy
+            : statusFilter === 'done'
+                ? activeDoneGroupBy
+                : statusFilter === 'someday'
+                    ? activeSomedayGroupBy
+                    : activeNextGroupBy,
+        settings,
+    );
+    const completedGroupingDayKey = useLocalDayKey(activeDoneGroupBy === 'completedDate');
+    const groupByOptions: readonly TaskListGroupBy[] = statusFilter === 'reference'
+        ? REFERENCE_AXES
+        : statusFilter === 'done'
+            ? DONE_AXES
+            : statusFilter === 'someday'
+                ? SOMEDAY_AXES
+            : FOCUS_AXES;
+    const defaultGroupBy: TaskListGroupBy = statusFilter === 'reference'
+        ? 'area'
+        : 'none';
+    const isListGrouping = activeGroupBy !== 'none';
+    const somedaySectionDefinitions = useMemo(
+        () => sortViewSectionDefinitions(settings?.gtd?.viewSections?.someday),
+        [settings?.gtd?.viewSections?.someday],
+    );
+    const showDeferredProjects = statusFilter === 'someday' || statusFilter === 'waiting';
+    const deferredProjects = useMemo(() => (showDeferredProjects
+        ? selectDeferredProjects(projects, statusFilter as 'someday' | 'waiting', resolvedAreaFilter, areaById)
+        : []), [areaById, projects, resolvedAreaFilter, showDeferredProjects, statusFilter]);
+
+    const deferredProjectsInGroups = statusFilter === 'someday'
+        && activeGroupBy === 'viewSection'
+        && somedaySectionDefinitions.length > 0;
+    const groupedTasks = useMemo(() => {
+        if (!isListGrouping) return [] as TaskGroup[];
+        const groups = groupTasks(activeGroupBy, {
+                tasks: filteredTasks,
+                areas,
+                projectMap,
+                t,
+                theme: settings?.theme,
+                viewSectionDefinitions: settings?.gtd?.viewSections?.someday,
+        });
+        if (statusFilter !== 'someday' || activeGroupBy !== 'viewSection') return groups;
+        const byId = new Map(groups.map((group) => [group.id, group]));
+        const projectsByGroupId = deferredProjectsInGroups
+            ? groupProjectsByViewSection(deferredProjects, 'someday', somedaySectionDefinitions)
+            : new Map<string, Project[]>();
+        const withProjects = (group: TaskGroup): TaskGroup => {
+            const groupProjects = projectsByGroupId.get(group.id);
+            return groupProjects ? { ...group, projects: groupProjects } : group;
+        };
+        const sectionGroups = somedaySectionDefinitions.map((section) => withProjects(
+            byId.get(`view-section:someday:${section.id}`) ?? {
+                id: `view-section:someday:${section.id}`,
+                title: section.title,
+                tasks: [],
+            }
+        ));
+        const noSectionGroup = byId.get(SOMEDAY_NO_SECTION_GROUP_ID)
+            ?? (projectsByGroupId.has(SOMEDAY_NO_SECTION_GROUP_ID)
+                ? { id: SOMEDAY_NO_SECTION_GROUP_ID, title: tFallback(t, 'viewSections.noSection', 'No section'), tasks: [], muted: true }
+                : undefined);
+        return noSectionGroup ? [...sectionGroups, withProjects(noSectionGroup)] : sectionGroups;
+    }, [activeGroupBy, areas, completedGroupingDayKey, deferredProjects, deferredProjectsInGroups, filteredTasks, isListGrouping, projectMap, settings?.gtd?.viewSections?.someday, settings?.theme, somedaySectionDefinitions, statusFilter, t]);
+    const {
+        collapsedGroupIds,
+        getSectionDomId,
+        toggleGroup,
+        virtualRows: groupedVirtualRows,
+
+
+        visibleTasks,
+    } = useTaskGroupCollapse({
+        axis: activeGroupBy,
+        groups: groupedTasks,
+        tasks: filteredTasks,
+        idPrefix: `${statusFilter}-group`,
+        collapsedGroups,
+        setCollapsedGroups,
+    });
+    const firstGroupedRowIndexByTaskId = useMemo(() => {
+        const indices = new Map<string, number>();
+        groupedVirtualRows?.forEach((row, index) => {
+            if (row.kind === 'task' && !indices.has(row.task.id)) {
+                indices.set(row.task.id, index);
+            }
+        });
+        return indices;
+    }, [groupedVirtualRows]);
+    const taskIndexById = useMemo(() => {
+        const map = new Map<string, number>();
+        visibleTasks.forEach((task, index) => map.set(task.id, index));
+        return map;
+    }, [visibleTasks]);
+
+
+    useEffect(() => {
+        if (!highlightTaskId || !isListGrouping) return;
+
+
+        if (visibleTasks.some((task) => task.id === highlightTaskId)) return;
+        const collapsedGroup = groupedTasks.find((group) => (
+            collapsedGroupIds.has(group.id) && group.tasks.some((task) => task.id === highlightTaskId)
+        ));
+        if (collapsedGroup) toggleGroup(collapsedGroup.id);
+    }, [collapsedGroupIds, groupedTasks, highlightTaskId, isListGrouping, toggleGroup, visibleTasks]);
+
+    const showDeferredProjectSection = showDeferredProjects && deferredProjects.length > 0 && !deferredProjectsInGroups;
+    const showEmptyState = filteredTasks.length === 0
+        && !showDeferredProjectSection
+        && !(statusFilter === 'someday' && activeGroupBy === 'viewSection' && somedaySectionDefinitions.length > 0);
+    const handleOpenProject = useCallback((projectId: string) => {
+        setProjectView({ selectedProjectId: projectId });
+        dispatchNavigateEvent('projects');
+    }, [setProjectView]);
+    const handleReactivateProject = useCallback((projectId: string) => {
+        updateProject(projectId, { status: 'active' })
+            .catch((error) => {
+                reportError('Failed to reactivate project', error);
+                showToast(tFallback(t, 'projects.reactivateFailed', 'Failed to reactivate project'), 'error');
+            });
+    }, [showToast, t, updateProject]);
+    const handleApplySomedayProjectMove = useCallback(async (sectionId: string | undefined) => {
+
+        await runStoreCommand(async () => {
+            const project = useTaskStore.getState().projects.find((candidate) => candidate.id === somedayMoveProjectId);
+            if (!project) throw new Error('Someday project no longer exists');
+            const update = buildProjectViewSectionUpdate(project, 'someday', sectionId);
+            if (!update) return;
+            const result = await updateProject(project.id, update);
+            if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+                throw new Error(result.error || 'Could not move the project to the section');
+            }
+        });
+        setSomedayMoveProjectId(null);
+    }, [somedayMoveProjectId, updateProject]);
+    const renderSectionProject = useCallback((project: Project) => (
+        <DeferredProjectRow
+            project={project}
+            area={project.areaId ? areaById.get(project.areaId) : undefined}
+            t={t}
+            onOpen={handleOpenProject}
+            onReactivate={handleReactivateProject}
+            onMoveToSection={readOnly ? undefined : setSomedayMoveProjectId}
+        />
+    ), [areaById, handleOpenProject, handleReactivateProject, readOnly, t]);
+    const virtualRowCount = groupedVirtualRows?.length ?? filteredTasks.length;
+    const shouldVirtualize = virtualRowCount > LIST_VIRTUALIZATION_THRESHOLD;
+    const rowVirtualizer = useVirtualizer({
+        count: shouldVirtualize ? virtualRowCount : 0,
+        getScrollElement: () => listScrollRef.current,
+        estimateSize: (index) => (
+            groupedVirtualRows?.[index]?.kind === 'header'
+                ? LIST_VIRTUAL_HEADER_ESTIMATE
+                : densityMode === 'condensed'
+                    ? 72
+                    : densityMode === 'compact'
+                        ? 90
+                        : LIST_VIRTUAL_ROW_ESTIMATE
+        ),
+        overscan: LIST_VIRTUAL_OVERSCAN_ROWS,
+        getItemKey: (index) => {
+            const row = groupedVirtualRows?.[index];
+            if (!row) return filteredTasks[index]?.id ?? index;
+            if (!row) return index;
+            return row.kind === 'header'
+                ? `group:${row.group.id}`
+                : `task:${row.group.id}:${row.task.id}`;
+        },
+    });
+
+
+    const scrollToVirtualIndex = useCallback((index: number, align: 'auto' | 'center') => {
+        const taskId = visibleTasks[index]?.id;
+        const virtualIndex = isListGrouping && taskId
+            ? firstGroupedRowIndexByTaskId.get(taskId) ?? index
+            : index;
+        rowVirtualizer.scrollToIndex(virtualIndex, { align });
+    }, [visibleTasks, isListGrouping, firstGroupedRowIndexByTaskId, rowVirtualizer]);
+    const isHistoricalReferenceTask = useCallback((task: Task) => (
+        isReferenceView
+        && Boolean(task.projectId && projectMap.get(task.projectId)?.status === 'archived')
+    ), [isReferenceView, projectMap]);
+    const selectableTaskIds = useMemo(
+        () => visibleTasks.filter((task) => !isHistoricalReferenceTask(task)).map((task) => task.id),
+        [isHistoricalReferenceTask, visibleTasks],
+    );
+    const {
+        contextPromptMode,
+        contextPromptOpen,
+        handleBatchAddContext,
+        handleBatchAddTag,
+        handleBatchMoveToDestination,
+        handleBatchDelete,
+        handleBatchMove,
+        handleBatchRemoveContext,
+        handleBatchRemoveTag,
+        handleConfirmContextPrompt,
+        handleConfirmRemoveTags,
+        handleConfirmTagPrompt,
+        handleSelectIndex,
+        exportSelectedTasks,
+        isBatchDeleting,
+        isBulkOrganizing,
+        isExporting,
+        allVisibleTasksSelected,
+        clearTaskSelection,
+        exitSelectionMode,
+        multiSelectedIds,
+        organizeSelectedTasks,
+        removableTagOptions,
+        removeTagPickerOpen,
+        selectedIdsArray,
+        selectedIndex,
+        selectAllVisibleTasks,
+        selectionMode,
+        setContextPromptOpen,
+        setRemoveTagPickerOpen,
+        setTagPromptOpen,
+        tagPromptOpen,
+        toggleMultiSelect,
+        toggleSelectionMode,
+    } = useListSelection({
+        addInputRef,
+        batchDeleteTasks,
+        batchMoveTasks,
+        batchUpdateTasks,
+        filteredTasks: visibleTasks,
+        selectableTaskIds,
+        highlightTaskId,
+        isProcessing,
+        registerTaskListScope,
+        restoreTask,
+        scrollToVirtualIndex,
+        selectionResetKey: [
+            statusFilter,
+            prioritiesEnabled ? '1' : '0',
+            timeEstimatesEnabled ? '1' : '0',
+            activeSelectedTokens.join('|'),
+            activeExcludedTokens.join('|'),
+            selectedPriorities.join('|'),
+            selectedTimeEstimates.join('|'),
+            selectedWaitingPerson,
+            activeNextGroupBy,
+            includeArchivedReferenceProjects ? 'archived-projects' : 'active-projects',
+        ].join('::'),
+        setHighlightTask,
+        shouldVirtualize,
+        showToast,
+        t,
+        tasksById,
+        undoNotificationsEnabled,
+    });
+    const openSomedayMove = useCallback((taskId: string) => {
+        if (statusFilter !== 'someday' || readOnly) return;
+        setSomedayMoveTargetIds([taskId]);
+    }, [readOnly, statusFilter]);
+    const handleApplySomedayMove = useCallback(async (
+        destinationId: string | undefined,
+        pendingMove?: SomedaySectionMove,
+    ) => {
+        if (!somedayMoveTargetIds?.length) throw new Error('No selected Someday tasks');
+        const move = pendingMove
+            ? await retryPendingSomedaySectionMove(pendingMove)
+            : await saveSomedaySectionMove(
+                somedayMoveTargetIds,
+                destinationId,
+                selectableTaskIds,
+                tFallback(t, 'viewSections.noSection', 'No section'),
+            );
+        if (move.changedCount > 0) {
+            void logInfo('Someday section assignment saved', {
+                scope: 'task',
+                extra: {
+                    releaseCheck: 'v1.3.1/someday-section-move',
+                    count: move.changedCount,
+                    operation: 'move',
+                },
+            }).catch((error) => reportError('Failed to log Someday section move', error));
+
+            let pendingUndoCount: number | undefined;
+            const runUndo = async () => {
+                try {
+                    const count = await undoSomedaySectionMove(move, pendingUndoCount);
+                    pendingUndoCount = undefined;
+                    if (count > 0) {
+                        void logInfo('Someday section assignment saved', {
+                            scope: 'task',
+                            extra: {
+                                releaseCheck: 'v1.3.1/someday-section-move',
+                                count,
+                                operation: 'undo',
+                            },
+                        }).catch((error) => reportError('Failed to log Someday section undo', error));
+                    }
+                } catch (error) {
+                    if (error instanceof SomedaySectionUndoSaveError) pendingUndoCount = error.pendingCount;
+                    reportError('Failed to undo Someday section move', error);
+                    showToast(
+                        tFallback(t, 'viewSections.undoFailed', 'Could not undo the section move.'),
+                        'error',
+                        5000,
+                        { label: tFallback(t, 'common.retry', 'Retry'), onClick: () => { void runUndo(); } },
+                    );
+                }
+            };
+            const undo = registerUndoableAction(() => { void runUndo(); });
+            const message = formatI18nTemplate(tFallback(t, 'viewSections.moved', 'Moved to {section} ({count})'), {
+                count: move.changedCount,
+                section: move.destinationTitle,
+            });
+            showToast(message, 'success', 5000, {
+                label: tFallback(t, 'common.undo', 'Undo'),
+                onClick: undo,
+            });
+        }
+        setSomedayMoveTargetIds(null);
+        exitSelectionMode();
+    }, [exitSelectionMode, selectableTaskIds, showToast, somedayMoveTargetIds, t]);
+    const handleAddTaskToSomedaySection = useCallback((group: TaskGroup) => {
+        if (statusFilter !== 'someday' || activeGroupBy !== 'viewSection') return;
+        const prefix = 'view-section:someday:';
+        if (!group.id.startsWith(prefix) || group.id === SOMEDAY_NO_SECTION_GROUP_ID) return;
+        const sectionId = group.id.slice(prefix.length);
+        const latest = sortViewSectionDefinitions(useTaskStore.getState().settings?.gtd?.viewSections?.someday);
+        if (!latest.some((section) => section.id === sectionId)) return;
+        window.dispatchEvent(new CustomEvent('stride:quick-add', {
+            detail: { initialProps: { status: 'someday', viewSectionIds: { someday: sectionId } } },
+        }));
+    }, [activeGroupBy, statusFilter]);
+    const getSomedayAddTaskLabel = useCallback((group: TaskGroup) => (
+        group.id === SOMEDAY_NO_SECTION_GROUP_ID
+            ? undefined
+            : formatI18nTemplate(tFallback(t, 'viewSections.addTask', 'Add task to {section}'), { section: group.title })
+    ), [t]);
+    const handleApplyTaskBulkOrganize = useCallback(async (input: BulkOrganizeTaskUpdateInput) => {
+        const selectedCount = selectedIdsArray.length;
+        await organizeSelectedTasks(input, {
+            afterSuccess: () => {
+            setBulkOrganizeOpen(false);
+            const message = resolveI18nText(t, 'bulk.organizeApplied', {
+                fallback: '{{count}} selected tasks organized',
+                values: { count: selectedCount },
+            });
+            showToast(message, 'success');
+            },
+        });
+    }, [
+        organizeSelectedTasks,
+        selectedIdsArray,
+        showToast,
+        t,
+    ]);
+
+    const handleAddTask = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newTaskTitle.trim()) return;
+        try {
+            const parsed = parseQuickAdd(
+                newTaskTitle,
+                projects,
+                new Date(),
+                areas,
+                quickAddParseOptions,
+            );
+
+
+            const transaction = await executeCaptureTransaction(
+                {
+                    parsed,
+                    rawInput: newTaskTitle,
+                    projects,
+
+                    initialProps: statusFilter === 'all' ? undefined : { status: statusFilter },
+                    selectedAreaId: defaultNewTaskAreaId,
+                },
+                { addProject, addTask },
+                {
+                    transformProps: (props) => {
+                        if (copilotContext) {
+                            const existing = props.contexts ?? [];
+                            props.contexts = Array.from(new Set([...existing, copilotContext]));
+                        }
+                        if (copilotTags.length) {
+                            const existingTags = props.tags ?? [];
+                            props.tags = Array.from(new Set([...existingTags, ...copilotTags]));
+                        }
+                        return props;
+                    },
+                },
+            );
+            if (!transaction.success) {
+
+
+                if (transaction.reason === 'invalid-date-command') {
+                    showToast(`${t('quickAdd.invalidDateCommand')}: ${transaction.invalidDateCommands.join(', ')}`, 'error');
+                } else if (transaction.reason !== 'empty-title') {
+                    showToast(tFallback(t, 'task.addFailed', 'Failed to add task'), 'error');
+                }
+                return;
+            }
+            setNewTaskTitle('');
+            resetCopilot();
+
+
+            if (transaction.createdTaskId) {
+                setHighlightTask(transaction.createdTaskId);
+            }
+        } catch (error) {
+            reportError('Failed to add task from quick add', error);
+            showToast(tFallback(t, 'task.addFailed', 'Failed to add task'), 'error');
+        }
+    };
+
+
+    const showFilters = ['next', 'all', 'done', 'waiting', 'someday', 'inbox', 'reference'].includes(statusFilter);
+    const isInbox = statusFilter === 'inbox';
+    const isNextView = statusFilter === 'next';
+    const isWaitingView = statusFilter === 'waiting';
+    const showQuickAdd = isInbox;
+
+
+    const quickAddPreviewEntries = useMemo(() => {
+        if (!showQuickAdd || !newTaskTitle.trim()) return [];
+        return buildQuickAddPreviewEntries(
+            parseQuickAdd(newTaskTitle, projects, new Date(), areas, quickAddParseOptions),
+            { t, projects, areas, rawInput: newTaskTitle },
+        );
+    }, [areas, newTaskTitle, projects, quickAddParseOptions, showQuickAdd, t]);
+    const priorityOptions = PRIORITY_FILTER_OPTIONS;
+    const timeEstimateOptions = TIME_ESTIMATE_OPTIONS;
+    const formatEstimate = (value: TimeEstimate) => formatTimeEstimateLabel(value, { t });
+    const excludedLabel = resolveText('filters.excluded', 'Excluded');
+    const chipDeps: ActiveFilterChipDeps = {
+        t,
+        resolveText,
+        getProject: (projectId) => projectMap.get(projectId),
+        getAreaColor: (areaId) => areaById.get(areaId)?.color,
+        getAreaLabel: (areaId) => areaById.get(areaId)?.name,
+    };
+    const activeFilterChips: DesktopActiveFilterChip[] = [];
+    if (normalizedSearchQuery) {
+        activeFilterChips.push({
+            id: 'search',
+            label: getListSearchChipLabel(searchQuery.trim(), t),
+            onRemove: () => setSearchQuery(''),
+        });
+    }
+
+
+    buildActiveFilterChips(listFilterCriteria, chipDeps, { appliedCriteria: activeListFilterCriteria })
+        .forEach((chip) => {
+            activeFilterChips.push({ ...chip, onRemove: () => removeFilterChip(chip.id) });
+        });
+    if (selectedWaitingPerson) {
+        activeFilterChips.push({
+            id: 'waiting-person',
+            label: `${t('process.delegateWhoLabel')}: ${selectedWaitingPerson}`,
+            onRemove: () => setSelectedWaitingPerson(''),
+        });
+    }
+    if (isReferenceView && includeArchivedReferenceProjects) {
+        activeFilterChips.push({
+            id: 'include-archived-projects',
+            label: t('reference.includeArchivedProjects'),
+            onRemove: () => setIncludeArchivedReferenceProjects(false),
+        });
+    }
+    const filterSummary = activeFilterChips
+        .filter((chip) => !chip.inactive)
+        .map((chip) => (chip.excluded ? `${excludedLabel}: ${chip.label}` : chip.label));
+
+
+    const hasFilters = filterSummary.length > 0;
+
+
+    const hasFilterChips = activeFilterChips.length > 0;
+    const filterSummaryLabel = filterSummary.slice(0, 3).join(', ');
+    const filterSummarySuffix = filterSummary.length > 3 ? ` +${filterSummary.length - 3}` : '';
+    const showFiltersPanel = filtersOpen;
+
+    const openQuickAdd = useCallback((status: TaskStatus | 'all', captureMode?: 'text' | 'audio') => {
+        const initialStatus = status === 'all' ? 'inbox' : status;
+        window.dispatchEvent(new CustomEvent('stride:quick-add', {
+            detail: { initialProps: { status: initialStatus }, captureMode },
+        }));
+    }, []);
+    const openMindSweep = useCallback(() => setMindSweepOpen(true), []);
+    const closeMindSweep = useCallback(() => setMindSweepOpen(false), []);
+
+    const emptyState = (() => {
+        switch (statusFilter) {
+            case 'inbox':
+                return {
+                    title: tFallback(t, 'list.inbox', 'Inbox'),
+                    body: resolveText('inbox.emptyAddHint', 'Inbox is clear. Capture something new.'),
+                    action: tFallback(t, 'nav.addTask', 'Add task'),
+                };
+            case 'next':
+                return {
+                    title: tFallback(t, 'list.next', 'Next Actions'),
+                    body: resolveText('list.noTasks', 'No next actions yet.'),
+                };
+            case 'waiting':
+                return {
+                    title: resolveText('waiting.empty', tFallback(t, 'list.waiting', 'Waiting')),
+                    body: resolveText('waiting.emptyHint', 'Track delegated or pending items.'),
+                };
+            case 'someday':
+                return {
+                    title: resolveText('someday.empty', tFallback(t, 'list.someday', 'Someday')),
+                    body: resolveText('someday.emptyHint', 'Store ideas for later.'),
+                };
+            case 'reference':
+                return {
+                    title: resolveText('reference.empty', tFallback(t, 'list.reference', 'Reference')),
+                    body: resolveText('reference.emptyHint', 'Reference holds info you might want later — no action required.'),
+                };
+            case 'done':
+                return {
+                    title: tFallback(t, 'list.done', 'Done'),
+                    body: resolveText('done.emptyHint', 'Completed tasks land here — a running log of what you finished.'),
+                };
+            default:
+                return {
+                    title: tFallback(t, 'list.tasks', 'Tasks'),
+                    body: resolveText('list.noTasks', 'No tasks yet.'),
+                };
+        }
+    })();
+    const renderListTask = useCallback((task: Task) => {
+        const index = taskIndexById.get(task.id) ?? 0;
+        const isHistoricalReference = isHistoricalReferenceTask(task);
+        return (
+            <StoreTaskItem
+                key={task.id}
+                taskId={task.id}
+                isSelected={index === selectedIndex}
+                index={index}
+                onSelectIndex={handleSelectIndex}
+                selectionMode={selectionMode}
+                isMultiSelected={multiSelectedIds.has(task.id)}
+                onToggleSelectId={toggleMultiSelect}
+                showQuickDone={showQuickDone}
+                readOnly={readOnly}
+                compactMetaEnabled={showListDetails}
+                enableDoubleClickEdit
+                showProjectBadgeInActions={false}
+                interactionDisabled={isHistoricalReference}
+                onMoveToSomedaySection={statusFilter === 'someday' ? openSomedayMove : undefined}
+            />
+        );
+    }, [
+        handleSelectIndex,
+        isHistoricalReferenceTask,
+        multiSelectedIds,
+        readOnly,
+        selectedIndex,
+        selectionMode,
+        showListDetails,
+        showQuickDone,
+        taskIndexById,
+        toggleMultiSelect,
+        openSomedayMove,
+        statusFilter,
+    ]);
+    const handleToggleDetails = useCallback(() => {
+        if (showListDetails) {
+            collapseAllTaskDetails();
+            setListOptions({ showDetails: false });
+            return;
+        }
+        setListOptions({ showDetails: true });
+    }, [collapseAllTaskDetails, setListOptions, showListDetails]);
+
+    return (
+        <ErrorBoundary>
+            <div className="flex h-full flex-col">
+                <div className="space-y-6">
+                    <ListHeader
+                        title={title}
+                        showNextCount={isNextView}
+                        nextCount={nextCount}
+                        taskCount={filteredTasks.length}
+                        scopeLabel={isInbox ? t('projects.allAreas') : undefined}
+                        hasFilters={hasFilters}
+                        filterSummaryLabel={filterSummaryLabel}
+                        filterSummarySuffix={filterSummarySuffix}
+                        sortBy={sortBy}
+                        defaultSortBy="default"
+                        onChangeSortBy={(value) => {
+                            if (statusFilter === 'done') {
+                                setListOptions({ doneSortBy: value });
+                                return;
+                            }
+                            void updateSettings({ taskSortBy: value });
+                        }}
+                        showGroupBy
+                        groupBy={activeGroupBy}
+                        defaultGroupBy={defaultGroupBy}
+                        groupByOptions={groupByOptions}
+                        sortByOptions={statusFilter === 'done' ? DONE_TASK_LIST_SORT_OPTIONS : undefined}
+                        onChangeGroupBy={(value) => {
+                            if (statusFilter === 'reference') {
+                                setListOptions({ referenceGroupBy: value as ReferenceGroupBy });
+                                return;
+                            }
+                            if (statusFilter === 'done') {
+                                setListOptions({ doneGroupBy: value as DoneGroupBy });
+                                return;
+                            }
+                            setListOptions({ [groupByKey]: value as NextGroupBy });
+                        }}
+                        showFiltersButton={showFilters}
+                        filtersOpen={showFiltersPanel}
+                        onToggleFilters={() => setFiltersOpen(!filtersOpen)}
+                        selectionMode={selectionMode}
+                        onToggleSelection={toggleSelectionMode}
+                        showDetailsToggle={!isReferenceView}
+                        showListDetails={showListDetails}
+                        onToggleDetails={handleToggleDetails}
+                        onNewSomedaySection={statusFilter === 'someday' ? () => {
+                            setNewSomedaySectionError(null);
+                            setNewSomedaySectionOpen(true);
+                        } : undefined}
+                        t={t}
+                    />
+
+                    {isBatchDeleting && (
+                        <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                            {tFallback(t, 'bulk.deleting', 'Deleting selected tasks...')}
+                        </div>
+                    )}
+
+                    {selectionMode && (
+                        <div className="space-y-3">
+                            <BulkSelectionToolbar
+                                selectionCount={selectedIdsArray.length}
+                                totalCount={selectableTaskIds.length}
+                                allSelected={allVisibleTasksSelected}
+                                onSelectAll={selectAllVisibleTasks}
+                                onClearSelection={clearTaskSelection}
+                                t={t}
+                            />
+                            {selectedIdsArray.length > 0 && (
+                                <ListBulkActions
+                                    selectionCount={selectedIdsArray.length}
+                                    currentStatus={statusFilter}
+                                    onMoveToStatus={handleBatchMove}
+                                    onMoveToSomedaySection={statusFilter === 'someday'
+                                        ? () => setSomedayMoveTargetIds([...selectedIdsArray])
+                                        : undefined}
+                                    onMoveToDestination={handleBatchMoveToDestination}
+                                    projects={projects}
+                                    areas={areas}
+                                    onBulkOrganize={() => setBulkOrganizeOpen(true)}
+                                    onAddTag={handleBatchAddTag}
+                                    onRemoveTag={handleBatchRemoveTag}
+                                    disableRemoveTag={removableTagOptions.length === 0}
+                                    onAddContext={handleBatchAddContext}
+                                    onRemoveContext={handleBatchRemoveContext}
+                                    onExportCsv={() => { void exportSelectedTasks(); }}
+                                    isExporting={isExporting}
+                                    onDelete={handleBatchDelete}
+                                    isDeleting={isBatchDeleting}
+                                    t={t}
+                                />
+                            )}
+                        </div>
+                    )}
+
+                    {isNextView && nextCount > NEXT_WARNING_THRESHOLD && (
+                        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+                            <AlertTriangle className="mt-0.5 h-5 w-5 text-warning" />
+                            <div>
+                                <p className="font-medium text-warning">
+                                    {nextCount} {t('next.warningCount')}
+                                </p>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {t('next.warningHint')}
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {showDeferredProjectSection && (
+                        <div className="rounded-lg border border-border bg-card/50 p-4">
+                            <button
+                                type="button"
+                                aria-expanded={!collapsedProjectLists[statusFilter]}
+                                onClick={() => setCollapsedProjectLists((current) => ({ ...current, [statusFilter]: !current[statusFilter] }))}
+                                className="flex min-h-8 w-full items-center gap-2 rounded text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                            >
+                                {collapsedProjectLists[statusFilter] ? <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" /> : <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                                {tFallback(t, 'projects.title', 'Projects')} ({deferredProjects.length})
+                            </button>
+                            {!collapsedProjectLists[statusFilter] && <div className="mt-3 space-y-2">
+                                {deferredProjects.map((project) => (
+                                    <DeferredProjectRow
+                                        key={project.id}
+                                        project={project}
+                                        area={project.areaId ? areaById.get(project.areaId) : undefined}
+                                        t={t}
+                                        onOpen={handleOpenProject}
+                                        onReactivate={handleReactivateProject}
+                                    />
+                                ))}
+                            </div>}
+                        </div>
+                    )}
+
+                    <InboxProcessor
+                        t={t}
+                        isInbox={isInbox}
+                        tasks={tasks}
+                        projects={projects}
+                        areas={areas}
+                        settings={settings}
+                        addTask={addTask}
+                        addProject={addProject}
+                        updateTask={updateTask}
+                        deleteTask={deleteTask}
+                        allContexts={allContexts}
+                        allTags={allTags}
+                        isProcessing={isProcessing}
+                        setIsProcessing={setIsProcessing}
+                        onOpenMindSweep={openMindSweep}
+                    />
+
+                    {showViewFilterInput && !isProcessing && (
+                        <input
+                            type="text"
+                            data-view-filter-input
+                            placeholder={t('common.search')}
+                            aria-label={t('common.search')}
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            className={VIEW_FILTER_INPUT}
+                        />
+                    )}
+
+                    {isWaitingView && !isProcessing && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                            <span className="text-xs font-medium text-muted-foreground">{t('process.delegateWhoLabel')}</span>
+                            <div className="relative max-w-full">
+                                <select
+                                    aria-label={t('process.delegateWhoLabel')}
+                                    value={selectedWaitingPerson}
+                                    onChange={(event) => setSelectedWaitingPerson(event.target.value)}
+                                    className={`max-w-full appearance-none rounded border border-border/50 bg-transparent py-1 pl-2 pr-7 text-xs hover:border-border focus-visible:outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/40 ${selectedWaitingPerson ? 'text-foreground' : 'text-muted-foreground'}`}
+                                >
+                                    <option value="">{t('common.all')}</option>
+                                    {waitingPeople.map((person) => (
+                                        <option key={person} value={person}>
+                                            {person}
+                                        </option>
+                                    ))}
+                                </select>
+                                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                            </div>
+                            {selectedWaitingPerson && (
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedWaitingPerson('')}
+                                    className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                                >
+                                    {t('common.clear')}
+                                </button>
+                            )}
+                        </div>
+                    )}
+
+                    {showFilters && (showFiltersPanel || hasFilterChips) && !isProcessing && (
+                        <ListFiltersPanel
+                            anyDateRange={listFilterCriteria.anyDateRange}
+                            onAnyDateRangeChange={(value) => setListFilters({ criteria: { ...listFilterCriteria, anyDateRange: value } })}
+                            t={t}
+                            activeFilterChips={activeFilterChips}
+                            hasFilters={hasFilterChips}
+                            showFiltersPanel={showFiltersPanel}
+                            onClose={() => setFiltersOpen(false)}
+                            onClearFilters={() => {
+                                clearFilters();
+                                setSearchQuery('');
+                                setSelectedWaitingPerson('');
+                                setIncludeArchivedReferenceProjects(false);
+                            }}
+                            allTokens={filterTokens}
+                            selectedTokens={selectedTokens}
+                            excludedTokens={excludedTokens}
+                            tokenCounts={tokenCounts}
+                            onToggleToken={toggleTokenFilter}
+                            contextMatchMode={contextMatchMode}
+                            tagMatchMode={tagMatchMode}
+                            onContextMatchModeChange={(mode) => setMatchMode('context', mode)}
+                            onTagMatchModeChange={(mode) => setMatchMode('tag', mode)}
+                            showPriorityFilters={showPriorityFilters}
+                            priorityOptions={priorityOptions}
+                            selectedPriorities={selectedPriorities}
+                            onTogglePriority={togglePriorityFilter}
+                            showTimeEstimateFilters={showTimeEstimateFilters}
+                            timeEstimateOptions={timeEstimateOptions}
+                            selectedTimeEstimates={selectedTimeEstimates}
+                            onToggleEstimate={toggleTimeFilter}
+                            formatEstimate={formatEstimate}
+                            showIncludeArchivedProjects={isReferenceView}
+                            includeArchivedProjects={includeArchivedReferenceProjects}
+                            onToggleIncludeArchivedProjects={() => {
+                                setIncludeArchivedReferenceProjects((include) => !include);
+                            }}
+                        />
+                    )}
+
+                    {showQuickAdd && (
+                        <>
+                            <ListQuickAdd
+                                value={newTaskTitle}
+                                inputRef={addInputRef}
+                                projects={projects}
+                                areas={areas}
+                                contexts={allTokens}
+                                contextHistory={quickAddContextHistory}
+                                people={personOptionNames}
+                                t={t}
+                                dense={densityMode !== 'comfortable'}
+                                onCreateProject={async (title) => {
+                                    const created = await addProject(
+                                        title,
+                                        DEFAULT_AREA_COLOR,
+                                        getQuickAddProjectInitialProps({}, defaultNewTaskAreaId),
+                                    );
+                                    return created?.id ?? null;
+                                }}
+                                onChange={setNewTaskTitle}
+                                onSubmit={handleAddTask}
+                                onOpenAudio={() => openQuickAdd(statusFilter, 'audio')}
+                                onResetCopilot={resetCopilot}
+                            />
+                            {aiEnabled && pendingCopilotParts.length > 0 && (
+                                <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                                    <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />{t('copilot.suggested')}</span>
+                                    {pendingCopilotParts.map((part) => (
+                                        <button
+                                            key={`${part.kind}:${part.value}`}
+                                            type="button"
+                                            onClick={() => applyCopilotPart(part)}
+                                            className="rounded bg-muted/50 px-1.5 py-0.5 text-foreground transition-colors hover:bg-muted"
+                                        >
+                                            {part.value}
+                                        </button>
+                                    ))}
+                                    {pendingCopilotParts.length > 1 && (
+                                        <button
+                                            type="button"
+                                            onClick={applyCopilotSuggestion}
+                                            className="rounded px-1.5 py-0.5 text-primary transition-colors hover:bg-primary/10"
+                                        >
+                                            {t('copilot.applyAll')}
+                                        </button>
+                                    )}
+                                    <span className="text-muted-foreground/70">{t('copilot.applyHint')}</span>
+                                </div>
+                            )}
+                            {aiEnabled && (copilotContext || copilotTags.length > 0) && (
+                                <div className="mt-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                                    <Check className="mr-1 inline h-3 w-3 align-[-0.125em]" aria-hidden="true" />{t('copilot.applied')}{' '}
+                                    {copilotContext ? `${copilotContext} ` : ''}
+                                    {copilotTags.length ? copilotTags.join(' ') : ''}
+                                </div>
+                            )}
+                            {!isProcessing && (
+                                <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        {
+
+                                                                                      }
+                                        <QuickAddPreview entries={quickAddPreviewEntries} className="min-w-0" />
+                                        {quickAddPreviewEntries.length === 0 ? (
+                                            <span className="min-w-0 truncate">
+                                                {t('quickAdd.inlineHint')}
+                                            </span>
+                                        ) : null}
+                                        <button
+                                            type="button"
+                                            onClick={() => setQuickAddSyntaxOpen((open) => !open)}
+                                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                                            aria-label={t('quickAdd.syntaxHelp')}
+                                            aria-expanded={quickAddSyntaxOpen}
+                                            title={formatQuickAddHelp(t('quickAdd.help'), { priorities: prioritiesEnabled, timeEstimates: timeEstimatesEnabled })}
+                                        >
+                                            <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                                        </button>
+                                    </div>
+                                    {quickAddSyntaxOpen && (
+                                        <p className="rounded border border-border bg-muted/30 px-2 py-1 leading-relaxed text-muted-foreground">
+                                            <QuickAddSyntaxHint text={t('quickAdd.help')} />
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+            <div
+                ref={listScrollRef}
+                className="flex-1 min-h-0 overflow-y-auto pt-3"
+                role="list"
+                aria-label={tFallback(t, 'list.tasks', 'Task list')}
+            >
+                {isFiltering && (
+                    <div className="px-3 pb-2 text-xs text-muted-foreground">
+                        {tFallback(t, 'list.filtering', 'Filtering...')}
+                    </div>
+                )}
+                {showEmptyState ? (
+                    <ListEmptyState
+                        hasFilters={hasFilters}
+                        emptyState={emptyState}
+                        onAddTask={() => openQuickAdd(statusFilter)}
+                        primaryAction={isInbox && !hasFilters
+                            ? (
+                                <div className="flex flex-col gap-2">
+                                    <QuickCaptureTrigger t={t} variant="primary" />
+                                    <MindSweepTrigger t={t} onOpen={openMindSweep} variant="secondary" />
+                                </div>
+                            )
+                            : undefined}
+                        t={t}
+                    />
+                ) : (
+                    <GroupedTaskList
+                        groups={groupedTasks}
+                        tasks={filteredTasks}
+                        virtualRows={groupedVirtualRows}
+                        virtualizer={shouldVirtualize ? rowVirtualizer : null}
+                        collapsedGroupIds={collapsedGroupIds}
+                        onToggleGroup={isListGrouping ? toggleGroup : undefined}
+                        getSectionDomId={getSectionDomId}
+                        onAddTaskToGroup={statusFilter === 'someday' && activeGroupBy === 'viewSection'
+                            ? (group) => {
+                                if (group.id !== SOMEDAY_NO_SECTION_GROUP_ID) handleAddTaskToSomedaySection(group);
+                            }
+                            : undefined}
+                        addTaskLabel={getSomedayAddTaskLabel}
+                        renderProject={deferredProjectsInGroups ? renderSectionProject : undefined}
+                        flatRowClassName={densityMode === 'condensed'
+                            ? 'pb-0.5'
+                            : densityMode === 'compact'
+                                ? 'pb-1'
+                                : 'pb-1.5'}
+                        renderTask={renderListTask}
+                    />
+                )}
+                <div data-list-end className={LIST_END_GAP} aria-hidden="true" />
+            </div>
+        </div>
+        <MindSweepModal
+            isOpen={mindSweepOpen}
+            onClose={closeMindSweep}
+            t={t}
+            addTask={addTask}
+        />
+        <PromptModal
+            isOpen={tagPromptOpen}
+            title={t('bulk.addTag')}
+            description={t('bulk.addTag')}
+            placeholder={t('bulk.tagPlaceholder')}
+            defaultValue=""
+            confirmLabel={t('common.save')}
+            cancelLabel={t('common.cancel')}
+            onCancel={() => setTagPromptOpen(false)}
+            onConfirm={handleConfirmTagPrompt}
+        />
+        <PromptModal
+            isOpen={contextPromptOpen}
+            title={contextPromptMode === 'add' ? t('bulk.addContext') : t('bulk.removeContext')}
+            description={contextPromptMode === 'add' ? t('bulk.addContext') : t('bulk.removeContext')}
+            placeholder={t('bulk.contextPlaceholder')}
+            defaultValue=""
+            confirmLabel={t('common.save')}
+            cancelLabel={t('common.cancel')}
+            onCancel={() => setContextPromptOpen(false)}
+            onConfirm={handleConfirmContextPrompt}
+        />
+        <TokenPickerModal
+            isOpen={removeTagPickerOpen}
+            title={t('bulk.removeTag')}
+            description={t('bulk.removeTag')}
+            tokens={removableTagOptions}
+            placeholder={t('bulk.tagPlaceholder')}
+            multiSelect
+            confirmLabel={t('common.save')}
+            cancelLabel={t('common.cancel')}
+            onCancel={() => setRemoveTagPickerOpen(false)}
+            onConfirm={handleConfirmRemoveTags}
+        />
+        <TaskBulkOrganizeModal
+            isOpen={bulkOrganizeOpen}
+            selectedCount={selectedIdsArray.length}
+            projects={projects}
+            areas={areas}
+            isApplying={isBulkOrganizing}
+            t={t}
+            titleKey={isInbox ? 'bulk.organizeInbox' : 'bulk.organizeTasks'}
+            titleFallback={isInbox ? 'Bulk organize Inbox' : 'Bulk organize tasks'}
+            onCancel={() => setBulkOrganizeOpen(false)}
+            onApply={handleApplyTaskBulkOrganize}
+        />
+        {somedayMoveTargetIds && (
+            <SomedaySectionMoveDialog
+                key={somedayMoveTargetIds.join('|')}
+                sections={somedaySectionDefinitions}
+                selectedCount={somedayMoveTargetIds.length}
+                initialSectionId={somedayMoveTargetIds.length === 1
+                    ? tasksById.get(somedayMoveTargetIds[0])?.viewSectionIds?.someday
+                    : undefined}
+                t={t}
+                onCreateSection={createSomedaySection}
+                onApply={handleApplySomedayMove}
+                onCancel={() => setSomedayMoveTargetIds(null)}
+            />
+        )}
+        {somedayMoveProjectId && (
+            <SomedaySectionMoveDialog
+                key={`project:${somedayMoveProjectId}`}
+                sections={somedaySectionDefinitions}
+                selectedCount={1}
+                description={projects.find((project) => project.id === somedayMoveProjectId)?.title}
+                initialSectionId={projects.find((project) => project.id === somedayMoveProjectId)?.viewSectionIds?.someday}
+                t={t}
+                onCreateSection={createSomedaySection}
+                onApply={handleApplySomedayProjectMove}
+                onCancel={() => setSomedayMoveProjectId(null)}
+            />
+        )}
+        <PromptModal
+            isOpen={newSomedaySectionOpen}
+            title={tFallback(t, 'viewSections.add', 'New section…')}
+            description={tFallback(t, 'viewSections.nameHint', 'Section name')}
+            errorMessage={newSomedaySectionError ?? undefined}
+            busy={newSomedaySectionBusy}
+            placeholder={tFallback(t, 'viewSections.namePlaceholder', 'Books to read')}
+            confirmLabel={t('common.save')}
+            cancelLabel={t('common.cancel')}
+            onCancel={() => { if (!newSomedaySectionBusyRef.current) setNewSomedaySectionOpen(false); }}
+            onConfirm={(title) => {
+                if (newSomedaySectionBusyRef.current) return;
+                newSomedaySectionBusyRef.current = true;
+                setNewSomedaySectionBusy(true);
+                setNewSomedaySectionError(null);
+                void createSomedaySection(title).then((id) => {
+                    if (id) setNewSomedaySectionOpen(false);
+                    else setNewSomedaySectionError(tFallback(t, 'viewSections.updateFailed', 'Could not update Someday sections.'));
+                }).catch((error) => {
+                    reportError('Failed to create Someday list section', error);
+                    setNewSomedaySectionError(tFallback(t, 'viewSections.updateFailed', 'Could not update Someday sections.'));
+                }).finally(() => {
+                    newSomedaySectionBusyRef.current = false;
+                    setNewSomedaySectionBusy(false);
+                });
+            }}
+        />
+        </ErrorBoundary>
+    );
+});

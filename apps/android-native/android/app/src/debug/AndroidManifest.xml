@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+
+        <activity-alias
+            android:name="${applicationId}.DebugQuickCapture"
+            android:exported="true"
+            android:targetActivity="com.ishaanpilar.stride.androidwidget.QuickCaptureActivity" />
+
+        <activity
+            android:name="com.ishaanpilar.stride.pilot.WidgetHostActivity"
+            android:exported="true"
+            android:label="Widget host" />
+
+        <provider
+            android:name="com.ishaanpilar.stride.pilot.ShareTestProvider"
+            android:authorities="${applicationId}.sharetest"
+            android:exported="true" />
+
+        <activity
+            android:name="com.ishaanpilar.stride.pilot.ShareTestSender"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+
+        <activity
+            android:name="com.ishaanpilar.stride.pilot.SyncLockProbe"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+        <activity
+            android:name="com.ishaanpilar.stride.pilot.SyncLockHolder"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:process=":lockholder"
+            android:theme="@android:style/Theme.NoDisplay" />
+    </application>
+</manifest>

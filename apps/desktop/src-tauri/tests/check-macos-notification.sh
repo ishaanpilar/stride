@@ -1,0 +1,36 @@
+#!/bin/bash
+set -euo pipefail
+
+
+mode=${1:-regression}
+case "$mode" in check|regression|request|test) ;; *) exit 2 ;; esac
+source_dir=$(cd "$(dirname "$0")" && pwd)
+build_dir=${STRIDE_NOTIFICATION_TEST_DIR:-"$HOME/worktrees/Stride/notification-bridge-check"}
+app="$build_dir/StrideNotificationTest.app"
+mkdir -p "$app/Contents/MacOS"
+cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.ishaanpilar.stride.dev</string>
+<key>CFBundleExecutable</key><string>NotificationTest</string>
+<key>CFBundleName</key><string>StrideNotificationTest</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+PLIST
+xcrun clang -fobjc-arc -fblocks -Wall -Werror -Wno-deprecated-declarations \
+    "$source_dir/macos_notification_bridge.m" -framework AppKit \
+    -framework Foundation -framework UserNotifications \
+    -o "$app/Contents/MacOS/NotificationTest"
+codesign --force --sign - "$app"
+if [[ "$mode" == request || "$mode" == test ]]; then
+
+    echo "Native result: $build_dir/$mode.log (test must print PASS; request waits for user choice)"
+    exec open -n --stdout "$build_dir/$mode.log" --stderr "$build_dir/$mode-error.log" "$app" --args "$mode"
+fi
+if [[ "$mode" == regression ]]; then
+    "$app/Contents/MacOS/NotificationTest" regression
+    cp "$app/Contents/MacOS/NotificationTest" "$build_dir/NotificationTest-unbundled"
+    exec "$build_dir/NotificationTest-unbundled" unbundled
+fi
+exec "$app/Contents/MacOS/NotificationTest" "$mode"

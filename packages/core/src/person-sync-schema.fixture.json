@@ -1,0 +1,25 @@
+{
+    "schemaVersion": 1,
+    "fields": [
+        { "name": "id", "nullability": "required", "cloudSynced": false, "cloudWrite": "managed", "sqliteColumn": "id", "sqliteOrder": 0, "sqliteType": null },
+        { "name": "name", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "name", "sqliteOrder": 1, "sqliteType": null },
+        { "name": "note", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "note", "sqliteOrder": 2, "sqliteType": "TEXT" },
+        { "name": "referenceLink", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "referenceLink", "sqliteOrder": 3, "sqliteType": "TEXT" },
+        { "name": "rev", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "rev", "sqliteOrder": 4, "sqliteType": "INTEGER" },
+        { "name": "revBy", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "revBy", "sqliteOrder": 5, "sqliteType": "TEXT" },
+        { "name": "createdAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "createdAt", "sqliteOrder": 6, "sqliteType": "TEXT" },
+        { "name": "updatedAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "updatedAt", "sqliteOrder": 7, "sqliteType": "TEXT" },
+        { "name": "deletedAt", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "deletedAt", "sqliteOrder": 8, "sqliteType": "TEXT" }
+    ],
+    "fixture": {
+        "id": "person-schema-fixture",
+        "name": "Verify every Person field",
+        "note": "Schema fixture note",
+        "referenceLink": "https://example.com/person-schema",
+        "rev": 3,
+        "revBy": "device-schema",
+        "createdAt": "2026-07-01T10:00:00.000Z",
+        "updatedAt": "2026-07-14T11:00:00.000Z",
+        "deletedAt": "2026-07-14T11:30:00.000Z"
+    }
+}

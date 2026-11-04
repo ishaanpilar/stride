@@ -1,0 +1,2126 @@
+import {
+    type AppData,
+    type Attachment,
+    type AttachmentSettings,
+    type SyncRunAttachmentHelpers,
+    MAX_DOWNLOAD_BYTES,
+    MAX_FILE_SYNC_BUFFERED_PLAINTEXT_BYTES,
+    ResponseTooLargeError,
+    applyAttachmentPatches,
+    withAttachmentSettingsPatch,
+    createWebdavDownloadBackoff,
+    buildCloudKitAttachmentKey,
+    buildFileSyncGenerationCloudKey,
+    cloudAttachmentExists,
+    cloudGetFile,
+    cloudPutFile,
+    computeSha256Hex,
+    createDropboxAttachmentPresenceIndex,
+    DROPBOX_ATTACHMENTS_PATH,
+    isAttachmentPresenceRepairCandidate,
+    repairMissingRemoteAttachments,
+    getErrorStatus,
+    isAttachmentUploadAdmissionError,
+    isBlockedAttachmentContentRefusal,
+    isSyncRemoteMutationFenceError,
+    isWebdavRemoteWriteConflictError,
+    isWebdavRateLimitedError,
+    normalizeStrongWebdavEtag,
+    parseCloudKitAttachmentKey,
+    handleRemoteAttachmentNotFound,
+    validateAttachmentForUpload,
+    webdavFileExists,
+    webdavGetFile,
+    webdavHeadFile,
+    webdavMakeDirectory,
+    webdavPutFileVersioned,
+    withRetry,
+} from '@stride/core';
+
+import {
+    collectAttachmentsById,
+    createAttachmentUploadSnapshotFactory,
+    reportProgress,
+    syncBasicRemoteAttachments,
+    validateAttachmentHash,
+} from './sync-attachments';
+import {
+    ATTACHMENTS_DIR_NAME,
+    buildCloudKey,
+    createLocalAttachmentFs,
+    extractExtension,
+    resolveFileBackendPath,
+    sleep,
+    stripFileScheme,
+    createCooperativeYield,
+    writeFileSafelyAbsolute,
+} from './sync-service-utils';
+import { getManagedPath } from './managed-paths';
+import {
+    abandonAttachmentGeneration as syncFsAbandonAttachmentGeneration,
+    exists as syncFsExists,
+    mkdir as syncFsMkdir,
+    publishAttachmentGeneration as syncFsPublishAttachmentGeneration,
+    reserveAttachmentGeneration as syncFsReserveAttachmentGeneration,
+    stat as syncFsStat,
+} from './sync-fs';
+import {
+    clearAttachmentValidationFailure,
+    handleAttachmentValidationFailure,
+    shouldAttemptAttachmentUpload,
+} from './sync-attachment-validation';
+import { openAttachmentBytes, sealAttachmentBytes } from './sync-encryption-service';
+import {
+    isAttachmentPresenceReconciliationDue,
+    markAttachmentPresenceReconciled,
+} from './attachment-presence-scope';
+import {
+    downloadDropboxFile,
+    DropboxConflictError,
+    DropboxFileNotFoundError,
+    DropboxUnauthorizedError,
+    getDropboxFileMetadata,
+    listDropboxFolderFiles,
+    uploadDropboxFileVersioned,
+} from './dropbox-sync';
+import {
+    deleteCloudKitAttachmentAssets,
+    fetchCloudKitAttachmentAsset,
+    isCloudKitAttachmentNotFoundError,
+    saveCloudKitAttachmentAsset,
+    type CloudKitAttachmentMetadata,
+} from './cloudkit-sync';
+import {
+    installAttachmentDownload,
+    type AttachmentInstallExpectation,
+} from './attachment-installer';
+import {
+    reportFileSyncAttachmentFailure,
+    runFileSyncAttachmentStage,
+    type FileSyncAttachmentFailureStage,
+} from './file-sync-attachment-diagnostics';
+
+export type WebDavConfig = {
+    url: string;
+    username: string;
+    password?: string;
+    hasPassword?: boolean;
+    allowInsecureHttp?: boolean;
+    allowWeakFingerprint?: boolean;
+};
+export type CloudConfig = {
+    url: string;
+    token: string;
+    allowInsecureHttp?: boolean;
+    rememberToken?: boolean;
+};
+
+export type AttachmentBackendDeps = {
+    getTauriFetch: () => Promise<typeof fetch | undefined>;
+    isTauriRuntimeEnv: () => boolean;
+    logSyncInfo: (message: string, extra?: Record<string, string>) => void;
+    logSyncWarning: (message: string, error?: unknown, extra?: Record<string, string>) => void;
+    resolveWebdavPassword: (config: WebDavConfig) => Promise<string>;
+
+
+    presenceScope?: string | null;
+};
+
+const FILE_BACKEND_VALIDATION_CONFIG = {
+    maxFileSizeBytes: Number.POSITIVE_INFINITY,
+    blockedMimeTypes: [],
+};
+const FILE_DOWNLOAD_READ_CHUNK_BYTES = 64 * 1024;
+
+class FileSyncGenerationIntegrityError extends Error {
+
+
+    readonly corrupt: boolean;
+    constructor(message: string, options: { cause?: unknown; corrupt?: boolean } = {}) {
+        super(message);
+        this.name = 'FileSyncGenerationIntegrityError';
+        this.corrupt = options.corrupt === true;
+        if (options.cause !== undefined) (this as Error & { cause?: unknown }).cause = options.cause;
+    }
+}
+
+
+const fileSyncGenerationGaveUp = new Set<string>();
+
+const UPLOAD_TIMEOUT_MS = 120_000;
+const WEBDAV_ATTACHMENT_RETRY_OPTIONS = {
+    maxAttempts: 5,
+    baseDelayMs: 2000,
+    maxDelayMs: 60_000,
+};
+const CLOUD_ATTACHMENT_RETRY_OPTIONS = {
+    maxAttempts: 5,
+    baseDelayMs: 2000,
+    maxDelayMs: 60_000,
+};
+const WEBDAV_ATTACHMENT_MIN_INTERVAL_MS = 400;
+const WEBDAV_ATTACHMENT_COOLDOWN_MS = 60_000;
+const WEBDAV_ATTACHMENT_MAX_DOWNLOADS_PER_SYNC = 10;
+const WEBDAV_ATTACHMENT_MAX_UPLOADS_PER_SYNC = 10;
+const WEBDAV_ATTACHMENT_MISSING_BACKOFF_MS = 15 * 60_000;
+const WEBDAV_ATTACHMENT_ERROR_BACKOFF_MS = 2 * 60_000;
+
+
+const describeAttachmentUriForLog = (
+    uri: string | undefined,
+    managedAttachmentsDir: string,
+): string => {
+    if (!uri) return 'none';
+    const trimmed = uri.trim();
+    const isWindowsPath = /^[A-Za-z]:[\\/]/.test(trimmed);
+    const scheme = isWindowsPath
+        ? 'path:'
+        : (/^[A-Za-z][A-Za-z0-9+.-]*:/.exec(trimmed)?.[0]?.toLowerCase() ?? 'path:');
+    const normalizePath = (value: string): string => value
+        .replace(/^file:\/\//i, '')
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '');
+    const normalizedPath = normalizePath(trimmed);
+    const normalizedManagedDir = normalizePath(managedAttachmentsDir);
+    const comparePath = isWindowsPath ? normalizedPath.toLowerCase() : normalizedPath;
+    const compareManagedDir = isWindowsPath ? normalizedManagedDir.toLowerCase() : normalizedManagedDir;
+    const location = comparePath === compareManagedDir
+        || comparePath.startsWith(`${compareManagedDir}/`)
+        ? 'managed'
+        : 'external';
+    return `${scheme}${location}${extractExtension(normalizedPath.split(/[?#]/, 1)[0])}`;
+};
+
+const describeAttachmentErrorForLog = (error: unknown): Error => {
+    const status = getErrorStatus(error);
+    if (status != null) return new Error(`Attachment sync operation failed (${status})`);
+
+
+    const message = error instanceof Error ? error.message : String(error ?? '');
+
+
+    const deniedCommand = /^fs\.(open|read|write) not allowed\b/i.exec(message)?.[1]?.toLowerCase();
+    if (deniedCommand) {
+        return new Error(`Attachment sync operation failed (fs:${deniedCommand} permission denied)`);
+    }
+    if (/forbidden path|not allowed on the configured scope/i.test(message)) {
+        return new Error('Attachment sync operation failed (path refused by fs scope)');
+    }
+    return new Error('Attachment sync operation failed');
+};
+
+const logAttachmentWarning = (
+    deps: Pick<AttachmentBackendDeps, 'logSyncWarning'>,
+    message: string,
+    error: unknown,
+): void => {
+    deps.logSyncWarning(message, describeAttachmentErrorForLog(error));
+};
+
+
+const CLOUD_ATTACHMENT_PRESENCE_MAX_CHECKS_PER_PASS = 200;
+
+type LocalFilePresenceProbe = ReturnType<typeof createLocalAttachmentFs>['localFilePresence'];
+
+
+const reconcileRemoteAttachmentPresence = async (options: {
+    label: string;
+    attachmentsById: Map<string, Attachment>;
+    localFilePresence: LocalFilePresenceProbe;
+
+
+    createProbe: () => Promise<((attachment: Attachment) => Promise<boolean | null>) | null>;
+    recordPatch: (attachment: Attachment) => void;
+    deps: AttachmentBackendDeps;
+    maxChecks?: number;
+}): Promise<boolean> => {
+    const candidates: Attachment[] = [];
+    const maybeYield = createCooperativeYield(4);
+    for (const attachment of options.attachmentsById.values()) {
+        await maybeYield();
+        if (!isAttachmentPresenceRepairCandidate(attachment)) continue;
+        const localPath = attachment.uri ? stripFileScheme(attachment.uri) : '';
+        if (!localPath || /^https?:\/\//i.test(localPath)) continue;
+        if (await options.localFilePresence(localPath, attachment) !== 'present') continue;
+        candidates.push(attachment);
+    }
+    if (candidates.length === 0) return true;
+
+    const probe = await options.createProbe();
+    if (!probe) return false;
+
+    const result = await repairMissingRemoteAttachments({
+        candidates,
+        probe,
+        clear: (attachment) => options.recordPatch({ ...attachment, cloudKey: undefined }),
+        maxChecks: options.maxChecks,
+        log: options.deps.logSyncInfo,
+    });
+    options.deps.logSyncInfo(`${options.label} attachment presence pass`, {
+        checked: String(result.checked),
+        cleared: String(result.cleared),
+        complete: result.complete ? 'true' : 'false',
+    });
+    return result.complete;
+};
+
+type AttachmentDownloadStageOps = {
+    join: (...paths: string[]) => Promise<string>;
+    writeFile: (path: string, bytes: Uint8Array) => Promise<void>;
+    remove: (path: string) => Promise<void>;
+};
+
+const createAttachmentDownloadStagePath = async (
+    managedAttachmentsDir: string,
+    join: AttachmentDownloadStageOps['join'],
+): Promise<string> => join(
+    managedAttachmentsDir,
+    `.download-${Date.now()}-${Math.random().toString(16).slice(2, 14)}`,
+);
+
+const resolveAttachmentDownloadTarget = async (
+    attachment: Attachment,
+    expectation: AttachmentInstallExpectation,
+    managedAttachmentsDir: string,
+    filename: string,
+    join: AttachmentDownloadStageOps['join'],
+): Promise<string> => expectation.kind === 'present'
+    ? stripFileScheme(attachment.uri)
+    : join(managedAttachmentsDir, filename);
+
+const cleanOwnedAttachmentDownloadStage = async (
+    stagedPath: string,
+    remove: AttachmentDownloadStageOps['remove'],
+    deps: AttachmentBackendDeps,
+): Promise<void> => {
+    try {
+        await remove(stagedPath);
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to clean incomplete attachment download stage', error);
+    }
+};
+
+const validateAndHashAttachmentDownload = async (
+    attachment: Attachment,
+    bytes: Uint8Array,
+): Promise<string> => {
+    await validateAttachmentHash(attachment, bytes);
+    const sha256 = await computeSha256Hex(bytes);
+    if (!sha256) {
+        throw new Error('Integrity validation unavailable: no SHA-256 implementation');
+    }
+    return sha256;
+};
+
+const installStagedAttachmentDownload = async (
+    attachment: Attachment,
+    backend: 'webdav' | 'cloud' | 'dropbox' | 'cloudkit' | 'file',
+    stagedPath: string,
+    targetPath: string,
+    expectation: AttachmentInstallExpectation,
+    expectedDownloadSha256: string,
+    remove: AttachmentDownloadStageOps['remove'],
+    deps: AttachmentBackendDeps,
+): Promise<boolean> => {
+
+
+    const outcome = await installAttachmentDownload(
+        stagedPath,
+        targetPath,
+        expectation,
+        expectedDownloadSha256,
+    );
+    if (outcome.kind === 'installed') {
+        await cleanOwnedAttachmentDownloadStage(stagedPath, remove, deps);
+        return true;
+    }
+
+    deps.logSyncInfo('Attachment download deferred after local-edit race', {
+        id: attachment.id,
+        backend,
+        reason: outcome.reason,
+    });
+    reportProgress(
+        attachment.id,
+        'download',
+        0,
+        attachment.size ?? 0,
+        'failed',
+        'Local file changed during sync; download deferred',
+    );
+    return false;
+};
+
+const stageAndInstallAttachmentDownload = async (
+    attachment: Attachment,
+    backend: 'webdav' | 'cloud' | 'dropbox' | 'file',
+    bytes: Uint8Array,
+    targetPath: string,
+    expectation: AttachmentInstallExpectation,
+    expectedDownloadSha256: string,
+    managedAttachmentsDir: string,
+    ops: AttachmentDownloadStageOps,
+    deps: AttachmentBackendDeps,
+): Promise<boolean> => {
+    const stagedPath = await createAttachmentDownloadStagePath(managedAttachmentsDir, ops.join);
+    try {
+        await ops.writeFile(stagedPath, bytes);
+    } catch (error) {
+        await cleanOwnedAttachmentDownloadStage(stagedPath, ops.remove, deps);
+        throw error;
+    }
+    return installStagedAttachmentDownload(
+        attachment,
+        backend,
+        stagedPath,
+        targetPath,
+        expectation,
+        expectedDownloadSha256,
+        ops.remove,
+        deps,
+    );
+};
+
+const webdavDownloadBackoff = createWebdavDownloadBackoff({
+    missingBackoffMs: WEBDAV_ATTACHMENT_MISSING_BACKOFF_MS,
+    errorBackoffMs: WEBDAV_ATTACHMENT_ERROR_BACKOFF_MS,
+});
+let webdavAttachmentRateLimitedUntil = 0;
+
+export const clearAttachmentSyncState = (): void => {
+    webdavDownloadBackoff.clear();
+    webdavAttachmentRateLimitedUntil = 0;
+    fileSyncGenerationGaveUp.clear();
+};
+
+const getWebdavAttachmentRateLimitRemainingMs = (): number => Math.max(0, webdavAttachmentRateLimitedUntil - Date.now());
+
+const markWebdavAttachmentRateLimited = (
+    error: unknown,
+    deps: Pick<AttachmentBackendDeps, 'logSyncWarning'>,
+): boolean => {
+    if (!isWebdavRateLimitedError(error)) return false;
+    webdavAttachmentRateLimitedUntil = Math.max(
+        webdavAttachmentRateLimitedUntil,
+        Date.now() + WEBDAV_ATTACHMENT_COOLDOWN_MS,
+    );
+    logAttachmentWarning(deps, 'WebDAV rate limited; pausing attachment sync', error);
+    return true;
+};
+
+const getWebdavDownloadBackoff = (attachmentId: string): number | null => {
+    return webdavDownloadBackoff.getBlockedUntil(attachmentId);
+};
+
+const setWebdavDownloadBackoff = (attachmentId: string, error: unknown): void => {
+    webdavDownloadBackoff.setFromError(attachmentId, error);
+};
+
+const pruneWebdavDownloadBackoff = (): void => {
+    webdavDownloadBackoff.prune();
+};
+
+
+export const isAttachmentDownloadBackedOff = (attachmentId: string): boolean => getWebdavDownloadBackoff(attachmentId) !== null;
+
+
+const remoteAttachmentNotFound = (attachment: Attachment, helpers?: SyncRunAttachmentHelpers): boolean => {
+    const activationProbe = helpers?.activationProbe === true;
+    if (!activationProbe) setWebdavDownloadBackoff(attachment.id, { status: 404 });
+    return handleRemoteAttachmentNotFound(attachment, activationProbe);
+};
+
+const downloadsOutsideBackoff = (helpers?: SyncRunAttachmentHelpers) => (attachment: Attachment): boolean => (
+    helpers?.activationProbe === true || !isAttachmentDownloadBackedOff(attachment.id)
+);
+
+
+type CloudKitAttachmentOwner = {
+    ownerType: 'task' | 'project';
+    ownerId: string;
+};
+
+const collectCloudKitAttachmentOwners = (appData: AppData): Map<string, CloudKitAttachmentOwner> => {
+    const owners = new Map<string, CloudKitAttachmentOwner>();
+    for (const task of appData.tasks) {
+        if (task.deletedAt) continue;
+        for (const attachment of task.attachments ?? []) {
+            owners.set(attachment.id, { ownerType: 'task', ownerId: task.id });
+        }
+    }
+    for (const project of appData.projects) {
+        if (project.deletedAt) continue;
+        for (const attachment of project.attachments ?? []) {
+            owners.set(attachment.id, { ownerType: 'project', ownerId: project.id });
+        }
+    }
+    return owners;
+};
+
+const buildCloudKitAttachmentMetadata = (
+    attachment: Attachment,
+    owned: CloudKitAttachmentOwner,
+    size?: number,
+): CloudKitAttachmentMetadata => {
+    return {
+        attachmentId: attachment.id,
+        ownerType: owned.ownerType,
+        ownerId: owned.ownerId,
+        title: attachment.title || 'attachment',
+        mimeType: attachment.mimeType,
+        size: Number.isFinite(size ?? NaN) ? size : attachment.size,
+        fileHash: attachment.fileHash,
+        updatedAt: attachment.updatedAt || new Date().toISOString(),
+        deletedAt: attachment.deletedAt,
+    };
+};
+
+const applyCloudKitAttachmentMetadata = (
+    attachment: Attachment,
+    metadata: CloudKitAttachmentMetadata,
+    fallbackSize?: number,
+): boolean => {
+    let mutated = false;
+    const nextSize = Number.isFinite(metadata.size ?? NaN) ? metadata.size : fallbackSize;
+    if (Number.isFinite(nextSize ?? NaN) && attachment.size !== nextSize) {
+        attachment.size = nextSize;
+        mutated = true;
+    }
+    if (metadata.fileHash && attachment.fileHash !== metadata.fileHash) {
+        attachment.fileHash = metadata.fileHash;
+        mutated = true;
+    }
+    return mutated;
+};
+
+
+const flushPendingCloudKitAttachmentDeletes = async (
+    appData: AppData,
+): Promise<AttachmentSettings | undefined> => {
+    const attachmentSettings = appData.settings.attachments;
+    const pendingDeletes = attachmentSettings?.pendingRemoteDeletes ?? [];
+    if (!attachmentSettings || pendingDeletes.length === 0) return undefined;
+
+    const remaining = [];
+    const recordNames: string[] = [];
+    for (const pending of pendingDeletes) {
+        const recordName = parseCloudKitAttachmentKey(pending.cloudKey);
+        if (recordName) {
+            recordNames.push(recordName);
+        } else {
+            remaining.push(pending);
+        }
+    }
+    if (recordNames.length === 0) return undefined;
+
+    await deleteCloudKitAttachmentAssets(recordNames);
+    return { ...attachmentSettings, pendingRemoteDeletes: remaining };
+};
+
+export async function syncWebdavAttachments(
+    appData: AppData,
+    webDavConfig: WebDavConfig,
+    baseSyncUrl: string,
+    deps: AttachmentBackendDeps,
+    helpers?: SyncRunAttachmentHelpers,
+): Promise<AppData | null> {
+    if (!deps.isTauriRuntimeEnv()) return null;
+    if (!webDavConfig.url) return null;
+    const cooldownRemainingMs = getWebdavAttachmentRateLimitRemainingMs();
+    if (cooldownRemainingMs > 0) {
+        deps.logSyncInfo('WebDAV attachment sync skipped during rate-limit cooldown', {
+            remainingMs: String(Math.ceil(cooldownRemainingMs)),
+        });
+        return null;
+    }
+
+    const fetcher = await deps.getTauriFetch();
+    const { BaseDirectory, exists, mkdir, readFile, stat, writeFile, remove } = await import('@tauri-apps/plugin-fs');
+    const { dataDir, join } = await import('@tauri-apps/api/path');
+    const password = await deps.resolveWebdavPassword(webDavConfig);
+
+    const attachmentsDirUrl = `${baseSyncUrl}/${ATTACHMENTS_DIR_NAME}`;
+
+
+    let attachmentsDirEnsured = false;
+    const ensureRemoteAttachmentsDir = async (): Promise<void> => {
+        if (attachmentsDirEnsured) return;
+        try {
+            await helpers?.assertRemoteMutationFenceHeld?.(UPLOAD_TIMEOUT_MS + 5_000);
+            await webdavMakeDirectory(attachmentsDirUrl, {
+                allowInsecureHttp: webDavConfig.allowInsecureHttp,
+                username: webDavConfig.username,
+                password,
+                fetcher,
+            });
+        } catch (error) {
+            if (isSyncRemoteMutationFenceError(error)) throw error;
+
+
+            if (markWebdavAttachmentRateLimited(error, deps)) throw error;
+            logAttachmentWarning(deps, 'Failed to ensure WebDAV attachments directory', error);
+        }
+
+
+        attachmentsDirEnsured = true;
+    };
+
+    try {
+        await mkdir(await getManagedPath(ATTACHMENTS_DIR_NAME), { recursive: true });
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure local attachments directory', error);
+    }
+
+    const baseDataDir = await dataDir();
+    const managedAttachmentsDir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+    const attachmentsById = collectAttachmentsById(appData);
+
+
+    const allPatches = new Map<string, Attachment>();
+    const recordPatch = (attachment: Attachment): void => {
+        allPatches.set(attachment.id, attachment);
+        attachmentsById.set(attachment.id, attachment);
+    };
+
+    pruneWebdavDownloadBackoff();
+
+
+    const reconcilePresence = helpers?.activationProbe === true
+        ? helpers.activationContinuation !== true
+        : isAttachmentPresenceReconciliationDue(deps.presenceScope);
+    deps.logSyncInfo('WebDAV attachment sync start', {
+        count: String(attachmentsById.size),
+        presence: reconcilePresence ? 'reconcile' : 'skipped',
+    });
+
+    let lastRequestAt = 0;
+    const waitForSlot = async (): Promise<void> => {
+        const cooldownRemainingMs = getWebdavAttachmentRateLimitRemainingMs();
+        if (cooldownRemainingMs > 0) {
+            throw new Error(`WebDAV rate limited for ${cooldownRemainingMs}ms`);
+        }
+        const now = Date.now();
+        const elapsed = now - lastRequestAt;
+        if (elapsed < WEBDAV_ATTACHMENT_MIN_INTERVAL_MS) {
+            await sleep(WEBDAV_ATTACHMENT_MIN_INTERVAL_MS - elapsed);
+        }
+        lastRequestAt = Date.now();
+    };
+    const handleRateLimit = (error: unknown): boolean => {
+        return markWebdavAttachmentRateLimited(error, deps);
+    };
+
+    const { readLocalFile, localFilePresence, statLocalFile } = createLocalAttachmentFs(
+        (message, error) => logAttachmentWarning(deps, message, error),
+        {
+            baseDataDir,
+            dataBaseDir: BaseDirectory.Data,
+            exists,
+            readFile,
+            managedAttachmentsDir,
+            stat,
+        },
+    );
+    const computeLocalFileHash = async (path: string, attachment: Attachment): Promise<string | null> =>
+        computeSha256Hex(await readLocalFile(path, attachment));
+    const createUploadSnapshot = createAttachmentUploadSnapshotFactory({ readLocalFile, statLocalFile });
+
+    let abortedByRateLimit = false;
+    const presenceCandidates: Attachment[] = [];
+
+
+    const maybeYieldPrePass = createCooperativeYield(4);
+    for (const attachment of attachmentsById.values()) {
+        await maybeYieldPrePass();
+        if (attachment.kind !== 'file' || attachment.deletedAt) continue;
+
+        const rawUri = attachment.uri ? stripFileScheme(attachment.uri) : '';
+        const isHttp = /^https?:\/\//i.test(rawUri);
+        const localPath = isHttp ? '' : rawUri;
+        const hasLocalPath = Boolean(localPath);
+        const localPresence = hasLocalPath
+            ? await localFilePresence(localPath, attachment)
+            : 'confirmed-not-found';
+        if (localPresence === 'unreadable') {
+            attachmentsById.delete(attachment.id);
+            continue;
+        }
+        const existsLocally = localPresence === 'present';
+        deps.logSyncInfo('WebDAV attachment check', {
+            id: attachment.id,
+            uri: describeAttachmentUriForLog(localPath || rawUri, managedAttachmentsDir),
+            cloud: attachment.cloudKey ? 'set' : 'missing',
+            local: hasLocalPath ? 'true' : 'false',
+            exists: existsLocally ? 'true' : 'false',
+        });
+
+        if (existsLocally) {
+            webdavDownloadBackoff.deleteEntry(attachment.id);
+        }
+
+        if (reconcilePresence && existsLocally && isAttachmentPresenceRepairCandidate(attachment)) {
+            presenceCandidates.push(attachment);
+        }
+    }
+
+    if (reconcilePresence) {
+        const presenceResult = await repairMissingRemoteAttachments({
+            candidates: presenceCandidates,
+            probe: async (attachment) => {
+                try {
+                    const remoteExists = await withRetry(async () => {
+                        await waitForSlot();
+                        return await webdavFileExists(`${baseSyncUrl}/${attachment.cloudKey}`, {
+                            allowInsecureHttp: webDavConfig.allowInsecureHttp,
+                            username: webDavConfig.username,
+                            password,
+                            fetcher,
+                        });
+                    }, WEBDAV_ATTACHMENT_RETRY_OPTIONS);
+                    deps.logSyncInfo('WebDAV attachment remote exists', {
+                        id: attachment.id,
+                        exists: remoteExists ? 'true' : 'false',
+                    });
+                    return remoteExists;
+                } catch (error) {
+                    if (handleRateLimit(error)) abortedByRateLimit = true;
+                    else logAttachmentWarning(deps, 'Failed to check WebDAV attachment remote status', error);
+                    return null;
+                }
+            },
+            clear: (attachment) => recordPatch({ ...attachment, cloudKey: undefined }),
+        });
+        deps.logSyncInfo('WebDAV attachment presence proof finished', {
+            releaseCheck: 'v1.3.0/webdav-presence-proof',
+            checked: String(presenceResult.checked),
+            cleared: String(presenceResult.cleared),
+            complete: presenceResult.complete ? 'true' : 'false',
+        });
+
+
+        if (presenceResult.complete && helpers?.activationProbe !== true) {
+            markAttachmentPresenceReconciled(deps.presenceScope, deps.logSyncWarning);
+        }
+    }
+
+
+    let uploadCount = 0;
+    let uploadLimitLogged = false;
+    let downloadCount = 0;
+    let downloadLimitLogged = false;
+
+    const shouldUpload = (): boolean => {
+        if (uploadCount >= WEBDAV_ATTACHMENT_MAX_UPLOADS_PER_SYNC) {
+            if (!uploadLimitLogged) {
+                deps.logSyncInfo('WebDAV attachment upload limit reached', {
+                    limit: String(WEBDAV_ATTACHMENT_MAX_UPLOADS_PER_SYNC),
+                });
+                uploadLimitLogged = true;
+            }
+            helpers?.onTransferBatchDeferred?.();
+            return false;
+        }
+        uploadCount += 1;
+        return true;
+    };
+
+    const shouldDownload = (attachment: Attachment): boolean => {
+
+        if (helpers?.activationProbe !== true && getWebdavDownloadBackoff(attachment.id)) return false;
+        if (downloadCount >= WEBDAV_ATTACHMENT_MAX_DOWNLOADS_PER_SYNC) {
+            if (!downloadLimitLogged) {
+                deps.logSyncInfo('WebDAV attachment download limit reached', {
+                    limit: String(WEBDAV_ATTACHMENT_MAX_DOWNLOADS_PER_SYNC),
+                });
+                downloadLimitLogged = true;
+            }
+            helpers?.onTransferBatchDeferred?.();
+            return false;
+        }
+        downloadCount += 1;
+        return true;
+    };
+
+    const { patches } = await syncBasicRemoteAttachments({
+        attachmentsById,
+        deferUploads: helpers?.phase === 'prepare',
+        ensureLocalSnapshotFresh: helpers?.ensureLocalSnapshotFresh,
+        getLocalFilePresence: localFilePresence,
+        getLocalFileStat: statLocalFile,
+        computeLocalFileHash,
+        createUploadSnapshot,
+        contentChangePhase: helpers?.phase,
+        isFatalError: (error) => (
+            isSyncRemoteMutationFenceError(error)
+            || isWebdavRemoteWriteConflictError(error)
+        ),
+        policy: {
+            shouldSkip: () => abortedByRateLimit,
+            shouldUpload,
+            shouldDownload,
+        },
+        onUpload: async (attachment, _localPath, snapshot) => {
+            if (!shouldAttemptAttachmentUpload(attachment)) return false;
+            const cloudKey = buildCloudKey(attachment);
+            if (!snapshot?.bytes) throw new Error('Immutable attachment upload bytes are unavailable');
+            const fileData = snapshot.bytes;
+            const validation = await validateAttachmentForUpload(attachment, fileData.length);
+            if (!validation.valid) {
+                const failure = handleAttachmentValidationFailure(attachment, validation.error);
+                reportProgress(
+                    attachment.id,
+                    'upload',
+                    0,
+                    attachment.size ?? fileData.length,
+                    'failed',
+                    failure.message,
+                );
+                deps.logSyncWarning(
+                    failure.logMessage,
+                );
+                return failure.mutated;
+            }
+            clearAttachmentValidationFailure(attachment.id);
+            reportProgress(attachment.id, 'upload', 0, fileData.length, 'active');
+            deps.logSyncInfo('WebDAV attachment upload start', {
+                id: attachment.id,
+                bytes: String(fileData.length),
+                cloudKey,
+            });
+            await ensureRemoteAttachmentsDir();
+
+
+            const wireData = await sealAttachmentBytes(fileData, cloudKey);
+            const uploadUrl = `${baseSyncUrl}/${cloudKey}`;
+            const remoteVersion = await withRetry(async () => {
+                await waitForSlot();
+                return webdavHeadFile(uploadUrl, {
+                    allowInsecureHttp: webDavConfig.allowInsecureHttp,
+                    username: webDavConfig.username,
+                    password,
+                    fetcher,
+                    timeoutMs: UPLOAD_TIMEOUT_MS,
+                });
+            }, WEBDAV_ATTACHMENT_RETRY_OPTIONS);
+            const expectedEtag = remoteVersion.exists
+                ? normalizeStrongWebdavEtag(remoteVersion.etag)
+                : null;
+            if (remoteVersion.exists && !expectedEtag) {
+                throw new Error('WebDAV attachment version is unavailable; refusing an unconditional overwrite');
+            }
+            await withRetry(
+                async () => {
+                    await waitForSlot();
+                    await helpers?.assertRemoteMutationFenceHeld?.(UPLOAD_TIMEOUT_MS + 5_000);
+                    return await webdavPutFileVersioned(
+                        uploadUrl,
+                        wireData,
+                        attachment.mimeType || 'application/octet-stream',
+                        expectedEtag,
+                        {
+                            allowInsecureHttp: webDavConfig.allowInsecureHttp,
+                            headers: { 'Content-Length': String(wireData.length) },
+                            username: webDavConfig.username,
+                            password,
+                            fetcher,
+                            timeoutMs: UPLOAD_TIMEOUT_MS,
+                        },
+                    );
+                },
+                {
+                    ...WEBDAV_ATTACHMENT_RETRY_OPTIONS,
+                    onRetry: (error, attempt, delayMs) => {
+                        deps.logSyncInfo('Retrying WebDAV attachment upload', {
+                            id: attachment.id,
+                            attempt: String(attempt + 1),
+                            delayMs: String(delayMs),
+                            error: describeAttachmentErrorForLog(error).message,
+                        });
+                    },
+                },
+            );
+            attachment.cloudKey = cloudKey;
+            attachment.localStatus = 'available';
+            reportProgress(attachment.id, 'upload', fileData.length, fileData.length, 'completed');
+            deps.logSyncInfo('WebDAV attachment upload done', {
+                id: attachment.id,
+                bytes: String(fileData.length),
+            });
+            return true;
+        },
+        onUploadError: (attachment, error) => {
+            if (handleRateLimit(error)) {
+                abortedByRateLimit = true;
+                return;
+            }
+            reportProgress(
+                attachment.id,
+                'upload',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to upload attachment ${attachment.id}`, error);
+        },
+        onDownload: async (attachment, expectation) => {
+            if (!attachment.cloudKey) return false;
+            const cloudKey = attachment.cloudKey;
+            let fileData: ArrayBuffer;
+            try {
+                fileData = await withRetry(async () => {
+                    await waitForSlot();
+                    return await webdavGetFile(`${baseSyncUrl}/${cloudKey}`, {
+                        allowInsecureHttp: webDavConfig.allowInsecureHttp,
+                        username: webDavConfig.username,
+                        password,
+                        fetcher,
+                        onProgress: (loaded, total) =>
+                            reportProgress(attachment.id, 'download', loaded, total, 'active'),
+                    });
+                }, WEBDAV_ATTACHMENT_RETRY_OPTIONS);
+            } catch (error) {
+                if (handleRateLimit(error)) {
+                    abortedByRateLimit = true;
+                    return false;
+                }
+                if (getErrorStatus(error) === 404) {
+                    deps.logSyncInfo('WebDAV attachment not found (404); row kept', {
+                        id: attachment.id,
+                        releaseCheck: 'v1.3.8/attachment-not-found-kept',
+                    });
+                    return remoteAttachmentNotFound(attachment, helpers);
+                }
+                throw error;
+            }
+
+
+            const bytes = await openAttachmentBytes(
+                fileData instanceof ArrayBuffer ? new Uint8Array(fileData) : new Uint8Array(fileData as ArrayBuffer),
+                cloudKey,
+            );
+            const expectedDownloadSha256 = await validateAndHashAttachmentDownload(attachment, bytes);
+            const filename = cloudKey.split('/').pop() || `${attachment.id}${extractExtension(attachment.uri)}`;
+            const targetPath = await resolveAttachmentDownloadTarget(
+                attachment,
+                expectation,
+                managedAttachmentsDir,
+                filename,
+                join,
+            );
+            const installed = await stageAndInstallAttachmentDownload(
+                attachment,
+                'webdav',
+                bytes,
+                targetPath,
+                expectation,
+                expectedDownloadSha256,
+                managedAttachmentsDir,
+                {
+                    join,
+                    writeFile,
+                    remove,
+                },
+                deps,
+            );
+            if (!installed) return false;
+            attachment.uri = targetPath;
+            attachment.localStatus = 'available';
+            attachment.fileHash = expectedDownloadSha256;
+            webdavDownloadBackoff.deleteEntry(attachment.id);
+            reportProgress(attachment.id, 'download', bytes.length, bytes.length, 'completed');
+            return true;
+        },
+        onDownloadError: (attachment, error) => {
+
+
+            if (helpers?.activationProbe !== true) setWebdavDownloadBackoff(attachment.id, error);
+            reportProgress(
+                attachment.id,
+                'download',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to download attachment ${attachment.id}`, error);
+        },
+    });
+
+    for (const patch of patches.values()) allPatches.set(patch.id, patch);
+    const nextData = applyAttachmentPatches(appData, allPatches);
+    const didMutate = nextData !== appData;
+
+    if (abortedByRateLimit) {
+        deps.logSyncWarning('WebDAV attachment sync aborted due to rate limiting');
+    }
+    deps.logSyncInfo('WebDAV attachment sync done', {
+        mutated: didMutate ? 'true' : 'false',
+    });
+    return didMutate ? nextData : null;
+}
+
+export async function syncCloudAttachments(
+    appData: AppData,
+    cloudConfig: CloudConfig,
+    baseSyncUrl: string,
+    deps: AttachmentBackendDeps,
+    helpers?: SyncRunAttachmentHelpers,
+): Promise<AppData | false> {
+    if (!deps.isTauriRuntimeEnv() || !cloudConfig.url) return false;
+
+    const fetcher = await deps.getTauriFetch();
+    const { BaseDirectory, exists, mkdir, readFile, stat, writeFile, remove } = await import('@tauri-apps/plugin-fs');
+    const { dataDir, join } = await import('@tauri-apps/api/path');
+
+    try {
+        await mkdir(await getManagedPath(ATTACHMENTS_DIR_NAME), { recursive: true });
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure local attachments directory', error);
+    }
+
+    const baseDataDir = await dataDir();
+    const managedAttachmentsDir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+    const attachmentsById = collectAttachmentsById(appData);
+
+    const { readLocalFile, localFilePresence, statLocalFile } = createLocalAttachmentFs(
+        (message, error) => logAttachmentWarning(deps, message, error),
+        {
+            baseDataDir,
+            dataBaseDir: BaseDirectory.Data,
+            exists,
+            readFile,
+            managedAttachmentsDir,
+            stat,
+        },
+    );
+    const computeLocalFileHash = async (path: string, attachment: Attachment): Promise<string | null> =>
+        computeSha256Hex(await readLocalFile(path, attachment));
+    const createUploadSnapshot = createAttachmentUploadSnapshotFactory({ readLocalFile, statLocalFile });
+
+
+    const allPatches = new Map<string, Attachment>();
+    const recordPatch = (attachment: Attachment): void => {
+        allPatches.set(attachment.id, attachment);
+        attachmentsById.set(attachment.id, attachment);
+    };
+    const reconcilePresence = helpers?.activationProbe === true
+        || isAttachmentPresenceReconciliationDue(deps.presenceScope);
+    const presenceProven = !reconcilePresence || await reconcileRemoteAttachmentPresence({
+        label: 'Cloud',
+        attachmentsById,
+        localFilePresence,
+        recordPatch,
+        deps,
+        maxChecks: CLOUD_ATTACHMENT_PRESENCE_MAX_CHECKS_PER_PASS,
+        createProbe: async () => (attachment) => cloudAttachmentExists(
+            `${baseSyncUrl}/${attachment.cloudKey}`,
+            {
+                allowInsecureHttp: cloudConfig.allowInsecureHttp,
+                token: cloudConfig.token,
+                fetcher,
+
+
+                partialBodyReads: true,
+            },
+        ),
+    });
+
+    const { patches } = await syncBasicRemoteAttachments({
+        attachmentsById,
+        deferUploads: helpers?.phase === 'prepare',
+        allowPendingRemoteRecovery: false,
+        ensureLocalSnapshotFresh: helpers?.ensureLocalSnapshotFresh,
+        getLocalFilePresence: localFilePresence,
+        getLocalFileStat: statLocalFile,
+        computeLocalFileHash,
+        createUploadSnapshot,
+        contentChangePhase: helpers?.phase,
+        policy: { shouldDownload: downloadsOutsideBackoff(helpers) },
+        isFatalError: isSyncRemoteMutationFenceError,
+        onUpload: async (attachment, _localPath, snapshot) => {
+            if (!shouldAttemptAttachmentUpload(attachment)) return false;
+            const cloudKey = buildCloudKey(attachment);
+            if (!snapshot?.bytes) throw new Error('Immutable attachment upload bytes are unavailable');
+            const fileData = snapshot.bytes;
+            const validation = await validateAttachmentForUpload(attachment, fileData.length);
+            if (!validation.valid) {
+                const failure = handleAttachmentValidationFailure(attachment, validation.error);
+                reportProgress(
+                    attachment.id,
+                    'upload',
+                    0,
+                    attachment.size ?? fileData.length,
+                    'failed',
+                    failure.message,
+                );
+                deps.logSyncWarning(
+                    failure.logMessage,
+                );
+                return failure.mutated;
+            }
+            reportProgress(attachment.id, 'upload', 0, fileData.length, 'active');
+            try {
+                await withRetry(
+                    async () => {
+                        await helpers?.assertRemoteMutationFenceHeld?.(UPLOAD_TIMEOUT_MS + 5_000);
+                        return await cloudPutFile(
+                            `${baseSyncUrl}/${cloudKey}`,
+                            fileData,
+                            attachment.mimeType || 'application/octet-stream',
+                            {
+                                allowInsecureHttp: cloudConfig.allowInsecureHttp,
+                                token: cloudConfig.token,
+                                fetcher,
+                                timeoutMs: UPLOAD_TIMEOUT_MS,
+                                onProgress: (loaded, total) =>
+                                    reportProgress(attachment.id, 'upload', loaded, total, 'active'),
+                            },
+                        );
+                    },
+                    {
+                        ...CLOUD_ATTACHMENT_RETRY_OPTIONS,
+                        onRetry: (error, attempt, delayMs) => {
+                            deps.logSyncInfo('Retrying cloud attachment upload', {
+                                id: attachment.id,
+                                attempt: String(attempt + 1),
+                                delayMs: String(delayMs),
+                                error: describeAttachmentErrorForLog(error).message,
+                            });
+                        },
+                    },
+                );
+            } catch (error) {
+                const status = getErrorStatus(error);
+
+
+                const refusesTheseBytes = status === 413
+                    || (status === 400 && isBlockedAttachmentContentRefusal(error));
+                if (refusesTheseBytes && helpers?.activationProbe !== true) {
+                    const failure = handleAttachmentValidationFailure(
+                        attachment,
+                        status === 413 ? 'server_file_too_large' : 'server_rejected',
+                    );
+                    reportProgress(
+                        attachment.id,
+                        'upload',
+                        0,
+                        attachment.size ?? fileData.length,
+                        'failed',
+                        failure.message,
+                    );
+                    deps.logSyncWarning(failure.logMessage);
+                    if (
+                        failure.reachedLimit
+                        && !failure.mutated
+                        && attachment.pendingContentUpload === true
+                        && attachment.cloudKey !== undefined
+                    ) {
+                        deps.logSyncWarning(
+                            'Attachment replacement retained after upload refusal',
+                            undefined,
+                            { releaseCheck: 'v1.3.2/attachment-replacement-held' },
+                        );
+                    }
+                    return failure.mutated;
+                }
+                throw error;
+            }
+            clearAttachmentValidationFailure(attachment.id);
+            attachment.cloudKey = cloudKey;
+            attachment.localStatus = 'available';
+            reportProgress(attachment.id, 'upload', fileData.length, fileData.length, 'completed');
+            return true;
+        },
+        onUploadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'upload',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to upload attachment ${attachment.id}`, error);
+        },
+        onDownload: async (attachment, expectation) => {
+            if (!attachment.cloudKey) return false;
+            let fileData: ArrayBuffer;
+            try {
+                fileData = await withRetry(() =>
+                    cloudGetFile(`${baseSyncUrl}/${attachment.cloudKey}`, {
+                        allowInsecureHttp: cloudConfig.allowInsecureHttp,
+                        token: cloudConfig.token,
+                        fetcher,
+                        onProgress: (loaded, total) =>
+                            reportProgress(attachment.id, 'download', loaded, total, 'active'),
+                    }),
+                );
+            } catch (error) {
+                if (getErrorStatus(error) === 404) {
+                    return remoteAttachmentNotFound(attachment, helpers);
+                }
+                throw error;
+            }
+            const bytes =
+                fileData instanceof ArrayBuffer ? new Uint8Array(fileData) : new Uint8Array(fileData as ArrayBuffer);
+            const expectedDownloadSha256 = await validateAndHashAttachmentDownload(attachment, bytes);
+            const filename =
+                attachment.cloudKey.split('/').pop() || `${attachment.id}${extractExtension(attachment.uri)}`;
+            const targetPath = await resolveAttachmentDownloadTarget(
+                attachment,
+                expectation,
+                managedAttachmentsDir,
+                filename,
+                join,
+            );
+            const installed = await stageAndInstallAttachmentDownload(
+                attachment,
+                'cloud',
+                bytes,
+                targetPath,
+                expectation,
+                expectedDownloadSha256,
+                managedAttachmentsDir,
+                { join, writeFile, remove },
+                deps,
+            );
+            if (!installed) return false;
+            attachment.uri = targetPath;
+            attachment.localStatus = 'available';
+            attachment.fileHash = expectedDownloadSha256;
+            reportProgress(attachment.id, 'download', bytes.length, bytes.length, 'completed');
+            return true;
+        },
+        onDownloadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'download',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to download attachment ${attachment.id}`, error);
+        },
+    });
+
+
+    if (reconcilePresence && presenceProven && helpers?.activationProbe !== true) {
+        markAttachmentPresenceReconciled(deps.presenceScope, deps.logSyncWarning);
+    }
+
+    for (const patch of patches.values()) allPatches.set(patch.id, patch);
+    const nextData = applyAttachmentPatches(appData, allPatches);
+    return nextData !== appData ? nextData : false;
+}
+
+export async function syncDropboxAttachments(
+    appData: AppData,
+    resolveAccessToken: (forceRefresh?: boolean) => Promise<string>,
+    deps: AttachmentBackendDeps,
+    helpers?: SyncRunAttachmentHelpers,
+): Promise<AppData | false> {
+    if (!deps.isTauriRuntimeEnv()) return false;
+
+    const fetcher = await deps.getTauriFetch();
+    const dropboxFetcher = fetcher ?? fetch;
+    const { BaseDirectory, exists, mkdir, readFile, stat, writeFile, remove } = await import('@tauri-apps/plugin-fs');
+    const { dataDir, join } = await import('@tauri-apps/api/path');
+
+    try {
+        await mkdir(await getManagedPath(ATTACHMENTS_DIR_NAME), { recursive: true });
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure local attachments directory', error);
+    }
+
+    const baseDataDir = await dataDir();
+    const managedAttachmentsDir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+    const attachmentsById = collectAttachmentsById(appData);
+
+    const withDropboxAccess = async <T>(operation: (accessToken: string) => Promise<T>): Promise<T> => {
+        try {
+            return await operation(await resolveAccessToken(false));
+        } catch (error) {
+            if (error instanceof DropboxUnauthorizedError) {
+                return await operation(await resolveAccessToken(true));
+            }
+            throw error;
+        }
+    };
+
+    const { readLocalFile, localFilePresence, statLocalFile } = createLocalAttachmentFs(
+        (message, error) => logAttachmentWarning(deps, message, error),
+        {
+            baseDataDir,
+            dataBaseDir: BaseDirectory.Data,
+            exists,
+            readFile,
+            managedAttachmentsDir,
+            stat,
+        },
+    );
+    const computeLocalFileHash = async (path: string, attachment: Attachment): Promise<string | null> =>
+        computeSha256Hex(await readLocalFile(path, attachment));
+    const createUploadSnapshot = createAttachmentUploadSnapshotFactory({ readLocalFile, statLocalFile });
+
+
+    const allPatches = new Map<string, Attachment>();
+    const recordPatch = (attachment: Attachment): void => {
+        allPatches.set(attachment.id, attachment);
+        attachmentsById.set(attachment.id, attachment);
+    };
+    const reconcilePresence = helpers?.activationProbe === true
+        || isAttachmentPresenceReconciliationDue(deps.presenceScope);
+    const presenceProven = !reconcilePresence || await reconcileRemoteAttachmentPresence({
+        label: 'Dropbox',
+        attachmentsById,
+        localFilePresence,
+        recordPatch,
+        deps,
+        createProbe: async () => {
+            try {
+                const isPresent = createDropboxAttachmentPresenceIndex(await withRetry(
+                    () => withDropboxAccess((token) => listDropboxFolderFiles(
+                        token,
+                        DROPBOX_ATTACHMENTS_PATH,
+                        dropboxFetcher,
+                        { timeoutMs: UPLOAD_TIMEOUT_MS },
+                    )),
+                    CLOUD_ATTACHMENT_RETRY_OPTIONS,
+                ));
+                return async (attachment) => isPresent(attachment.cloudKey ?? '');
+            } catch (error) {
+                logAttachmentWarning(deps, 'Failed to list Dropbox attachments for the presence pass', error);
+                return null;
+            }
+        },
+    });
+
+    const { patches } = await syncBasicRemoteAttachments({
+        attachmentsById,
+        deferUploads: helpers?.phase === 'prepare',
+        ensureLocalSnapshotFresh: helpers?.ensureLocalSnapshotFresh,
+        getLocalFilePresence: localFilePresence,
+        getLocalFileStat: statLocalFile,
+        computeLocalFileHash,
+        createUploadSnapshot,
+        contentChangePhase: helpers?.phase,
+        policy: { shouldDownload: downloadsOutsideBackoff(helpers) },
+        isFatalError: (error) => (
+            isSyncRemoteMutationFenceError(error)
+            || error instanceof DropboxConflictError
+        ),
+        onUpload: async (attachment, _localPath, snapshot) => {
+            if (!shouldAttemptAttachmentUpload(attachment)) return false;
+            const cloudKey = buildCloudKey(attachment);
+            if (!snapshot?.bytes) throw new Error('Immutable attachment upload bytes are unavailable');
+            const fileData = snapshot.bytes;
+            const validation = await validateAttachmentForUpload(attachment, fileData.length);
+            if (!validation.valid) {
+                const failure = handleAttachmentValidationFailure(attachment, validation.error);
+                reportProgress(
+                    attachment.id,
+                    'upload',
+                    0,
+                    attachment.size ?? fileData.length,
+                    'failed',
+                    failure.message,
+                );
+                deps.logSyncWarning(
+                    failure.logMessage,
+                );
+                return failure.mutated;
+            }
+            clearAttachmentValidationFailure(attachment.id);
+            reportProgress(attachment.id, 'upload', 0, fileData.length, 'active');
+            const wireData = await sealAttachmentBytes(fileData, cloudKey);
+            const expectedRev = await withRetry(
+                () => withDropboxAccess((token) => getDropboxFileMetadata(
+                    token,
+                    cloudKey,
+                    dropboxFetcher,
+                    { timeoutMs: UPLOAD_TIMEOUT_MS },
+                )),
+                CLOUD_ATTACHMENT_RETRY_OPTIONS,
+            ).then((metadata) => metadata.rev);
+            await withRetry(
+                () =>
+                    withDropboxAccess(async (token) => {
+                        await helpers?.assertRemoteMutationFenceHeld?.(UPLOAD_TIMEOUT_MS + 5_000);
+                        return uploadDropboxFileVersioned(
+                            token,
+                            cloudKey,
+                            wireData,
+                            expectedRev,
+                            dropboxFetcher,
+                            { timeoutMs: UPLOAD_TIMEOUT_MS },
+                        );
+                    }),
+                {
+                    ...CLOUD_ATTACHMENT_RETRY_OPTIONS,
+                    onRetry: (error, attempt, delayMs) => {
+                        deps.logSyncInfo('Retrying Dropbox attachment upload', {
+                            id: attachment.id,
+                            attempt: String(attempt + 1),
+                            delayMs: String(delayMs),
+                            error: describeAttachmentErrorForLog(error).message,
+                        });
+                    },
+                },
+            );
+            attachment.cloudKey = cloudKey;
+            attachment.localStatus = 'available';
+            reportProgress(attachment.id, 'upload', fileData.length, fileData.length, 'completed');
+            return true;
+        },
+        onUploadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'upload',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to upload attachment ${attachment.id}`, error);
+        },
+        onDownload: async (attachment, expectation) => {
+            if (!attachment.cloudKey) return false;
+            reportProgress(attachment.id, 'download', 0, attachment.size ?? 0, 'active');
+            let fileData: ArrayBuffer;
+            try {
+                fileData = await withRetry(() =>
+                    withDropboxAccess((token) => downloadDropboxFile(token, attachment.cloudKey!, dropboxFetcher)),
+                );
+            } catch (error) {
+                if (error instanceof DropboxFileNotFoundError) {
+                    return remoteAttachmentNotFound(attachment, helpers);
+                }
+                throw error;
+            }
+            const bytes = await openAttachmentBytes(
+                fileData instanceof ArrayBuffer ? new Uint8Array(fileData) : new Uint8Array(fileData as ArrayBuffer),
+                attachment.cloudKey,
+            );
+            const expectedDownloadSha256 = await validateAndHashAttachmentDownload(attachment, bytes);
+            const filename =
+                attachment.cloudKey.split('/').pop() || `${attachment.id}${extractExtension(attachment.uri)}`;
+            const targetPath = await resolveAttachmentDownloadTarget(
+                attachment,
+                expectation,
+                managedAttachmentsDir,
+                filename,
+                join,
+            );
+            const installed = await stageAndInstallAttachmentDownload(
+                attachment,
+                'dropbox',
+                bytes,
+                targetPath,
+                expectation,
+                expectedDownloadSha256,
+                managedAttachmentsDir,
+                { join, writeFile, remove },
+                deps,
+            );
+            if (!installed) return false;
+            attachment.uri = targetPath;
+            attachment.localStatus = 'available';
+            attachment.fileHash = expectedDownloadSha256;
+            reportProgress(attachment.id, 'download', bytes.length, bytes.length, 'completed');
+            return true;
+        },
+        onDownloadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'download',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to download attachment ${attachment.id}`, error);
+        },
+    });
+
+
+    if (reconcilePresence && presenceProven && helpers?.activationProbe !== true) {
+        markAttachmentPresenceReconciled(deps.presenceScope, deps.logSyncWarning);
+    }
+
+    for (const patch of patches.values()) allPatches.set(patch.id, patch);
+    const nextData = applyAttachmentPatches(appData, allPatches);
+    return nextData !== appData ? nextData : false;
+}
+
+export async function syncCloudKitAttachments(
+    appData: AppData,
+    deps: AttachmentBackendDeps,
+    helpers?: SyncRunAttachmentHelpers,
+): Promise<AppData | false> {
+    if (!deps.isTauriRuntimeEnv()) return false;
+
+    const { BaseDirectory, exists, mkdir, readFile, stat, writeFile, rename, remove } = await import('@tauri-apps/plugin-fs');
+    const { dataDir, join } = await import('@tauri-apps/api/path');
+
+    try {
+        await mkdir(await getManagedPath(ATTACHMENTS_DIR_NAME), { recursive: true });
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure CloudKit attachments directory', error);
+    }
+
+    const baseDataDir = await dataDir();
+    const managedAttachmentsDir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+    const attachmentsById = collectAttachmentsById(appData);
+    const ownerByAttachmentId = collectCloudKitAttachmentOwners(appData);
+    const settingsPatch = await flushPendingCloudKitAttachmentDeletes(appData);
+
+    const { readLocalFile, localFilePresence, statLocalFile } = createLocalAttachmentFs(
+        (message, error) => logAttachmentWarning(deps, message, error),
+        { baseDataDir, dataBaseDir: BaseDirectory.Data, exists, readFile, managedAttachmentsDir, stat },
+        'Failed to check CloudKit attachment file',
+    );
+    const computeLocalFileHash = async (path: string, attachment: Attachment): Promise<string | null> =>
+        computeSha256Hex(await readLocalFile(path, attachment));
+    const createUploadSnapshot = createAttachmentUploadSnapshotFactory({
+        readLocalFile,
+        statLocalFile,
+        stageBytes: async (bytes, attachment) => {
+            const sourcePath = await join(
+                managedAttachmentsDir,
+                `.upload-${attachment.id}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            );
+            await writeFileSafelyAbsolute(sourcePath, bytes, { writeFile, rename, remove });
+            return {
+                sourcePath,
+                dispose: async () => {
+                    await remove(sourcePath);
+                },
+            };
+        },
+    });
+
+    deps.logSyncInfo('CloudKit attachment sync start', {
+        count: String(attachmentsById.size),
+    });
+
+    const { patches } = await syncBasicRemoteAttachments({
+        attachmentsById,
+        deferUploads: helpers?.phase === 'prepare',
+        allowPendingRemoteRecovery: false,
+        ensureLocalSnapshotFresh: helpers?.ensureLocalSnapshotFresh,
+        getLocalFilePresence: localFilePresence,
+        getLocalFileStat: statLocalFile,
+        computeLocalFileHash,
+        createUploadSnapshot,
+        contentChangePhase: helpers?.phase,
+        policy: { shouldDownload: downloadsOutsideBackoff(helpers) },
+
+
+        hasCloudCopy: (attachment) => Boolean(parseCloudKitAttachmentKey(attachment.cloudKey)),
+        onUpload: async (attachment, localPath, snapshot) => {
+            if (!shouldAttemptAttachmentUpload(attachment)) return false;
+            const owned = ownerByAttachmentId.get(attachment.id);
+            if (!owned) return false;
+            if (!snapshot?.bytes) throw new Error('Immutable attachment upload bytes are unavailable');
+            const fileData = snapshot.bytes;
+            const validation = await validateAttachmentForUpload(attachment, fileData.length);
+            if (!validation.valid) {
+                const failure = handleAttachmentValidationFailure(attachment, validation.error);
+                reportProgress(
+                    attachment.id,
+                    'upload',
+                    0,
+                    attachment.size ?? fileData.length,
+                    'failed',
+                    failure.message,
+                );
+                logAttachmentWarning(deps, failure.message, validation.error);
+                return failure.mutated;
+            }
+
+            clearAttachmentValidationFailure(attachment.id);
+            reportProgress(attachment.id, 'upload', 0, fileData.length, 'active');
+            const metadata = buildCloudKitAttachmentMetadata(
+                { ...attachment, fileHash: snapshot.fileHash },
+                owned,
+                fileData.length,
+            );
+            const savedMetadata = await saveCloudKitAttachmentAsset(attachment.id, localPath, metadata);
+            attachment.cloudKey = buildCloudKitAttachmentKey(attachment.id);
+            attachment.localStatus = 'available';
+            applyCloudKitAttachmentMetadata(attachment, savedMetadata, fileData.length);
+            reportProgress(attachment.id, 'upload', fileData.length, fileData.length, 'completed');
+            return true;
+        },
+        onUploadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'upload',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to upload CloudKit attachment ${attachment.id}`, error);
+        },
+        onDownload: async (attachment, expectation) => {
+            const recordName = parseCloudKitAttachmentKey(attachment.cloudKey);
+            if (!recordName) return false;
+            const extension = extractExtension(attachment.title) || extractExtension(attachment.uri);
+            const filename = `${attachment.id}${extension}`;
+            const targetPath = await resolveAttachmentDownloadTarget(
+                attachment,
+                expectation,
+                managedAttachmentsDir,
+                filename,
+                join,
+            );
+            const stagedPath = await createAttachmentDownloadStagePath(managedAttachmentsDir, join);
+            reportProgress(attachment.id, 'download', 0, attachment.size ?? 0, 'active');
+            let metadata: CloudKitAttachmentMetadata;
+            let bytes: Uint8Array;
+            let expectedDownloadSha256: string;
+            try {
+                metadata = await fetchCloudKitAttachmentAsset(recordName, stagedPath);
+                bytes = await readFile(stagedPath);
+                expectedDownloadSha256 = await validateAndHashAttachmentDownload(attachment, bytes);
+            } catch (error) {
+                await cleanOwnedAttachmentDownloadStage(stagedPath, remove, deps);
+                if (isCloudKitAttachmentNotFoundError(error)) {
+                    reportProgress(
+                        attachment.id,
+                        'download',
+                        0,
+                        attachment.size ?? 0,
+                        'failed',
+                        'Attachment is no longer available',
+                    );
+                    logAttachmentWarning(
+                        deps,
+                        `CloudKit attachment ${attachment.id} is no longer available`,
+                        error,
+                    );
+                    return remoteAttachmentNotFound(attachment, helpers);
+                }
+                throw error;
+            }
+            const installed = await installStagedAttachmentDownload(
+                attachment,
+                'cloudkit',
+                stagedPath,
+                targetPath,
+                expectation,
+                expectedDownloadSha256,
+                remove,
+                deps,
+            );
+            if (!installed) return false;
+            attachment.uri = targetPath;
+            attachment.localStatus = 'available';
+            applyCloudKitAttachmentMetadata(attachment, metadata, bytes.length);
+            attachment.fileHash = expectedDownloadSha256;
+            reportProgress(attachment.id, 'download', bytes.length, bytes.length, 'completed');
+            return true;
+        },
+        onDownloadError: (attachment, error) => {
+            reportProgress(
+                attachment.id,
+                'download',
+                0,
+                attachment.size ?? 0,
+                'failed',
+                error instanceof Error ? error.message : String(error),
+            );
+            logAttachmentWarning(deps, `Failed to download CloudKit attachment ${attachment.id}`, error);
+        },
+    });
+
+
+    if (helpers?.activationProbe !== true) {
+        markAttachmentPresenceReconciled(deps.presenceScope, deps.logSyncWarning);
+    }
+
+    const nextData = withAttachmentSettingsPatch(applyAttachmentPatches(appData, patches), settingsPatch);
+    const didMutate = nextData !== appData;
+    deps.logSyncInfo('CloudKit attachment sync done', {
+        mutated: didMutate ? 'true' : 'false',
+    });
+
+    return didMutate ? nextData : false;
+}
+
+export async function syncFileAttachments(
+    appData: AppData,
+    baseSyncDir: string,
+    deps: AttachmentBackendDeps,
+    helpers?: SyncRunAttachmentHelpers,
+    fileSyncLeaseToken?: string,
+): Promise<AppData | false> {
+    if (!deps.isTauriRuntimeEnv() || !baseSyncDir) return false;
+
+
+    const { BaseDirectory, exists, open, readFile, stat, writeFile, remove } = await import('@tauri-apps/plugin-fs');
+    const { dataDir, join } = await import('@tauri-apps/api/path');
+
+    const attachmentsDir = await join(baseSyncDir, ATTACHMENTS_DIR_NAME);
+    try {
+        await syncFsMkdir(attachmentsDir);
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure sync attachments directory', error);
+    }
+
+    try {
+        await syncFsMkdir(await getManagedPath(ATTACHMENTS_DIR_NAME));
+    } catch (error) {
+        logAttachmentWarning(deps, 'Failed to ensure local attachments directory', error);
+    }
+
+    const baseDataDir = await dataDir();
+    const managedAttachmentsDir = await getManagedPath(ATTACHMENTS_DIR_NAME);
+    const attachmentsById = collectAttachmentsById(appData);
+
+    let activeLocalSourceStage: FileSyncAttachmentFailureStage | undefined;
+    let snapshotStatFailure: unknown;
+    let snapshotOperationFailureReported = false;
+    let preparingUploadSnapshot = false;
+    const { readLocalFile: rawReadLocalFile, localFilePresence, statLocalFile: rawStatLocalFile } = createLocalAttachmentFs(
+        (message, error) => {
+            if (preparingUploadSnapshot && activeLocalSourceStage === 'local-source-stat') {
+                snapshotStatFailure = error;
+            }
+            try {
+                logAttachmentWarning(deps, message, error);
+            } catch {
+
+            }
+        },
+        {
+            baseDataDir,
+            dataBaseDir: BaseDirectory.Data,
+
+
+            exists: (path, options) => (options ? exists(path, options) : syncFsExists(path)),
+            readFile,
+            managedAttachmentsDir,
+
+
+            stat: async (path, options) => {
+                if (options) return stat(path, options);
+                const result = await syncFsStat(path);
+                return { mtime: new Date(result.mtimeMs), size: result.size };
+            },
+        },
+    );
+    const readLocalFileForSnapshot = async (
+        path: string,
+        attachment: Attachment,
+    ): Promise<Uint8Array> => {
+        try {
+            return await rawReadLocalFile(path, attachment);
+        } catch (error) {
+            snapshotOperationFailureReported = true;
+            reportFileSyncAttachmentFailure('local-source-read', error, deps.logSyncWarning);
+            throw error;
+        }
+    };
+    const statLocalFileForSnapshot = async (path: string, attachment: Attachment) => {
+        activeLocalSourceStage = 'local-source-stat';
+        try {
+            return await rawStatLocalFile(path, attachment);
+        } finally {
+            activeLocalSourceStage = undefined;
+        }
+    };
+    const computeLocalFileHash = async (path: string, attachment: Attachment): Promise<string | null> =>
+        computeSha256Hex(await rawReadLocalFile(path, attachment));
+    const prepareUploadSnapshot = createAttachmentUploadSnapshotFactory({
+        readLocalFile: readLocalFileForSnapshot,
+        statLocalFile: statLocalFileForSnapshot,
+        maxBufferedUploadBytes: MAX_FILE_SYNC_BUFFERED_PLAINTEXT_BYTES,
+    });
+    const createUploadSnapshot = async (path: string, attachment: Attachment) => {
+        preparingUploadSnapshot = true;
+        snapshotStatFailure = undefined;
+        snapshotOperationFailureReported = false;
+        try {
+            return await prepareUploadSnapshot(path, attachment);
+        } catch (error) {
+            if (snapshotStatFailure !== undefined) {
+                reportFileSyncAttachmentFailure(
+                    'local-source-stat',
+                    snapshotStatFailure,
+                    deps.logSyncWarning,
+                );
+            } else if (
+                !snapshotOperationFailureReported
+                && !(error instanceof Error && error.name === 'AttachmentUploadTooLargeError')
+            ) {
+                reportFileSyncAttachmentFailure('snapshot-prepare', error, deps.logSyncWarning);
+            }
+            throw error;
+        } finally {
+            preparingUploadSnapshot = false;
+            snapshotStatFailure = undefined;
+            snapshotOperationFailureReported = false;
+        }
+    };
+
+    const readFileSyncWireData = async (
+        sourcePath: string,
+        options?: { expectedSize?: number },
+    ): Promise<Uint8Array> => {
+        const expectedSize = options?.expectedSize;
+        const readLimit = expectedSize ?? MAX_DOWNLOAD_BYTES;
+        if (!Number.isSafeInteger(readLimit) || readLimit < 0) {
+            throw new Error('File Sync attachment read limit is invalid');
+        }
+        const sourceStat = await syncFsStat(sourcePath);
+        if (
+            !Number.isFinite(sourceStat.size)
+            || sourceStat.size < 0
+            || sourceStat.size > readLimit
+        ) {
+            throw new ResponseTooLargeError(readLimit);
+        }
+        if (expectedSize !== undefined && sourceStat.size !== expectedSize) {
+            throw new Error('File Sync attachment generation size does not match the candidate');
+        }
+        const source = await open(sourcePath, { read: true });
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        try {
+            const buffer = new Uint8Array(FILE_DOWNLOAD_READ_CHUNK_BYTES);
+            while (true) {
+                const bytesRead = await source.read(buffer);
+                if (bytesRead === null) break;
+                if (!Number.isInteger(bytesRead) || bytesRead <= 0 || bytesRead > buffer.byteLength) {
+                    throw new Error('File Sync attachment read returned an invalid byte count');
+                }
+                totalBytes += bytesRead;
+                if (totalBytes > readLimit) {
+                    throw new ResponseTooLargeError(readLimit);
+                }
+                chunks.push(buffer.slice(0, bytesRead));
+            }
+        } finally {
+            await source.close();
+        }
+        const wireData = new Uint8Array(totalBytes);
+        let wireOffset = 0;
+        for (const chunk of chunks) {
+            wireData.set(chunk, wireOffset);
+            wireOffset += chunk.byteLength;
+        }
+        if (expectedSize !== undefined && wireData.byteLength !== expectedSize) {
+            throw new Error('File Sync attachment generation size changed while reading');
+        }
+        return wireData;
+    };
+
+
+    const publishFileSyncGeneration = async (
+        targetPath: string,
+        wireData: Uint8Array,
+        expectedPlaintextSha256: string,
+    ): Promise<boolean> => {
+
+
+        if (fileSyncGenerationGaveUp.has(targetPath)) return false;
+        const expectedWireSha256 = await runFileSyncAttachmentStage(
+            'snapshot-prepare',
+            deps.logSyncWarning,
+            async () => {
+                const sha256 = await computeSha256Hex(wireData);
+                if (!sha256) {
+                    throw new Error('File Sync attachment generation hash is unavailable');
+                }
+                return sha256;
+            },
+        );
+        const publicationLeaseToken = fileSyncLeaseToken ?? '';
+        const INTEGRITY_FAILURE = 'File Sync attachment generation failed integrity verification';
+        const verifyExistingGeneration = async (): Promise<void> => {
+            let existingWireData: Uint8Array;
+            try {
+                existingWireData = await runFileSyncAttachmentStage(
+                    'existing-generation-read',
+                    deps.logSyncWarning,
+                    () => readFileSyncWireData(targetPath, { expectedSize: wireData.byteLength }),
+                );
+            } catch (error) {
+
+
+                throw new FileSyncGenerationIntegrityError(INTEGRITY_FAILURE, { cause: error });
+            }
+            try {
+                await runFileSyncAttachmentStage(
+                    'existing-generation-verify',
+                    deps.logSyncWarning,
+                    async () => {
+                        const plaintext = await openAttachmentBytes(existingWireData, targetPath);
+                        const actualSha256 = await computeSha256Hex(plaintext);
+                        if (actualSha256?.toLowerCase() !== expectedPlaintextSha256.toLowerCase()) {
+                            throw new Error('plaintext digest mismatch');
+                        }
+                    },
+                );
+            } catch (error) {
+
+
+                throw new FileSyncGenerationIntegrityError(INTEGRITY_FAILURE, {
+                    cause: error,
+                    corrupt: true,
+                });
+            }
+        };
+
+        if (await runFileSyncAttachmentStage(
+            'generation-presence',
+            deps.logSyncWarning,
+            () => syncFsExists(targetPath),
+        )) {
+            try {
+                await verifyExistingGeneration();
+                return true;
+            } catch (error) {
+                if (!(error instanceof FileSyncGenerationIntegrityError) || !error.corrupt) throw error;
+                fileSyncGenerationGaveUp.add(targetPath);
+                deps.logSyncWarning(
+                    'Preserved invalid File Sync attachment generation; refusing replacement',
+                    undefined,
+                    { releaseCheck: 'v1.3.2/file-generation-preserved' },
+                );
+                return false;
+            }
+        }
+
+        const reservation = await runFileSyncAttachmentStage(
+            'generation-reserve',
+            deps.logSyncWarning,
+            () => syncFsReserveAttachmentGeneration(
+                publicationLeaseToken,
+                targetPath,
+                wireData.byteLength,
+                expectedWireSha256,
+            ),
+        );
+
+        let target: Awaited<ReturnType<typeof open>> | undefined;
+        let closed = false;
+        let readyForPublication = false;
+        try {
+            target = await runFileSyncAttachmentStage(
+                'scratch-open',
+                deps.logSyncWarning,
+                () => open(reservation.scratchPath, { write: true, createNew: true }),
+            );
+            await runFileSyncAttachmentStage(
+                'scratch-write',
+                deps.logSyncWarning,
+                async () => {
+                    const written = await target!.write(wireData);
+                    if (written !== wireData.byteLength) {
+                        throw new Error('File Sync attachment generation write was incomplete');
+                    }
+                },
+            );
+            await runFileSyncAttachmentStage(
+                'scratch-close',
+                deps.logSyncWarning,
+                () => target!.close(),
+            );
+            closed = true;
+            readyForPublication = true;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const publication = await runFileSyncAttachmentStage(
+                    'native-publication',
+                    deps.logSyncWarning,
+                    () => syncFsPublishAttachmentGeneration(
+                        publicationLeaseToken,
+                        reservation.operationId,
+                    ),
+                );
+                if (publication.status === 'published') return true;
+                if (await runFileSyncAttachmentStage(
+                    'generation-presence',
+                    deps.logSyncWarning,
+                    () => syncFsExists(targetPath),
+                )) {
+                    await verifyExistingGeneration();
+                    await syncFsAbandonAttachmentGeneration(
+                        publicationLeaseToken,
+                        reservation.operationId,
+                    );
+                    return true;
+                }
+            }
+            const collisionError = new Error('File Sync attachment generation collision could not be resolved');
+            reportFileSyncAttachmentFailure('native-publication', collisionError, deps.logSyncWarning);
+            throw collisionError;
+        } catch (error) {
+            if (target && !closed) await target.close().catch(() => undefined);
+
+
+            if (!readyForPublication) {
+                await syncFsAbandonAttachmentGeneration(
+                    publicationLeaseToken,
+                    reservation.operationId,
+                ).catch(() => undefined);
+            }
+            throw error;
+        }
+    };
+
+
+    const reconcilePresence = helpers?.activationProbe === true
+        || isAttachmentPresenceReconciliationDue(deps.presenceScope);
+
+
+    const allPatches = new Map<string, Attachment>();
+    for (const attachment of attachmentsById.values()) {
+        if (
+            attachment.kind !== 'file'
+            || attachment.deletedAt
+            || !attachment.cloudKey
+            || attachment.pendingContentUpload === true
+        ) continue;
+        const rawUri = attachment.uri ? stripFileScheme(attachment.uri) : '';
+        if (!rawUri || /^https?:\/\//i.test(rawUri)) continue;
+        if (await localFilePresence(rawUri, attachment) === 'unreadable') {
+            attachmentsById.delete(attachment.id);
+        }
+    }
+
+
+    const presenceProven = !reconcilePresence || await reconcileRemoteAttachmentPresence({
+        label: 'File Sync',
+        attachmentsById,
+        localFilePresence,
+        recordPatch: (attachment) => {
+            allPatches.set(attachment.id, attachment);
+            attachmentsById.set(attachment.id, attachment);
+        },
+        deps,
+        createProbe: async () => async (attachment) => {
+            try {
+                return await syncFsExists(
+                    await resolveFileBackendPath(join, baseSyncDir, attachment.cloudKey ?? ''),
+                );
+            } catch (error) {
+                logAttachmentWarning(deps, 'Failed to check sync-folder attachment presence', error);
+                return null;
+            }
+        },
+    });
+
+
+    if (reconcilePresence && presenceProven && helpers?.activationProbe !== true) {
+        markAttachmentPresenceReconciled(deps.presenceScope, deps.logSyncWarning);
+    }
+
+    const { patches } = await syncBasicRemoteAttachments({
+        attachmentsById,
+        deferUploads: helpers?.phase === 'prepare',
+        ensureLocalSnapshotFresh: helpers?.ensureLocalSnapshotFresh,
+        getLocalFilePresence: localFilePresence,
+        getLocalFileStat: rawStatLocalFile,
+        computeLocalFileHash,
+        createUploadSnapshot,
+        maxBufferedUploadBytes: MAX_FILE_SYNC_BUFFERED_PLAINTEXT_BYTES,
+        contentChangePhase: helpers?.phase,
+        isFatalError: isAttachmentUploadAdmissionError,
+        onUpload: async (attachment, _localPath, snapshot) => {
+            if (!shouldAttemptAttachmentUpload(attachment)) return false;
+            if (!snapshot?.bytes) throw new Error('Immutable attachment upload bytes are unavailable');
+            const cloudKey = buildFileSyncGenerationCloudKey(attachment, snapshot.fileHash);
+            const fileData = snapshot.bytes;
+            const validation = await validateAttachmentForUpload(
+                attachment,
+                fileData.length,
+                FILE_BACKEND_VALIDATION_CONFIG,
+            );
+            if (!validation.valid) {
+                const failure = handleAttachmentValidationFailure(attachment, validation.error);
+                deps.logSyncWarning(
+                    failure.logMessage,
+                );
+                return failure.mutated;
+            }
+            clearAttachmentValidationFailure(attachment.id);
+
+
+            const wireData = await runFileSyncAttachmentStage(
+                'wire-encryption',
+                deps.logSyncWarning,
+                () => sealAttachmentBytes(fileData, cloudKey),
+            );
+            if (!await publishFileSyncGeneration(
+                await resolveFileBackendPath(join, baseSyncDir, cloudKey),
+                wireData,
+                snapshot.fileHash,
+            )) return false;
+            attachment.cloudKey = cloudKey;
+            attachment.localStatus = 'available';
+            deps.logSyncInfo('File Sync attachment transfer completed', {
+                releaseCheck: 'v1.3.0/file-sync-streaming-permissions',
+                operation: 'upload',
+            });
+            return true;
+        },
+        onUploadError: (attachment, error) => {
+            try {
+                logAttachmentWarning(deps, `Failed to copy attachment ${attachment.id} to sync folder`, error);
+            } catch {
+
+            }
+        },
+        onDownload: async (attachment, expectation) => {
+            if (!attachment.cloudKey) return false;
+            const sourcePath = await resolveFileBackendPath(join, baseSyncDir, attachment.cloudKey);
+            if (!(await syncFsExists(sourcePath))) return false;
+            const fileData = await openAttachmentBytes(
+                await readFileSyncWireData(sourcePath),
+                attachment.cloudKey,
+            );
+            const expectedDownloadSha256 = await validateAndHashAttachmentDownload(attachment, fileData);
+            const filename =
+                attachment.cloudKey.split('/').pop() || `${attachment.id}${extractExtension(attachment.uri)}`;
+            const targetPath = await resolveAttachmentDownloadTarget(
+                attachment,
+                expectation,
+                managedAttachmentsDir,
+                filename,
+                join,
+            );
+            const installed = await stageAndInstallAttachmentDownload(
+                attachment,
+                'file',
+                fileData,
+                targetPath,
+                expectation,
+                expectedDownloadSha256,
+                managedAttachmentsDir,
+                { join, writeFile, remove },
+                deps,
+            );
+            if (!installed) return false;
+            attachment.uri = targetPath;
+            attachment.localStatus = 'available';
+            attachment.fileHash = expectedDownloadSha256;
+            deps.logSyncInfo('File Sync attachment transfer completed', {
+                releaseCheck: 'v1.3.0/file-sync-streaming-permissions',
+                operation: 'download',
+            });
+            return true;
+        },
+        onDownloadError: (attachment, error) => {
+            logAttachmentWarning(deps, `Failed to copy attachment ${attachment.id} from sync folder`, error);
+        },
+    });
+
+    for (const patch of patches.values()) allPatches.set(patch.id, patch);
+    const nextData = applyAttachmentPatches(appData, allPatches);
+    return nextData !== appData ? nextData : false;
+}

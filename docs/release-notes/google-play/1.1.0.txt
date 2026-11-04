@@ -1,0 +1,15 @@
+<en-US>
+Stride 1.1.0 adds opt-in time tracking via linked Pomodoro sessions, Undo instead of delete/archive confirmations, a locale-based week start, a %person capture token, file sharing into capture, a persistent Quick capture notification, faster sync and smoother lists on large libraries, checklists independent from notes, copied attachments, clearer sync conflict reports, and stronger data-loss safeguards.
+</en-US>
+<de-DE>
+Stride 1.1.0 bringt optionale Zeiterfassung ueber verknuepfte Pomodoro-Sitzungen, Undo statt Loesch-/Archivbestaetigungen, regionsabhaengigen Wochenstart, das %Person-Token, Datei-Teilen in die Erfassung, eine dauerhafte Schnellerfassungs-Benachrichtigung, schnelleren Sync und fluessigere Listen, von Notizen unabhaengige Checklisten, kopierte Anhaenge, klarere Sync-Konfliktberichte und mehr Schutz vor Datenverlust.
+</de-DE>
+<es-ES>
+Stride 1.1.0 agrega registro de tiempo opcional con sesiones Pomodoro vinculadas, Deshacer en lugar de confirmaciones, inicio de semana segun tu region, el token %persona, compartir archivos a la captura, notificacion de captura rapida fija, sincronizacion mas rapida y listas mas fluidas, listas de verificacion independientes de las notas, adjuntos copiados, informes de conflictos mas claros y mas protecciones contra perdida de datos.
+</es-ES>
+<fr-FR>
+Stride 1.1.0 ajoute un suivi du temps optionnel via les sessions Pomodoro liees, Annuler au lieu de confirmations, un debut de semaine selon votre region, le jeton %personne, le partage de fichiers vers la capture, une notification de capture rapide epinglee, une synchronisation plus rapide et des listes plus fluides, des checklists independantes des notes, des pieces jointes copiees, des rapports de conflits plus clairs et plus de protections contre la perte de donnees.
+</fr-FR>
+<zh-CN>
+Stride 1.1.0 新增可选的时间记录（通过关联的番茄钟会话）、以"撤销"取代删除/归档确认、按区域设置的每周起始日、%人名 捕捉标记、向捕捉页分享文件、可固定的快速捕捉通知，并带来更快的同步、更流畅的列表、与备注独立的清单、附件真实副本、更清晰的同步冲突报告和更强的数据丢失保护。
+</zh-CN>

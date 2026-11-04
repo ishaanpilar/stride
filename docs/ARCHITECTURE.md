@@ -1,0 +1,68 @@
+# Stride Architecture
+
+Stride is a local-first GTD system built as a Bun workspace monorepo. The shared `@stride/core` package owns the data model, persistence behavior, and sync rules; desktop, mobile, cloud, and MCP layers stay thin around that core.
+
+## System shape
+
+- `packages/core`
+  Shared domain model, Zustand store, quick-add parsing, recurrence, sync/merge, storage adapters, and shared tests.
+- `apps/desktop`
+  Tauri + React shell. Uses the shared core store with desktop-specific UI state, native dialogs, filesystem access, and SQLite-backed persistence.
+  The Rust side also hosts the optional Local API (`local_api.rs`), a REST server for scripts and the MCP helper's API mode. The built-in MCP server (`mcp_server.rs`) runs in the same process, over authenticated streamable HTTP on `127.0.0.1:8722`. Its tools (`mcp_tools.rs`) only adapt arguments and call the same Local API operations; `local_query.rs` holds the task queries both share.
+- `apps/mobile`
+  Expo + React Native shell. Reuses the core store and sync logic with mobile-specific storage, navigation, notifications, and calendar integrations.
+- `apps/cloud`
+  Self-hosted sync endpoint. Stores one JSON namespace plus attachments per bearer token and merges incoming app data using the same shared sync semantics.
+- `apps/mcp-server`
+  MCP server for AI tools, over stdio by default or streamable HTTP when `--http` is set (bearer-token authenticated). It reads and optionally mutates the local SQLite database with explicit `--write` opt-in, or talks to a self-hosted `apps/cloud` endpoint instead when pointed at one. See [MCP integration](https://github.com/ishaanpilar/stride/tree/main/docs) for the user-facing setup.
+
+## Data flow
+
+1. UI actions update the shared Zustand store in `packages/core`.
+2. The store sanitizes and persists the full app snapshot through a platform storage adapter.
+3. Optional sync services read remote state, merge in memory, then write back local and remote snapshots.
+4. Derived views are recomputed from canonical store data plus view filters instead of mutating persisted records for presentation.
+
+The design goal is that GTD behavior, merge logic, and validation live once in core, while platform apps handle input, rendering, and OS integration.
+
+## Persistence model
+
+- Desktop and mobile use SQLite as the primary structured store.
+- JSON snapshots remain part of the durability and sync story, but as a derived sync/backup representation rather than a second equal local source of truth.
+- Attachments are treated separately from structured task/project data.
+- Deletes are soft by default using `deletedAt` tombstones so sync can converge safely across devices.
+
+The SQLite<->JSON bridge contract is recorded in [ADR 0009](./adr/0009-sqlite-json-sync-bridge.md).
+
+Stride prefers explicit repair and merge logic in the app layer over hard database-only assumptions. That is why sync-sensitive relationships are normalized and repaired by shared code instead of depending purely on foreign-key enforcement.
+
+## Sync model
+
+Sync is optional and backend-agnostic. Supported backends include file sync, WebDAV, Dropbox in supported builds, the self-hosted cloud server, and CloudKit (iCloud) in the Apple builds.
+
+Important properties:
+
+- Merge is item-based, not whole-file overwrite.
+- Revisions and timestamps are both used for conflict resolution.
+- Tombstones prevent deleted records from being silently resurrected.
+- Attachments are merged and transferred separately from the main JSON payload.
+- The blob backends (file sync, WebDAV, Dropbox) can optionally encrypt everything written to the sync location with a user-held passphrase (Argon2id -> AES-256-GCM, MWENC1 container); the server-merged backends (self-hosted cloud, CloudKit) are excluded because their merge must read the document (ADR 0025).
+- New or changed sync destinations stay inactive until a candidate probe verifies snapshot IO and every live attachment. Failed commits restore the last verified setup or leave sync off.
+- WebDAV requires RFC-style strong ETags on file GETs and enforcement of `If-None-Match`/`If-Match` writes and deletes. Setup uses a disposable probe to verify create-only writes, exact replacement, stale write/delete rejection, and conditional cleanup. Missing or weak ETags, reused validators, or ignored conditions fail closed because replacement, deletion, and encryption transitions cannot be made safe without a trustworthy backend generation.
+
+The detailed algorithm, edge cases, and tie-break rules are documented in the public docs site. The source for those pages lives in the Stride web docs source:
+
+- [Docs source](https://github.com/ishaanpilar/stride-web/tree/main/docs)
+- [Architecture](https://github.com/ishaanpilar/stride/tree/main/docs)
+- [Sync Algorithm](https://github.com/ishaanpilar/stride/tree/main/docs)
+- [Data and Sync](https://github.com/ishaanpilar/stride/tree/main/docs)
+- [Performance Guide](https://github.com/ishaanpilar/stride/tree/main/docs)
+
+## Boundaries and responsibilities
+
+- Core decides what data means.
+- Desktop/mobile decide how users interact with that data.
+- Cloud decides how remote snapshots are stored and validated.
+- MCP decides how external AI tools can safely read or write local data.
+
+That separation keeps product behavior consistent across platforms and makes most regression tests possible in shared code instead of duplicating logic per app.

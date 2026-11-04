@@ -1,0 +1,494 @@
+{
+    "version": 1,
+    "cases": [
+        {
+            "name": "higher revision wins despite an older timestamp",
+            "category": "revision-dominance",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-revision",
+                "title": "Higher revision",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 5,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-revision",
+                "title": "Newer clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-09T00:00:00.000Z",
+                "rev": 4,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "left", "reverse": "left", "converges": true }
+        },
+        {
+            "name": "equivalent offset timestamps fall through to revBy",
+            "category": "timestamp-offset-equivalence",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-offset",
+                "title": "Offset alpha",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T12:00:00+02:00",
+                "rev": 3,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-offset",
+                "title": "Offset zeta",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T05:00:00-05:00",
+                "rev": 3,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "date-only timestamp participates as UTC midnight",
+            "category": "date-only-timestamp",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-date-only",
+                "title": "Date only wins",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-02"
+            },
+            "right": {
+                "id": "parity-date-only",
+                "title": "Earlier datetime",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T23:00:00.000Z"
+            },
+            "expected": { "forward": "left", "reverse": "left", "converges": true }
+        },
+        {
+            "name": "valid timestamp beats an invalid timestamp",
+            "category": "invalid-timestamp",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-invalid-time",
+                "title": "Invalid clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "not-a-time"
+            },
+            "right": {
+                "id": "parity-invalid-time",
+                "title": "Valid clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "two future timestamps clamp then retain raw ordering",
+            "category": "future-clamping",
+            "nowIso": "2026-01-01T00:00:00.000Z",
+            "left": {
+                "id": "parity-future-clamp",
+                "title": "February future",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-02-01T00:00:00.000Z"
+            },
+            "right": {
+                "id": "parity-future-clamp",
+                "title": "March future",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-03-01T00:00:00.000Z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "revBy resolves equal revision and time when both are present",
+            "category": "rev-by-both",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-rev-by-both",
+                "title": "Alpha writer",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 7,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-rev-by-both",
+                "title": "Zeta writer",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 7,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "one missing revBy falls through to the content signature",
+            "category": "rev-by-missing",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-rev-by-missing",
+                "title": "Zebra content",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2
+            },
+            "right": {
+                "id": "parity-rev-by-missing",
+                "title": "Alpha content",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "left", "reverse": "left", "converges": true }
+        },
+        {
+            "name": "revisionless timestamps inside skew use content ordering",
+            "category": "revisionless-skew",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-skew-inside",
+                "title": "Zebra inside skew",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "right": {
+                "id": "parity-skew-inside",
+                "title": "Alpha newer clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:01:00.000Z"
+            },
+            "expected": { "forward": "left", "reverse": "left", "converges": true }
+        },
+        {
+            "name": "revisionless timestamps outside skew use time ordering",
+            "category": "revisionless-skew",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-skew-outside",
+                "title": "Zebra older clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "right": {
+                "id": "parity-skew-outside",
+                "title": "Alpha later clock",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:10:00.000Z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "legacy ambiguous delete beats live",
+            "category": "delete-live",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-delete-legacy",
+                "title": "Live legacy",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "right": {
+                "id": "parity-delete-legacy",
+                "title": "Deleted legacy",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "deletedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "revisioned ambiguous live beats delete at equal revision",
+            "category": "delete-live",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-delete-revisioned",
+                "title": "Deleted revisioned",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "deletedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 5,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-delete-revisioned",
+                "title": "Live revisioned",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 5,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "newer tombstone outside the ambiguity window beats live",
+            "category": "delete-live",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-delete-newer",
+                "title": "Older live",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 4,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-delete-newer",
+                "title": "Newer tombstone",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:10:00.000Z",
+                "deletedAt": "2026-01-01T00:10:00.000Z",
+                "rev": 5,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "later tombstone outside the window beats a higher revision live edit",
+            "category": "revision-vs-delete-window",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-delete-window-live",
+                "title": "Higher revision live",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 10,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-delete-window-live",
+                "title": "Lower revision tombstone",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:31.000Z",
+                "deletedAt": "2026-01-01T00:00:31.000Z",
+                "rev": 3,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "later live edit outside the window beats a higher revision tombstone",
+            "category": "revision-vs-delete-window",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-delete-window-tombstone",
+                "title": "Higher revision tombstone",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "deletedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 10,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-delete-window-tombstone",
+                "title": "Lower revision live",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:31.000Z",
+                "rev": 3,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "backup restore can resurrect over a higher revision tombstone",
+            "category": "backup-resurrection",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-backup-resurrection",
+                "title": "Deleted before restore",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T12:00:00.000Z",
+                "deletedAt": "2026-01-01T12:00:00.000Z",
+                "rev": 9,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-backup-resurrection",
+                "title": "Restored from backup",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T12:00:05.000Z",
+                "rev": 8,
+                "revBy": "backup-restore"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "purgedAt is a deletion operation and wins by revision",
+            "category": "purged-at",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-purged-at",
+                "title": "Still live",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 3,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-purged-at",
+                "title": "(deleted)",
+                "status": "inbox",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2026-01-02T00:00:00.000Z",
+                "updatedAt": "2026-01-02T00:00:00.000Z",
+                "deletedAt": "2026-01-02T00:00:00.000Z",
+                "purgedAt": "2026-01-02T00:00:00.000Z",
+                "rev": 4,
+                "revBy": "device-z"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "comparable tie uses the full signature for ignored ordering fields",
+            "category": "comparable-signature-tie",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-comparable-tie",
+                "title": "Same content",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "focusOrder": 1,
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-comparable-tie",
+                "title": "Same content",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "focusOrder": 9,
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2,
+                "revBy": "device-a"
+            },
+            "expected": { "forward": "right", "reverse": "right", "converges": true }
+        },
+        {
+            "name": "exact full-signature tie selects the incoming value",
+            "category": "exact-signature-tie",
+            "nowIso": "2026-01-10T00:00:00.000Z",
+            "left": {
+                "id": "parity-exact-tie",
+                "title": "Identical",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2,
+                "revBy": "device-a"
+            },
+            "right": {
+                "id": "parity-exact-tie",
+                "title": "Identical",
+                "status": "next",
+                "tags": [],
+                "contexts": [],
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+                "rev": 2,
+                "revBy": "device-a"
+            },
+            "expected": { "forward": "right", "reverse": "left", "converges": true }
+        }
+    ]
+}

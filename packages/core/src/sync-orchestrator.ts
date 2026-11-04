@@ -1,0 +1,168 @@
+export interface SyncOrchestratorControls<Arg> {
+    requestFollowUp: (nextArg?: Arg) => void;
+    requestFollowUpAfter: (delayMs: number, nextArg?: Arg) => void;
+}
+
+interface CreateSyncOrchestratorOptions<Arg, Result> {
+    runCycle: (arg: Arg, controls: SyncOrchestratorControls<Arg>) => Promise<Result>;
+    onQueueStateChange?: (queued: boolean) => void;
+    onDrained?: () => void;
+    onQueuedRunComplete?: (result: Result) => void;
+    onQueuedRunError?: (error: unknown) => void;
+
+
+    getFollowUpDelayMs?: (lastCycleDurationMs: number, minimumDelayMs: number) => number;
+
+    getFollowUpWaitMs?: () => number;
+}
+
+export interface SyncOrchestrator<Arg, Result> {
+    run: (arg: Arg) => Promise<Result>;
+    requestFollowUp: (nextArg?: Arg) => void;
+    requestFollowUpAfter: (delayMs: number, nextArg?: Arg) => void;
+    clearFollowUp: () => void;
+    reset: () => void;
+    getState: () => { inFlight: boolean; queued: boolean };
+}
+
+export const createSyncOrchestrator = <Arg, Result>(
+    options: CreateSyncOrchestratorOptions<Arg, Result>,
+): SyncOrchestrator<Arg, Result> => {
+    const { runCycle, onQueueStateChange, onDrained, onQueuedRunComplete, onQueuedRunError, getFollowUpDelayMs, getFollowUpWaitMs } = options;
+    let inFlight: Promise<Result> | null = null;
+    let queued = false;
+    let queuedArg: Arg | undefined;
+    let followUpTimer: ReturnType<typeof setTimeout> | null = null;
+    let minimumFollowUpDelayMs = 0;
+
+    const cancelFollowUpTimer = () => {
+        if (followUpTimer) {
+            clearTimeout(followUpTimer);
+            followUpTimer = null;
+        }
+    };
+
+    const setQueued = (next: boolean) => {
+        if (queued === next) return;
+        queued = next;
+        onQueueStateChange?.(next);
+    };
+
+    const requestFollowUp = (nextArg?: Arg) => {
+        if (nextArg !== undefined) queuedArg = nextArg;
+        setQueued(true);
+    };
+
+    const requestFollowUpAfter = (delayMs: number, nextArg?: Arg) => {
+        if (nextArg !== undefined) queuedArg = nextArg;
+        minimumFollowUpDelayMs = Math.max(minimumFollowUpDelayMs, Math.max(0, Math.ceil(delayMs)));
+        setQueued(true);
+    };
+
+    const clearFollowUp = () => {
+        cancelFollowUpTimer();
+        queuedArg = undefined;
+        minimumFollowUpDelayMs = 0;
+        setQueued(false);
+    };
+
+    const run = (arg: Arg): Promise<Result> => {
+        if (inFlight) {
+            requestFollowUp(arg);
+            return inFlight;
+        }
+
+        cancelFollowUpTimer();
+        setQueued(false);
+
+
+        const cycleArg = arg;
+        queuedArg = undefined;
+        const cycleStartedAt = Date.now();
+
+        let resolveDeferred!: (value: Result) => void;
+        let rejectDeferred!: (error: unknown) => void;
+        const current = new Promise<Result>((resolve, reject) => {
+            resolveDeferred = resolve;
+            rejectDeferred = reject;
+        });
+        inFlight = current;
+        try {
+            void runCycle(cycleArg, {
+                requestFollowUp: (nextArg?: Arg) => requestFollowUp(nextArg ?? cycleArg),
+                requestFollowUpAfter: (delayMs: number, nextArg?: Arg) => requestFollowUpAfter(
+                    delayMs,
+                    nextArg ?? cycleArg,
+                ),
+            }).then(
+                (result) => resolveDeferred(result),
+                (error) => rejectDeferred(error),
+            );
+        } catch (error) {
+            rejectDeferred(error);
+        }
+
+
+        current.finally(() => {
+            if (inFlight !== current) return;
+            inFlight = null;
+
+            if (!queued) {
+                onDrained?.();
+                return;
+            }
+
+            const startQueuedRun = () => {
+                followUpTimer = null;
+
+                if (inFlight || !queued) return;
+                const waitMs = getFollowUpWaitMs?.() ?? 0;
+                if (waitMs > 0) {
+                    followUpTimer = setTimeout(startQueuedRun, waitMs);
+                    return;
+                }
+                const nextArg = queuedArg ?? cycleArg;
+                setQueued(false);
+                queuedArg = undefined;
+                void run(nextArg)
+                    .then((result) => {
+                        onQueuedRunComplete?.(result);
+                    })
+                    .catch((error) => {
+                        onQueuedRunError?.(error);
+                    });
+            };
+
+            const delayMs = Math.max(
+                getFollowUpDelayMs?.(Date.now() - cycleStartedAt, minimumFollowUpDelayMs) ?? 0,
+                minimumFollowUpDelayMs,
+            );
+            minimumFollowUpDelayMs = 0;
+            if (delayMs > 0) {
+                followUpTimer = setTimeout(startQueuedRun, delayMs);
+                return;
+            }
+            startQueuedRun();
+        }).catch(() => {});
+
+        return current;
+    };
+
+    return {
+        run,
+        requestFollowUp,
+        requestFollowUpAfter,
+        clearFollowUp,
+        reset: () => {
+            cancelFollowUpTimer();
+            inFlight = null;
+            queuedArg = undefined;
+            minimumFollowUpDelayMs = 0;
+            setQueued(false);
+        },
+        getState: () => ({
+            inFlight: !!inFlight,
+            queued,
+        }),
+    };
+};

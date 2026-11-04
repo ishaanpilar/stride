@@ -1,0 +1,1277 @@
+import { Link, Tabs, useRouter } from 'expo-router';
+import { CommonActions } from '@react-navigation/native';
+import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { Search, Inbox, Calendar, Circle, ClipboardCheck, Folder, Menu, Mic, Plus, Target } from 'lucide-react-native';
+import { Animated, BackHandler, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View, type ViewStyle } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { HapticTab } from '@/components/haptic-tab';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { MobileAreaSwitcher } from '@/components/mobile-area-switcher';
+import { useMobileAreaFilter } from '@/hooks/use-mobile-area-filter';
+import { useMobileSyncBadge } from '@/hooks/use-mobile-sync-badge';
+import { useAdaptiveWindow } from '@/components/adaptive-window-context';
+import type { AdaptiveWindowLayout } from '@/lib/adaptive-window';
+import { useAndroidActivitySession } from '@/hooks/use-android-activity-session';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useThemeColors } from '@/hooks/use-theme-colors';
+import { useThemeTokens } from '@/hooks/use-theme-tokens';
+import { MOBILE_HOME_TAB_ROUTE } from '@/lib/home-route';
+import { useLanguage } from '../../../contexts/language-context';
+import {
+  QuickCaptureSheet,
+  subscribeQuickCaptureSubmissionFailure,
+} from '@/components/quick-capture-sheet';
+import { beginCaptureProfile, endCaptureProfile } from '@/lib/capture-profiler';
+import { QuickCaptureProvider, useQuickCapture, type QuickCaptureOptions } from '../../../contexts/quick-capture-context';
+import { useToastBottomOffset } from '../../../contexts/toast-context';
+import {
+  buildMoreMenuModel,
+  getDefaultTaskAreaMode,
+  isSandboxMode,
+  resolveMobileQuickAccessView,
+  useTaskStore,
+  type MobileQuickAccessView,
+  type MoreMenuItem,
+  type SavedSearch,
+  type Task,
+} from '@stride/core';
+import { MOBILE_QUICK_ACCESS_TAB_ROUTE } from '@/lib/mobile-quick-access-view';
+import { COMPACT_NAV_TEXT_MAX_SCALE } from '@/constants/text-scale';
+
+type IconSymbolName = Parameters<typeof IconSymbol>[0]['name'];
+type Translate = (key: string) => string;
+
+type TabCaptureActivityState = {
+  initialValue: string;
+  initialProps: Partial<Task> | null;
+};
+
+const isTabCaptureActivityState = (value: unknown): value is TabCaptureActivityState => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.initialValue === 'string'
+    && candidate.initialValue.length <= 100_000
+    && (
+      candidate.initialProps === null
+      || (typeof candidate.initialProps === 'object' && !Array.isArray(candidate.initialProps))
+    );
+};
+
+const CAPTURE_BUTTON_LIFT = 4;
+const TAB_CAPTURE_ACTIVITY_OWNER_SUFFIX = 'tabs:quick-capture';
+const TAB_CAPTURE_DRAFT_ACTIVITY_OWNER_SUFFIX = 'tabs:quick-capture-draft';
+
+type MoreDestination = {
+  id: string;
+  label: string;
+  displayLabel?: string;
+  icon: IconSymbolName;
+  iconColor: string;
+  route?: string;
+  onPress?: () => void;
+};
+
+const toMoreDestination = (item: MoreMenuItem): MoreDestination => ({ ...item, icon: item.icon as IconSymbolName });
+
+export const resolveMoreMenuFrameStyle = (
+  adaptiveWindow: AdaptiveWindowLayout,
+  tabBarHeight: number,
+): ViewStyle | null => {
+  if (!adaptiveWindow.isExpanded && !adaptiveWindow.activeFeature) return null;
+  const frame = adaptiveWindow.navigationActionFrame;
+  const overlayBottomInset = adaptiveWindow.isExpanded ? 0 : tabBarHeight;
+  const overlayBottom = Math.max(0, adaptiveWindow.height - overlayBottomInset);
+  const frameBottom = Math.min(overlayBottom, frame.y + frame.height);
+  const availableTop = Math.min(frameBottom, frame.y + 12);
+  const availableBottom = Math.max(availableTop, frameBottom - 12);
+  const width = Math.max(0, Math.min(420, frame.width - 24));
+  const minLeft = frame.x + 12;
+  const maxLeft = Math.max(minLeft, frame.x + frame.width - width - 12);
+  const triggerPlacement = adaptiveWindow.isExpanded
+    ? adaptiveWindow.navigationPlacement
+    : adaptiveWindow.navigationPlacement === 'left' ? 'right' : 'left';
+  const preferredLeft = triggerPlacement === 'left'
+    ? frame.x + adaptiveWindow.navigationWidth + 12
+    : frame.x + frame.width - adaptiveWindow.navigationWidth - width - 12;
+
+  return {
+    bottom: Math.max(12, overlayBottom - availableBottom),
+    left: Math.max(minLeft, Math.min(maxLeft, preferredLeft)),
+    maxHeight: Math.max(0, availableBottom - availableTop),
+    right: undefined,
+    top: undefined,
+    width,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+  };
+};
+
+function MoreSheetTile({
+  item,
+  itemStyle,
+  onNavigate,
+  tc,
+}: {
+  item: MoreDestination;
+  itemStyle?: ViewStyle;
+  onNavigate: (route: string) => void;
+  tc: ReturnType<typeof useThemeColors>;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={item.label}
+      onPress={() => {
+        if (item.route) {
+          onNavigate(item.route);
+          return;
+        }
+        item.onPress?.();
+      }}
+      style={({ pressed }) => [
+        styles.moreTile,
+        itemStyle,
+        {
+          backgroundColor: pressed ? tc.filterBg : tc.cardBg,
+          borderColor: tc.border,
+        },
+      ]}
+    >
+      <View style={[styles.moreTileIcon, { backgroundColor: tc.filterBg }]}>
+        <IconSymbol name={item.icon} size={24} color={item.iconColor} />
+      </View>
+      <Text
+        style={[styles.moreTileLabel, { color: tc.text }]}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.78}
+        maxFontSizeMultiplier={COMPACT_NAV_TEXT_MAX_SCALE}
+      >
+        {item.displayLabel ?? item.label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function MoreSheetCompactItem({
+  itemStyle,
+  item,
+  onNavigate,
+  tc,
+}: {
+  itemStyle?: ViewStyle;
+  item: MoreDestination;
+  onNavigate: (route: string) => void;
+  tc: ReturnType<typeof useThemeColors>;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={item.label}
+      onPress={() => {
+        if (item.route) {
+          onNavigate(item.route);
+          return;
+        }
+        item.onPress?.();
+      }}
+      style={({ pressed }) => [
+        styles.moreCompactItem,
+        itemStyle,
+        { backgroundColor: pressed ? tc.filterBg : 'transparent' },
+      ]}
+    >
+      <View style={styles.moreCompactIcon}>
+        <IconSymbol name={item.icon} size={18} color={item.iconColor} />
+      </View>
+      <Text
+        style={[styles.moreCompactLabel, { color: tc.secondaryText }]}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.72}
+        maxFontSizeMultiplier={COMPACT_NAV_TEXT_MAX_SCALE}
+      >
+        {item.displayLabel ?? item.label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function MoreNavigationSheet({
+  closeRequestId,
+  onClose,
+  onNavigate,
+  savedSearches,
+  t,
+  tabBarHeight,
+  tc,
+  visible,
+  quickAccessView,
+}: {
+  closeRequestId: number;
+  onClose: () => void;
+  onNavigate: (route: string) => void;
+  savedSearches: SavedSearch[];
+  t: Translate;
+  tabBarHeight: number;
+  tc: ReturnType<typeof useThemeColors>;
+  visible: boolean;
+  quickAccessView: MobileQuickAccessView;
+}) {
+  const reducedMotion = useReducedMotion();
+  const adaptiveWindow = useAdaptiveWindow();
+  const sheetTranslateY = useRef(new Animated.Value(adaptiveWindow.height)).current;
+  const lastCloseRequestIdRef = useRef(closeRequestId);
+  const wasVisibleRef = useRef(false);
+  const hiddenTranslateY = adaptiveWindow.height;
+  const constrainedSheetStyle = resolveMoreMenuFrameStyle(adaptiveWindow, tabBarHeight);
+
+  const animateClosed = useCallback(() => {
+    if (reducedMotion) {
+      sheetTranslateY.setValue(hiddenTranslateY);
+      onClose();
+      return;
+    }
+    Animated.timing(sheetTranslateY, {
+      toValue: hiddenTranslateY,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(() => {
+      onClose();
+    });
+  }, [hiddenTranslateY, onClose, reducedMotion, sheetTranslateY]);
+  const animateOpen = useCallback(() => {
+    if (reducedMotion) {
+      sheetTranslateY.setValue(0);
+      return;
+    }
+    sheetTranslateY.setValue(hiddenTranslateY);
+    Animated.timing(sheetTranslateY, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [hiddenTranslateY, reducedMotion, sheetTranslateY]);
+  const restoreOpenPosition = useCallback(() => {
+    if (reducedMotion) {
+      sheetTranslateY.setValue(0);
+      return;
+    }
+    Animated.timing(sheetTranslateY, {
+      toValue: 0,
+      duration: 140,
+      useNativeDriver: true,
+    }).start();
+  }, [reducedMotion, sheetTranslateY]);
+  const closeSheet = useCallback(() => {
+    animateClosed();
+  }, [animateClosed]);
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !visible) return undefined;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeSheet();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [closeSheet, visible]);
+  const settleSheetGesture = useCallback((gestureState: { dy: number; vy: number }) => {
+    if (gestureState.dy > 72 || (gestureState.dy > 24 && gestureState.vy > 0.75)) {
+      closeSheet();
+      return;
+    }
+    restoreOpenPosition();
+  }, [closeSheet, restoreOpenPosition]);
+  const sheetPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_event, gestureState) => (
+      gestureState.dy > 12
+      && gestureState.dy > Math.abs(gestureState.dx)
+    ),
+    onPanResponderMove: (_event, gestureState) => {
+      sheetTranslateY.setValue(Math.max(0, gestureState.dy));
+    },
+    onPanResponderRelease: (_event, gestureState) => settleSheetGesture(gestureState),
+    onPanResponderTerminate: (_event, gestureState) => settleSheetGesture(gestureState),
+  }), [settleSheetGesture, sheetTranslateY]);
+
+  useEffect(() => {
+    if (!visible) {
+      wasVisibleRef.current = false;
+      return;
+    }
+    if (!wasVisibleRef.current) {
+      wasVisibleRef.current = true;
+      animateOpen();
+      return;
+    }
+
+
+    sheetTranslateY.setValue(0);
+  }, [animateOpen, hiddenTranslateY, sheetTranslateY, visible]);
+
+  useEffect(() => {
+    if (lastCloseRequestIdRef.current === closeRequestId) return;
+    lastCloseRequestIdRef.current = closeRequestId;
+    if (visible) animateClosed();
+  }, [animateClosed, closeRequestId, visible]);
+
+  if (!visible) return null;
+
+
+  const menu = buildMoreMenuModel({ quickAccessView, savedSearches, t });
+  const primaryItems = menu.primary.map(toMoreDestination);
+  const secondaryItems = menu.utilities.map(toMoreDestination);
+
+  return (
+    <>
+      <View
+        pointerEvents="box-none"
+        style={[styles.moreOverlayContainer, { bottom: adaptiveWindow.isExpanded ? 0 : tabBarHeight }]}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t('common.close')}
+          style={styles.moreBackdrop}
+          onPress={closeSheet}
+        />
+        <Animated.View
+          accessibilityRole="menu"
+          style={[
+            styles.moreSheet,
+            {
+              backgroundColor: tc.cardBg,
+              borderColor: tc.border,
+
+
+              borderBottomColor: constrainedSheetStyle ? tc.border : tc.cardBg,
+              bottom: 0,
+              transform: [{ translateY: sheetTranslateY }],
+            },
+            constrainedSheetStyle,
+          ]}
+          {...sheetPanResponder.panHandlers}
+        >
+          <View style={[styles.moreSheetHandle, { backgroundColor: tc.border }]} />
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.moreSheetContent}
+          >
+            <View style={styles.moreUtilityRow}>
+              {secondaryItems.map((item) => (
+                <MoreSheetCompactItem
+                  key={item.id}
+                  item={item}
+                  itemStyle={styles.moreUtilityRowItem}
+                  onNavigate={onNavigate}
+                  tc={tc}
+                />
+              ))}
+            </View>
+
+            {menu.savedSearches.length > 0 ? (
+              <View style={styles.moreSavedSection}>
+                <Text style={[styles.moreSectionTitle, { color: tc.secondaryText }]}>
+                  {menu.savedSearchesTitle}
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.moreUtilityStripContent}
+                >
+                  {menu.savedSearches.map((search) => (
+                    <MoreSheetCompactItem
+                      key={search.id}
+                      item={toMoreDestination(search)}
+                      itemStyle={styles.moreUtilityScrollItem}
+                      onNavigate={onNavigate}
+                      tc={tc}
+                    />
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+
+            <View style={[styles.moreDivider, { backgroundColor: tc.border }]} />
+
+            <View style={styles.morePrimaryGrid}>
+              {primaryItems.map((item) => (
+                <MoreSheetTile
+                  key={item.id}
+                  item={item}
+                  itemStyle={styles.moreTileThird}
+                  onNavigate={onNavigate}
+                  tc={tc}
+                />
+              ))}
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+
+    </>
+  );
+}
+
+function NativeTabBar({
+  state,
+  descriptors,
+  navigation,
+  iconTint,
+  inactiveTint,
+  tc,
+  captureBg,
+  captureFg,
+  captureRadius,
+  tabBarHeight,
+  tabBarBottomInset,
+  tabBarBottomOffset,
+  tabItemTopOffset,
+  iconLift,
+  openQuickCapture,
+  closeMoreSheet,
+  toggleMoreSheet,
+  defaultAutoRecord,
+  addTaskAccessibilityLabel,
+  audioCaptureAccessibilityLabel,
+  menuSyncIndicatorColor,
+  moreSheetVisible,
+  quickAccessTabRoute,
+  expanded,
+  navigationPlacement,
+  navigationWidth,
+  expandedBottomInset,
+  expandedNavigationFrame,
+  compactNavigationFrame,
+}: BottomTabBarProps & {
+  iconTint: string;
+  inactiveTint: string;
+  tc: { cardBg: string; border: string; onTint: string; tint: string };
+  captureBg: string;
+  captureFg: string;
+  captureRadius: number;
+  tabBarHeight: number;
+  tabBarBottomInset: number;
+  tabBarBottomOffset: number;
+  tabItemTopOffset: number;
+  iconLift: number;
+  openQuickCapture: (options?: { initialValue?: string; initialProps?: Partial<Task>; autoRecord?: boolean }) => void;
+  closeMoreSheet: () => void;
+  toggleMoreSheet: () => void;
+  defaultAutoRecord: boolean;
+  addTaskAccessibilityLabel: string;
+  audioCaptureAccessibilityLabel: string;
+  menuSyncIndicatorColor?: string;
+  moreSheetVisible: boolean;
+  quickAccessTabRoute: string;
+  expanded: boolean;
+  navigationPlacement: 'left' | 'right';
+  navigationWidth: number;
+  expandedBottomInset: number;
+  expandedNavigationFrame?: { y: number; height: number };
+  compactNavigationFrame?: { x: number; width: number };
+}) {
+  const longPressRef = useRef(false);
+  const visibleTabNames = new Set(['inbox', 'focus', 'capture', quickAccessTabRoute, 'menu']);
+  const visibleRoutes = state.routes.filter((route) => visibleTabNames.has(route.name));
+
+  return (
+    <View
+      style={[
+        styles.nativeTabBar,
+        expanded ? styles.nativeTabRail : styles.nativeTabBarCompact,
+        {
+          backgroundColor: tc.cardBg,
+          borderTopColor: expanded ? 'transparent' : tc.border,
+          borderLeftColor: navigationPlacement === 'right' ? tc.border : 'transparent',
+          borderRightColor: navigationPlacement === 'left' ? tc.border : 'transparent',
+          height: expanded ? (expandedNavigationFrame?.height ?? '100%') : tabBarHeight,
+          width: expanded ? navigationWidth : (compactNavigationFrame?.width ?? '100%'),
+          marginLeft: expanded ? 0 : compactNavigationFrame?.x,
+          marginTop: expanded ? (expandedNavigationFrame?.y ?? 0) : 0,
+          paddingBottom: expanded
+            ? 16 + (expandedNavigationFrame ? 0 : expandedBottomInset)
+            : tabBarBottomInset,
+          marginBottom: expanded ? 0 : tabBarBottomOffset,
+        },
+      ]}
+    >
+      {visibleRoutes.map((route) => {
+        const focused = state.routes[state.index]?.key === route.key;
+        const descriptor = descriptors[route.key];
+        const options = descriptor.options;
+
+        if (route.name === 'capture') {
+          return (
+            <TouchableOpacity
+              key={route.key}
+              onPress={() => {
+                if (longPressRef.current) {
+                  longPressRef.current = false;
+                  return;
+                }
+                if (moreSheetVisible) closeMoreSheet();
+                openQuickCapture({ autoRecord: defaultAutoRecord });
+              }}
+              onLongPress={() => {
+                longPressRef.current = true;
+                if (moreSheetVisible) closeMoreSheet();
+                openQuickCapture({ autoRecord: !defaultAutoRecord });
+                setTimeout(() => {
+                  longPressRef.current = false;
+                }, 400);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={defaultAutoRecord ? audioCaptureAccessibilityLabel : addTaskAccessibilityLabel}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={[
+                styles.nativeTabItem,
+                expanded && styles.nativeTabItemExpanded,
+                {
+                  paddingTop: iconLift,
+                  transform: [{ translateY: expanded ? 0 : tabItemTopOffset - CAPTURE_BUTTON_LIFT }],
+                },
+              ]}
+            >
+              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }]}>
+                {defaultAutoRecord ? (
+                  <Mic size={24} color={captureFg} strokeWidth={2.5} />
+                ) : (
+                  <Plus size={28} color={captureFg} strokeWidth={3} />
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }
+
+        const active = route.name === 'menu' ? moreSheetVisible : focused;
+
+        const onPress = () => {
+          const event = navigation.emit({
+            type: 'tabPress',
+            target: route.key,
+            canPreventDefault: true,
+          });
+          if (event.defaultPrevented) return;
+          if (route.name === 'menu') {
+            toggleMoreSheet();
+            return;
+          }
+          if (moreSheetVisible) closeMoreSheet();
+          if (focused) return;
+          navigation.dispatch({
+            ...CommonActions.navigate(route),
+            target: state.key,
+          });
+        };
+
+        const onLongPress = () => {
+          navigation.emit({ type: 'tabLongPress', target: route.key });
+        };
+
+        const tabIcon = options.tabBarIcon?.({
+          focused: active,
+          color: active ? iconTint : inactiveTint,
+          size: active ? 24 : 22,
+        });
+        const tabLabel = typeof options.title === 'string' ? options.title : route.name;
+
+        return (
+          <TouchableOpacity
+            key={route.key}
+            accessibilityRole="button"
+            accessibilityState={route.name === 'menu' ? { expanded: moreSheetVisible } : focused ? { selected: true } : {}}
+            accessibilityLabel={options.tabBarAccessibilityLabel ?? options.title}
+            testID={options.tabBarButtonTestID}
+            onPress={onPress}
+            onLongPress={onLongPress}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={[
+              styles.nativeTabItem,
+              expanded && styles.nativeTabItemExpanded,
+              { paddingTop: iconLift, transform: [{ translateY: expanded ? 0 : tabItemTopOffset }] },
+            ]}
+          >
+            <View style={styles.nativeTabIconWrap}>
+              {tabIcon}
+              {route.name === 'menu' && menuSyncIndicatorColor ? (
+                <View
+                  accessibilityElementsHidden
+                  importantForAccessibility="no"
+                  style={[
+                    styles.menuSyncDot,
+                    {
+                      backgroundColor: menuSyncIndicatorColor,
+                      borderColor: tc.cardBg,
+                    },
+                  ]}
+                />
+              ) : null}
+            </View>
+            <Text
+              style={[
+                styles.nativeTabLabel,
+                styles.nativeTabTextLabel,
+                { color: active ? iconTint : inactiveTint, fontWeight: active ? '700' : '600' },
+              ]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              maxFontSizeMultiplier={COMPACT_NAV_TEXT_MAX_SCALE}
+            >
+              {tabLabel}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+export default function TabLayout() {
+  const tc = useThemeColors();
+  const tokens = useThemeTokens();
+  const { t } = useLanguage();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const adaptiveWindow = useAdaptiveWindow();
+
+  const { openQuickCapture: openRouteQuickCapture } = useQuickCapture();
+  const settings = useTaskStore((state) => state.settings);
+  const { selectedAreaIdForNewTasks } = useMobileAreaFilter();
+  const defaultAreaMode = getDefaultTaskAreaMode(settings);
+  const androidNavInset = Platform.OS === 'android' && insets.bottom >= 20
+    ? Math.max(0, insets.bottom - 12)
+    : 0;
+  const iosBottomInset = Platform.OS === 'ios'
+    ? Math.max(0, insets.bottom - 12)
+    : 0;
+  const tabBarBottomInset = Platform.OS === 'ios' ? iosBottomInset : androidNavInset;
+  const tabBarBottomOffset = 0;
+  const tabItemTopOffset = Platform.OS === 'ios' ? 0 : -2;
+  const tabBarHeight = 66 + tabBarBottomInset;
+  const iconLift = 0;
+
+  useToastBottomOffset(adaptiveWindow.isExpanded ? 0 : tabBarHeight + tabBarBottomOffset);
+  const [captureState, setCaptureState] = useState<{
+    visible: boolean;
+    openRequestId: number;
+    initialValue?: string;
+    initialProps?: Partial<Task> | null;
+    autoRecord?: boolean;
+  }>({
+    visible: false,
+    openRequestId: 0,
+    initialValue: '',
+    initialProps: null,
+    autoRecord: false,
+  });
+  const [moreSheetVisible, setMoreSheetVisible] = useState(false);
+  const [moreSheetCloseRequestId, setMoreSheetCloseRequestId] = useState(0);
+  const [tabCaptureRecoveryEnabled, setTabCaptureRecoveryEnabled] = useState(true);
+  const [queuedCaptureFailureOwner, setQueuedCaptureFailureOwner] = useState<string | null>(null);
+  const captureStateRef = useRef(captureState);
+  captureStateRef.current = captureState;
+  const workspaceActivityScope = isSandboxMode() ? 'sandbox' : 'personal';
+  const tabCaptureActivityOwner = `${workspaceActivityScope}:${TAB_CAPTURE_ACTIVITY_OWNER_SUFFIX}`;
+  const tabCaptureDraftActivityOwner = `${workspaceActivityScope}:${TAB_CAPTURE_DRAFT_ACTIVITY_OWNER_SUFFIX}`;
+  const longPressRef = useRef(false);
+  const restoreTabCapture = useCallback((recovered: TabCaptureActivityState) => {
+    setTabCaptureRecoveryEnabled(true);
+    beginCaptureProfile();
+    setCaptureState((current) => ({
+      visible: true,
+      openRequestId: current.openRequestId + 1,
+      initialValue: recovered.initialValue,
+      initialProps: recovered.initialProps,
+
+
+      autoRecord: false,
+    }));
+  }, []);
+  const tabCaptureActivityValue = useMemo<TabCaptureActivityState | null>(() => (
+    captureState.visible ? {
+      initialValue: captureState.initialValue ?? '',
+      initialProps: captureState.initialProps ?? null,
+    } : null
+  ), [captureState.initialProps, captureState.initialValue, captureState.visible]);
+  const {
+    clear: clearTabCaptureActivity,
+    rearm: rearmTabCaptureActivity,
+  } = useAndroidActivitySession({
+    enabled: tabCaptureRecoveryEnabled,
+    ownerId: tabCaptureActivityOwner,
+    value: tabCaptureActivityValue,
+    validate: isTabCaptureActivityState,
+    onRestore: restoreTabCapture,
+  });
+  useEffect(() => {
+    setQueuedCaptureFailureOwner(null);
+    return subscribeQuickCaptureSubmissionFailure(
+      tabCaptureDraftActivityOwner,
+      () => {
+      if (captureStateRef.current.visible) {
+        setQueuedCaptureFailureOwner(tabCaptureDraftActivityOwner);
+        return;
+      }
+      setTabCaptureRecoveryEnabled(true);
+      beginCaptureProfile();
+      setCaptureState((current) => ({
+        visible: true,
+        openRequestId: current.openRequestId + 1,
+        initialValue: '',
+        initialProps: null,
+        autoRecord: false,
+      }));
+    },
+    );
+  }, [tabCaptureDraftActivityOwner]);
+  const withSelectedArea = useCallback((initialProps?: Partial<Task> | null): Partial<Task> | undefined => {
+    const nextInitialProps = initialProps ? { ...initialProps } : {};
+    const hasProject = typeof nextInitialProps.projectId === 'string' && nextInitialProps.projectId.trim().length > 0;
+    const hasArea = Object.prototype.hasOwnProperty.call(nextInitialProps, 'areaId');
+    if (!hasProject && !hasArea && defaultAreaMode === 'active' && selectedAreaIdForNewTasks) {
+      nextInitialProps.areaId = selectedAreaIdForNewTasks;
+    }
+    return Object.keys(nextInitialProps).length > 0 ? nextInitialProps : undefined;
+  }, [defaultAreaMode, selectedAreaIdForNewTasks]);
+
+  const openQuickCapture = useCallback((options?: QuickCaptureOptions) => {
+    setTabCaptureRecoveryEnabled(true);
+
+
+    if (options?.returnTo) {
+      openRouteQuickCapture({ ...options, initialProps: withSelectedArea(options.initialProps) });
+      return;
+    }
+    beginCaptureProfile();
+    setCaptureState((prev) => {
+
+      if (options?.preserveDraft && prev.visible) return prev;
+      return {
+        visible: true,
+        openRequestId: prev.openRequestId + 1,
+        initialValue: options?.initialValue ?? '',
+        initialProps: withSelectedArea(options?.initialProps) ?? null,
+        autoRecord: options?.autoRecord ?? false,
+      };
+    });
+  }, [openRouteQuickCapture, withSelectedArea]);
+
+  const closeQuickCapture = useCallback(() => {
+    clearTabCaptureActivity();
+    setTabCaptureRecoveryEnabled(false);
+    endCaptureProfile();
+    if (queuedCaptureFailureOwner === tabCaptureDraftActivityOwner) {
+      setQueuedCaptureFailureOwner(null);
+      setTabCaptureRecoveryEnabled(true);
+      beginCaptureProfile();
+      setCaptureState((prev) => ({
+        visible: true,
+        openRequestId: prev.openRequestId + 1,
+        initialValue: '',
+        initialProps: null,
+        autoRecord: false,
+      }));
+      return;
+    }
+    setCaptureState((prev) => ({
+      visible: false,
+      openRequestId: prev.openRequestId,
+      initialValue: '',
+      initialProps: null,
+      autoRecord: false,
+    }));
+  }, [clearTabCaptureActivity, queuedCaptureFailureOwner, tabCaptureDraftActivityOwner]);
+  const handleCaptureSubmissionStart = useCallback(() => {
+    clearTabCaptureActivity();
+  }, [clearTabCaptureActivity]);
+  const handleCaptureSubmissionSettled = useCallback(() => {
+    rearmTabCaptureActivity();
+  }, [rearmTabCaptureActivity]);
+  const closeMoreSheet = useCallback(() => setMoreSheetVisible(false), []);
+  const toggleMoreSheet = useCallback(() => {
+    if (moreSheetVisible) {
+      setMoreSheetCloseRequestId((prev) => prev + 1);
+      return;
+    }
+    setMoreSheetVisible(true);
+  }, [moreSheetVisible]);
+  const navigateFromMoreSheet = useCallback((route: string) => {
+    setMoreSheetVisible(false);
+    router.push(route as never);
+  }, [router]);
+
+  const iconTint = tc.tabIconSelected;
+  const inactiveTint = tc.tabIconDefault;
+
+
+  const captureBg = tokens.isMaterial && tokens.roles ? tokens.roles.primary : tc.tint;
+  const captureFg = tokens.isMaterial && tokens.roles ? tokens.roles.onPrimary : tc.onTint;
+  const captureRadius = tokens.isMaterial ? tokens.shape.large : 10;
+  const defaultCapture = settings.gtd?.defaultCaptureMethod ?? 'text';
+  const defaultAutoRecord = defaultCapture === 'audio';
+  const quickAccessView = resolveMobileQuickAccessView(settings.appearance?.mobileQuickAccessView);
+  const quickAccessTabRoute = MOBILE_QUICK_ACCESS_TAB_ROUTE[quickAccessView];
+  const { syncBadgeAccessibilityLabel, syncBadgeColor } = useMobileSyncBadge();
+
+  return (
+    <QuickCaptureProvider value={{ openQuickCapture }}>
+      <Tabs
+        initialRouteName={MOBILE_HOME_TAB_ROUTE}
+        tabBar={(props) => (
+          <NativeTabBar
+            {...props}
+            iconTint={iconTint}
+            inactiveTint={inactiveTint}
+            tc={{ cardBg: tc.cardBg, border: tc.border, onTint: tc.onTint, tint: tc.tint }}
+            captureBg={captureBg}
+            captureFg={captureFg}
+            captureRadius={captureRadius}
+            tabBarHeight={tabBarHeight}
+            tabBarBottomInset={tabBarBottomInset}
+            tabBarBottomOffset={tabBarBottomOffset}
+            tabItemTopOffset={tabItemTopOffset}
+            iconLift={iconLift}
+            openQuickCapture={openQuickCapture}
+            closeMoreSheet={closeMoreSheet}
+            toggleMoreSheet={toggleMoreSheet}
+            defaultAutoRecord={defaultAutoRecord}
+            addTaskAccessibilityLabel={t('nav.addTask')}
+            audioCaptureAccessibilityLabel={t('quickAdd.audioCaptureLabel')}
+            menuSyncIndicatorColor={syncBadgeColor}
+            moreSheetVisible={moreSheetVisible}
+            quickAccessTabRoute={quickAccessTabRoute}
+            expanded={adaptiveWindow.isExpanded}
+            navigationPlacement={adaptiveWindow.navigationPlacement}
+            navigationWidth={adaptiveWindow.navigationWidth}
+            expandedBottomInset={Math.max(0, insets.bottom)}
+            expandedNavigationFrame={
+              adaptiveWindow.isExpanded && adaptiveWindow.activeFeature?.orientation === 'horizontal'
+                ? {
+                    y: adaptiveWindow.navigationFrame.y,
+                    height: adaptiveWindow.navigationFrame.height,
+                  }
+                : undefined
+            }
+            compactNavigationFrame={
+              !adaptiveWindow.isExpanded && adaptiveWindow.activeFeature?.orientation === 'vertical'
+                ? {
+                    x: adaptiveWindow.foregroundFrame.x,
+                    width: adaptiveWindow.foregroundFrame.width,
+                  }
+                : undefined
+            }
+          />
+        )}
+        screenOptions={({ route }) => ({
+        tabBarActiveTintColor: iconTint,
+        tabBarInactiveTintColor: inactiveTint,
+        tabBarShowLabel: false,
+        tabBarPosition: adaptiveWindow.isExpanded ? adaptiveWindow.navigationPlacement : 'bottom',
+        headerShown: true,
+        headerTitleAlign: 'center',
+        headerShadowVisible: false,
+        headerStyle: {
+          backgroundColor: tc.cardBg,
+          borderBottomWidth: 0,
+        },
+        headerBackground: () => (
+          <View
+            style={[
+              StyleSheet.absoluteFillObject,
+              {
+                backgroundColor: tc.cardBg,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+                borderBottomColor: tc.border,
+              },
+            ]}
+          />
+        ),
+        headerLeft: () => <MobileAreaSwitcher />,
+        headerLeftContainerStyle: {
+          paddingLeft: 16,
+        },
+        headerTintColor: tc.text,
+        headerTitle: ({ children }) => (
+          <Text
+            style={[styles.headerTitle, { color: tc.text }]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.72}
+            maxFontSizeMultiplier={COMPACT_NAV_TEXT_MAX_SCALE}
+          >
+            {children}
+          </Text>
+        ),
+        headerTitleStyle: {
+          fontSize: 17,
+          fontWeight: '700',
+        },
+        headerRight: route.name === 'menu'
+          ? undefined
+          : () => (
+            <Link href="/global-search" asChild>
+              <TouchableOpacity style={styles.headerIconButton} accessibilityLabel={t('search.title')}>
+                <Search size={22} color={tc.text} />
+              </TouchableOpacity>
+            </Link>
+          ),
+        headerRightContainerStyle: {
+          paddingRight: 16,
+        },
+        tabBarButton: (props) => (
+          <HapticTab
+            {...props}
+            activeBackgroundColor="transparent"
+            inactiveBackgroundColor="transparent"
+            activeIndicatorColor="transparent"
+            indicatorHeight={0}
+          />
+        ),
+      })}
+      >
+      <Tabs.Screen
+        name={MOBILE_HOME_TAB_ROUTE}
+        options={{
+          title: t('tab.next'),
+          tabBarIcon: ({ color, focused }) => (
+            <Target size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="inbox"
+        options={{
+          title: t('tab.inbox'),
+          tabBarIcon: ({ color, focused }) => (
+            <Inbox size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="capture"
+        options={{
+          title: t('nav.addTask'),
+          tabBarButton: () => (
+            <TouchableOpacity
+              onPress={() => {
+                if (longPressRef.current) {
+                  longPressRef.current = false;
+                  return;
+                }
+                openQuickCapture({ autoRecord: defaultAutoRecord });
+              }}
+              onLongPress={() => {
+                longPressRef.current = true;
+                openQuickCapture({ autoRecord: !defaultAutoRecord });
+                setTimeout(() => {
+                  longPressRef.current = false;
+                }, 400);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={defaultAutoRecord ? t('quickAdd.audioCaptureLabel') : t('nav.addTask')}
+              style={styles.captureButton}
+            >
+              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }]}>
+                {defaultAutoRecord ? (
+                  <Mic size={24} color={captureFg} strokeWidth={2.5} />
+                ) : (
+                  <Plus size={28} color={captureFg} strokeWidth={3} />
+                )}
+              </View>
+            </TouchableOpacity>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="capture-quick"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="projects"
+        options={{
+          title: t('projects.title'),
+          href: quickAccessView === 'projects' ? undefined : null,
+          tabBarIcon: ({ color, focused }) => (
+            <Folder size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="calendar-tab"
+        options={{
+          title: t('nav.calendar'),
+          href: quickAccessView === 'calendar' ? undefined : null,
+          tabBarIcon: ({ color, focused }) => (
+            <Calendar size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="contexts-tab"
+        options={{
+          title: t('nav.contexts'),
+          href: quickAccessView === 'contexts' ? undefined : null,
+          tabBarIcon: ({ color, focused }) => (
+            <Circle size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="review-tab"
+        options={{
+          title: t('tab.review'),
+          href: quickAccessView === 'review' ? undefined : null,
+          tabBarIcon: ({ color, focused }) => (
+            <ClipboardCheck size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="menu"
+        options={{
+          title: t('tab.menu'),
+          tabBarAccessibilityLabel: syncBadgeAccessibilityLabel
+            ? `${t('tab.menu')}, ${syncBadgeAccessibilityLabel}`
+            : t('tab.menu'),
+          tabBarIcon: ({ color, focused }) => (
+            <Menu size={focused ? 26 : 24} color={color} strokeWidth={2} opacity={focused ? 1 : 0.8} />
+          ),
+        }}
+      />
+    </Tabs>
+    {captureState.visible && (
+      <QuickCaptureSheet
+        visible
+        openRequestId={captureState.openRequestId}
+        initialValue={captureState.initialValue}
+        initialProps={captureState.initialProps ?? undefined}
+        autoRecord={captureState.autoRecord}
+        activitySessionOwnerId={tabCaptureDraftActivityOwner}
+        onSubmissionStart={handleCaptureSubmissionStart}
+        onSubmissionSettled={handleCaptureSubmissionSettled}
+        onClose={closeQuickCapture}
+      />
+    )}
+    <MoreNavigationSheet
+      closeRequestId={moreSheetCloseRequestId}
+      onClose={closeMoreSheet}
+      onNavigate={navigateFromMoreSheet}
+      savedSearches={settings?.savedSearches ?? []}
+      t={t}
+      tabBarHeight={tabBarHeight}
+      tc={tc}
+      visible={moreSheetVisible}
+      quickAccessView={quickAccessView}
+    />
+    </QuickCaptureProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  nativeTabBar: {
+    alignItems: 'stretch',
+    overflow: 'visible',
+  },
+  nativeTabBarCompact: {
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  nativeTabRail: {
+    flexDirection: 'column',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 8,
+  },
+  nativeTabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 0,
+    paddingHorizontal: 2,
+  },
+  nativeTabItemExpanded: {
+    flex: 0,
+    minHeight: 64,
+    width: '100%',
+  },
+  nativeTabIconWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  } as ViewStyle,
+  menuSyncDot: {
+    position: 'absolute',
+    top: -2,
+    right: -7,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    borderWidth: 1.5,
+    opacity: 0.85,
+  },
+  nativeTabLabel: {
+    fontSize: 10,
+    lineHeight: 12,
+    maxWidth: '100%',
+    minWidth: 0,
+    textAlign: 'center',
+  },
+  nativeTabTextLabel: {
+    marginTop: 2,
+  },
+  headerIconButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    textAlign: 'center',
+    minWidth: 0,
+  },
+  captureButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ translateY: -CAPTURE_BUTTON_LIFT }],
+  },
+  captureButtonInner: {
+    width: 48,
+    height: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  moreOverlayContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    elevation: 20,
+    overflow: 'hidden',
+  },
+  moreBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.36)',
+  },
+  moreSheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    maxHeight: '82%',
+    paddingTop: 10,
+    paddingHorizontal: 18,
+    paddingBottom: 16,
+  },
+  moreSheetHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    marginBottom: 18,
+  },
+  moreSheetContent: {
+    paddingBottom: 8,
+  },
+  morePrimaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  moreTile: {
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexGrow: 1,
+    minHeight: 104,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+  },
+  moreTileHalf: {
+    flexBasis: '47%',
+  },
+  moreTileThird: {
+    flexBasis: '31%',
+  },
+  moreTileIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  moreTileLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    includeFontPadding: false,
+    lineHeight: 15,
+    textAlign: 'center',
+  },
+  moreDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: 12,
+  },
+  moreUtilityRow: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  moreUtilityStripContent: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingRight: 2,
+  },
+  moreCompactItem: {
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 58,
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+  },
+  moreUtilityRowItem: {
+    flex: 1,
+    minWidth: 0,
+  },
+  moreUtilityScrollItem: {
+    width: 76,
+  },
+  moreCompactIcon: {
+    opacity: 0.64,
+  },
+  moreCompactLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
+    marginTop: 4,
+    minHeight: 16,
+    textAlign: 'center',
+  },
+  moreSavedSection: {
+    marginTop: 18,
+  },
+  moreSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+});

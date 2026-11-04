@@ -1,0 +1,8 @@
+{
+  "platforms": ["ios"],
+  "ios": {
+    "podspecPath": "ios/StrideIosSiriActions.podspec",
+    "swiftModuleName": "StrideIosSiriActions",
+    "modules": ["StrideIosSiriActionsModule"]
+  }
+}

@@ -1,0 +1,1421 @@
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type KeyboardEvent as ReactKeyboardEvent,
+    type MouseEvent as ReactMouseEvent,
+    type ReactNode,
+    type RefObject,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { Calendar, CalendarClock, Check, ChevronRight, Copy, Flag, Folder, ListChecks, Pencil, Tag, Trash2 } from 'lucide-react';
+import {
+    buildTaskMovePatch,
+    getAdvancedReviewDate,
+    getChecklistMoveTargets,
+    isDueForReview,
+    normalizeBulkTaskTokenInput,
+    safeParseDate,
+    tFallback,
+    type Area,
+    type Project,
+    type Section,
+    type StoreActionResult,
+    type Task,
+    type TaskMoveDestination,
+    type TaskPriority,
+    type TaskStatus,
+} from '@stride/core';
+import { joinDateTime, splitDateTime } from '@stride/core/date-draft';
+
+import { reportError } from '../../lib/report-error';
+import { copyTaskReference, copyTaskTitles } from '../../lib/task-clipboard';
+import { cn } from '../../lib/utils';
+import { isImeComposing } from '../../lib/ime';
+import { FocusStarIcon } from '../FocusStarIcon';
+import { Button } from '../ui/Button';
+import { DestinationSelector } from '../ui/DestinationSelector';
+import { SectionSelector } from '../ui/SectionSelector';
+import { normalizeDateInputValue } from './task-item-helpers';
+import { ContextsField } from './fields/TaskMetadataFields';
+import { PriorityFlag } from './PriorityFlag';
+import { DateField } from '../ui/DateField';
+import { TimeInput } from '../ui/TimeInput';
+
+const VIEWPORT_MARGIN_PX = 8;
+const PANEL_GAP_PX = 8;
+const MENU_WIDTH_PX = 224;
+const HOVER_OPEN_DELAY_MS = 250;
+
+type QuickPanelId = 'dates' | 'startTime' | 'dueDate' | 'reviewAt' | 'destination' | 'contexts' | 'priority' | 'checklist' | null;
+
+const isDateEditorPanel = (panel: QuickPanelId) => panel === 'startTime' || panel === 'dueDate' || panel === 'reviewAt';
+
+export interface TaskQuickActionMenuProps {
+    task: Task;
+    x: number;
+    y: number;
+    t: (key: string) => string;
+    dateFormatSetting?: string | null;
+    nativeDateInputLocale: string;
+    contextOptions: string[];
+    contextSuggestions?: string[];
+    areas: Area[];
+    projects: Project[];
+    sections?: Section[];
+    readOnly: boolean;
+    prioritiesEnabled: boolean;
+    focusAction?: {
+        isFocused: boolean;
+        canToggle: boolean;
+        label: string;
+        title: string;
+        onToggle: () => void;
+    };
+
+
+    onClose: (options?: { restoreFocus?: boolean }) => void;
+    onRename?: () => void;
+
+    onPromoteToProject?: () => void;
+
+    onConvertToSection?: () => void;
+    onDuplicate: () => void;
+    onDelete: () => void;
+    onStatusChange: (status: TaskStatus) => void;
+    onCreateArea: (name: string) => Promise<string | null>;
+    onCreateProject: (title: string) => Promise<string | null>;
+
+    onUpdateTask: (updates: Partial<Task>, base?: Task) => Promise<StoreActionResult>;
+
+
+    checklistMove?: { tasks: Task[]; onSelect: (targetId: string) => void };
+
+    extraActions?: Array<{
+        id: string;
+        label: string;
+        onSelect: () => void;
+    }>;
+}
+
+const clamp = (value: number, min: number, max: number) => {
+    if (max <= min) return min;
+    return Math.min(Math.max(value, min), max);
+};
+
+
+const suppressDismissClick = () => {
+    const cleanup = () => {
+        window.removeEventListener('click', swallow, true);
+        window.removeEventListener('mouseup', endGesture, true);
+        window.removeEventListener('dragstart', cleanup, true);
+    };
+    function swallow(event: MouseEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        cleanup();
+    }
+
+
+    function endGesture() {
+        window.setTimeout(cleanup, 0);
+    }
+    window.addEventListener('click', swallow, { capture: true, once: true });
+    window.addEventListener('mouseup', endGesture, { capture: true, once: true });
+
+    window.addEventListener('dragstart', cleanup, { capture: true, once: true });
+};
+
+const parseTokenInput = (value: string) => Array.from(new Set(
+    value
+        .split(',')
+        .map((token) => token.trim())
+        .filter(Boolean)
+));
+
+const preserveFocusedDatePanelLayout = (event: ReactMouseEvent<HTMLDivElement>) => {
+
+
+    event.preventDefault();
+};
+
+
+const getPanelPosition = (anchor: HTMLElement | null, panel: HTMLElement | null) => {
+    if (!anchor || !panel) return null;
+    const anchorRect = anchor.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const preferredLeft = anchorRect.right + PANEL_GAP_PX;
+    const fallbackLeft = anchorRect.left - panelRect.width - PANEL_GAP_PX;
+    const shouldOpenLeft = preferredLeft + panelRect.width > window.innerWidth - VIEWPORT_MARGIN_PX
+        && fallbackLeft >= VIEWPORT_MARGIN_PX;
+    return {
+        left: clamp(
+            shouldOpenLeft ? fallbackLeft : preferredLeft,
+            VIEWPORT_MARGIN_PX,
+            window.innerWidth - panelRect.width - VIEWPORT_MARGIN_PX,
+        ),
+        top: clamp(
+            anchorRect.top,
+            VIEWPORT_MARGIN_PX,
+            window.innerHeight - panelRect.height - VIEWPORT_MARGIN_PX,
+        ),
+    };
+};
+
+const focusPanelControl = (panel: HTMLElement | null) => {
+    const control = panel?.querySelector<HTMLElement>(
+        'input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    control?.focus();
+    return control;
+};
+
+export function TaskQuickActionMenu({
+    task,
+    x,
+    y,
+    t,
+    dateFormatSetting,
+    nativeDateInputLocale,
+    contextOptions,
+    contextSuggestions = contextOptions,
+    areas,
+    projects,
+    sections = [],
+    readOnly,
+    prioritiesEnabled,
+    focusAction,
+    onClose,
+    onRename,
+    onDuplicate,
+    onDelete,
+    onStatusChange,
+    onCreateArea,
+    onCreateProject,
+    onUpdateTask,
+    checklistMove,
+    extraActions = [],
+}: TaskQuickActionMenuProps) {
+    const menuRef = useRef<HTMLDivElement | null>(null);
+
+    const datesMenuRef = useRef<HTMLDivElement | null>(null);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    const focusedPanelRef = useRef<QuickPanelId>(null);
+    const hoverTimerRef = useRef<number | null>(null);
+    const panelOpenedByHoverRef = useRef(false);
+    const initialLayoutScrollSettledRef = useRef(false);
+    const datesButtonRef = useRef<HTMLButtonElement | null>(null);
+    const destinationButtonRef = useRef<HTMLButtonElement | null>(null);
+    const contextsButtonRef = useRef<HTMLButtonElement | null>(null);
+    const priorityButtonRef = useRef<HTMLButtonElement | null>(null);
+    const checklistButtonRef = useRef<HTMLButtonElement | null>(null);
+    const [checklistQuery, setChecklistQuery] = useState('');
+    const startItemRef = useRef<HTMLButtonElement | null>(null);
+    const dueItemRef = useRef<HTMLButtonElement | null>(null);
+    const reviewItemRef = useRef<HTMLButtonElement | null>(null);
+    const [activePanel, setActivePanel] = useState<QuickPanelId>(null);
+    const datesMenuOpen = activePanel === 'dates' || isDateEditorPanel(activePanel);
+    const [datesMenuPosition, setDatesMenuPosition] = useState<{ left: number; top: number } | null>(null);
+    const [panelPosition, setPanelPosition] = useState<{ left: number; top: number } | null>(null);
+    const [menuSize, setMenuSize] = useState({ width: MENU_WIDTH_PX, height: 1 });
+    const initialStartDraft = splitDateTime(task.startTime);
+    const initialDueDraft = splitDateTime(task.dueDate);
+    const initialReviewDraft = splitDateTime(task.reviewAt);
+    const initialDestinationDraft: TaskMoveDestination = task.projectId
+        ? { kind: 'project', id: task.projectId }
+        : task.areaId
+            ? { kind: 'area', id: task.areaId }
+            : { kind: 'none' };
+    const initialSectionDraft = task.projectId ? task.sectionId || '' : '';
+    const initialContextsDraft = task.contexts?.join(', ') || '';
+    const [startDateDraft, setStartDateDraft] = useState(initialStartDraft.date);
+    const [startTimeDraft, setStartTimeDraft] = useState(initialStartDraft.time);
+    const [dueDateDraft, setDueDateDraft] = useState(initialDueDraft.date);
+    const [dueTimeDraft, setDueTimeDraft] = useState(initialDueDraft.time);
+    const [reviewDateDraft, setReviewDateDraft] = useState(initialReviewDraft.date);
+    const [reviewTimeDraft, setReviewTimeDraft] = useState(initialReviewDraft.time);
+    const [destinationDraft, setDestinationDraft] = useState<TaskMoveDestination>(initialDestinationDraft);
+    const [sectionDraft, setSectionDraft] = useState(initialSectionDraft);
+    const [contextsDraft, setContextsDraft] = useState(initialContextsDraft);
+
+    const contextsBaseRef = useRef(task);
+    const [savingPanel, setSavingPanel] = useState<Exclude<QuickPanelId, null> | null>(null);
+    const startLabel = tFallback(t, 'taskEdit.startDateLabel', 'Start Date');
+    const dueLabel = tFallback(t, 'taskEdit.dueDateLabel', 'Due Date');
+    const reviewLabel = tFallback(t, 'taskEdit.reviewDateLabel', 'Review Date');
+    const datesLabel = t('task.dates');
+    const moveToLabel = t('task.moveTo');
+    const destinationLabel = t('task.destination');
+    const projectsLabel = tFallback(t, 'projects.title', 'Projects');
+    const areasLabel = tFallback(t, 'areas.manage', 'Areas');
+    const sectionLabel = tFallback(t, 'taskEdit.sectionLabel', 'Section');
+    const contextsLabel = tFallback(t, 'taskEdit.contextsLabel', 'Contexts');
+    const priorityLabel = tFallback(t, 'taskEdit.priorityLabel', 'Priority');
+    const clearPriorityLabel = tFallback(t, 'common.clear', 'Clear');
+    const priorityChoices: Array<{ value: TaskPriority | ''; label: string }> = [
+        { value: '', label: clearPriorityLabel },
+        { value: 'low', label: tFallback(t, 'priority.low', 'Low') },
+        { value: 'medium', label: tFallback(t, 'priority.medium', 'Medium') },
+        { value: 'high', label: tFallback(t, 'priority.high', 'High') },
+        { value: 'urgent', label: tFallback(t, 'priority.urgent', 'Urgent') },
+    ];
+    const createProjectLabel = tFallback(t, 'projects.new', 'New project');
+    const renameLabel = tFallback(t, 'task.renameTitle', 'Rename task');
+    const duplicateLabel = tFallback(t, 'projects.duplicate', 'Duplicate');
+    const deleteLabel = tFallback(t, 'common.delete', 'Delete');
+    const markReviewedLabel = tFallback(t, 'review.markReviewed', 'Mark reviewed');
+    const advanceReviewLabel = tFallback(t, 'review.advanceWeek', 'Review in 1 week');
+    const saveLabel = tFallback(t, 'common.save', 'Save');
+    const cancelLabel = tFallback(t, 'common.cancel', 'Cancel');
+    const moreOptionsLabel = tFallback(t, 'taskEdit.moreOptions', 'More options');
+    const searchDestinationLabel = tFallback(t, 'common.search', 'Search');
+    const searchSectionsLabel = tFallback(t, 'sections.search', 'Search sections');
+    const noSectionLabel = tFallback(t, 'taskEdit.noSectionOption', 'No Section');
+    const createSectionLabel = tFallback(t, 'projects.addSection', 'Add section');
+    const noMatchesLabel = tFallback(t, 'common.noMatches', 'No matches');
+    const addToChecklistLabel = tFallback(t, 'task.addToChecklist', 'Add to checklist…');
+    const checklistTargets = activePanel === 'checklist' && checklistMove
+        ? getChecklistMoveTargets(checklistMove.tasks, task.id, checklistQuery)
+        : [];
+    const chooseChecklistTarget = (targetId: string) => {
+        checklistMove?.onSelect(targetId);
+        onClose();
+    };
+    const createAreaLabel = tFallback(t, 'areas.new', 'New area');
+    const canMarkReviewed = isDueForReview(task.reviewAt);
+
+    const normalizedInitialContexts = parseTokenInput(initialContextsDraft);
+    const normalizedDraftContexts = Array.from(new Set(
+        parseTokenInput(contextsDraft)
+            .map((token) => normalizeBulkTaskTokenInput(token, 'contexts'))
+            .filter(Boolean)
+    ));
+    const startDraftChanged = startDateDraft !== initialStartDraft.date || startTimeDraft !== initialStartDraft.time;
+    const dueDraftChanged = dueDateDraft !== initialDueDraft.date || dueTimeDraft !== initialDueDraft.time;
+    const reviewDraftChanged = reviewDateDraft !== initialReviewDraft.date || reviewTimeDraft !== initialReviewDraft.time;
+    const destinationDraftChanged = destinationDraft.kind !== initialDestinationDraft.kind
+        || (destinationDraft.kind !== 'none'
+            && initialDestinationDraft.kind !== 'none'
+            && destinationDraft.id !== initialDestinationDraft.id);
+    const sectionDraftChanged = sectionDraft !== initialSectionDraft;
+    const contextsDraftChanged = normalizedDraftContexts.join('\u0000') !== normalizedInitialContexts.join('\u0000');
+    const hasDraftChanges = activePanel === 'startTime' ? startDraftChanged
+        : activePanel === 'dueDate' ? dueDraftChanged
+            : activePanel === 'reviewAt' ? reviewDraftChanged
+                : activePanel === 'destination' ? destinationDraftChanged || sectionDraftChanged
+                    : activePanel === 'contexts' && contextsDraftChanged;
+    const cancelHoverOpen = useCallback(() => {
+        if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+    }, []);
+
+    useEffect(() => cancelHoverOpen, [activePanel, cancelHoverOpen, hasDraftChanges, savingPanel, task, readOnly, prioritiesEnabled]);
+
+    useEffect(() => {
+        const nextStartDraft = splitDateTime(task.startTime);
+        const nextDueDraft = splitDateTime(task.dueDate);
+        const nextReviewDraft = splitDateTime(task.reviewAt);
+        setStartDateDraft(nextStartDraft.date);
+        setStartTimeDraft(nextStartDraft.time);
+        setDueDateDraft(nextDueDraft.date);
+        setDueTimeDraft(nextDueDraft.time);
+        setReviewDateDraft(nextReviewDraft.date);
+        setReviewTimeDraft(nextReviewDraft.time);
+        setDestinationDraft(task.projectId
+            ? { kind: 'project', id: task.projectId }
+            : task.areaId
+                ? { kind: 'area', id: task.areaId }
+                : { kind: 'none' });
+        setSectionDraft(task.projectId ? task.sectionId || '' : '');
+        setContextsDraft(task.contexts?.join(', ') || '');
+        contextsBaseRef.current = task;
+    }, [task.areaId, task.contexts, task.dueDate, task.id, task.projectId, task.reviewAt, task.startTime]);
+
+
+    useEffect(() => {
+        menuRef.current?.focus();
+    }, []);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            initialLayoutScrollSettledRef.current = true;
+        }, 120);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
+        const isInsideMenuSurface = (event: Event) => event.composedPath().some((target) => {
+            if (!(target instanceof Node)) return false;
+            if (
+                menuRef.current?.contains(target)
+                || datesMenuRef.current?.contains(target)
+                || panelRef.current?.contains(target)
+            ) return true;
+            const targetElement = target instanceof Element ? target : target.parentElement;
+            return Boolean(targetElement?.closest('[data-selector-dropdown="true"]'));
+        });
+        const handlePointer = (event: Event) => {
+            if (isInsideMenuSurface(event)) return;
+
+
+            if (event.type === 'mousedown') suppressDismissClick();
+            onClose({ restoreFocus: false });
+        };
+        const handleScrollOrResize = (event: Event) => {
+            if (event.type === 'scroll') {
+                if (!initialLayoutScrollSettledRef.current) return;
+
+
+                if (isInsideMenuSurface(event)) return;
+            }
+            onClose({ restoreFocus: false });
+        };
+        const getMenuItems = (root: HTMLElement | null) => Array.from(
+            root?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
+        );
+        const moveMenuFocus = (root: HTMLElement | null, delta: number) => {
+            const items = getMenuItems(root);
+            if (items.length === 0) return;
+            const currentIndex = items.findIndex((item) => item === document.activeElement);
+            const nextIndex = currentIndex < 0
+                ? (delta > 0 ? 0 : items.length - 1)
+                : (currentIndex + delta + items.length) % items.length;
+            items[nextIndex]?.focus();
+        };
+        const getPanelAnchor = (panelId: Exclude<QuickPanelId, null>) => (
+            panelId === 'dates' || panelId === 'startTime' || panelId === 'dueDate' || panelId === 'reviewAt'
+                ? datesButtonRef.current
+                : panelId === 'destination'
+                    ? destinationButtonRef.current
+                    : panelId === 'priority'
+                        ? priorityButtonRef.current
+                        : panelId === 'checklist'
+                            ? checklistButtonRef.current
+                            : contextsButtonRef.current
+        );
+        const closeActivePanel = () => {
+            if (!activePanel) return;
+            const anchor = getPanelAnchor(activePanel);
+            setActivePanel(null);
+            anchor?.focus();
+        };
+
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (isImeComposing(event)) return;
+            cancelHoverOpen();
+            const target = event.target instanceof Node ? event.target : null;
+            const inSelectorDropdown = Boolean(
+                target instanceof Element && target.closest('[data-selector-dropdown="true"]'),
+            );
+            if (event.key === 'Escape') {
+
+
+                if (inSelectorDropdown) return;
+                event.preventDefault();
+                event.stopPropagation();
+                if (activePanel) {
+                    closeActivePanel();
+                    return;
+                }
+                onClose();
+                return;
+            }
+            const inPanelSurface = inSelectorDropdown
+                || Boolean(target && panelRef.current?.contains(target));
+
+
+            if (inPanelSurface) return;
+            const inDatesSubmenu = Boolean(target && datesMenuRef.current?.contains(target));
+            const surface = inDatesSubmenu ? datesMenuRef.current : menuRef.current;
+
+            switch (event.key) {
+                case 'ArrowDown':
+                    moveMenuFocus(surface, 1);
+                    break;
+                case 'ArrowUp':
+                    moveMenuFocus(surface, -1);
+                    break;
+                case 'Home':
+                    getMenuItems(surface)[0]?.focus();
+                    break;
+                case 'End': {
+                    const items = getMenuItems(surface);
+                    items[items.length - 1]?.focus();
+                    break;
+                }
+                case 'ArrowRight': {
+                    const active = document.activeElement;
+                    if (
+                        active instanceof HTMLElement
+                        && surface?.contains(active)
+                        && active.getAttribute('aria-haspopup') === 'dialog'
+                    ) {
+                        if (active.getAttribute('aria-expanded') === 'true') {
+                            focusPanelControl(active === datesButtonRef.current ? datesMenuRef.current : panelRef.current);
+                        } else {
+                            active.click();
+                        }
+                        break;
+                    }
+                    return;
+                }
+                case 'ArrowLeft':
+                    if (!activePanel) return;
+                    closeActivePanel();
+                    break;
+                default:
+                    return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        window.addEventListener('mousedown', handlePointer);
+        window.addEventListener('scroll', handleScrollOrResize, true);
+        window.addEventListener('resize', handleScrollOrResize);
+        window.addEventListener('contextmenu', handlePointer);
+        window.addEventListener('keydown', handleKeyDown, true);
+        return () => {
+            window.removeEventListener('mousedown', handlePointer);
+            window.removeEventListener('scroll', handleScrollOrResize, true);
+            window.removeEventListener('resize', handleScrollOrResize);
+            window.removeEventListener('contextmenu', handlePointer);
+            window.removeEventListener('keydown', handleKeyDown, true);
+        };
+    }, [activePanel, cancelHoverOpen, onClose]);
+
+    const menuPosition = {
+        left: clamp(
+            x,
+            VIEWPORT_MARGIN_PX,
+            window.innerWidth - menuSize.width - VIEWPORT_MARGIN_PX,
+        ),
+        top: clamp(
+            y,
+            VIEWPORT_MARGIN_PX,
+            window.innerHeight - menuSize.height - VIEWPORT_MARGIN_PX,
+        ),
+    };
+
+    useLayoutEffect(() => {
+        const menu = menuRef.current;
+        if (!menu) return;
+        const rect = menu.getBoundingClientRect();
+        const nextSize = {
+            width: Math.ceil(rect.width) || MENU_WIDTH_PX,
+            height: Math.ceil(rect.height) || 1,
+        };
+        setMenuSize((current) => (
+            current.width === nextSize.width && current.height === nextSize.height
+                ? current
+                : nextSize
+        ));
+    }, [readOnly]);
+
+    useLayoutEffect(() => {
+        if (!datesMenuOpen) {
+            setDatesMenuPosition(null);
+            return;
+        }
+        const position = getPanelPosition(datesButtonRef.current, datesMenuRef.current);
+        if (position) setDatesMenuPosition(position);
+    }, [datesMenuOpen, menuPosition.left, menuPosition.top]);
+
+    useLayoutEffect(() => {
+        if (!activePanel || activePanel === 'dates') {
+            setPanelPosition(null);
+            return;
+        }
+        const anchor = activePanel === 'startTime'
+            ? startItemRef.current
+            : activePanel === 'dueDate'
+                ? dueItemRef.current
+                : activePanel === 'reviewAt'
+                    ? reviewItemRef.current
+                    : activePanel === 'destination'
+                        ? destinationButtonRef.current
+                        : activePanel === 'priority'
+                            ? priorityButtonRef.current
+                            : contextsButtonRef.current;
+        const position = getPanelPosition(anchor, panelRef.current);
+        if (position) setPanelPosition(position);
+    }, [activePanel, datesMenuPosition, menuPosition.left, menuPosition.top]);
+
+    useEffect(() => {
+        const surface = activePanel === 'dates' ? datesMenuRef.current : panelRef.current;
+        if (!activePanel || !(activePanel === 'dates' ? datesMenuPosition : panelPosition)) {
+            if (!activePanel) focusedPanelRef.current = null;
+            return;
+        }
+        if (focusedPanelRef.current === activePanel) return;
+        focusedPanelRef.current = activePanel;
+        if (panelOpenedByHoverRef.current) {
+
+
+            if (isDateEditorPanel(activePanel)) surface?.querySelector<HTMLElement>('input')?.click();
+            return;
+        }
+        const control = focusPanelControl(surface);
+        if (isDateEditorPanel(activePanel)) control?.click();
+    }, [activePanel, datesMenuPosition, panelPosition]);
+
+    if (typeof document === 'undefined') return null;
+
+    const openPanel = (panelId: Exclude<QuickPanelId, null>, fromHover = false) => {
+        cancelHoverOpen();
+        if (fromHover && (
+            hasDraftChanges || savingPanel
+            || panelRef.current?.contains(document.activeElement)
+            || document.activeElement?.closest('[data-selector-dropdown="true"]')
+        )) return;
+        if (panelId === activePanel) {
+            if (fromHover) return;
+
+            if (panelOpenedByHoverRef.current) {
+                panelOpenedByHoverRef.current = false;
+                const control = focusPanelControl(panelId === 'dates' ? datesMenuRef.current : panelRef.current);
+                if (isDateEditorPanel(panelId)) control?.click();
+                return;
+            }
+            setPanelPosition(null);
+
+            setActivePanel(isDateEditorPanel(panelId) ? 'dates' : null);
+            return;
+        }
+        panelOpenedByHoverRef.current = fromHover;
+        setPanelPosition(null);
+        if (panelId === 'startTime') {
+            const nextStartDraft = splitDateTime(task.startTime);
+            setStartDateDraft(nextStartDraft.date);
+            setStartTimeDraft(nextStartDraft.time);
+        } else if (panelId === 'dueDate') {
+            const nextDueDraft = splitDateTime(task.dueDate);
+            setDueDateDraft(nextDueDraft.date);
+            setDueTimeDraft(nextDueDraft.time);
+        } else if (panelId === 'reviewAt') {
+            const nextReviewDraft = splitDateTime(task.reviewAt);
+            setReviewDateDraft(nextReviewDraft.date);
+            setReviewTimeDraft(nextReviewDraft.time);
+        } else if (panelId === 'destination') {
+            setDestinationDraft(task.projectId
+                ? { kind: 'project', id: task.projectId }
+                : task.areaId
+                    ? { kind: 'area', id: task.areaId }
+                    : { kind: 'none' });
+            setSectionDraft(task.projectId ? task.sectionId || '' : '');
+        } else if (panelId === 'checklist') {
+            setChecklistQuery('');
+        } else if (panelId === 'contexts') {
+            setContextsDraft(task.contexts?.join(', ') || '');
+            contextsBaseRef.current = task;
+        }
+        setActivePanel(panelId);
+    };
+
+    const handleStartDateSave = async (
+        dateDraft = startDateDraft,
+        timeDraft = startTimeDraft,
+    ) => {
+        setSavingPanel('startTime');
+        try {
+            const normalizedDate = normalizeDateInputValue(dateDraft);
+            const nextStartTime = normalizedDate ? joinDateTime(normalizedDate, timeDraft) : undefined;
+            const result = await onUpdateTask({ startTime: nextStartTime });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task start date');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task start date from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleDueDateSave = async (
+        dateDraft = dueDateDraft,
+        timeDraft = dueTimeDraft,
+    ) => {
+        setSavingPanel('dueDate');
+        try {
+            const normalizedDate = normalizeDateInputValue(dateDraft);
+            const nextDueDate = normalizedDate ? joinDateTime(normalizedDate, timeDraft) : undefined;
+            const result = await onUpdateTask({ dueDate: nextDueDate });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task due date');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task due date from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleReviewDateSave = async (
+        dateDraft = reviewDateDraft,
+        timeDraft = reviewTimeDraft,
+    ) => {
+        setSavingPanel('reviewAt');
+        try {
+            const normalizedDate = normalizeDateInputValue(dateDraft);
+            const nextReviewAt = normalizedDate ? joinDateTime(normalizedDate, timeDraft) : undefined;
+            const result = await onUpdateTask({ reviewAt: nextReviewAt });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task review date');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task review date from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleMarkReviewed = async () => {
+        setSavingPanel('reviewAt');
+        try {
+            const result = await onUpdateTask({ reviewAt: undefined });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to mark task reviewed');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to mark task reviewed from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleAdvanceReview = async () => {
+        setSavingPanel('reviewAt');
+        try {
+            const result = await onUpdateTask({ reviewAt: getAdvancedReviewDate(task.reviewAt) });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to advance task review date');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to advance task review date from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleDestinationSave = async () => {
+        setSavingPanel('destination');
+        try {
+            const result = await onUpdateTask(buildTaskMovePatch(
+                destinationDraft,
+                destinationDraft.kind === 'project'
+                    ? { projectId: destinationDraft.id, sectionId: sectionDraft || undefined }
+                    : undefined,
+            ));
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task destination');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task destination from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handleContextsSave = async () => {
+        setSavingPanel('contexts');
+        try {
+
+            const result = await onUpdateTask({ contexts: normalizedDraftContexts }, contextsBaseRef.current);
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task contexts');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task contexts from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+    const handlePrioritySave = async (nextPriority: TaskPriority | '') => {
+        setSavingPanel('priority');
+        try {
+            const result = await onUpdateTask({ priority: nextPriority || undefined });
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to update task priority');
+            }
+            onClose();
+        } catch (error) {
+            reportError('Failed to update task priority from quick actions', error);
+        } finally {
+            setSavingPanel(null);
+        }
+    };
+
+
+    const handlePanelKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter' || event.defaultPrevented || isImeComposing(event) || !activePanel) return;
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (target?.closest('button, [data-selector-dropdown="true"]')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (savingPanel) return;
+        if (activePanel === 'startTime') {
+            if (startDraftChanged) void handleStartDateSave();
+            else onClose();
+        } else if (activePanel === 'dueDate') {
+            if (dueDraftChanged) void handleDueDateSave();
+            else onClose();
+        } else if (activePanel === 'reviewAt') {
+            if (reviewDraftChanged) void handleReviewDateSave();
+            else onClose();
+        } else if (activePanel === 'destination') {
+            if (destinationDraftChanged || sectionDraftChanged) void handleDestinationSave();
+            else onClose();
+        } else if (activePanel === 'checklist') {
+            if (checklistTargets[0]) chooseChecklistTarget(checklistTargets[0].id);
+        } else if (contextsDraftChanged) {
+            void handleContextsSave();
+        } else {
+            onClose();
+        }
+    };
+
+    const renderMenuAction = ({
+        key,
+        ref,
+        icon,
+        label,
+        active = false,
+        onClick,
+        showChevron = false,
+        disabled = false,
+        title,
+        hoverPanel,
+    }: {
+        key?: string;
+        ref?: RefObject<HTMLButtonElement | null>;
+        icon?: ReactNode;
+        label: string;
+        active?: boolean;
+        onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+        showChevron?: boolean;
+        disabled?: boolean;
+        title?: string;
+        hoverPanel?: Exclude<QuickPanelId, null>;
+    }) => (
+        <button
+            key={key}
+            ref={ref}
+            type="button"
+            role="menuitem"
+            aria-haspopup={showChevron ? 'dialog' : undefined}
+            aria-expanded={showChevron ? active : undefined}
+            disabled={disabled}
+            title={title}
+            onClick={onClick}
+            onPointerEnter={(event) => {
+                if (!hoverPanel || disabled || event.pointerType !== 'mouse') return;
+                cancelHoverOpen();
+                hoverTimerRef.current = window.setTimeout(() => openPanel(hoverPanel, true), HOVER_OPEN_DELAY_MS);
+            }}
+            onPointerLeave={cancelHoverOpen}
+            onPointerDown={cancelHoverOpen}
+            className={cn(
+
+
+                'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:bg-muted focus-visible:ring-2 focus-visible:ring-primary/40',
+                disabled
+                    ? 'cursor-not-allowed text-muted-foreground/50'
+                    : active
+                        ? 'bg-muted text-foreground'
+                        : 'text-foreground hover:bg-muted',
+            )}
+        >
+            <span className={cn(
+                'flex h-4 w-4 shrink-0 items-center justify-center',
+                disabled ? 'text-muted-foreground/50' : 'text-muted-foreground',
+            )}>{icon}</span>
+            <span className="flex-1 truncate">{label}</span>
+            {showChevron ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : null}
+        </button>
+    );
+
+    return createPortal(
+        <>
+                <div
+                    ref={menuRef}
+                    role="menu"
+                    aria-label={moreOptionsLabel}
+                    tabIndex={-1}
+                    className="fixed z-50 w-56 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-xl focus:outline-none"
+                    style={{ top: menuPosition.top, left: menuPosition.left }}
+                    onContextMenu={(event) => event.preventDefault()}
+                >
+                {!readOnly && focusAction && renderMenuAction({
+                    icon: (
+                        <FocusStarIcon
+                            className={cn(
+                                'h-4 w-4',
+                                focusAction.isFocused && 'text-warning',
+                            )}
+                            filled={focusAction.isFocused}
+                        />
+                    ),
+                    label: focusAction.label,
+                    title: focusAction.title,
+                    disabled: !focusAction.canToggle,
+                    onClick: () => {
+                        if (!focusAction.canToggle) return;
+                        focusAction.onToggle();
+                        onClose();
+                    },
+                })}
+                {!readOnly && focusAction ? <div className="my-1 h-px bg-border/70" role="separator" /> : null}
+                {!readOnly && onRename && renderMenuAction({
+                    icon: <Pencil className="h-4 w-4" />,
+                    label: renameLabel,
+                    onClick: () => {
+                        onRename();
+                        onClose();
+                    },
+                })}
+                {!readOnly && renderMenuAction({
+                    ref: datesButtonRef,
+                    icon: <Calendar className="h-4 w-4" />,
+                    label: datesLabel,
+                    active: datesMenuOpen,
+                    onClick: () => openPanel('dates'),
+                    hoverPanel: 'dates',
+                    showChevron: true,
+                })}
+                {!readOnly && renderMenuAction({
+                    ref: destinationButtonRef,
+                    icon: <Folder className="h-4 w-4" />,
+                    label: moveToLabel,
+                    active: activePanel === 'destination',
+                    onClick: () => openPanel('destination'),
+                    hoverPanel: 'destination',
+                    showChevron: true,
+                })}
+                {!readOnly && renderMenuAction({
+                    ref: contextsButtonRef,
+                    icon: <Tag className="h-4 w-4" />,
+                    label: `${contextsLabel}…`,
+                    active: activePanel === 'contexts',
+                    onClick: () => openPanel('contexts'),
+                    hoverPanel: 'contexts',
+                    showChevron: true,
+                })}
+                {!readOnly && prioritiesEnabled && renderMenuAction({
+                    ref: priorityButtonRef,
+                    icon: <Flag className="h-4 w-4" />,
+                    label: `${priorityLabel}…`,
+                    active: activePanel === 'priority',
+                    onClick: () => openPanel('priority'),
+                    hoverPanel: 'priority',
+                    showChevron: true,
+                })}
+                {!readOnly && checklistMove && renderMenuAction({
+                    ref: checklistButtonRef,
+                    icon: <ListChecks className="h-4 w-4" />,
+                    label: addToChecklistLabel,
+                    active: activePanel === 'checklist',
+                    onClick: () => openPanel('checklist'),
+                    hoverPanel: 'checklist',
+                    showChevron: true,
+                })}
+                {!readOnly ? <div className="my-1 h-px bg-border/70" role="separator" /> : null}
+                {renderMenuAction({
+                    icon: <Copy className="h-4 w-4" />,
+                    label: tFallback(t, 'task.copyTitle', 'Copy Title'),
+                    onClick: (event) => {
+                        void copyTaskTitles([task], t, false, 'menu', {
+                            isTrusted: event.nativeEvent.isTrusted, detail: event.nativeEvent.detail,
+                        });
+                        onClose();
+                    },
+                })}
+                {(['link', 'id'] as const).map((kind) => renderMenuAction({
+                    key: `copy-${kind}`,
+                    icon: <Copy className="h-4 w-4" />,
+                    label: kind === 'link'
+                        ? tFallback(t, 'task.copyTaskLink', 'Copy task link')
+                        : tFallback(t, 'task.copyTaskId', 'Copy task ID'),
+                    onClick: (event) => {
+                        void copyTaskReference(task.id, kind, t, {
+                            isTrusted: event.nativeEvent.isTrusted, detail: event.nativeEvent.detail,
+                        });
+                        onClose();
+                    },
+                }))}
+                {renderMenuAction({
+                    icon: <Copy className="h-4 w-4" />,
+                    label: duplicateLabel,
+                    onClick: () => {
+                        onDuplicate();
+                        onClose();
+                    },
+                })}
+                {task.status === 'done' && renderMenuAction({
+                    icon: <ChevronRight className="h-4 w-4" />,
+                    label: t('waiting.moveToNext'),
+                    onClick: () => {
+                        onStatusChange('next');
+                        onClose();
+                    },
+                })}
+                {extraActions.map((action) => renderMenuAction({
+                    key: action.id,
+                    label: action.label,
+                    onClick: () => {
+                        action.onSelect();
+                        onClose();
+                    },
+                }))}
+                {renderMenuAction({
+                    icon: <Trash2 className="h-4 w-4" />,
+                    label: deleteLabel,
+                    onClick: () => {
+                        onDelete();
+                        onClose();
+                    },
+                })}
+            </div>
+
+            {datesMenuOpen && (
+                <div
+                    ref={datesMenuRef}
+                    role="dialog"
+                    aria-label={datesLabel}
+                    className="fixed z-50 w-56 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-xl"
+                    style={{
+                        top: datesMenuPosition?.top ?? menuPosition.top,
+                        left: datesMenuPosition?.left ?? (menuPosition.left + 188),
+                        visibility: datesMenuPosition ? 'visible' : 'hidden',
+                    }}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onPointerEnter={cancelHoverOpen}
+                >
+                    <div className="space-y-1" role="menu" aria-label={datesLabel}>
+                        {renderMenuAction({
+                            icon: <Calendar className="h-4 w-4" />,
+                            ref: startItemRef,
+                            label: `${startLabel}…`,
+                            active: activePanel === 'startTime',
+                            onClick: () => openPanel('startTime'),
+                            hoverPanel: 'startTime',
+                            showChevron: true,
+                        })}
+                        {renderMenuAction({
+                            icon: <Calendar className="h-4 w-4" />,
+                            ref: dueItemRef,
+                            label: `${dueLabel}…`,
+                            active: activePanel === 'dueDate',
+                            onClick: () => openPanel('dueDate'),
+                            hoverPanel: 'dueDate',
+                            showChevron: true,
+                        })}
+                        {renderMenuAction({
+                            icon: <CalendarClock className="h-4 w-4" />,
+                            ref: reviewItemRef,
+                            label: `${reviewLabel}…`,
+                            active: activePanel === 'reviewAt',
+                            onClick: () => openPanel('reviewAt'),
+                            hoverPanel: 'reviewAt',
+                            showChevron: true,
+                        })}
+                        {canMarkReviewed && (
+                            <div className="my-1 h-px bg-border/70" role="separator" />
+                        )}
+                        {canMarkReviewed && renderMenuAction({
+                            icon: <CalendarClock className="h-4 w-4" />,
+                            label: markReviewedLabel,
+                            onClick: () => { void handleMarkReviewed(); },
+                        })}
+                        {canMarkReviewed && renderMenuAction({
+                            icon: <CalendarClock className="h-4 w-4" />,
+                            label: advanceReviewLabel,
+                            onClick: () => { void handleAdvanceReview(); },
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {activePanel && activePanel !== 'dates' && (
+                <div
+                    ref={panelRef}
+                    role="dialog"
+                    aria-label={
+                        activePanel === 'startTime'
+                            ? startLabel
+                            : activePanel === 'dueDate'
+                                ? dueLabel
+                                : activePanel === 'reviewAt'
+                                    ? reviewLabel
+                                    : activePanel === 'destination'
+                                        ? destinationLabel
+                                            : activePanel === 'priority'
+                                                ? priorityLabel
+                                                : activePanel === 'checklist'
+                                                    ? addToChecklistLabel
+                                                    : contextsLabel
+                    }
+                    className="fixed z-50 w-[min(30rem,calc(100vw-1rem))] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-xl"
+                    style={{
+                        top: panelPosition?.top ?? menuPosition.top,
+                        left: panelPosition?.left ?? (menuPosition.left + 188),
+                        visibility: panelPosition ? 'visible' : 'hidden',
+                    }}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onKeyDown={handlePanelKeyDown}
+                    onPointerEnter={cancelHoverOpen}
+                >
+                    {activePanel === 'startTime' ? (
+                        <div className="space-y-3">
+                            <DateField
+                                t={t}
+                                label={startLabel}
+                                dateAriaLabel={startLabel}
+                                dateValue={startDateDraft}
+                                selectedDate={safeParseDate(startDateDraft)}
+                                dateFormatSetting={dateFormatSetting}
+                                nativeDateInputLocale={nativeDateInputLocale}
+                                dateInputClassName="rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                timeInput={
+                                    <TimeInput
+                                        lang={nativeDateInputLocale}
+                                        aria-label={t('task.aria.startTime')}
+                                        onKeyDown={handlePanelKeyDown}
+                                        value={startTimeDraft}
+                                        disabled={!startDateDraft}
+                                        onChange={setStartTimeDraft}
+                                        className="w-24 shrink-0 rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                                    />
+                                }
+                                onDateChange={(value) => {
+                                    setStartDateDraft(value);
+                                    if (!value) setStartTimeDraft('');
+                                }}
+                                onClear={() => {
+                                    setStartDateDraft('');
+                                    setStartTimeDraft('');
+                                }}
+                                hasValue={Boolean(startDateDraft || startTimeDraft)}
+                            />
+                            <div
+                                className="flex items-center justify-end gap-2"
+                                onMouseDown={preserveFocusedDatePanelLayout}
+                            >
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setStartDateDraft(initialStartDraft.date);
+                                        setStartTimeDraft(initialStartDraft.time);
+                                        setActivePanel(null);
+                                    }}
+                                >
+                                    {cancelLabel}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={() => void handleStartDateSave()}
+                                    loading={savingPanel === 'startTime'}
+                                    disabled={!startDraftChanged}
+                                >
+                                    {saveLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    ) : activePanel === 'dueDate' ? (
+                        <div className="space-y-3">
+                            <DateField
+                                t={t}
+                                label={dueLabel}
+                                dateAriaLabel={dueLabel}
+                                dateValue={dueDateDraft}
+                                selectedDate={safeParseDate(dueDateDraft)}
+                                dateFormatSetting={dateFormatSetting}
+                                nativeDateInputLocale={nativeDateInputLocale}
+                                dateInputClassName="rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                timeInput={
+                                    <TimeInput
+                                        lang={nativeDateInputLocale}
+                                        aria-label={t('task.aria.dueTime')}
+                                        onKeyDown={handlePanelKeyDown}
+                                        value={dueTimeDraft}
+                                        disabled={!dueDateDraft}
+                                        onChange={setDueTimeDraft}
+                                        className="w-24 shrink-0 rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                                    />
+                                }
+                                onDateChange={(value) => {
+                                    setDueDateDraft(value);
+                                    if (!value) setDueTimeDraft('');
+                                }}
+                                onClear={() => {
+                                    setDueDateDraft('');
+                                    setDueTimeDraft('');
+                                }}
+                                hasValue={Boolean(dueDateDraft || dueTimeDraft)}
+                            />
+                            <div
+                                className="flex items-center justify-end gap-2"
+                                onMouseDown={preserveFocusedDatePanelLayout}
+                            >
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setDueDateDraft(initialDueDraft.date);
+                                        setDueTimeDraft(initialDueDraft.time);
+                                        setActivePanel(null);
+                                    }}
+                                >
+                                    {cancelLabel}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={() => void handleDueDateSave()}
+                                    loading={savingPanel === 'dueDate'}
+                                    disabled={!dueDraftChanged}
+                                >
+                                    {saveLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    ) : activePanel === 'reviewAt' ? (
+                        <div className="space-y-3">
+                            <DateField
+                                t={t}
+                                label={reviewLabel}
+                                dateAriaLabel={reviewLabel}
+                                dateValue={reviewDateDraft}
+                                selectedDate={safeParseDate(reviewDateDraft)}
+                                dateFormatSetting={dateFormatSetting}
+                                nativeDateInputLocale={nativeDateInputLocale}
+                                dateInputClassName="rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                timeInput={
+                                    <TimeInput
+                                        lang={nativeDateInputLocale}
+                                        aria-label={t('task.aria.reviewTime')}
+                                        onKeyDown={handlePanelKeyDown}
+                                        value={reviewTimeDraft}
+                                        disabled={!reviewDateDraft}
+                                        onChange={setReviewTimeDraft}
+                                        className="w-24 shrink-0 rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                                    />
+                                }
+                                onDateChange={(value) => {
+                                    setReviewDateDraft(value);
+                                    if (!value) setReviewTimeDraft('');
+                                }}
+                                onClear={() => {
+                                    setReviewDateDraft('');
+                                    setReviewTimeDraft('');
+                                }}
+                                hasValue={Boolean(reviewDateDraft || reviewTimeDraft)}
+                            />
+                            <div
+                                className="flex items-center justify-end gap-2"
+                                onMouseDown={preserveFocusedDatePanelLayout}
+                            >
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setReviewDateDraft(initialReviewDraft.date);
+                                        setReviewTimeDraft(initialReviewDraft.time);
+                                        setActivePanel(null);
+                                    }}
+                                >
+                                    {cancelLabel}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={() => void handleReviewDateSave()}
+                                    loading={savingPanel === 'reviewAt'}
+                                    disabled={!reviewDraftChanged}
+                                >
+                                    {saveLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    ) : activePanel === 'destination' ? (
+                        <div className="space-y-3">
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-muted-foreground">{destinationLabel}</label>
+                                <DestinationSelector
+                                    projects={projects}
+                                    areas={areas}
+                                    value={destinationDraft}
+                                    onChange={(next) => {
+                                        if (next.kind !== 'project'
+                                            || destinationDraft.kind !== 'project'
+                                            || next.id !== destinationDraft.id) {
+                                            setSectionDraft('');
+                                        }
+                                        setDestinationDraft(next);
+                                    }}
+                                    onCreateProject={onCreateProject}
+                                    onCreateArea={onCreateArea}
+                                    destinationLabel={destinationLabel}
+                                    projectsLabel={projectsLabel}
+                                    areasLabel={areasLabel}
+                                    deferredLabel={tFallback(t, 'projects.deferredSection', 'Someday / Waiting')}
+                                    noneLabel={tFallback(t, 'common.none', 'None')}
+                                    searchPlaceholder={searchDestinationLabel}
+                                    noMatchesLabel={noMatchesLabel}
+                                    createProjectLabel={createProjectLabel}
+                                    createAreaLabel={createAreaLabel}
+                                    className="w-full"
+                                />
+                            </div>
+                            {destinationDraft.kind === 'project' && (
+                                <div className="space-y-1">
+                                    <label className="text-xs font-medium text-muted-foreground">{sectionLabel}</label>
+                                    <SectionSelector
+                                        sections={sections.filter((section) => section.projectId === destinationDraft.id)}
+                                        value={sectionDraft}
+                                        onChange={setSectionDraft}
+                                        placeholder={noSectionLabel}
+                                        noSectionLabel={noSectionLabel}
+                                        searchPlaceholder={searchSectionsLabel}
+                                        noMatchesLabel={noMatchesLabel}
+                                        createSectionLabel={createSectionLabel}
+                                        className="w-full"
+                                    />
+                                </div>
+                            )}
+                            <div className="flex items-center justify-end gap-2">
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setDestinationDraft(initialDestinationDraft);
+                                        setSectionDraft(initialSectionDraft);
+                                        setActivePanel(null);
+                                    }}
+                                >
+                                    {cancelLabel}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={handleDestinationSave}
+                                    loading={savingPanel === 'destination'}
+                                    disabled={!destinationDraftChanged && !sectionDraftChanged}
+                                >
+                                    {saveLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    ) : activePanel === 'checklist' ? (
+                        <div
+                            className="space-y-2"
+                            onKeyDown={(event) => {
+                                if (isImeComposing(event) || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+
+                                const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input, [role="option"]'));
+                                const index = controls.indexOf(document.activeElement as HTMLElement);
+                                const next = controls[(index + (event.key === 'ArrowDown' ? 1 : -1) + controls.length) % controls.length];
+                                event.preventDefault();
+                                next?.focus();
+                            }}
+                        >
+                            <input
+                                autoFocus
+                                value={checklistQuery}
+                                onChange={(event) => setChecklistQuery(event.target.value)}
+                                placeholder={searchDestinationLabel}
+                                aria-label={searchDestinationLabel}
+                                className="w-full rounded border border-border bg-muted/50 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            />
+                            <div role="listbox" aria-label={addToChecklistLabel} className="max-h-64 space-y-0.5 overflow-y-auto">
+                                {checklistTargets.map((target) => (
+                                    <button
+                                        key={target.id}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={false}
+                                        onClick={() => chooseChecklistTarget(target.id)}
+                                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted/60 focus:bg-muted focus:outline-none"
+                                    >
+                                        <span className="flex-1 truncate">{target.title}</span>
+                                        {target.checklist?.length ? (
+                                            <span className="shrink-0 text-xs text-muted-foreground">
+                                                {target.checklist.filter((item) => item.isCompleted).length}/{target.checklist.length}
+                                            </span>
+                                        ) : null}
+                                    </button>
+                                ))}
+                                {checklistTargets.length === 0 && (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground">{noMatchesLabel}</div>
+                                )}
+                            </div>
+                        </div>
+                    ) : activePanel === 'priority' ? (
+                        <div className="space-y-1">
+                            {priorityChoices.map(({ value, label }) => {
+                                const isSelected = (task.priority || '') === value;
+                                return (
+                                    <button
+                                        key={value || 'none'}
+                                        type="button"
+                                        aria-pressed={isSelected}
+                                        disabled={savingPanel === 'priority'}
+                                        onClick={() => { void handlePrioritySave(value); }}
+                                        className={cn(
+                                            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:bg-muted focus-visible:ring-2 focus-visible:ring-primary/40',
+                                            isSelected
+                                                ? 'bg-muted text-foreground'
+                                                : 'text-foreground hover:bg-muted/60'
+                                        )}
+                                    >
+                                        {value ? <PriorityFlag priority={value} /> : null}
+                                        <span className="flex-1 truncate">{label}</span>
+                                        {isSelected ? <Check className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            <ContextsField
+                                t={t}
+                                value={contextsDraft}
+                                options={contextOptions}
+                                suggestions={contextSuggestions}
+                                onChange={setContextsDraft}
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                        setContextsDraft(initialContextsDraft);
+                                        setActivePanel(null);
+                                    }}
+                                >
+                                    {cancelLabel}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={handleContextsSave}
+                                    loading={savingPanel === 'contexts'}
+                                    disabled={!contextsDraftChanged}
+                                >
+                                    {saveLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </>,
+        document.body,
+    );
+}

@@ -1,0 +1,360 @@
+import {
+    fetchWithTimeoutAndConsume as fetchHttpWithTimeoutAndConsume,
+    readResponseText,
+    SUSPENDED_REQUEST_MESSAGE,
+} from '../http-utils';
+import type { AIProvider, AIProviderConfig, AIRequestOptions, AIRequestStopReason } from './types';
+
+const MAX_JSON_REPAIR_BOUNDARIES = 50;
+const MAX_AI_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+
+function repairTruncatedJson(input: string): string[] {
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    const boundaries: Array<{ len: number; stack: string[] }> = [];
+
+    for (let i = 0; i < input.length; i += 1) {
+        const ch = input[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+
+                if (stack.length > 0) boundaries.push({ len: i + 1, stack: [...stack] });
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === '{' || ch === '[') {
+            stack.push(ch);
+            continue;
+        }
+        if (ch === '}' || ch === ']') {
+            stack.pop();
+            if (stack.length > 0) boundaries.push({ len: i + 1, stack: [...stack] });
+            continue;
+        }
+    }
+
+    const repaired: string[] = [];
+    const repairBoundaries = boundaries.slice(-MAX_JSON_REPAIR_BOUNDARIES);
+    for (let i = repairBoundaries.length - 1; i >= 0; i -= 1) {
+        const { len, stack: openStack } = repairBoundaries[i];
+        const head = input.slice(0, len).replace(/[,\s]+$/, '');
+        const closers = openStack
+            .map((opener) => (opener === '{' ? '}' : ']'))
+            .reverse()
+            .join('');
+        const candidate = head + closers;
+        if (!repaired.includes(candidate)) repaired.push(candidate);
+    }
+    return repaired;
+}
+
+export function parseJson<T>(raw: string, validator?: (value: unknown) => value is T): T {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        throw new Error('AI response was empty.');
+    }
+    const cleaned = trimmed
+        .replace(/^```(?:json)?/i, '')
+        .replace(/```$/i, '')
+        .trim();
+
+    const candidates = [cleaned];
+    const objectStart = cleaned.indexOf('{');
+    const objectEnd = cleaned.lastIndexOf('}');
+    if (objectStart !== -1 && objectEnd > objectStart) {
+        const sliced = cleaned.slice(objectStart, objectEnd + 1);
+        if (!candidates.includes(sliced)) candidates.push(sliced);
+    }
+    const arrayStart = cleaned.indexOf('[');
+    const arrayEnd = cleaned.lastIndexOf(']');
+    if (arrayStart !== -1 && arrayEnd > arrayStart) {
+        const sliced = cleaned.slice(arrayStart, arrayEnd + 1);
+        if (!candidates.includes(sliced)) candidates.push(sliced);
+    }
+    const strictCandidateCount = candidates.length;
+    for (const repaired of repairTruncatedJson(cleaned)) {
+        if (!candidates.includes(repaired)) candidates.push(repaired);
+    }
+
+    let lastError: unknown = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        try {
+            const parsed = JSON.parse(candidate) as unknown;
+            if (validator && !validator(parsed)) {
+                throw new Error('AI response failed validation.');
+            }
+            if (index >= strictCandidateCount) {
+
+                logAiParseDiagnostic('recovered-from-truncated-response', raw);
+            }
+            return parsed as T;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    logAiParseDiagnostic('unrecoverable', raw);
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`AI JSON parse error: ${message}.`);
+}
+
+
+function logAiParseDiagnostic(stage: 'recovered-from-truncated-response' | 'unrecoverable', raw: string): void {
+    if (typeof console === 'undefined' || typeof console.warn !== 'function') return;
+    if (stage === 'recovered-from-truncated-response') {
+        console.warn(`[AI JSON parse] recovered from a truncated response (length=${raw.length}).`);
+        return;
+    }
+    const tail = raw.slice(-160).replace(/\s+/g, ' ');
+    console.warn(`[AI JSON parse] unrecoverable response (length=${raw.length}); tail: …${tail}`);
+}
+
+const TIME_ESTIMATE_MAP: Record<string, string> = {
+    '5m': '5min',
+    '5min': '5min',
+    '10m': '10min',
+    '10min': '10min',
+    '15m': '15min',
+    '15min': '15min',
+    '30m': '30min',
+    '30min': '30min',
+    '1h': '1hr',
+    '1hr': '1hr',
+    '2h': '2hr',
+    '2hr': '2hr',
+    '3h': '3hr',
+    '3hr': '3hr',
+    '4h': '4hr',
+    '4hr': '4hr',
+    '4h+': '4hr+',
+    '4hr+': '4hr+',
+};
+
+export function normalizeTimeEstimate(value?: string): string | undefined {
+    if (!value) return undefined;
+    const key = value.trim().toLowerCase();
+    return TIME_ESTIMATE_MAP[key];
+}
+
+
+export function filterReviewSuggestionsToKnownIds<T extends { id: string }>(
+    suggestions: readonly T[],
+    knownIds: Iterable<string>
+): T[] {
+    const allowed = new Set(knownIds);
+    return suggestions.filter((suggestion) => allowed.has(suggestion.id));
+}
+
+export function normalizeTags(tags?: string[] | null): string[] {
+    if (!tags || tags.length === 0) return [];
+    const normalized = tags
+        .map((tag) => String(tag).trim())
+        .filter(Boolean)
+        .map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
+    return Array.from(new Set(normalized));
+}
+
+
+export function formatAIErrorAlertBody(genericBody: string, error: unknown): string {
+    const raw = error instanceof Error ? error.message : String(error ?? '');
+    const detail = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!detail) return genericBody;
+    return `${genericBody}\n\n${detail}`;
+}
+
+export type BufferedAIResponse = {
+    ok: boolean;
+    status: number;
+    statusText: string;
+    headers: Headers;
+    bodyText: string;
+};
+
+export class AIRequestStopError extends Error {
+    readonly reason: AIRequestStopReason;
+
+    constructor(reason: AIRequestStopReason, message: string) {
+        super(message);
+        this.name = 'AIRequestStopError';
+        this.reason = reason;
+    }
+}
+
+export const isAIRequestStopError = (error: unknown): error is AIRequestStopError => (
+    error instanceof AIRequestStopError
+);
+
+export const throwIfAIRequestAborted = (signal: AbortSignal | undefined, label: string): void => {
+    if (signal?.aborted) {
+        throw new AIRequestStopError('aborted', `${label} request aborted`);
+    }
+};
+
+export const waitForAIRequestRetry = async (
+    delayMs: number,
+    signal: AbortSignal | undefined,
+    label: string,
+): Promise<void> => {
+    throwIfAIRequestAborted(signal, label);
+    if (delayMs <= 0) return;
+
+    await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, delayMs);
+        const onAbort = () => {
+            clearTimeout(timeoutId);
+            signal?.removeEventListener('abort', onAbort);
+            reject(new AIRequestStopError('aborted', `${label} request aborted`));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+};
+
+export const runAIProviderOperation = async <T>(
+    config: AIProviderConfig,
+    operation: () => Promise<T>,
+): Promise<T> => {
+    try {
+        return await operation();
+    } catch (error) {
+        if (isAIRequestStopError(error)) {
+            try {
+                config.onRequestStop?.(error.reason);
+            } catch {
+
+            }
+        }
+        throw error;
+    }
+};
+
+export const withAIRequestStopNotifications = (
+    config: AIProviderConfig,
+    provider: AIProvider,
+): AIProvider => ({
+    clarifyTask: (input, options) => runAIProviderOperation(
+        config,
+        () => provider.clarifyTask(input, options),
+    ),
+    breakDownTask: (input, options) => runAIProviderOperation(
+        config,
+        () => provider.breakDownTask(input, options),
+    ),
+    analyzeReview: (input, options) => runAIProviderOperation(
+        config,
+        () => provider.analyzeReview(input, options),
+    ),
+    predictMetadata: (input, options) => runAIProviderOperation(
+        config,
+        () => provider.predictMetadata(input, options),
+    ),
+    ...(provider.generateText
+        ? {
+            generateText: (prompt: { system: string; user: string }, options?: AIRequestOptions) => runAIProviderOperation(
+                config,
+                () => provider.generateText!(prompt, options),
+            ),
+        }
+        : {}),
+});
+
+export async function fetchTextWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    label: string,
+    externalSignal?: AbortSignal,
+    fetcher: typeof fetch = globalThis.fetch
+): Promise<BufferedAIResponse> {
+    const callerSignal = externalSignal ?? init.signal ?? undefined;
+    const timeoutMessage = `${label} request timed out`;
+    throwIfAIRequestAborted(callerSignal, label);
+    const stopController = typeof AbortController === 'function' ? new AbortController() : null;
+    let didTimeout = false;
+    let didCallerAbort = false;
+    const startedAt = Date.now();
+    const timeoutId = stopController
+        ? setTimeout(() => {
+            didTimeout = true;
+            const message = Date.now() - startedAt > timeoutMs * 3
+                ? `${timeoutMessage}; ${SUSPENDED_REQUEST_MESSAGE}`
+                : timeoutMessage;
+            stopController.abort(new AIRequestStopError('timeout', message));
+        }, timeoutMs)
+        : null;
+    const onCallerAbort = stopController && callerSignal
+        ? () => {
+            didCallerAbort = true;
+            stopController.abort(new AIRequestStopError('aborted', `${label} request aborted`));
+        }
+        : null;
+    if (callerSignal && onCallerAbort) {
+        callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    const requestSignal = stopController?.signal ?? callerSignal;
+    try {
+        return await fetchHttpWithTimeoutAndConsume(
+            url,
+            { ...init, signal: requestSignal },
+            timeoutMs,
+            fetcher,
+            timeoutMessage,
+            async (response, signal) => ({
+                ok: response.ok,
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                bodyText: await readResponseText(response, MAX_AI_RESPONSE_BYTES, signal),
+            }),
+        );
+    } catch (error) {
+        if (isAIRequestStopError(error)) {
+            throw error;
+        }
+        if (didCallerAbort || callerSignal?.aborted) {
+            throw new AIRequestStopError('aborted', `${label} request aborted`);
+        }
+        if (didTimeout) {
+            const message = error instanceof Error ? error.message : timeoutMessage;
+            throw new AIRequestStopError('timeout', message);
+        }
+        throw error;
+    } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (callerSignal && onCallerAbort) {
+            callerSignal.removeEventListener('abort', onCallerAbort);
+        }
+    }
+}
+
+const lastRequestAt = new Map<string, number>();
+
+export async function rateLimit(
+    key: string,
+    minIntervalMs = 250,
+    signal?: AbortSignal,
+    label = 'AI',
+): Promise<void> {
+    throwIfAIRequestAborted(signal, label);
+    const now = Date.now();
+    const last = lastRequestAt.get(key) ?? 0;
+    const waitMs = minIntervalMs - (now - last);
+    if (waitMs > 0) {
+        await waitForAIRequestRetry(waitMs, signal, label);
+    }
+    lastRequestAt.set(key, Date.now());
+}

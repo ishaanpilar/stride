@@ -1,0 +1,269 @@
+import { readFileSync } from 'node:fs';
+import { SUPPORTED_LANGUAGES } from './i18n-constants';
+import { describe, expect, it } from 'vitest';
+import { arOverrides } from './locales/ar';
+import { csOverrides } from './locales/cs';
+import { daOverrides } from './locales/da';
+import { deOverrides } from './locales/de';
+import { en } from './locales/en';
+import { esOverrides } from './locales/es';
+import { faOverrides } from './locales/fa';
+import { frOverrides } from './locales/fr';
+import { hiOverrides } from './locales/hi';
+import { huOverrides } from './locales/hu';
+import { itOverrides } from './locales/it';
+import { jaOverrides } from './locales/ja';
+import { koOverrides } from './locales/ko';
+import { nlOverrides } from './locales/nl';
+import { plOverrides } from './locales/pl';
+import { ptOverrides } from './locales/pt';
+import { ruOverrides } from './locales/ru';
+import { svOverrides } from './locales/sv';
+import { trOverrides } from './locales/tr';
+import { ukOverrides } from './locales/uk';
+import { viOverrides } from './locales/vi';
+import { zhHans } from './locales/zh-Hans';
+import { zhHant } from './locales/zh-Hant';
+import {
+    allowedEnglishMirrorKeysByLocale,
+    englishResidueWords,
+    hasTranslatableEnglishText,
+    hasMixedEnglishText,
+    isAllowedEnglishMirrorKey,
+    isAllowedEnglishResidueKey,
+    missingSlashCommandTokens,
+    quotedEnglishLabels,
+} from './locale-quality';
+import { i18nTemplateSlots } from './index';
+import { LOCALES, isEnglishResidueChecked, isMixedEnglishChecked, type Locale } from './i18n-locales';
+
+
+const translationsByLocale: Record<Locale, Record<string, string>> = {
+    zh: zhHans, 'zh-Hant': zhHant,
+    ar: arOverrides, cs: csOverrides, da: daOverrides, de: deOverrides, es: esOverrides, fa: faOverrides, fr: frOverrides,
+    hi: hiOverrides, hu: huOverrides, it: itOverrides, ja: jaOverrides, ko: koOverrides, nl: nlOverrides,
+    pl: plOverrides, pt: ptOverrides, ru: ruOverrides, sv: svOverrides, tr: trOverrides, uk: ukOverrides, vi: viOverrides,
+};
+
+const englishKeyCount = Object.keys(en).length;
+const locales = Object.entries(LOCALES) as Array<[Locale, (typeof LOCALES)[Locale]]>;
+
+
+const fullParityLocales = locales.filter(([, descriptor]) => descriptor.translatedKeyFloor === 'all');
+const countFloorLocales = locales.filter(([, descriptor]) => typeof descriptor.translatedKeyFloor === 'number');
+const nonLatinOverrideLocales = locales.filter(([, descriptor]) => isMixedEnglishChecked(descriptor, englishKeyCount));
+const latinOverrideLocales = locales.filter(([, descriptor]) => isEnglishResidueChecked(descriptor));
+const recoverySettingsKeys = [
+    'onboarding.startFreshTitle',
+    'onboarding.toastNotCreated',
+    'onboarding.toastReady',
+    'onboarding.toastFailed',
+    'settings.gettingStartedContentAction',
+    'settings.gettingStartedContentDesc',
+    'settings.gettingStartedContentConfirmTitle',
+    'settings.gettingStartedContentConfirmDesc',
+    'settings.gettingStartedContentConfirm',
+    'settings.gettingStartedContentContinueTitle',
+    'settings.gettingStartedContentContinueDesc',
+    'settings.syncSetupGuideTitle',
+    'settings.syncSetupGuideDesc',
+    'settings.importSetupGuideTitle',
+    'settings.importSetupGuideDesc',
+] as const;
+const pomodoroAlertSettingsKeys = [
+    'settings.pomodoroCompletionAlert',
+    'settings.pomodoroCompletionAlertDesc',
+    'settings.pomodoroAlertPermissionTitle',
+    'settings.pomodoroAlertPermissionDesc',
+    'settings.pomodoroAlertPermissionAction',
+    'settings.exactAlarmsDesc',
+] as const;
+
+describe('locale parity', () => {
+    it('declares the shared translations to the React Native iOS locale resolver', () => {
+        const config = JSON.parse(readFileSync(new URL('../../../../apps/mobile/app.json', import.meta.url), 'utf8'));
+        expect(config.expo.ios.infoPlist.CFBundleLocalizations.slice().sort())
+            .toEqual(SUPPORTED_LANGUAGES.map((code) => code === 'zh' ? 'zh-Hans' : code).sort());
+    });
+
+    it('declares the shared translations to the native iOS locale resolver', () => {
+        const plist = readFileSync(new URL('../../../../apps/ios-native/App/Info.plist', import.meta.url), 'utf8');
+        const localizations = plist.match(/<key>CFBundleLocalizations<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1] ?? '';
+        const declared = [...localizations.matchAll(/<string>([^<]+)<\/string>/g)].map((match) => match[1]);
+        expect(declared.sort()).toEqual(SUPPORTED_LANGUAGES.map((code) => code === 'zh' ? 'zh-Hans' : code).sort());
+    });
+
+    it.each(locales)('keeps simplified navigation and controls translated in %s', (lang) => {
+        for (const key of [
+            'nav.history', 'task.dates', 'task.moveTo', 'task.destination',
+            'common.viewOptions', 'settings.regionalFormats', 'settings.keyboardAndWindow',
+            'projects.new', 'filters.more', 'viewSections.new',
+            'filters.searchTasks', 'filters.searchOptions', 'filters.tokenCycleHint',
+        ]) {
+            expect(translationsByLocale[lang][key], key).toBeTruthy();
+        }
+    });
+
+    it.each(locales)('keeps the AI request timeout controls translated in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        for (const key of ['settings.aiAdvanced', 'settings.aiRequestTimeout', 'settings.aiRequestTimeoutDesc']) {
+            expect(translations[key]).toBeTruthy();
+        }
+        expect(translations['settings.aiRequestTimeoutSeconds']).toContain('{{seconds}}');
+    });
+
+    it.each(locales)('keeps the selected-task CSV action translated in %s', (lang) => {
+        expect(translationsByLocale[lang]['bulk.exportCsv']).toBeTruthy();
+    });
+
+    it.each(fullParityLocales)('keeps %s in full key parity with English', (lang) => {
+        const englishKeys = Object.keys(en);
+        const missing = englishKeys.filter((key) => !translationsByLocale[lang][key]);
+        expect(missing).toEqual([]);
+    });
+
+    it.each(countFloorLocales)('keeps %s translated-key count from silently regressing', (lang, descriptor) => {
+        const translatedKeys = Object.keys(translationsByLocale[lang]).length;
+        const coverage = ((translatedKeys / englishKeyCount) * 100).toFixed(1);
+
+
+        expect(
+            translatedKeys,
+            `${lang} translates ${translatedKeys} of ${englishKeyCount} English keys (${coverage}%); floor is ${descriptor.translatedKeyFloor}. Raise the floor in i18n-locales.ts when translations land; never lower it.`,
+        ).toBeGreaterThanOrEqual(descriptor.translatedKeyFloor as number);
+    });
+
+    it.each(locales)('keeps promoted task action labels translated in %s', (lang) => {
+        const taskActionKeys = [
+            'task.createProjectFromTask',
+            'task.duplicateFailed',
+            'task.promoteToProjectFailed',
+        ];
+        const missing = taskActionKeys.filter((key) => !translationsByLocale[lang][key]);
+        expect(missing).toEqual([]);
+    });
+
+    it.each(locales)('keeps desktop search scope hint translated in %s', (lang) => {
+        expect(translationsByLocale[lang]['search.scopeHint']).toBeTruthy();
+    });
+
+    it('defines the recovery settings copy in English', () => {
+        const missing = recoverySettingsKeys.filter((key) => !en[key]);
+        expect(missing).toEqual([]);
+    });
+
+    it.each(locales)('keeps recovery settings copy translated in %s', (lang) => {
+        const missing = recoverySettingsKeys.filter((key) => !translationsByLocale[lang][key]);
+        expect(missing).toEqual([]);
+    });
+
+    it('defines the Pomodoro alert settings contract in English', () => {
+        expect(Object.fromEntries(pomodoroAlertSettingsKeys.map((key) => [key, en[key]]))).toEqual({
+            'settings.pomodoroCompletionAlert': 'Alert when timer ends',
+            'settings.pomodoroCompletionAlertDesc': 'Notify me when a focus session or break ends.',
+            'settings.pomodoroAlertPermissionTitle': 'Android permission needed for on-time alerts',
+            'settings.pomodoroAlertPermissionDesc': 'This alert is on, but Android may delay it. Allow Stride in Android’s “Alarms & reminders” settings to improve timing.',
+            'settings.pomodoroAlertPermissionAction': 'Open Android settings',
+            'settings.exactAlarmsDesc': 'Android may delay reminders because Stride does not have permission to schedule exact alarms.',
+        });
+    });
+
+    it.each(['de', 'fr'] as const)('keeps Pomodoro alert settings copy translated in %s', (lang) => {
+        const missing = pomodoroAlertSettingsKeys.filter((key) => !translationsByLocale[lang][key]);
+        expect(missing).toEqual([]);
+    });
+
+    it.each(locales)('keeps %s limited to known English keys', (lang) => {
+        const englishKeys = new Set(Object.keys(en));
+        const unknown = Object.keys(translationsByLocale[lang]).filter((key) => !englishKeys.has(key));
+        expect(unknown).toEqual([]);
+    });
+
+    it.each(locales)('does not hide untranslated copy behind verbatim English placeholders in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const placeholders = Object.keys(translations).filter((key) => (
+            translations[key] === en[key]
+            && hasTranslatableEnglishText(en[key])
+            && !isAllowedEnglishMirrorKey(lang, key)
+        ));
+        expect(placeholders).toEqual([]);
+    });
+
+    it('keeps mirrored-English allow-lists limited to reviewed matching keys', () => {
+        for (const [language, allowedKeys] of Object.entries(allowedEnglishMirrorKeysByLocale)) {
+            const translations = translationsByLocale[language as Locale];
+            expect(translations, `Known locale for mirrored-English allow-list ${language}`).toBeDefined();
+
+            const staleKeys = allowedKeys.filter((key) => (
+                !translations?.[key] || translations[key] !== en[key] || !hasTranslatableEnglishText(en[key])
+            ));
+            expect(staleKeys, `Stale mirrored-English allow-list keys in ${language}`).toEqual([]);
+        }
+    });
+
+    it('uses named interpolation slots in English source strings', () => {
+        const positionalPlaceholders = Object.keys(en).filter((key) => /\{\{\s*value\d+\s*\}\}/.test(en[key]));
+        expect(positionalPlaceholders).toEqual([]);
+    });
+
+    it('keeps generated placeholder fragments out of source key names', () => {
+        const generatedKeys = Object.keys(en).filter((key) => /(?:vValue|ValueValue|Value\d)/.test(key));
+        expect(generatedKeys).toEqual([]);
+    });
+
+
+    it.each(locales)('keeps interpolation slots intact in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const mismatched = Object.keys(translations)
+            .filter((key) => key in en)
+            .map((key) => ({
+                key,
+                english: i18nTemplateSlots(en[key]),
+                translated: i18nTemplateSlots(translations[key]),
+            }))
+            .filter(({ english, translated }) => english.join(',') !== translated.join(','))
+            .map(({ key, english, translated }) => (
+                `${key}: en has [${english.join(', ')}], ${lang} has [${translated.join(', ')}]`
+            ));
+        expect(mismatched).toEqual([]);
+    });
+
+
+    it.each(latinOverrideLocales)('does not ship word-substituted English in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const substituted = Object.keys(translations)
+            .filter((key) => key in en && !isAllowedEnglishResidueKey(lang, key))
+            .map((key) => ({ key, residue: englishResidueWords(lang, translations[key], en[key]) }))
+            .filter(({ residue }) => residue.length > 0)
+            .map(({ key, residue }) => `${key}: English left in place [${residue.join(', ')}]`);
+        expect(substituted).toEqual([]);
+    });
+
+    it.each(nonLatinOverrideLocales)('does not ship mixed English fragments in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const mixedEnglish = Object.keys(translations).filter((key) => hasMixedEnglishText(lang, key, translations[key], en[key]));
+        expect(mixedEnglish).toEqual([]);
+    });
+
+
+    it.each(locales)('keeps every slash command token from the English source in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const dropped = Object.keys(translations)
+            .filter((key) => key in en)
+            .map((key) => ({ key, missing: missingSlashCommandTokens(translations[key], en[key]) }))
+            .filter(({ missing }) => missing.length > 0)
+            .map(({ key, missing }) => `${key}: missing [${missing.join(', ')}]`);
+        expect(dropped).toEqual([]);
+    });
+
+
+    it.each(locales)('quotes button labels by their translated text in %s', (lang) => {
+        const translations = translationsByLocale[lang];
+        const stale = Object.keys(translations)
+            .filter((key) => key in en)
+            .map((key) => ({ key, labels: quotedEnglishLabels(key, translations[key], en, translations) }))
+            .filter(({ labels }) => labels.length > 0)
+            .map(({ key, labels }) => `${key}: quotes English [${labels.join(', ')}]`);
+        expect(stale).toEqual([]);
+    });
+});

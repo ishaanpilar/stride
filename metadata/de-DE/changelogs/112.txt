@@ -1,0 +1,4 @@
+- Das Archiv bietet Suche, Filter, Sortierung, Gruppen und einklappbare Überschriften.
+- Der Kalender zeigt Erledigtes, übernimmt Feed-Farben und trennt Kategorien.
+- „Backup zusammenführen“ verbindet Sicherung und lokale Daten; Auto-Archiv läuft beim Start.
+- SQLite hält Hilfsdaten im Speicher und verhindert Android-Schreibfehler.

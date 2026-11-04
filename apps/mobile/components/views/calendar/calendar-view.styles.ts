@@ -1,0 +1,978 @@
+import { StyleSheet } from 'react-native';
+
+export const styles = StyleSheet.create({
+  deadlineRail: { position: 'absolute', left: '60%', right: 0, top: 0, bottom: 0 },
+  deadlineAnchor: { position: 'absolute', left: 0, fontSize: 10, zIndex: 3 },
+  deadlineGroup: { position: 'absolute', left: 0, right: 0, borderRadius: 4, zIndex: 2 },
+  container: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+  },
+  header: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  monthTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  title: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    color: '#111827',
+  },
+  todayButton: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  todayButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  modeToggle: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 2,
+    gap: 2,
+  },
+  modeToggleButton: {
+    flex: 1,
+    alignItems: 'center',
+    borderRadius: 8,
+    paddingVertical: 6,
+  },
+  modeToggleText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  showCompletedToggle: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  showCompletedToggleText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  navButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  navButtonText: {
+    fontSize: 26,
+    color: '#3B82F6',
+    fontWeight: 'bold',
+  },
+  monthCalendar: {
+    flexShrink: 0,
+  },
+  calendarNavigationContent: {
+    flex: 1,
+  },
+  monthDetailsPane: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexShrink: 0,
+    borderTopWidth: 1,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    overflow: 'hidden',
+    zIndex: 30,
+    elevation: 30,
+  },
+  sheetHandleWrap: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  sheetHandle: {
+    width: 42,
+    height: 4,
+    borderRadius: 999,
+  },
+  monthDetailsContent: {
+    padding: 16,
+    paddingBottom: 24,
+  },
+  monthDetailsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 6,
+  },
+  addTaskButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  addTaskButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  calendarScroll: {
+    flex: 1,
+  },
+  dayHeaders: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  dayHeader: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  dayHeaderText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 4,
+    paddingTop: 0,
+  },
+  calendarGridCompact: {
+    paddingHorizontal: 12,
+  },
+  dayCell: {
+    width: '14.28%',
+    aspectRatio: 1,
+    padding: 4,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  dayCellCompact: {
+    aspectRatio: 0.88,
+    padding: 3,
+  },
+  todayCell: {
+    backgroundColor: '#EFF6FF',
+  },
+  selectedCell: {
+    backgroundColor: '#DBEAFE',
+  },
+  dayNumber: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayNumberCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+  },
+  todayNumber: {
+    backgroundColor: '#3B82F6',
+  },
+  dayText: {
+    fontSize: 14,
+    color: '#111827',
+  },
+  dayTextCompact: {
+    fontSize: 13,
+  },
+  todayText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  taskDot: {
+    backgroundColor: '#3B82F6',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 8,
+    minWidth: 16,
+    alignItems: 'center',
+  },
+  taskDotText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  indicatorRow: {
+    marginTop: 2,
+    flexDirection: 'row',
+    gap: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  eventDot: {
+    backgroundColor: '#6B7280',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 8,
+    minWidth: 16,
+    alignItems: 'center',
+  },
+  eventDotText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  monthPreviewList: {
+    width: '100%',
+    gap: 2,
+    marginTop: 2,
+  },
+  monthPreviewItem: {
+    width: '100%',
+    borderLeftWidth: 2,
+    borderRadius: 4,
+    paddingHorizontal: 3,
+    paddingVertical: 1,
+  },
+  monthPreviewText: {
+    fontSize: 9,
+    lineHeight: 11,
+    fontWeight: '700',
+  },
+  selectedDateSection: {
+    backgroundColor: '#FFFFFF',
+    margin: 16,
+    padding: 16,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  selectedDateTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 12,
+  },
+  addTaskForm: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  input: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    backgroundColor: '#F9FAFB',
+    color: '#111827',
+  },
+  tasksList: {
+    gap: 8,
+  },
+  scheduleResults: {
+    gap: 8,
+    marginBottom: 12,
+  },
+  scheduleResultsTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    paddingHorizontal: 2,
+  },
+  scheduleResultsSubtitle: {
+    fontSize: 12,
+    paddingHorizontal: 2,
+  },
+  taskItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#3B82F6',
+  },
+  eventItem: {
+    borderLeftColor: '#6B7280',
+  },
+  taskItemMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  taskItemTitle: {
+    fontSize: 14,
+    color: '#111827',
+    flexShrink: 1,
+  },
+  taskItemTime: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  quickDoneButton: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginLeft: 8,
+  },
+  quickDoneButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  noTasks: {
+    textAlign: 'center',
+    color: '#9CA3AF',
+    fontSize: 14,
+    paddingVertical: 16,
+  },
+  dayModeHeader: {
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+  },
+  dayModeBack: {
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+  },
+  dayModeBackText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dayModeTitle: {
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  dayModeTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  dayNavButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  dayNavText: {
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  dayScroll: {
+    flex: 1,
+  },
+  daySwipeArea: {
+    flex: 1,
+  },
+  dayScrollContent: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 24,
+  },
+  allDayCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  allDayPinned: {
+    marginHorizontal: 16,
+    marginTop: 16,
+  },
+
+
+  allDayList: {
+    maxHeight: 176,
+  },
+  allDayListContent: {
+    gap: 4,
+  },
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  allDayItem: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  allDayChip: {
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  allDayMore: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  allDayMoreText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+
+  timelineCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    paddingVertical: 9,
+  },
+  timelineArea: {
+    position: 'relative',
+  },
+  timelineTapTarget: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+  },
+  timelineItemsLayer: {
+    position: 'absolute',
+    left: 56,
+    right: 12,
+    top: 0,
+    bottom: 0,
+  },
+
+  nowLine: {
+    position: 'absolute',
+    left: 50,
+    right: 12,
+    height: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 20,
+    transform: [{ translateY: -5 }],
+  },
+  nowDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#EF4444',
+  },
+  nowRule: {
+    flex: 1,
+    height: 2,
+    backgroundColor: '#EF4444',
+  },
+
+
+  hourLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 18,
+    paddingRight: 12,
+    transform: [{ translateY: -9 }],
+  },
+  hourLabel: {
+    width: 56,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'right',
+    paddingRight: 8,
+  },
+  hourDivider: {
+    flex: 1,
+    height: 1,
+  },
+  eventBlock: {
+    position: 'absolute',
+    left: 56,
+    right: 12,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+  },
+  eventBlockTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  eventBlockTime: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  taskBlock: {
+    position: 'absolute',
+    left: 56,
+    right: 12,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+  },
+  taskBlockTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  taskBlockTitleCompact: {
+    fontSize: 12,
+    lineHeight: 14,
+  },
+  taskBlockTime: {
+    fontSize: 11,
+    marginTop: 2,
+    color: 'rgba(255,255,255,0.9)',
+  },
+  dayScheduleCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 12,
+  },
+  weekHorizontal: {
+    flex: 1,
+  },
+  weekHorizontalContent: {
+    flexGrow: 1,
+  },
+  weekCanvas: {
+    flex: 1,
+  },
+  weekHeaderRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
+  weekTimeGutter: {
+    width: 56,
+    position: 'relative',
+  },
+  weekTimeGutterPinned: {
+
+    zIndex: 5,
+  },
+  weekDayHeader: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    borderLeftWidth: 1,
+  },
+  weekDayName: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  weekDayNameCompact: {
+    fontSize: 9,
+  },
+  weekDayNumber: {
+    fontSize: 17,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  weekDayNumberCompact: {
+    fontSize: 14,
+  },
+  weekAllDayRow: {
+    flexDirection: 'row',
+    minHeight: 54,
+    borderBottomWidth: 1,
+  },
+  weekAllDayLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    textAlign: 'right',
+    paddingRight: 6,
+    paddingTop: 10,
+  },
+  weekAllDayCell: {
+    borderLeftWidth: 1,
+    padding: 5,
+    gap: 3,
+  },
+  weekAllDayCellCompact: {
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+  },
+  weekAllDayItem: {
+    borderLeftWidth: 3,
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  weekAllDayItemCompact: {
+    borderLeftWidth: 2,
+    paddingHorizontal: 2,
+  },
+  weekAllDayText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  weekAllDayTextCompact: {
+    fontSize: 8,
+  },
+  weekAllDayMore: {
+    fontSize: 10,
+    fontWeight: '700',
+    paddingHorizontal: 2,
+  },
+  weekVertical: {
+    flex: 1,
+  },
+
+  weekVerticalContent: {
+    paddingTop: 7,
+    paddingBottom: 24,
+  },
+  weekGridRow: {
+    flexDirection: 'row',
+  },
+  weekHourLabel: {
+    position: 'absolute',
+    right: 6,
+    fontSize: 10,
+    fontWeight: '700',
+    transform: [{ translateY: -7 }],
+  },
+  weekDayColumn: {
+    position: 'relative',
+    borderLeftWidth: 1,
+  },
+  weekHourRule: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    opacity: 0.7,
+  },
+
+  weekNowLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 30,
+    transform: [{ translateY: -5 }],
+  },
+  weekTimedItemsLayer: {
+    position: 'absolute',
+    left: 4,
+    right: 4,
+    top: 0,
+    bottom: 0,
+  },
+  weekTimedItemsLayerCompact: {
+    left: 2,
+    right: 2,
+  },
+  weekTimedItemsLayerUltraCompact: {
+    left: 1,
+    right: 1,
+  },
+  weekBlock: {
+    position: 'absolute',
+    left: 4,
+    right: 4,
+    borderLeftWidth: 4,
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    overflow: 'hidden',
+  },
+  weekBlockCompact: {
+    left: 2,
+    right: 2,
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingHorizontal: 3,
+    paddingVertical: 3,
+  },
+  weekBlockUltraCompact: {
+    left: 1,
+    right: 1,
+    borderLeftWidth: 2,
+    paddingHorizontal: 2,
+  },
+  weekBlockTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  weekBlockTitleCompact: {
+    fontSize: 9,
+    lineHeight: 11,
+  },
+  weekBlockTime: {
+    fontSize: 10,
+    marginTop: 1,
+  },
+  weekTaskBlockTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#FFFFFF',
+  },
+  weekTaskBlockTitleCompact: {
+    fontSize: 9,
+    lineHeight: 11,
+  },
+  weekTaskBlockTime: {
+    fontSize: 10,
+    marginTop: 1,
+    color: 'rgba(255,255,255,0.9)',
+  },
+  weekDensityBar: {
+    borderTopWidth: 1,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    gap: 8,
+  },
+  weekDensityHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  weekDensityLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  weekDensityValue: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  weekDensityHint: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  weekDensityTrack: {
+    height: 4,
+    borderRadius: 999,
+    justifyContent: 'center',
+    marginHorizontal: 16,
+  },
+  weekDensityTrackFill: {
+    position: 'absolute',
+    left: 0,
+    height: 4,
+    borderRadius: 999,
+  },
+  weekDensityThumb: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 3,
+    transform: [{ translateX: -11 }],
+  },
+  weekDensityTicks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  weekDensityTick: {
+    minWidth: 32,
+    minHeight: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekDensityTickText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  scheduleScroll: {
+    flex: 1,
+  },
+  scheduleContent: {
+    padding: 16,
+    gap: 18,
+    paddingBottom: 28,
+  },
+  scheduleSection: {
+    gap: 8,
+  },
+  scheduleDate: {
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    paddingHorizontal: 2,
+  },
+  scheduleItems: {
+    gap: 8,
+  },
+  scheduleItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+  },
+  composerBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  calendarComposer: {
+    maxHeight: '82%',
+    borderTopWidth: 1,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 16,
+    gap: 14,
+  },
+  composerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  composerTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  composerDate: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  composerCloseButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  composerCloseText: {
+    fontSize: 28,
+    lineHeight: 30,
+    fontWeight: '600',
+  },
+  composerModeToggle: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 2,
+    gap: 2,
+  },
+  composerModeButton: {
+    flex: 1,
+    alignItems: 'center',
+    borderRadius: 8,
+    paddingVertical: 8,
+  },
+  composerModeText: {
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  composerSection: {
+    gap: 8,
+  },
+  composerInput: {
+    flex: 0,
+    width: '100%',
+    minHeight: 46,
+  },
+  composerHelp: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  composerResults: {
+    maxHeight: 156,
+  },
+  composerResultItem: {
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 6,
+  },
+  composerSelectedTask: {
+    overflow: 'hidden',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  composerTimeRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 2,
+  },
+  composerTimeField: {
+    flex: 1,
+    gap: 4,
+  },
+  composerLabel: {
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  composerTimeInput: {
+    flex: 0,
+    width: '100%',
+    minHeight: 44,
+    textAlign: 'center',
+    fontWeight: '800',
+  },
+  durationChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 2,
+  },
+  durationChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  durationChipText: {
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  composerError: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  composerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  composerCancelButton: {
+    minWidth: 96,
+    alignItems: 'center',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  composerSaveButton: {
+    minWidth: 96,
+    alignItems: 'center',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  composerActionText: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+});

@@ -1,0 +1,21 @@
+
+
+gradle.settingsEvaluated { settings ->
+
+    if (gradle.parent != null) return
+    def appBuild = new File(settings.settingsDir, 'app/build.gradle')
+    if (!appBuild.exists() || !appBuild.text.contains("applicationId 'com.ishaanpilar.stride.benchmark'")) {
+        throw new GradleException('Macrobenchmark requires the separate APP_VARIANT=benchmark native project')
+    }
+    settings.include ':macrobenchmark'
+    settings.project(':macrobenchmark').projectDir = new File(settings.settingsDir, '../benchmark')
+}
+
+
+gradle.projectsEvaluated {
+    if (gradle.parent != null) return
+    gradle.rootProject.project(':app').tasks.named('createBundleReleaseJsAndAssets') {
+        inputs.property('strideCaptureProfiling', System.getenv('EXPO_PUBLIC_CAPTURE_PROFILING') ?: '')
+        inputs.property('strideStartupProfiling', System.getenv('EXPO_PUBLIC_STARTUP_PROFILING') ?: '')
+    }
+}

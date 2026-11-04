@@ -1,0 +1,1133 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, Modal, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+    WEEKLY_REVIEW_PREVIEW,
+    formatI18nTemplate,
+    getReviewSuggestionActionLabel,
+    getWeeklyReviewCalendar,
+    getWeeklyReviewCalendarNotice,
+    getWeeklyReviewContextMoreLabel,
+    safeFormatDate,
+    type Task,
+    type WeeklyReviewCalendarDay,
+} from '@stride/core';
+import {
+    Brain,
+    Calendar as CalendarIcon,
+    Check,
+    CheckCircle2,
+    ChevronDown,
+    ChevronRight,
+    Clock,
+    FolderOpen,
+    History,
+    Lightbulb,
+    PartyPopper,
+    Play,
+    Share2,
+    Sparkles,
+    Tag,
+    X,
+} from 'lucide-react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
+import { useLanguage } from '../contexts/language-context';
+import { ToastViewport } from '../contexts/toast-context';
+import { AppPressable } from './app-pressable';
+import { CompactText } from './compact-text';
+import { SwipeableTaskItem, type TaskRowActions } from './swipeable-task-item';
+import { TaskEditModal } from './task-edit-modal';
+import { InboxProcessingModal } from './inbox-processing-modal';
+import { MindSweepModalContent } from './mind-sweep-modal-content';
+import { ErrorBoundary } from './ErrorBoundary';
+import { type ContextReviewGroup, useReviewModalController } from './review/useReviewModalController';
+import { styles } from './review-modal.styles';
+import { SandboxWorkspaceCue } from './sandbox-workspace-cue';
+import { ShareCardModal } from './share-card-modal';
+import { useFilledButtonColors } from '@/hooks/use-filled-button-colors';
+
+interface ReviewModalProps {
+    visible: boolean;
+    onClose: () => void;
+}
+
+export const checkReviewTime = () => true;
+
+export function ReviewModal({ visible, onClose }: ReviewModalProps) {
+    const { t } = useLanguage();
+    const filledButton = useFilledButtonColors();
+    const [showInboxProcessing, setShowInboxProcessing] = useState(false);
+    const [showMindSweep, setShowMindSweep] = useState(false);
+    const [showShareCard, setShowShareCard] = useState(false);
+    const [showScheduledWaiting, setShowScheduledWaiting] = useState(false);
+    const [showScheduledSomeday, setShowScheduledSomeday] = useState(false);
+    const {
+        aiEnabled,
+        aiError,
+        aiLoading,
+        aiRan,
+        aiSelectedIds,
+        aiSuggestions,
+        applyAiSuggestions,
+        calendarReviewItems,
+        canGoBack,
+        closeEditModal,
+        closeProjectTaskPrompt,
+        closeProjectCompletionPrompt,
+        completeProject,
+        completingProjectId,
+        projectCompletionPrompt,
+        projectCompletionError,
+        completion,
+        contextReviewGroups,
+        currentStep,
+        editModalTab,
+        editingTask,
+        expandedContextGroups,
+        expandedExternalDays,
+        expandedProject,
+        externalCalendarError,
+        externalCalendarLoading,
+        externalCalendarReviewItems,
+        handleClose,
+        handleDelete,
+        handleEditModalDismiss,
+        handleFinish,
+        handleNavigateToProject,
+        handleNavigateToToken,
+        handleOpenProject,
+        handleReviewDismiss,
+        handleSaveTask,
+        handleStatusChange,
+        handleTaskPress,
+        inboxTasks,
+        isActionableSuggestion,
+        isDark,
+        labels,
+        modalVisible,
+        nextStep,
+        openProjectTaskPrompt,
+        openReviewQuickAdd,
+        prevStep,
+        progress,
+        projectReviewEntries,
+        projectTaskPrompt,
+        projectTaskTitle,
+        runAiAnalysis,
+        staleProjectItems,
+        staleTasks,
+        safeStepIndex,
+        setProjectTaskTitle,
+        showEditModal,
+        somedayList,
+        stepRail,
+        steps,
+        submitProjectTask,
+        tc,
+        toggleContextGroupExpanded,
+        toggleExpandedProject,
+        toggleExternalDayExpanded,
+        toggleSuggestion,
+        waitingList,
+    } = useReviewModalController({ visible, onClose });
+    const [expandedLaterProjects, setExpandedLaterProjects] = useState<Set<string>>(new Set());
+    const closeLabel = t('common.close');
+    const closeText = closeLabel && closeLabel !== 'common.close' ? closeLabel : 'Close';
+    const onFilled = filledButton.textColor ?? tc.onTint;
+
+
+    const rowSourcesRef = useRef({ handleTaskPress, handleStatusChange, handleDelete });
+    rowSourcesRef.current = { handleTaskPress, handleStatusChange, handleDelete };
+    const rowActions = useMemo<TaskRowActions>(() => ({
+        edit: (task) => rowSourcesRef.current.handleTaskPress(task),
+        changeStatus: (task, status) => rowSourcesRef.current.handleStatusChange(task.id, status),
+        remove: (task) => rowSourcesRef.current.handleDelete(task.id),
+    }), []);
+
+    useEffect(() => {
+        if (!visible && showInboxProcessing) {
+            setShowInboxProcessing(false);
+        }
+        if (!visible && showMindSweep) {
+            setShowMindSweep(false);
+        }
+        if (!visible && showShareCard) {
+            setShowShareCard(false);
+        }
+    }, [showInboxProcessing, showMindSweep, showShareCard, visible]);
+
+
+    const calendarView = getWeeklyReviewCalendar(externalCalendarReviewItems, calendarReviewItems, labels, safeFormatDate);
+
+    const renderSummaryRow = (good: boolean, text: string) => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            {good
+                ? <CheckCircle2 size={16} color={tc.success} strokeWidth={2.2} />
+                : <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: tc.warning }} />}
+            <Text style={{ flex: 1, fontSize: 14, color: good ? tc.secondaryText : tc.text }}>
+                {text}
+            </Text>
+        </View>
+    );
+
+    const renderMindSweepNudge = () => (
+        <View style={[styles.mindSweepNudge, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+            <View style={styles.mindSweepNudgeText}>
+                <Text style={[styles.mindSweepNudgeTitle, { color: tc.text }]}>{t('mindSweep.title')}</Text>
+                <Text style={[styles.mindSweepNudgeBody, { color: tc.secondaryText }]}>
+                    {t('mindSweep.intro')}
+                </Text>
+            </View>
+            <TouchableOpacity
+                testID="review-mind-sweep-button"
+                style={[styles.mindSweepNudgeButton, { borderColor: tc.tint }]}
+                onPress={() => setShowMindSweep(true)}
+                accessibilityRole="button"
+                accessibilityLabel={t('mindSweep.launchButton')}
+            >
+                <Brain size={16} color={tc.tint} strokeWidth={2.2} />
+                <Text style={[styles.mindSweepNudgeButtonText, { color: tc.tint }]}>
+                    {t('mindSweep.launchButton')}
+                </Text>
+            </TouchableOpacity>
+        </View>
+    );
+
+    const renderStepRail = () => (
+        <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={[styles.stepRail, { borderBottomColor: tc.border }]}
+            contentContainerStyle={styles.stepRailContent}
+        >
+            {stepRail.map((step) => {
+                const complete = step.state === 'complete';
+                const current = step.state === 'current';
+                return (
+                    <View
+                        key={step.id}
+                        style={[
+                            styles.stepRailItem,
+                            {
+                                backgroundColor: current
+                                    ? `${tc.tint}1A`
+                                    : complete
+                                        ? `${tc.success}1A`
+                                        : tc.filterBg,
+                                borderColor: current
+                                    ? tc.tint
+                                    : complete
+                                        ? `${tc.success}66`
+                                        : tc.border,
+                            },
+                        ]}
+                    >
+                        <View
+                            style={[
+                                styles.stepRailBadge,
+                                {
+                                    backgroundColor: current ? tc.tint : tc.cardBg,
+                                },
+                            ]}
+                        >
+                            {complete ? (
+                                <CheckCircle2 size={12} color={tc.text} strokeWidth={2.8} />
+                            ) : (
+                                <Text style={[styles.stepRailBadgeText, { color: current ? tc.onTint : tc.text }]}>{step.number}</Text>
+                            )}
+                        </View>
+                        <CompactText
+                            style={[
+                                styles.stepRailText,
+                                { color: current ? tc.text : tc.secondaryText },
+                            ]}
+                            numberOfLines={1}
+                        >
+                            {step.title}
+                        </CompactText>
+                    </View>
+                );
+            })}
+        </ScrollView>
+    );
+
+    const renderTaskList = (
+        taskList: Task[],
+        footer?: React.ReactElement | null,
+        header?: React.ReactElement | null,
+        empty?: React.ReactElement | null,
+        testID?: string,
+    ) => (
+        <FlatList
+            testID={testID}
+            data={taskList}
+            renderItem={({ item: task }) => (
+                <SwipeableTaskItem
+                    task={task}
+                    isDark={isDark}
+                    tc={tc}
+                    actions={rowActions}
+                />
+            )}
+            keyExtractor={(task) => task.id}
+            style={styles.taskList}
+            contentContainerStyle={styles.taskListContent}
+            ListHeaderComponent={header ?? null}
+            ListFooterComponent={footer ?? null}
+            ListEmptyComponent={empty ?? null}
+            initialNumToRender={12}
+            maxToRenderPerBatch={12}
+            windowSize={5}
+            updateCellsBatchingPeriod={50}
+            removeClippedSubviews={false}
+            showsVerticalScrollIndicator={false}
+        />
+    );
+
+    const renderScheduledGroup = (list: { scheduled: Task[]; scheduledLabel: string }, expanded: boolean, onToggle: () => void) => {
+        const { scheduled, scheduledLabel } = list;
+        if (scheduled.length === 0) return null;
+        const Chevron = expanded ? ChevronDown : ChevronRight;
+        return (
+            <View style={styles.scheduledSection}>
+                <AppPressable
+                    style={styles.scheduledToggle}
+                    onPress={onToggle}
+                    accessibilityRole="button"
+                    accessibilityLabel={scheduledLabel}
+                >
+                    <Chevron size={14} color={tc.secondaryText} strokeWidth={2.2} />
+                    <Text style={[styles.scheduledToggleText, { color: tc.secondaryText }]}>
+                        {scheduledLabel}
+                    </Text>
+                </AppPressable>
+                {expanded && scheduled.map((task) => (
+                    <SwipeableTaskItem
+                        key={task.id}
+                        task={task}
+                        isDark={isDark}
+                        tc={tc}
+                        actions={rowActions}
+                    />
+                ))}
+            </View>
+        );
+    };
+
+    const renderExternalCalendarList = (days: WeeklyReviewCalendarDay[]) => {
+        const notice = getWeeklyReviewCalendarNotice(
+            { loading: externalCalendarLoading, error: externalCalendarError, dayCount: days.length },
+            labels,
+        );
+        if (externalCalendarLoading) {
+            return (
+                <View style={styles.loadingRow}>
+                    <ActivityIndicator size="small" color={tc.tint} />
+                    <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>{notice}</Text>
+                </View>
+            );
+        }
+        if (notice !== null) {
+            return <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>{notice}</Text>;
+        }
+        return (
+            <View style={styles.calendarEventList}>
+                {days.map((day) => {
+                    const isExpanded = expandedExternalDays.has(day.key);
+                    const visibleEvents = isExpanded ? day.events : day.events.slice(0, WEEKLY_REVIEW_PREVIEW.dayEvents);
+
+                    return (
+                        <View key={day.key} style={[styles.calendarDayCard, { borderColor: tc.border }]}>
+                            <Text style={[styles.calendarDayTitle, { color: tc.secondaryText }]}>
+                                {day.title}
+                            </Text>
+                            {visibleEvents.map((event) => (
+                                <View key={event.key} style={styles.calendarEventRow}>
+                                    <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>
+                                        {event.timeLabel}
+                                    </Text>
+                                    <Text style={[styles.calendarEventTitle, { color: tc.text }]} numberOfLines={1}>
+                                        {event.title}
+                                    </Text>
+                                </View>
+                            ))}
+                            {day.moreLabel && (
+                                <TouchableOpacity onPress={() => toggleExternalDayExpanded(day.key)}>
+                                    <Text style={[styles.calendarEventMeta, styles.calendarToggleText, { color: tc.secondaryText }]}>
+                                        {isExpanded ? labels.less : day.moreLabel}
+                                    </Text>
+                                </TouchableOpacity>
+                            )}
+                        </View>
+                    );
+                })}
+            </View>
+        );
+    };
+
+    const renderCalendarTaskList = (items: { key: string; title: string; meta: string }[]) => {
+        if (items.length === 0) {
+            return <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>{labels.calendarTasksEmpty}</Text>;
+        }
+        return (
+            <View style={styles.calendarEventList}>
+                {items.map((entry) => (
+                    <View key={entry.key} style={[styles.calendarDayCard, { borderColor: tc.border }]}>
+                        <Text style={[styles.calendarEventTitle, { color: tc.text }]} numberOfLines={1}>
+                            {entry.title}
+                        </Text>
+                        <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>
+                            {entry.meta}
+                        </Text>
+                    </View>
+                ))}
+            </View>
+        );
+    };
+
+
+    const renderProjectEntry = (entry: (typeof projectReviewEntries)[number], meta?: string) => {
+        const isExpanded = expandedProject === entry.project.id;
+        return (
+            <View key={entry.project.id}>
+                <TouchableOpacity
+                    style={[styles.projectItem, { backgroundColor: tc.cardBg, borderColor: tc.border }]}
+                    accessibilityState={{ expanded: isExpanded }}
+                    onPress={() => toggleExpandedProject(entry.project.id)}
+                >
+                    <View style={styles.projectHeader}>
+                        <View style={[styles.projectDot, { backgroundColor: entry.areaColor ?? tc.tint }]} />
+                        <Text style={[styles.projectTitle, { color: tc.text }]}>{entry.project.title}</Text>
+                        <TouchableOpacity
+                            style={[styles.reviewProjectAddTaskButton, { borderColor: tc.border }]}
+                            onPress={(event) => {
+                                event.stopPropagation();
+                                openProjectTaskPrompt(entry.project.id, entry.project.title);
+                            }}
+                        >
+                            <Text style={[styles.reviewProjectAddTaskButtonText, { color: tc.text }]}>
+                                {labels.addTask}
+                            </Text>
+                        </TouchableOpacity>
+                        <View style={[styles.statusBadge, { backgroundColor: entry.badge.background }]}>
+                            <Text style={[styles.statusText, { color: entry.badge.color }]}>
+                                {entry.badge.label}
+                            </Text>
+                        </View>
+                    </View>
+                    <View style={styles.projectMeta}>
+                        <Text style={[styles.taskCount, { color: tc.secondaryText }]}>
+                            {meta ?? entry.countLabel}
+                        </Text>
+                        <Text style={[styles.expandIcon, { color: tc.secondaryText }]}>
+                            {isExpanded ? '▾' : '▸'}
+                        </Text>
+                    </View>
+                </TouchableOpacity>
+                {isExpanded && (
+                    <View style={styles.projectTasks}>
+                        {entry.currentTasks.map((task) => (
+                            <SwipeableTaskItem
+                                key={task.id}
+                                task={task}
+                                isDark={isDark}
+                                tc={tc}
+                                actions={rowActions}
+                            />
+                        ))}
+                        {entry.laterTasks.length > 0 && (
+                            <View style={styles.scheduledSection}>
+                                <AppPressable
+                                    style={styles.scheduledToggle}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`${labels.laterInSequence} (${entry.laterTasks.length})`}
+                                    accessibilityState={{ expanded: expandedLaterProjects.has(entry.project.id) }}
+                                    onPress={() => setExpandedLaterProjects((current) => {
+                                        const next = new Set(current);
+                                        if (next.has(entry.project.id)) next.delete(entry.project.id);
+                                        else next.add(entry.project.id);
+                                        return next;
+                                    })}
+                                >
+                                    {expandedLaterProjects.has(entry.project.id)
+                                        ? <ChevronDown size={14} color={tc.secondaryText} />
+                                        : <ChevronRight size={14} color={tc.secondaryText} />}
+                                    <Text style={[styles.scheduledToggleText, { color: tc.secondaryText }]}>
+                                        {labels.laterInSequence} ({entry.laterTasks.length})
+                                    </Text>
+                                </AppPressable>
+                                {expandedLaterProjects.has(entry.project.id) && entry.laterTasks.map((task) => (
+                                    <SwipeableTaskItem key={task.id} task={task} isDark={isDark} tc={tc} actions={rowActions} />
+                                ))}
+                            </View>
+                        )}
+                        <TouchableOpacity
+                            style={styles.reviewOpenProjectButton}
+                            accessibilityRole="button"
+                            onPress={() => handleOpenProject(entry.project.id)}
+                        >
+                            <FolderOpen size={14} color={tc.tint} strokeWidth={2} />
+                            <Text style={[styles.reviewOpenProjectText, { color: tc.tint }]} numberOfLines={1}>
+                                {formatI18nTemplate(t('task.aria.openProject'), { name: entry.project.title })}
+                            </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.reviewOpenProjectButton, { opacity: completingProjectId ? 0.5 : 1 }]}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('projects.complete')}
+                            accessibilityState={{ disabled: completingProjectId !== null }}
+                            disabled={completingProjectId !== null}
+                            testID={`review-complete-project-${entry.project.id}`}
+                            onPress={() => { void completeProject(entry.project.id); }}
+                        >
+                            <CheckCircle2 size={14} color={tc.tint} strokeWidth={2} />
+                            <Text style={[styles.reviewOpenProjectText, { color: tc.tint }]}>
+                                {t('projects.complete')}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
+            </View>
+        );
+    };
+
+    const renderContextsList = (groups: ContextReviewGroup[]) => {
+        if (groups.length === 0) {
+            return (
+                <View style={styles.emptyState}>
+                    <Text style={[styles.emptyText, { color: tc.secondaryText }]}>
+                        {labels.contextsEmpty}
+                    </Text>
+                </View>
+            );
+        }
+        return (
+            <FlatList
+                data={groups}
+                renderItem={({ item: group }) => {
+                    const contextKey = group.context;
+                    const isExpanded = expandedContextGroups.has(contextKey);
+                    const visibleTasks = isExpanded ? group.tasks : group.tasks.slice(0, WEEKLY_REVIEW_PREVIEW.contextTasks);
+                    const moreLabel = getWeeklyReviewContextMoreLabel(group.tasks.length, labels);
+                    return (
+                        <View style={[styles.contextGroupCard, { borderColor: tc.border, backgroundColor: tc.cardBg }]}>
+                            <View style={styles.contextGroupHeader}>
+                                <Text style={[styles.contextGroupTitle, { color: tc.text }]}>{group.context}</Text>
+                                <Text style={[styles.contextGroupCount, { color: tc.secondaryText }]}>{group.tasks.length}</Text>
+                            </View>
+                            {visibleTasks.map((task) => (
+                                <TouchableOpacity
+                                    key={`${group.context}-${task.id}`}
+                                    style={[styles.contextTaskRow, { borderTopColor: tc.border }]}
+                                    onPress={() => handleTaskPress(task)}
+                                >
+                                    <Text style={[styles.contextTaskTitle, { color: tc.text }]} numberOfLines={1}>
+                                        {task.title}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+                            {moreLabel && (
+                                <TouchableOpacity onPress={() => toggleContextGroupExpanded(contextKey)}>
+                                    <Text style={[styles.contextMoreText, { color: tc.secondaryText }]}>
+                                        {isExpanded ? labels.less : moreLabel}
+                                    </Text>
+                                </TouchableOpacity>
+                            )}
+                        </View>
+                    );
+                }}
+                keyExtractor={(group) => group.context}
+                style={styles.taskList}
+                initialNumToRender={12}
+                maxToRenderPerBatch={12}
+                windowSize={5}
+                updateCellsBatchingPeriod={50}
+                removeClippedSubviews={false}
+                showsVerticalScrollIndicator={false}
+            />
+        );
+    };
+
+    const renderStepContent = () => {
+        switch (currentStep) {
+            case 'inbox':
+                return renderTaskList(
+                    inboxTasks,
+                    null,
+                    <View style={styles.inboxHeader}>
+                        {inboxTasks.length > 0 && (
+                            <>
+                                <Text style={[styles.inboxCount, { color: tc.text }]}>
+                                    {formatI18nTemplate(labels.summaryInboxCount, { count: inboxTasks.length })}
+                                </Text>
+                                <Text style={[styles.inboxHint, { color: tc.secondaryText }]}>
+                                    {t('dailyReview.inboxDesc')}
+                                </Text>
+                                <TouchableOpacity
+                                    style={[styles.inboxProcessButton, { backgroundColor: filledButton.backgroundColor }]}
+                                    onPress={() => setShowInboxProcessing(true)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('inbox.processButton')}
+                                >
+                                    <Play size={18} color={onFilled} strokeWidth={2.5} fill={onFilled} />
+                                    <Text style={[styles.inboxActionText, { color: onFilled }]}>
+                                        {t('inbox.processButton')}
+                                    </Text>
+                                </TouchableOpacity>
+                            </>
+                        )}
+                        <TouchableOpacity
+                            testID="review-mind-sweep-button"
+                            style={styles.inboxMindSweepButton}
+                            onPress={() => setShowMindSweep(true)}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('mindSweep.launchButton')}
+                        >
+                            <Brain size={18} color={tc.tint} strokeWidth={2} />
+                            <Text style={[styles.inboxActionText, { color: tc.tint }]}>
+                                {t('mindSweep.launchButton')}
+                            </Text>
+                            <ChevronRight size={16} color={tc.tint} strokeWidth={2} />
+                        </TouchableOpacity>
+                    </View>,
+                    <View style={styles.emptyState}>
+                        <CheckCircle2 size={48} color={tc.secondaryText} strokeWidth={1.5} style={styles.emptyIcon} />
+                        <Text style={[styles.emptyText, { color: tc.secondaryText }]}>
+                            {labels.inboxEmpty}
+                        </Text>
+                    </View>,
+                    'review-step-scroll',
+                );
+
+            case 'stale':
+                return (
+                    <View style={styles.stepContent}>
+                        <View style={styles.stepTitleRow}>
+                            <History size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.stale}
+                            </Text>
+                        </View>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.staleDesc}
+                        </Text>
+                        <ScrollView style={styles.taskList}>
+                            {staleTasks.map((task) => (
+                                <SwipeableTaskItem
+                                    key={task.id}
+                                    task={task}
+                                    isDark={isDark}
+                                    tc={tc}
+                                    actions={rowActions}
+                                />
+                            ))}
+                            {staleProjectItems.map((item) => {
+                                const entry = projectReviewEntries.find((candidate) => `project:${candidate.project.id}` === item.id);
+                                if (entry) return renderProjectEntry(entry, item.daysLabel);
+                                return (
+                                <View key={item.id} style={[styles.calendarDayCard, { borderColor: tc.border }]}>
+                                    <Text style={[styles.calendarEventTitle, { color: tc.text }]} numberOfLines={1}>
+                                        {item.title}
+                                    </Text>
+                                    <Text style={[styles.calendarEventMeta, { color: tc.secondaryText }]}>
+                                        {item.daysLabel}
+                                    </Text>
+                                </View>
+                                );
+                            })}
+                            {aiEnabled && (
+                                <>
+                                    <View style={[styles.stepTitleRow, { marginTop: 16 }]}>
+                                        <Sparkles size={18} color={tc.text} strokeWidth={2} />
+                                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                                            {labels.aiDesc}
+                                        </Text>
+                                    </View>
+                                    <TouchableOpacity
+                                        style={[styles.primaryButton, { backgroundColor: filledButton.backgroundColor, marginTop: 12 }]}
+                                        onPress={runAiAnalysis}
+                                        disabled={aiLoading}
+                                    >
+                                        <Text style={[styles.primaryButtonText, { color: onFilled }]}>
+                                            {aiLoading ? labels.aiRunning : labels.aiRun}
+                                        </Text>
+                                    </TouchableOpacity>
+
+                                    {aiError && (
+                                        <Text style={[styles.hint, { color: '#EF4444', marginTop: 12 }]}>
+                                            {aiError}
+                                        </Text>
+                                    )}
+
+                                    {aiRan && !aiLoading && aiSuggestions.length === 0 && !aiError && (
+                                        <Text style={[styles.hint, { color: tc.secondaryText, marginTop: 12 }]}>
+                                            {labels.aiEmpty}
+                                        </Text>
+                                    )}
+
+                                    {aiSuggestions.map((suggestion) => {
+                                    const actionable = isActionableSuggestion(suggestion);
+                                    const label = getReviewSuggestionActionLabel(suggestion.action, labels);
+                                    return (
+                                        <TouchableOpacity
+                                            key={suggestion.id}
+                                            style={[styles.aiItemRow, { backgroundColor: tc.cardBg, borderColor: tc.border }]}
+                                            onPress={() => actionable && toggleSuggestion(suggestion.id)}
+                                            disabled={!actionable}
+                                        >
+                                            <View
+                                                style={[
+                                                    styles.aiCheckbox,
+                                                    {
+                                                        borderColor: tc.border,
+                                                        backgroundColor: aiSelectedIds.has(suggestion.id) ? tc.tint : 'transparent',
+                                                    },
+                                                ]}
+                                            >
+                                                {aiSelectedIds.has(suggestion.id) && <Check size={12} color={tc.onTint} strokeWidth={3} />}
+                                            </View>
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={[styles.aiItemTitle, { color: tc.text }]}>
+                                                    {suggestion.title}
+                                                </Text>
+                                                <Text style={[styles.aiItemMeta, { color: tc.secondaryText }]}>
+                                                    {label} · {suggestion.reason}
+                                                </Text>
+                                            </View>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                                {aiSuggestions.length > 0 && (
+                                    <TouchableOpacity
+                                        style={[styles.primaryButton, { backgroundColor: filledButton.backgroundColor, marginTop: 12 }]}
+                                        onPress={applyAiSuggestions}
+                                        disabled={aiSelectedIds.size === 0}
+                                    >
+                                        <Text style={[styles.primaryButtonText, { color: onFilled }]}>
+                                            {labels.aiApply} ({aiSelectedIds.size})
+                                        </Text>
+                                    </TouchableOpacity>
+                                )}
+                                </>
+                            )}
+                        </ScrollView>
+                    </View>
+                );
+
+            case 'calendar':
+                return (
+                    <ScrollView
+                        style={styles.stepContent}
+                        contentContainerStyle={styles.calendarStepContent}
+                        showsVerticalScrollIndicator
+                    >
+                        <View style={styles.stepTitleRow}>
+                            <CalendarIcon size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.calendar}
+                            </Text>
+                        </View>
+                        <TouchableOpacity
+                            style={[styles.reviewAddTaskButton, { borderColor: tc.border }]}
+                            onPress={() => openReviewQuickAdd({ status: 'inbox' })}
+                        >
+                            <Text style={[styles.reviewAddTaskButtonText, { color: tc.text }]}>{labels.addTask}</Text>
+                        </TouchableOpacity>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.calendarDesc}
+                        </Text>
+                        <View style={[styles.calendarColumn, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+                            <Text style={[styles.calendarColumnTitle, { color: tc.secondaryText }]}>{labels.calendarUpcoming}</Text>
+                            {renderExternalCalendarList(calendarView.days)}
+                        </View>
+                        <View style={[styles.calendarColumn, { backgroundColor: tc.cardBg, borderColor: tc.border, marginTop: 12 }]}>
+                            <Text style={[styles.calendarColumnTitle, { color: tc.secondaryText }]}>{labels.calendarTasks}</Text>
+                            {renderCalendarTaskList(calendarView.tasks)}
+                        </View>
+                    </ScrollView>
+                );
+
+            case 'waiting':
+                return (
+                    <View style={styles.stepContent}>
+                        <View style={styles.stepTitleRow}>
+                            <Clock size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.waitingDesc}
+                            </Text>
+                        </View>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.waitingGuide}
+                        </Text>
+                        {waitingList.total === 0 ? (
+                            <View style={styles.emptyState}>
+                                <Text style={[styles.emptyText, { color: tc.secondaryText }]}>
+                                    {labels.nothingWaiting}
+                                </Text>
+                            </View>
+                        ) : (
+                            renderTaskList(
+                                waitingList.visible,
+                                renderScheduledGroup(
+                                    waitingList,
+                                    showScheduledWaiting,
+                                    () => setShowScheduledWaiting((prev) => !prev),
+                                ),
+                            )
+                        )}
+                    </View>
+                );
+
+            case 'contexts':
+                return (
+                    <View style={styles.stepContent}>
+                        <View style={styles.stepTitleRow}>
+                            <Tag size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.contexts}
+                            </Text>
+                        </View>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.contextsDesc}
+                        </Text>
+                        {renderContextsList(contextReviewGroups)}
+                    </View>
+                );
+
+            case 'projects':
+                return (
+                    <View style={styles.stepContent}>
+                        <View style={styles.stepTitleRow}>
+                            <FolderOpen size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.projectsDesc}
+                            </Text>
+                        </View>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.projectsGuide}
+                        </Text>
+                        {projectReviewEntries.length === 0 ? (
+                            <View style={styles.emptyState}>
+                                <Text style={[styles.emptyText, { color: tc.secondaryText }]}>
+                                    {labels.noActiveProjects}
+                                </Text>
+                            </View>
+                        ) : (
+                            <FlatList
+                                data={projectReviewEntries}
+                                renderItem={({ item: entry }) => renderProjectEntry(entry)}
+                                keyExtractor={(entry) => entry.project.id}
+                                style={styles.taskList}
+                                initialNumToRender={12}
+                                maxToRenderPerBatch={12}
+                                windowSize={5}
+                                updateCellsBatchingPeriod={50}
+                                removeClippedSubviews={false}
+                                showsVerticalScrollIndicator={false}
+                            />
+                        )}
+                    </View>
+                );
+
+            case 'someday':
+                return (
+                    <View style={styles.stepContent}>
+                        <View style={styles.stepTitleRow}>
+                            <Lightbulb size={22} color={tc.text} strokeWidth={2} />
+                            <Text style={[styles.stepTitleInline, { color: tc.text }]}>
+                                {labels.somedayDesc}
+                            </Text>
+                        </View>
+                        <Text style={[styles.hint, { color: tc.secondaryText }]}>
+                            {labels.somedayGuide}
+                        </Text>
+                        {somedayList.total === 0 ? (
+                            <View style={styles.emptyState}>
+                                <Text style={[styles.emptyText, { color: tc.secondaryText }]}>
+                                    {labels.listEmpty}
+                                </Text>
+                            </View>
+                        ) : (
+                            renderTaskList(
+                                somedayList.visible,
+                                renderScheduledGroup(
+                                    somedayList,
+                                    showScheduledSomeday,
+                                    () => setShowScheduledSomeday((prev) => !prev),
+                                ),
+                            )
+                        )}
+                    </View>
+                );
+
+            case 'completed':
+                return (
+                    <ScrollView
+                        testID="review-completed-scroll"
+                        style={styles.stepContent}
+                        contentContainerStyle={styles.centerContent}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        <PartyPopper size={64} color={tc.tint} strokeWidth={1.5} style={styles.bigIcon} />
+                        <Text style={[styles.heading, { color: tc.text }]}>
+                            {labels.reviewComplete}
+                        </Text>
+                        <Text style={[styles.description, { color: tc.secondaryText }]}>
+                            {labels.completeDesc}
+                        </Text>
+                        <View style={{ alignSelf: 'stretch', borderWidth: 1, borderColor: tc.border, borderRadius: 10, padding: 14, gap: 10, marginBottom: 16 }}>
+                            {completion.week && (
+                                <View style={{ gap: 10, borderBottomWidth: 1, borderBottomColor: tc.border, paddingBottom: 10 }}>
+                                    <Text style={{ color: tc.secondaryText, fontSize: 14, fontWeight: '600' }}>
+                                        {completion.week.heading}
+                                    </Text>
+                                    {completion.week.rows.map((row) => (
+                                        <React.Fragment key={row}>{renderSummaryRow(true, row)}</React.Fragment>
+                                    ))}
+                                </View>
+                            )}
+                            {completion.checks.map((check) => (
+                                <React.Fragment key={check.text}>{renderSummaryRow(check.good, check.text)}</React.Fragment>
+                            ))}
+                        </View>
+                        {renderMindSweepNudge()}
+                    </ScrollView>
+                );
+        }
+    };
+
+    return (
+        <Modal visible={modalVisible} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal={!projectCompletionPrompt} onRequestClose={projectCompletionPrompt ? closeProjectCompletionPrompt : handleClose} onDismiss={handleReviewDismiss}>
+            <GestureHandlerRootView style={{ flex: 1 }}>
+                <SafeAreaView
+                    style={[styles.container, { backgroundColor: tc.bg }]}
+                    edges={['top', 'bottom']}
+                    accessibilityElementsHidden={Boolean(projectCompletionPrompt)}
+                    importantForAccessibility={projectCompletionPrompt ? 'no-hide-descendants' : 'auto'}
+                >
+                    <SandboxWorkspaceCue />
+                    <View style={[styles.header, { borderBottomColor: tc.border }]}>
+                        <TouchableOpacity
+                            onPress={handleClose}
+                            style={styles.closeButton}
+                            accessibilityRole="button"
+                            accessibilityLabel={closeText}
+                            hitSlop={8}
+                        >
+                            <X size={22} color={tc.text} strokeWidth={2} />
+                        </TouchableOpacity>
+                        <View style={styles.headerTitleRow}>
+                            {(() => {
+                                const HeaderIcon = steps[safeStepIndex].Icon;
+                                return <HeaderIcon size={18} color={tc.text} strokeWidth={2} />;
+                            })()}
+                            <Text style={[styles.headerTitle, { color: tc.text }]}>
+                                {steps[safeStepIndex].title}
+                            </Text>
+                        </View>
+                        <Text style={[styles.stepIndicator, { color: tc.secondaryText }]}>
+                            {safeStepIndex + 1}/{steps.length}
+                        </Text>
+                    </View>
+
+                    <View style={[styles.progressContainer, { backgroundColor: tc.border }]}>
+                        <View style={[styles.progressBar, { width: `${progress}%` }]} />
+                    </View>
+                    {renderStepRail()}
+
+                    <View style={styles.content}>
+                        {projectCompletionError && (
+                            <Text accessibilityRole="alert" style={[styles.hint, { color: tc.danger }]}>
+                                {projectCompletionError}
+                            </Text>
+                        )}
+                        {renderStepContent()}
+                    </View>
+
+                    <ToastViewport inline />
+
+                    {currentStep === 'completed' ? (
+                        <View style={[styles.footer, { borderTopColor: tc.border }]}>
+                            <TouchableOpacity
+                                style={[styles.shareButton, { borderColor: tc.border }]}
+                                onPress={() => setShowShareCard(true)}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('shareCard.action')}
+                                testID="review-share-card-button"
+                            >
+                                <Share2 size={18} color={tc.text} strokeWidth={2} />
+                                <Text style={[styles.shareButtonText, { color: tc.text }]}>
+                                    {t('shareCard.action')}
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.primaryButton, styles.finishButton, { backgroundColor: filledButton.backgroundColor }]}
+                                onPress={handleFinish}
+                                accessibilityRole="button"
+                                accessibilityLabel={labels.finish}
+                            >
+                                <Text style={[styles.primaryButtonText, { color: onFilled }]}>
+                                    {labels.finish}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        <View style={[styles.footer, { borderTopColor: tc.border }]}>
+                            <TouchableOpacity
+                                style={[styles.backButton, { opacity: canGoBack ? 1 : 0.5 }]}
+                                onPress={prevStep}
+                                disabled={!canGoBack}
+                                accessibilityRole="button"
+                                accessibilityLabel={labels.back}
+                                accessibilityState={{ disabled: !canGoBack }}
+                            >
+                                <Text style={[styles.backButtonText, { color: tc.secondaryText }]}>← {labels.back}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.primaryButton, { backgroundColor: filledButton.backgroundColor }]}
+                                onPress={nextStep}
+                                accessibilityRole="button"
+                                accessibilityLabel={labels.next}
+                            >
+                                <Text style={[styles.primaryButtonText, { color: onFilled }]}>{labels.next} →</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+                </SafeAreaView>
+
+                {projectCompletionPrompt && (
+                    <View style={[styles.promptBackdrop, styles.promptOverlay]} accessibilityViewIsModal onAccessibilityEscape={closeProjectCompletionPrompt}>
+                        <View style={[styles.promptCard, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+                            <Text style={[styles.promptTitle, { color: tc.text }]} numberOfLines={2} accessibilityLabel={projectCompletionPrompt.title}>
+                                {projectCompletionPrompt.title}
+                            </Text>
+                            <Text style={[styles.promptProject, { color: tc.secondaryText }]}>{t('projects.completeConfirm')}</Text>
+                            <View style={styles.promptActions}>
+                                <TouchableOpacity
+                                    style={[styles.promptButton, { borderColor: tc.border }]}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('common.cancel')}
+                                    onPress={closeProjectCompletionPrompt}
+                                    disabled={completingProjectId !== null}
+                                >
+                                    <Text style={[styles.promptButtonText, { color: tc.text }]}>{t('common.cancel')}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.promptButtonPrimary, { backgroundColor: filledButton.backgroundColor, opacity: completingProjectId ? 0.5 : 1 }]}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('projects.complete')}
+                                    accessibilityState={{ disabled: completingProjectId !== null }}
+                                    testID="review-confirm-complete-project"
+                                    onPress={() => { void completeProject(projectCompletionPrompt.id, true); }}
+                                    disabled={completingProjectId !== null}
+                                >
+                                    <Text style={[styles.promptButtonPrimaryText, { color: onFilled }]}>{t('projects.complete')}</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </View>
+                )}
+
+                <TaskEditModal
+                    visible={showEditModal}
+                    task={editingTask}
+                    onClose={closeEditModal}
+                    onDismiss={handleEditModalDismiss}
+                    onSave={handleSaveTask}
+                    defaultTab={editModalTab}
+                    onProjectNavigate={handleNavigateToProject}
+                    onContextNavigate={handleNavigateToToken}
+                    onTagNavigate={handleNavigateToToken}
+                />
+
+                <ShareCardModal
+                    visible={visible && showShareCard}
+                    onClose={() => setShowShareCard(false)}
+                />
+
+                <ErrorBoundary>
+                    <InboxProcessingModal
+                        visible={visible && showInboxProcessing}
+                        onClose={() => setShowInboxProcessing(false)}
+                    />
+                </ErrorBoundary>
+
+                <Modal
+                    visible={visible && showMindSweep}
+                    animationType="slide"
+                    presentationStyle="pageSheet"
+                    onRequestClose={() => setShowMindSweep(false)}
+                >
+                    <MindSweepModalContent onClose={() => setShowMindSweep(false)} />
+                </Modal>
+
+                <Modal
+                    visible={Boolean(projectTaskPrompt)}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={closeProjectTaskPrompt}
+                >
+                    <View style={styles.promptBackdrop}>
+                        <View style={[styles.promptCard, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+                            <Text style={[styles.promptTitle, { color: tc.text }]}>{labels.addTask}</Text>
+                            <Text style={[styles.promptProject, { color: tc.secondaryText }]}>
+                                {projectTaskPrompt?.projectTitle}
+                            </Text>
+                            <TextInput
+                                value={projectTaskTitle}
+                                onChangeText={setProjectTaskTitle}
+                                placeholder={labels.addTaskPlaceholder}
+                                placeholderTextColor={tc.secondaryText}
+                                autoFocus
+                                style={[styles.promptInput, { color: tc.text, borderColor: tc.border, backgroundColor: tc.bg }]}
+                                returnKeyType="done"
+                                onSubmitEditing={() => {
+                                    void submitProjectTask();
+                                }}
+                            />
+                            <View style={styles.promptActions}>
+                                <TouchableOpacity
+                                    style={[styles.promptButton, { borderColor: tc.border }]}
+                                    onPress={closeProjectTaskPrompt}
+                                >
+                                    <Text style={[styles.promptButtonText, { color: tc.text }]}>{labels.cancel}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[
+                                        styles.promptButton,
+                                        {
+                                            borderColor: tc.border,
+                                            opacity: projectTaskTitle.trim().length > 0 ? 1 : 0.5,
+                                        },
+                                    ]}
+                                    onPress={() => {
+                                        void submitProjectTask({ openEditor: true });
+                                    }}
+                                    disabled={projectTaskTitle.trim().length === 0}
+                                >
+                                    <Text style={[styles.promptButtonText, { color: tc.text }]}>{labels.saveAndEdit}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[
+                                        styles.promptButtonPrimary,
+                                        {
+                                            backgroundColor: filledButton.backgroundColor,
+                                            opacity: projectTaskTitle.trim().length > 0 ? 1 : 0.5,
+                                        },
+                                    ]}
+                                    onPress={() => {
+                                        void submitProjectTask();
+                                    }}
+                                    disabled={projectTaskTitle.trim().length === 0}
+                                >
+                                    <Text style={[styles.promptButtonPrimaryText, { color: onFilled }]}>{labels.add}</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </View>
+                </Modal>
+            </GestureHandlerRootView>
+        </Modal>
+    );
+}

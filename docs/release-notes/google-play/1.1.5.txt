@@ -1,0 +1,15 @@
+<en-US>
+Stride 1.1.5 adds native SQLite for faster saves and sync on large libraries, saved project sorting, manual Focus ordering, richer filters and completion grouping, exact repeating reminders, improved widgets and large-text layouts, safer backup restore, secure sync credentials, stronger recurrence continuity, and clearer write failures.
+</en-US>
+<de-DE>
+Stride 1.1.5 bringt natives SQLite für schnelleres Speichern und Sync großer Bibliotheken, gespeicherte Projektsortierung, manuelle Fokus-Reihenfolge, bessere Filter und Abschlussgruppen, pünktliche Wiederhol-Erinnerungen, verbesserte Widgets und große Schrift, sicherere Wiederherstellung, geschützte Sync-Zugänge, stabile Wiederholungen und klarere Fehler.
+</de-DE>
+<es-ES>
+Stride 1.1.5 incorpora SQLite nativo para guardar y sincronizar más rápido, orden por proyecto, orden manual de Enfoque, mejores filtros y grupos por finalización, avisos repetidos puntuales, mejores widgets y texto grande, restauraciones más seguras, credenciales protegidas, repeticiones más fiables y errores más claros.
+</es-ES>
+<fr-FR>
+Stride 1.1.5 ajoute SQLite natif pour accélérer l'enregistrement et la synchronisation, tri par projet, ordre Focus manuel, filtres et groupes par date de fin, rappels répétés ponctuels, meilleurs widgets et grandes polices, restauration plus sûre, identifiants protégés, récurrences plus fiables et erreurs plus claires.
+</fr-FR>
+<zh-CN>
+Stride 1.1.5 引入原生 SQLite，加快大型任务库保存与同步；新增项目排序记忆、手动专注排序、更完善的筛选与完成日期分组，并改进重复提醒、小组件、大字体布局、备份恢复、同步凭据安全、重复任务连续性和写入错误提示。
+</zh-CN>

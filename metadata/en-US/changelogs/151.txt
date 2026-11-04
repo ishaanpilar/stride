@@ -1,0 +1,5 @@
+- Organize Someday tasks into sections and edit new project follow-ups immediately.
+- Android widgets handle larger lists, completion Undo, saved filters, and safer overflow.
+- Bulk date editing and checklist input above the keyboard are easier to use.
+- Share capture avoids routing failures, and Android system bars follow the OS version.
+- Sync, attachments, archived-project recovery, reminders, and storage are more reliable.

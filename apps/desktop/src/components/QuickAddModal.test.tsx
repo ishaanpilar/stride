@@ -1,0 +1,2046 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import * as core from '@stride/core';
+import { buildEntityMap, useTaskStore, type Task } from '@stride/core';
+import type { ComponentProps } from 'react';
+
+import { LanguageProvider } from '../contexts/language-context';
+import { QuickAddModal } from './QuickAddModal';
+import { QUICK_ADD_MAIN_WINDOW_LABEL, QUICK_ADD_SAVED_EVENT } from '../lib/quick-add-saved-event';
+import { MAX_AUDIO_RECORDING_SECONDS } from '../lib/audio-capture-buffer';
+import { useUiStore } from '../store/ui-store';
+import { holdSyncSave } from '../test/hold-sync-save';
+import { writeCloudConfig } from '../lib/sync-service-config';
+
+
+import { beginNotifyProfile, endNotifyProfile } from '../../../../packages/core/src/store-notify-profiler';
+
+const sandboxState = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@stride/core', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@stride/core')>(),
+    isSandboxMode: () => sandboxState.enabled,
+}));
+
+vi.mock('../lib/sync-service', () => ({ SyncService: {
+    getSyncBackend: async () => 'cloud', getCloudProvider: async () => 'selfhosted',
+    getSyncEncryptionStatus: async () => ({ state: 'off' }),
+    getCloudConfig: async () => ({ url: 'https://cloud.example.com', token: 'test-token-1234567890' }),
+} }));
+
+const tauriMocks = vi.hoisted(() => ({
+    emitTo: vi.fn(async () => undefined),
+    hide: vi.fn(async () => undefined),
+    invoke: vi.fn<(_command?: string) => Promise<unknown>>(async () => false),
+    listen: vi.fn(async () => () => undefined),
+}));
+const fsMocks = vi.hoisted(() => ({
+    mkdir: vi.fn(async () => undefined),
+    readFile: vi.fn(async () => new Uint8Array()),
+    readTextFile: vi.fn(async (_path?: string) => ''),
+    remove: vi.fn(async () => undefined),
+    writeFile: vi.fn(async () => undefined),
+}));
+const pathMocks = vi.hoisted(() => ({
+    dataDir: vi.fn(async () => '/data'),
+    join: vi.fn(async (...parts: string[]) => parts.join('/')),
+}));
+const dataTransferMocks = vi.hoisted(() => ({
+    createDesktopRecoverySnapshot: vi.fn(async () => 'data.snapshot.json'),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+    invoke: tauriMocks.invoke,
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+    emitTo: tauriMocks.emitTo,
+    listen: tauriMocks.listen,
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+    getCurrentWindow: () => ({
+        hide: tauriMocks.hide,
+    }),
+}));
+
+vi.mock('@tauri-apps/plugin-fs', () => ({
+    BaseDirectory: { Data: 'Data' },
+    mkdir: fsMocks.mkdir,
+    readFile: fsMocks.readFile,
+    readTextFile: fsMocks.readTextFile,
+    remove: fsMocks.remove,
+    writeFile: fsMocks.writeFile,
+}));
+
+const dialogMocks = vi.hoisted(() => ({
+    open: vi.fn(async (_options?: unknown) => null as string | null),
+}));
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+    open: dialogMocks.open,
+}));
+
+vi.mock('@tauri-apps/api/path', () => ({
+    dataDir: pathMocks.dataDir,
+    join: pathMocks.join,
+}));
+
+vi.mock('../lib/data-transfer', () => ({
+    createDesktopRecoverySnapshot: dataTransferMocks.createDesktopRecoverySnapshot,
+}));
+
+const initialTaskState = useTaskStore.getState();
+
+const renderQuickAddModal = (props?: ComponentProps<typeof QuickAddModal>) => render(
+    <LanguageProvider>
+        <QuickAddModal {...props} />
+    </LanguageProvider>
+);
+
+const createDeferred = <T = void>() => {
+    let resolvePromise!: (value: T | PromiseLike<T>) => void;
+    let rejectPromise!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolvePromise = done;
+        rejectPromise = fail;
+    });
+    return {
+        promise,
+        reject: rejectPromise,
+        resolve: (value?: T) => resolvePromise(value as T),
+    };
+};
+
+const createImageClipboardData = (file: File) => ({
+    files: [file],
+    items: [{
+        kind: 'file',
+        type: file.type,
+        getAsFile: () => new File([file], file.name, { type: file.type }),
+    }],
+});
+
+beforeEach(() => {
+    sandboxState.enabled = false;
+    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    vi.clearAllMocks();
+    act(() => {
+        useTaskStore.setState(initialTaskState, true);
+        useTaskStore.setState((state) => ({
+            ...state,
+            _allProjects: [],
+            _allAreas: [],
+            settings: {
+                ...state.settings,
+                filters: {
+                    ...(state.settings?.filters ?? {}),
+                    areaId: 'all',
+                },
+                gtd: {
+                    ...(state.settings?.gtd ?? {}),
+                    defaultCaptureMethod: 'text',
+                },
+            },
+        }));
+        useUiStore.setState({
+            editingTaskId: null,
+            projectView: { selectedProjectId: null },
+        });
+    });
+});
+
+describe('QuickAddModal', () => {
+    it('keeps Quick Add open when Escape cancels an IME composition', async () => {
+        renderQuickAddModal();
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+        });
+        const input = screen.getByRole('combobox');
+        fireEvent.keyDown(input, { key: 'Escape', isComposing: true });
+        expect(input).toBeInTheDocument();
+        fireEvent.keyDown(input, { key: 'Escape', keyCode: 229 });
+        expect(input).toBeInTheDocument();
+        fireEvent.keyDown(input, { key: 'Escape' });
+        expect(input).not.toBeInTheDocument();
+    });
+
+    it('offers retained contexts only after a typed query', async () => {
+        const timestamp = '2026-09-27T00:00:00.000Z';
+        const task = (id: string, status: Task['status'], deletedAt?: string): Task => ({
+            id, title: id, status, contexts: [`@${id}-only`], tags: [], createdAt: timestamp, updatedAt: timestamp, deletedAt,
+        });
+        act(() => useTaskStore.setState({ _allTasks: [
+            task('active', 'next'), task('done', 'done'), task('archived', 'archived'), task('deleted', 'next', timestamp),
+            { ...task('bare', 'archived'), contexts: ['Seasonal Planning'] },
+        ] }));
+        renderQuickAddModal();
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+        });
+        const input = screen.getByRole('combobox');
+        fireEvent.change(input, { target: { value: '@' } });
+        expect(screen.queryByRole('option', { name: '@archived-only' })).not.toBeInTheDocument();
+        fireEvent.change(input, { target: { value: '@arch' } });
+        expect(await screen.findByRole('option', { name: '@archived-only' })).toBeVisible();
+        fireEvent.change(input, { target: { value: '@dele' } });
+        expect(screen.queryByRole('option', { name: '@deleted-only' })).not.toBeInTheDocument();
+        fireEvent.change(input, { target: { value: '@Seas' } });
+        expect(await screen.findByRole('option', { name: '@Seasonal Planning' })).toBeVisible();
+    });
+
+    it('blocks sandbox audio and private-file capture before native access', async () => {
+        sandboxState.enabled = true;
+        renderQuickAddModal();
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { captureMode: 'audio' },
+            }));
+        });
+        expect(screen.getByRole('button', { name: 'Audio' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Import .txt' })).toBeDisabled();
+        const input = screen.getByRole('combobox');
+        fireEvent.paste(input, {
+            clipboardData: createImageClipboardData(new File(['private image'], 'private.png', { type: 'image/png' })),
+        });
+        expect(await screen.findByText('Unavailable in sandbox')).toBeVisible();
+        expect(fsMocks.mkdir).not.toHaveBeenCalled();
+        expect(fsMocks.writeFile).not.toHaveBeenCalled();
+        expect(pathMocks.dataDir).not.toHaveBeenCalled();
+    });
+
+    it('submits once and exposes a busy, non-dismissible state while saving', async () => {
+        const deferred = createDeferred<{ success: true; id: string }>();
+        const addTask = vi.fn(() => deferred.promise);
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, addTask }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Single flight' },
+            }));
+            await Promise.resolve();
+        });
+
+        const save = screen.getByRole('button', { name: 'Save' });
+        await act(async () => {
+            fireEvent.click(save);
+            fireEvent.click(save);
+            await Promise.resolve();
+        });
+
+        expect(addTask).toHaveBeenCalledTimes(1);
+        expect(save).toBeDisabled();
+        expect(save).toHaveAttribute('aria-busy', 'true');
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled();
+
+        await act(async () => {
+            deferred.resolve({ success: true, id: 'task-id' });
+            await deferred.promise;
+        });
+
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('ignores duplicate open requests while the first open is still committing', async () => {
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'First capture' },
+            }));
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Second capture' },
+            }));
+            await Promise.resolve();
+        });
+
+        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(screen.getByPlaceholderText('Add Task')).toHaveValue('First capture');
+    });
+
+    it('opens the standalone quick add window before data refresh resolves', async () => {
+        const deferred = createDeferred();
+        const fetchData = vi.fn(() => deferred.promise) as unknown as typeof initialTaskState.fetchData;
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                fetchData,
+            }));
+        });
+
+        renderQuickAddModal({ standaloneWindow: true });
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Fast capture' },
+            }));
+            await Promise.resolve();
+        });
+
+        expect(fetchData).toHaveBeenCalledTimes(1);
+        const backdrop = document.querySelector('[role="presentation"]');
+        expect(backdrop).toHaveClass('bg-popover');
+        expect(backdrop).not.toHaveClass('bg-black/50');
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(screen.getByPlaceholderText('Add Task')).toHaveValue('Fast capture');
+
+        await act(async () => {
+            deferred.resolve();
+            await deferred.promise;
+        });
+    });
+
+    it('notifies the main window after a standalone text quick add is saved', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        const fetchData = vi.fn(async () => undefined) as unknown as typeof initialTaskState.fetchData;
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                fetchData,
+            }));
+        });
+
+        renderQuickAddModal({ standaloneWindow: true });
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Fast capture' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(tauriMocks.emitTo).toHaveBeenCalledWith(
+                QUICK_ADD_MAIN_WINDOW_LABEL,
+                QUICK_ADD_SAVED_EVENT,
+                expect.objectContaining({ savedAt: expect.any(String) }),
+            );
+        });
+        expect(addTask).toHaveBeenCalledWith('Fast capture', expect.objectContaining({ status: 'inbox' }));
+    });
+
+    it('uses the current area filter when default area mode is active', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                _allAreas: [
+                    {
+                        id: 'area-home',
+                        name: 'Home',
+                        color: '#10b981',
+                        order: 0,
+                        createdAt: '2026-07-01T00:00:00.000Z',
+                        updatedAt: '2026-07-01T00:00:00.000Z',
+                    },
+                    {
+                        id: 'area-work',
+                        name: 'Work',
+                        color: '#3b82f6',
+                        order: 1,
+                        createdAt: '2026-07-01T00:00:00.000Z',
+                        updatedAt: '2026-07-01T00:00:00.000Z',
+                    },
+                ],
+                settings: {
+                    ...state.settings,
+                    filters: { ...(state.settings?.filters ?? {}), areaId: 'area-work' },
+                    gtd: {
+                        ...(state.settings?.gtd ?? {}),
+                        defaultAreaMode: 'active',
+                        defaultAreaId: 'area-home',
+                    },
+                },
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Area filtered capture' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalledWith('Area filtered capture', expect.objectContaining({
+                areaId: 'area-work',
+                status: 'inbox',
+            }));
+        });
+    });
+
+    it('asks native code to hide standalone quick add without promoting the main window', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        renderQuickAddModal({ standaloneWindow: true });
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Close quietly' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+        await waitFor(() => {
+            expect(tauriMocks.invoke).toHaveBeenCalledWith('hide_quick_add_window');
+        });
+        expect(tauriMocks.hide).not.toHaveBeenCalled();
+    });
+
+    it("stars a task for Today's Focus from the add task modal", async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'File Q3 estimated tax payment' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: "Add to today's focus" }));
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalledWith('File Q3 estimated tax payment', expect.objectContaining({
+                status: 'inbox',
+                isFocusedToday: true,
+            }));
+        });
+    });
+
+    it('creates a new quick-add project in the parsed area', async () => {
+        const addProject = vi.fn(async () => ({
+            id: 'project-launch',
+            title: 'Launch',
+            color: '#3b82f6',
+            order: 0,
+            status: 'active' as const,
+            tagIds: [],
+            createdAt: '2026-04-01T00:00:00.000Z',
+            updatedAt: '2026-04-01T00:00:00.000Z',
+        }));
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addProject,
+                addTask,
+                settings: {
+                    ...state.settings,
+                    quickAddAutoClean: true,
+                },
+                _allAreas: [{
+                    id: 'area-work',
+                    name: 'Work',
+                    color: '#3b82f6',
+                    order: 0,
+                    createdAt: '2026-04-01T00:00:00.000Z',
+                    updatedAt: '2026-04-01T00:00:00.000Z',
+                }],
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Plan campaign +Launch !Work' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(addProject).toHaveBeenCalledWith('Launch', expect.any(String), { areaId: 'area-work' });
+        });
+        expect(addTask).toHaveBeenCalledWith('Plan campaign', expect.objectContaining({
+            projectId: 'project-launch',
+            areaId: undefined,
+        }));
+    });
+
+    it('opens the created project task when save and edit is requested', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-created' }));
+        const navigateListener = vi.fn();
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+        window.addEventListener('stride:navigate', navigateListener);
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: {
+                    initialValue: 'Draft launch brief',
+                    initialProps: { projectId: 'project-launch', status: 'next' },
+                },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save & edit' }));
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalledWith('Draft launch brief', expect.objectContaining({
+                projectId: 'project-launch',
+                status: 'next',
+            }));
+        });
+        expect(useUiStore.getState().projectView.selectedProjectId).toBe('project-launch');
+        expect(useUiStore.getState().editingTaskId).toBe('task-created');
+        expect(useTaskStore.getState().highlightTaskId).toBe('task-created');
+        expect(navigateListener).toHaveBeenCalledWith(expect.objectContaining({
+            detail: { view: 'projects' },
+        }));
+        window.removeEventListener('stride:navigate', navigateListener);
+    });
+
+    it('flashes the created row on a plain save from a project-preset capture (#916)', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-created' }));
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, addTask }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: {
+                    initialValue: 'Draft launch brief',
+                    initialProps: { projectId: 'project-launch', status: 'next' },
+                },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalled();
+        });
+        expect(useTaskStore.getState().highlightTaskId).toBe('task-created');
+    });
+
+    it('does not flash on a global capture with no project preset (#916)', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-global' }));
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, addTask }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: {
+                    initialValue: 'Loose thought',
+                    initialProps: { status: 'inbox' },
+                },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalled();
+        });
+        expect(useTaskStore.getState().highlightTaskId).toBeNull();
+    });
+
+    it('saves and opens the task for editing on Ctrl+Enter', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-shortcut' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Draft launch brief' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.keyDown(screen.getByPlaceholderText('Add Task'), { key: 'Enter', ctrlKey: true });
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalledWith('Draft launch brief', expect.anything());
+        });
+
+        await waitFor(() => {
+            expect(useUiStore.getState().editingTaskId).toBe('task-shortcut');
+        });
+    });
+
+    it('saves and keeps the dialog open for the next entry on Shift+Enter', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-batch' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'First batch entry' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.keyDown(screen.getByPlaceholderText('Add Task'), { key: 'Enter', shiftKey: true });
+
+        await waitFor(() => {
+            expect(addTask).toHaveBeenCalledWith('First batch entry', expect.anything());
+        });
+
+
+        await waitFor(() => {
+            expect(screen.getByPlaceholderText('Add Task')).toHaveValue('');
+        });
+        expect(useUiStore.getState().editingTaskId).toBeNull();
+    });
+
+    it('keeps the Esc chip and hidden file input out of the dialog tab order', async () => {
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Check tab stops' },
+            }));
+            await Promise.resolve();
+        });
+
+        const dialog = screen.getByRole('dialog');
+        const closeButton = screen.getByRole('button', { name: 'Close' });
+        const fileInput = screen.getByLabelText('Import text file');
+        expect(closeButton).toHaveAttribute('tabindex', '-1');
+        expect(fileInput).toHaveAttribute('tabindex', '-1');
+        expect(document.querySelector('[role="button"][tabindex="0"][aria-label="Close"]')).toBeNull();
+
+        const focusable = Array.from(
+            dialog.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]')
+        ).filter((element) => element.tabIndex >= 0 && !element.hasAttribute('disabled'));
+        expect(focusable).not.toContain(closeButton);
+        expect(focusable).not.toContain(fileInput);
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) throw new Error('Expected focusable Quick Add controls');
+        last.focus();
+        fireEvent.keyDown(last, { key: 'Tab' });
+        expect(document.activeElement).toBe(first);
+        expect(document.activeElement).not.toBe(closeButton);
+    });
+
+    it('uploads browser images only on Save and retries a failed durable save without another task or PUT', async () => {
+        const addTask = vi.fn(async (title: string, props?: Partial<Task>) => {
+            const timestamp = new Date().toISOString();
+            useTaskStore.setState({ _allTasks: [{ id: 'browser-task', title, status: 'inbox', tags: [], contexts: [], createdAt: timestamp, updatedAt: timestamp, ...props }] });
+            return { success: true, id: 'browser-task' };
+        });
+        const flush = vi.spyOn(core, 'flushPendingSave').mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue(undefined);
+        const upload = createDeferred<Response>();
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => upload.promise);
+        act(() => useTaskStore.setState({ addTask }));
+        renderQuickAddModal();
+        await act(async () => { window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'Keep text' } })); });
+        const input = screen.getByPlaceholderText('Add Task');
+        fireEvent.paste(input, { clipboardData: createImageClipboardData(new File(['png'], 'image.png', { type: 'image/png' })) });
+        await screen.findByText('1 image attached');
+        expect(fetcher).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+        fireEvent.change(input, { target: { value: 'Keep text and continued typing' } });
+        fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+        expect(addTask).not.toHaveBeenCalled();
+        await act(async () => { upload.resolve(new Response(null, { status: 200 })); });
+        await waitFor(() => expect(flush).toHaveBeenCalledOnce());
+        expect(addTask).toHaveBeenCalledWith('Keep text and continued typing', expect.objectContaining({ attachments: [expect.objectContaining({ uri: '', cloudKey: expect.stringMatching(/^attachments\//) })] }));
+        expect(input).toHaveValue('Keep text and continued typing');
+        expect(screen.getByText(/Retry Save or remove the file/)).toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(screen.queryByPlaceholderText('Add Task')).not.toBeInTheDocument());
+        expect(addTask).toHaveBeenCalledOnce();
+        expect(fetcher).toHaveBeenCalledOnce();
+        flush.mockRestore(); fetcher.mockRestore();
+    });
+
+    it('merges browser retry drafts onto peer changes admitted by a held sync writer', async () => {
+        const flush = vi.spyOn(core, 'flushPendingSave')
+            .mockRejectedValueOnce(new Error('storage unavailable'))
+            .mockRejectedValueOnce(new Error('storage unavailable'))
+            .mockResolvedValue(undefined);
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+        const originalAddTask = useTaskStore.getState().addTask;
+        let firstPublish: Promise<void> | undefined;
+        const addTask = vi.spyOn(useTaskStore.getState(), 'addTask').mockImplementation(async (title, props) => {
+            const result = await originalAddTask(title, props);
+            if (result.success && result.id) {
+                const created = useTaskStore.getState()._tasksById.get(result.id)!;
+                const peer = { ...created.attachments![0], id: 'first-peer', cloudKey: 'attachments/first-peer.png' };
+                firstPublish = core.runSyncStoreSave(async () => {
+                    useTaskStore.setState({ _allTasks: [{ ...created, attachments: [...created.attachments!, peer] }] });
+                });
+            }
+            return result;
+        });
+        let finish: (() => Promise<void>) | undefined;
+        try {
+            act(() => useTaskStore.setState({ _allTasks: [], settings: { deviceId: 'browser-device' } }));
+            renderQuickAddModal();
+            await act(async () => { window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'Keep text' } })); });
+            const input = screen.getByPlaceholderText('Add Task');
+            fireEvent.paste(input, { clipboardData: createImageClipboardData(new File(['png'], 'image.png', { type: 'image/png' })) });
+            await screen.findByText('1 image attached');
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await waitFor(() => expect(flush).toHaveBeenCalledOnce());
+            await firstPublish;
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled());
+            const admitted = useTaskStore.getState().tasks[0];
+            const peer = { ...admitted.attachments![0], id: 'peer-image', cloudKey: 'attachments/peer-image.png' };
+            finish = holdSyncSave(() => useTaskStore.setState({ _allTasks: [{
+                ...admitted, title: 'Peer title', attachments: [...admitted.attachments!, peer], rev: (admitted.rev ?? 0) + 1,
+            }] }));
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+            await act(async () => { await finish!(); });
+            await waitFor(() => expect(flush).toHaveBeenCalledTimes(2));
+            expect(useTaskStore.getState().tasks[0]).toMatchObject({ title: 'Peer title', attachments: [...admitted.attachments!, peer] });
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await waitFor(() => expect(screen.queryByPlaceholderText('Add Task')).not.toBeInTheDocument());
+            expect(useTaskStore.getState().tasks[0]).toMatchObject({ title: 'Peer title', attachments: [...admitted.attachments!, peer] });
+            expect(addTask).toHaveBeenCalledOnce();
+            expect(fetcher).toHaveBeenCalledOnce();
+        } finally {
+            await finish?.();
+            flush.mockRestore(); fetcher.mockRestore(); addTask.mockRestore();
+        }
+    });
+
+    it.each([false, true])('checks browser configuration inside a held writer (prior admission: %s)', async (priorAdmission) => {
+        const flush = vi.spyOn(core, 'flushPendingSave').mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue(undefined);
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+        let finish: (() => Promise<void>) | undefined;
+        try {
+            act(() => useTaskStore.setState({ _allTasks: [], settings: { deviceId: 'browser-device' } }));
+            renderQuickAddModal();
+            await act(async () => { window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'Original draft' } })); });
+            const input = screen.getByPlaceholderText('Add Task');
+            fireEvent.paste(input, { clipboardData: createImageClipboardData(new File(['png'], 'image.png', { type: 'image/png' })) });
+            await screen.findByText('1 image attached');
+            if (priorAdmission) {
+                fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+                await waitFor(() => expect(flush).toHaveBeenCalledOnce());
+                await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled());
+            }
+            const before = structuredClone(useTaskStore.getState().tasks);
+            finish = holdSyncSave(() => undefined);
+            fireEvent.change(input, { target: { value: 'Changed live draft' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+            await writeCloudConfig({ url: 'https://cloud.example.com', token: 'test-token-1234567890' }, {
+                isTauriRuntimeEnv: () => false, maybeMigrateLegacyLocalStorageToConfig: async () => undefined,
+                reportError: vi.fn(), invokeNative: async <T,>() => undefined as T,
+            });
+            await act(async () => { await finish!(); });
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled());
+            expect(useTaskStore.getState().tasks).toEqual(before);
+            expect(input).toHaveValue('Changed live draft');
+            expect(screen.getByText(/The draft or sync configuration changed/)).toBeVisible();
+            expect(fetcher).toHaveBeenCalledOnce();
+        } finally {
+            await finish?.();
+            flush.mockRestore(); fetcher.mockRestore();
+        }
+    });
+
+    it('rejects an unmounted browser capture when its writer resumes after another dialog opens', async () => {
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+        const finish = holdSyncSave(() => undefined);
+        try {
+            act(() => useTaskStore.setState({ _allTasks: [], settings: { deviceId: 'browser-device' } }));
+            const first = renderQuickAddModal();
+            await act(async () => { window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'Old draft' } })); });
+            fireEvent.paste(screen.getByPlaceholderText('Add Task'), { clipboardData: createImageClipboardData(new File(['png'], 'image.png', { type: 'image/png' })) });
+            await screen.findByText('1 image attached');
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+            first.unmount();
+            renderQuickAddModal();
+            await act(async () => { window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'New draft' } })); });
+            await act(async () => { await finish(); });
+            expect(useTaskStore.getState().tasks).toEqual([]);
+            expect(screen.getByPlaceholderText('Add Task')).toHaveValue('New draft');
+            expect(screen.queryByText(/The draft or sync configuration changed/)).not.toBeInTheDocument();
+            expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(['PUT']);
+        } finally {
+            await finish();
+            fetcher.mockRestore();
+        }
+    });
+
+    it('attaches a pasted image to a text quick-add task', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Capture receipt' },
+            }));
+            await Promise.resolve();
+        });
+
+        const file = new File([new Uint8Array([1, 2, 3])], 'receipt.png', { type: 'image/png' });
+        fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+            clipboardData: createImageClipboardData(file),
+        });
+
+        await waitFor(() => {
+            expect(fsMocks.writeFile).toHaveBeenCalled();
+            expect(screen.getByText('1 image attached')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => expect(addTask).toHaveBeenCalled());
+        expect(fsMocks.mkdir).toHaveBeenCalledWith('/data/stride/quick-add-images', {
+            recursive: true,
+        });
+        expect(fsMocks.writeFile).toHaveBeenCalledWith(
+            expect.stringMatching(/^\/data\/stride\/quick-add-images\/stride-paste-/),
+            expect.any(Uint8Array),
+        );
+        expect(addTask).toHaveBeenCalledWith('Capture receipt', expect.objectContaining({
+            attachments: [
+                expect.objectContaining({
+                    kind: 'file',
+                    title: expect.stringContaining('Screenshot'),
+                    uri: expect.stringContaining('/data/stride/quick-add-images/stride-paste-'),
+                    mimeType: 'image/png',
+                    size: 3,
+                }),
+            ],
+        }));
+    });
+
+    it('falls back to the async clipboard API when the paste event is empty (WebKitGTK)', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+        const read = vi.fn(async () => [{
+            types: ['image/png'],
+            getType: async () => new Blob([new Uint8Array([9, 9, 9, 9])], { type: 'image/png' }),
+        }]);
+        const originalClipboard = navigator.clipboard;
+        Object.defineProperty(navigator, 'clipboard', { value: { read }, configurable: true });
+
+        try {
+            renderQuickAddModal();
+            await act(async () => {
+                window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                    detail: { initialValue: 'Capture screenshot' },
+                }));
+                await Promise.resolve();
+            });
+
+            fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+                clipboardData: { getData: () => '', types: [], files: [], items: [] },
+            });
+
+            await waitFor(() => {
+                expect(read).toHaveBeenCalled();
+                expect(screen.getByText('1 image attached')).toBeInTheDocument();
+            });
+            expect(fsMocks.writeFile).toHaveBeenCalledWith(
+                expect.stringMatching(/^\/data\/stride\/quick-add-images\/stride-paste-/),
+                expect.any(Uint8Array),
+            );
+        } finally {
+            Object.defineProperty(navigator, 'clipboard', { value: originalClipboard, configurable: true });
+        }
+    });
+
+    it('does not touch the async clipboard API for an ordinary text paste', async () => {
+        const read = vi.fn(async () => []);
+        const originalClipboard = navigator.clipboard;
+        Object.defineProperty(navigator, 'clipboard', { value: { read }, configurable: true });
+
+        try {
+            renderQuickAddModal();
+            await act(async () => {
+                window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: {} }));
+                await Promise.resolve();
+            });
+
+            fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+                clipboardData: { getData: () => 'plain text', types: ['text/plain'], files: [], items: [] },
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+            });
+            expect(read).not.toHaveBeenCalled();
+        } finally {
+            Object.defineProperty(navigator, 'clipboard', { value: originalClipboard, configurable: true });
+        }
+    });
+
+    it('creates a screenshot-titled task for an image-only quick add paste', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+            await Promise.resolve();
+        });
+
+        const file = new File([new Uint8Array([4, 5])], 'screenshot.png', { type: 'image/png' });
+        fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+            clipboardData: createImageClipboardData(file),
+        });
+
+        await waitFor(() => {
+            expect(screen.getByText('1 image attached')).toBeInTheDocument();
+        });
+
+        const saveButton = screen.getByRole('button', { name: 'Save' });
+        await waitFor(() => expect(saveButton).not.toBeDisabled());
+        fireEvent.click(saveButton);
+
+        await waitFor(() => expect(addTask).toHaveBeenCalled());
+        const [title, props] = addTask.mock.calls[0] as unknown as [string, Record<string, unknown>];
+        expect(title).toContain('Screenshot');
+        expect(props).toEqual(expect.objectContaining({
+            status: 'inbox',
+            attachments: [
+                expect.objectContaining({
+                    kind: 'file',
+                    title: expect.stringContaining('Screenshot'),
+                    mimeType: 'image/png',
+                    size: 2,
+                }),
+            ],
+        }));
+    });
+
+    it('confirms and creates one task per nonblank pasted text line', async () => {
+        const addTasks = vi.fn(async () => ({ success: true, ids: ['task-id'] }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTasks,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+            await Promise.resolve();
+        });
+
+        fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+            clipboardData: {
+                files: [],
+                items: [],
+                getData: (type: string) => type === 'text/plain'
+                    ? 'Email Bob\nCall Alice\nReview notes'
+                    : '',
+            },
+        });
+
+        expect(await screen.findByText('Create 3 tasks?')).toBeInTheDocument();
+        expect(screen.getByText('Email Bob')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create tasks' }));
+
+        await waitFor(() => expect(addTasks).toHaveBeenCalledTimes(1));
+        expect(addTasks).toHaveBeenCalledWith([
+            { title: 'Email Bob', initialProps: expect.objectContaining({ status: 'inbox' }) },
+            { title: 'Call Alice', initialProps: expect.objectContaining({ status: 'inbox' }) },
+            { title: 'Review notes', initialProps: expect.objectContaining({ status: 'inbox' }) },
+        ]);
+    });
+
+    it('automatically keeps blank-line-separated project text as one task', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: {
+                    initialProps: {
+                        projectId: 'project-id',
+                        status: 'next',
+                    },
+                },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+            clipboardData: {
+                files: [],
+                items: [],
+                getData: (type: string) => type === 'text/plain'
+                    ? 'WeCom message one\n\nWeCom message two'
+                    : '',
+            },
+        });
+
+        expect(screen.getByPlaceholderText('Add Task')).toHaveValue('WeCom message one WeCom message two');
+        expect(screen.queryByText('Create 2 tasks?')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => expect(addTask).toHaveBeenCalledTimes(1));
+        expect(addTask).toHaveBeenCalledWith(
+            'WeCom message one WeCom message two',
+            expect.objectContaining({ projectId: 'project-id', status: 'next' }),
+        );
+    });
+
+    it('imports a text file through the same bulk quick-add confirmation', async () => {
+        const addTasks = vi.fn(async () => ({ success: true, ids: ['task-id'] }));
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTasks,
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+            await Promise.resolve();
+        });
+
+        const file = new File(['First imported task\nSecond imported task\n'], 'tasks.txt', { type: 'text/plain' });
+        fireEvent.change(screen.getByLabelText('Import text file'), {
+            target: { files: [file] },
+        });
+
+        expect(await screen.findByText('Create 2 tasks?')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Create tasks' }));
+
+        await waitFor(() => expect(addTasks).toHaveBeenCalledTimes(1));
+        expect(dataTransferMocks.createDesktopRecoverySnapshot).toHaveBeenCalledOnce();
+        expect(dataTransferMocks.createDesktopRecoverySnapshot.mock.invocationCallOrder[0])
+            .toBeLessThan(addTasks.mock.invocationCallOrder[0]);
+        expect(addTasks).toHaveBeenCalledWith([
+            { title: 'First imported task', initialProps: expect.objectContaining({ status: 'inbox' }) },
+            { title: 'Second imported task', initialProps: expect.objectContaining({ status: 'inbox' }) },
+        ]);
+    });
+
+    it('imports a .txt file through the native dialog in the desktop app, marking it as Stride\'s own dialog (#1472)', async () => {
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        dialogMocks.open.mockResolvedValueOnce('/home/me/tasks.txt');
+        fsMocks.readTextFile.mockResolvedValueOnce('First imported task\nSecond imported task\n');
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add'));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Import .txt' }));
+
+        expect(await screen.findByText('Create 2 tasks?')).toBeInTheDocument();
+        expect(dialogMocks.open).toHaveBeenCalledWith(expect.objectContaining({
+            filters: [{ name: 'Text', extensions: ['txt'] }],
+        }));
+        expect(fsMocks.readTextFile).toHaveBeenCalledWith('/home/me/tasks.txt');
+        const commands = tauriMocks.invoke.mock.calls.map(([command]) => command);
+        expect(commands.indexOf('app_lock_dialog_begin')).toBeGreaterThanOrEqual(0);
+        await waitFor(() => expect(tauriMocks.invoke.mock.calls.map(([command]) => command)).toContain('app_lock_dialog_end'));
+    });
+
+    it('shows a settings notice and keeps the dialog open when speech-to-text is unconfigured', async () => {
+
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Voice note' },
+            }));
+            await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Audio' }));
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(useUiStore.getState().toasts.some((toast) => (
+                toast.message === 'Enable a speech-to-text model in Settings to use voice input.'
+            ))).toBe(true);
+        });
+
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Start recording' })).toBeInTheDocument();
+        expect(tauriMocks.invoke).not.toHaveBeenCalledWith('start_audio_recording');
+    });
+
+    it.each(['text', 'audio'] as const)('starts recording with Enter from %s capture when speech-to-text is configured', async (captureMode) => {
+
+
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        act(() => {
+            useUiStore.setState({ toasts: [] });
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Voice note', captureMode },
+            }));
+            await Promise.resolve();
+        });
+
+        if (captureMode === 'text') fireEvent.click(screen.getByRole('button', { name: 'Audio' }));
+
+        await act(async () => {
+            expect(screen.getByRole('button', { name: 'Start recording' })).toHaveFocus();
+            await userEvent.keyboard('{Enter}');
+            await Promise.resolve();
+        });
+
+        expect(tauriMocks.invoke).toHaveBeenCalledWith('start_audio_recording');
+        expect(useUiStore.getState().toasts.some((toast) => (
+            toast.message === 'Enable a speech-to-text model in Settings to use voice input.'
+        ))).toBe(false);
+    });
+
+    it('keeps audio keyboard focus through startup so Enter can stop recording', async () => {
+        const starting = createDeferred();
+        const stopping = createDeferred();
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return starting.promise;
+            if (command === 'stop_audio_recording') return stopping.promise;
+            return false;
+        });
+        act(() => useTaskStore.setState((state) => ({
+            settings: { ...state.settings, ai: { ...state.settings.ai, speechToText: {
+                enabled: true, provider: 'whisper', offlineModelPath: '/models/whisper.bin',
+            } } },
+        })));
+        renderQuickAddModal();
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+        });
+        const recorder = screen.getByRole('button', { name: 'Start recording' });
+        expect(recorder).toHaveFocus();
+        await userEvent.keyboard('{Enter}');
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith('start_audio_recording'));
+
+        expect(recorder).not.toBeDisabled();
+        expect(recorder).toHaveAttribute('aria-disabled', 'true');
+        await userEvent.keyboard('{Enter}');
+        expect(tauriMocks.invoke.mock.calls.filter(([name]) => name === 'start_audio_recording')).toHaveLength(1);
+        await act(async () => { starting.resolve(); });
+        expect(screen.getByRole('button', { name: 'Stop recording' })).toHaveFocus();
+        await userEvent.keyboard('{Enter}');
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith('stop_audio_recording'));
+        await userEvent.keyboard('{Enter}');
+        expect(tauriMocks.invoke.mock.calls.filter(([name]) => name === 'stop_audio_recording')).toHaveLength(1);
+
+        await act(async () => { stopping.resolve(undefined); });
+    });
+
+    it('serializes deferred start A cleanup before recording in reopened capture B', async () => {
+        const startA = createDeferred();
+        const calls: string[] = [];
+        let startCount = 0;
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') {
+                startCount += 1;
+                calls.push(`start-${startCount}`);
+                if (startCount === 1) return startA.promise;
+                return undefined;
+            }
+            if (command === 'stop_audio_recording') {
+                calls.push('stop-stale-a');
+                return {
+                    path: '/data/stale-a.wav',
+                    sampleRate: 16_000,
+                    channels: 1,
+                    size: 64,
+                };
+            }
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await waitFor(() => expect(calls).toEqual(['start-1']));
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+
+        await act(async () => {
+            startA.resolve();
+            await startA.promise;
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Stop recording' })).toBeInTheDocument());
+
+        expect(calls).toEqual(['start-1', 'stop-stale-a', 'start-2']);
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('waits for active recording A cancellation before starting reopened capture B', async () => {
+        const cancelA = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const calls: string[] = [];
+        let startCount = 0;
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') {
+                startCount += 1;
+                calls.push(`start-${startCount}`);
+                return undefined;
+            }
+            if (command === 'stop_audio_recording') {
+                calls.push('stop-a');
+                return cancelA.promise;
+            }
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Stop recording' })).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(calls).toEqual(['start-1', 'stop-a']);
+
+        await act(async () => {
+            cancelA.resolve({
+                path: '/data/cancelled-a.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 64,
+            });
+            await cancelA.promise;
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Stop recording' })).toBeInTheDocument());
+        expect(calls).toEqual(['start-1', 'stop-a', 'start-2']);
+    });
+
+    it('does not surface a deferred start A error in reopened capture B', async () => {
+        const startA = createDeferred();
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return startA.promise;
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith('start_audio_recording'));
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            startA.reject(new Error('microphone bridge failed'));
+            await Promise.resolve();
+        });
+
+        expect(screen.getByRole('button', { name: 'Start recording' })).toBeInTheDocument();
+        expect(screen.queryByText(/We could not record audio/)).not.toBeInTheDocument();
+    });
+
+    it('does not install an auto-save timeout for stale start A after capture B opens', async () => {
+        const startA = createDeferred();
+        let stopCount = 0;
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return startA.promise;
+            if (command === 'stop_audio_recording') {
+                stopCount += 1;
+                return {
+                    path: '/data/stale-a.wav',
+                    sampleRate: 16_000,
+                    channels: 1,
+                    size: 64,
+                };
+            }
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        const timeoutSpy = vi.spyOn(window, 'setTimeout');
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith('start_audio_recording'));
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { initialValue: 'Capture B' } }));
+            startA.resolve();
+            await startA.promise;
+            await Promise.resolve();
+        });
+
+        expect(stopCount).toBe(1);
+        expect(timeoutSpy.mock.calls.some(([, delay]) => delay === MAX_AUDIO_RECORDING_SECONDS * 1000)).toBe(false);
+        expect(screen.getByPlaceholderText('Add Task')).toHaveValue('Capture B');
+        timeoutSpy.mockRestore();
+    });
+
+    it('owns audio processing as a non-dismissible capture submission', async () => {
+        const stoppedCapture = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const addTask = vi.fn(async () => ({ success: true, id: 'audio-task' }));
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return undefined;
+            if (command === 'stop_audio_recording') return stoppedCapture.promise;
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }));
+            await Promise.resolve();
+        });
+
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+        await act(async () => {
+            stoppedCapture.resolve({
+                path: '/data/audio-a.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 128,
+            });
+            await stoppedCapture.promise;
+        });
+        await waitFor(() => expect(addTask).toHaveBeenCalledTimes(1));
+    });
+
+
+    it('keeps a voice capture as an attachment when transcription fails', async () => {
+        const stoppedCapture = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const addTask = vi.fn(async () => ({ success: true, id: 'audio-task' }));
+        const updateTask = vi.fn(async () => ({ success: true }));
+        const audioTask: Task = {
+            id: 'audio-task',
+            title: 'Audio note',
+            status: 'inbox',
+            tags: [],
+            contexts: [],
+            attachments: [],
+            createdAt: '2026-09-18T00:00:00.000Z',
+            updatedAt: '2026-09-18T00:00:00.000Z',
+        };
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return undefined;
+            if (command === 'stop_audio_recording') return stoppedCapture.promise;
+            if (command === 'transcribe_whisper') throw new Error('Whisper model not found');
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                updateTask,
+                tasks: [audioTask],
+                _allTasks: [audioTask],
+                _tasksById: new Map([[audioTask.id, audioTask]]),
+                settings: {
+                    ...state.settings,
+                    gtd: {
+                        ...(state.settings?.gtd ?? {}),
+                        saveAudioAttachments: false,
+                    },
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            stoppedCapture.resolve({
+                path: '/data/audio-kept.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 128,
+            });
+            await stoppedCapture.promise;
+        });
+
+        await waitFor(() => expect(updateTask).toHaveBeenCalled());
+        expect(updateTask).toHaveBeenCalledWith('audio-task', expect.objectContaining({
+            attachments: [expect.objectContaining({
+                kind: 'file',
+                mimeType: 'audio/wav',
+                uri: '/data/audio-kept.wav',
+            })],
+        }));
+        expect(fsMocks.remove).not.toHaveBeenCalledWith('/data/audio-kept.wav');
+    });
+
+
+    it('keeps a voice capture when the transcript never reached the task', async () => {
+        const stoppedCapture = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const addTask = vi.fn(async () => ({ success: true, id: 'audio-task' }));
+        const updateTask = vi.fn(async () => ({ success: true }));
+        const audioTask: Task = {
+            id: 'audio-task',
+            title: 'Audio note',
+            status: 'inbox',
+            tags: [],
+            contexts: [],
+            attachments: [],
+            createdAt: '2026-09-18T00:00:00.000Z',
+            updatedAt: '2026-09-18T00:00:00.000Z',
+        };
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return undefined;
+            if (command === 'stop_audio_recording') return stoppedCapture.promise;
+
+
+            if (command === 'transcribe_whisper') return '';
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                updateTask,
+                tasks: [audioTask],
+                _allTasks: [audioTask],
+                _tasksById: new Map([[audioTask.id, audioTask]]),
+                settings: {
+                    ...state.settings,
+                    gtd: {
+                        ...(state.settings?.gtd ?? {}),
+                        saveAudioAttachments: false,
+                    },
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            stoppedCapture.resolve({
+                path: '/data/audio-silent.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 128,
+            });
+            await stoppedCapture.promise;
+        });
+
+        await waitFor(() => expect(updateTask).toHaveBeenCalled());
+        expect(updateTask).toHaveBeenCalledWith('audio-task', {
+            attachments: [expect.objectContaining({
+                kind: 'file',
+                mimeType: 'audio/wav',
+                uri: '/data/audio-silent.wav',
+            })],
+        });
+        expect(fsMocks.remove).not.toHaveBeenCalledWith('/data/audio-silent.wav');
+    });
+
+    it('toasts an unreadable date command and keeps Quick Add open', async () => {
+        const addTask = vi.fn(async () => ({ success: true, id: 'task-id' }));
+        act(() => {
+            useUiStore.setState({ toasts: [] });
+            useTaskStore.setState((state) => ({ ...state, addTask }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Task /start:monx' },
+            }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await Promise.resolve();
+        });
+
+        expect(addTask).not.toHaveBeenCalled();
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        await waitFor(() => {
+            expect(useUiStore.getState().toasts.some((toast) => (
+                toast.message.startsWith('Invalid date command')
+            ))).toBe(true);
+        });
+    });
+
+    it('toasts a rejected capture and keeps Quick Add open', async () => {
+        const addTask = vi.fn(async () => ({ success: false, error: 'Archived project' }));
+        act(() => {
+            useUiStore.setState({ toasts: [] });
+            useTaskStore.setState((state) => ({ ...state, addTask }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Rejected capture' },
+            }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+            await Promise.resolve();
+        });
+
+        expect(addTask).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        await waitFor(() => {
+            expect(useUiStore.getState().toasts.some((toast) => (
+                toast.message === 'Failed to add task'
+            ))).toBe(true);
+        });
+    });
+
+    it('keeps the audio capture dialog open when the task write is rejected', async () => {
+        const stoppedCapture = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const addTask = vi.fn(async () => ({ success: false, error: 'Archived project' }));
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return undefined;
+            if (command === 'stop_audio_recording') return stoppedCapture.promise;
+            return false;
+        });
+        act(() => {
+            useUiStore.setState({ toasts: [] });
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            stoppedCapture.resolve({
+                path: '/data/audio-rejected.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 128,
+            });
+            await stoppedCapture.promise;
+        });
+
+        await waitFor(() => expect(addTask).toHaveBeenCalledTimes(1));
+
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        await waitFor(() => {
+            expect(useUiStore.getState().toasts.some((toast) => (
+                toast.message === 'Failed to add task'
+            ))).toBe(true);
+        });
+    });
+
+    it('does not let an unmounted audio capture create into a reopened session', async () => {
+        const stoppedCapture = createDeferred<{
+            path: string;
+            sampleRate: number;
+            channels: number;
+            size: number;
+        }>();
+        const addTask = vi.fn(async () => ({ success: true, id: 'stale-audio-task' }));
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') return undefined;
+            if (command === 'stop_audio_recording') return stoppedCapture.promise;
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                addTask,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        const first = renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }));
+            await Promise.resolve();
+        });
+
+        first.unmount();
+        renderQuickAddModal();
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', {
+                detail: { initialValue: 'Second capture' },
+            }));
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            stoppedCapture.resolve({
+                path: '/data/audio-a.wav',
+                sampleRate: 16_000,
+                channels: 1,
+                size: 128,
+            });
+            await stoppedCapture.promise;
+            await Promise.resolve();
+        });
+
+        expect(addTask).not.toHaveBeenCalled();
+        expect(screen.getByPlaceholderText('Add Task')).toHaveValue('Second capture');
+        expect(fsMocks.remove).toHaveBeenCalledWith('/data/audio-a.wav');
+        expect(fsMocks.remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels an active audio recorder when the modal owner unmounts', async () => {
+        const calls: string[] = [];
+        (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+        tauriMocks.invoke.mockImplementation(async (command?: string) => {
+            if (command === 'start_audio_recording') {
+                calls.push('start');
+                return undefined;
+            }
+            if (command === 'stop_audio_recording') {
+                calls.push('cancel');
+                return {
+                    path: '/data/unmounted.wav',
+                    sampleRate: 16_000,
+                    channels: 1,
+                    size: 64,
+                };
+            }
+            return false;
+        });
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: {
+                    ...state.settings,
+                    ai: {
+                        ...state.settings?.ai,
+                        speechToText: {
+                            enabled: true,
+                            provider: 'whisper',
+                            offlineModelPath: '/models/whisper.bin',
+                        },
+                    },
+                },
+            }));
+        });
+        const view = renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: { captureMode: 'audio' } }));
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Start recording' }));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Stop recording' })).toBeInTheDocument());
+
+        view.unmount();
+        await waitFor(() => expect(calls).toEqual(['start', 'cancel']));
+    });
+
+    it('creates a bulk import in a single store commit (#942)', async () => {
+        const lines = Array.from({ length: 100 }, (_, index) => `Item ${index + 1} of Example bulk import #DeleteMe`);
+        renderQuickAddModal();
+
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('stride:quick-add', { detail: {} }));
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            fireEvent.paste(screen.getByPlaceholderText('Add Task'), {
+                clipboardData: { getData: () => lines.join('\n'), files: [], items: [] },
+            });
+            await Promise.resolve();
+        });
+
+
+        let commits = 0;
+        const unsubscribe = useTaskStore.subscribe((state, prevState) => {
+            if (state.lastDataChangeAt !== prevState.lastDataChangeAt) commits += 1;
+        });
+        try {
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Create tasks' }));
+                await Promise.resolve();
+            });
+        } finally {
+            unsubscribe();
+        }
+
+        expect(useTaskStore.getState().tasks).toHaveLength(100);
+        expect(commits).toBe(1);
+    });
+});
+
+
+describe('QuickAddModal closed-overlay derived-state gating (PERF-01)', () => {
+    const BASE_ISO = '2026-05-01T09:00:00.000Z';
+    const bigTasks: Task[] = Array.from({ length: 7_000 }, (_, index) => ({
+        id: `perf-task-${index}`,
+        title: `Synthetic task ${index}`,
+        status: 'next',
+        tags: [],
+        contexts: [],
+        createdAt: BASE_ISO,
+        updatedAt: BASE_ISO,
+    }));
+
+    beforeEach(() => {
+        act(() => {
+            useTaskStore.setState({
+                _allTasks: bigTasks,
+                _tasksById: buildEntityMap(bigTasks),
+            });
+        });
+    });
+
+    it('costs zero derived-state rebuilds on a write plus a re-render while closed', async () => {
+        renderQuickAddModal();
+
+        beginNotifyProfile();
+        let profile: ReturnType<typeof endNotifyProfile>;
+        try {
+            await act(async () => {
+
+                await useTaskStore.getState().updateTask('perf-task-3333', { title: 'closed-overlay edit' });
+
+
+                useTaskStore.setState((state) => ({ areas: [...state.areas] }));
+            });
+        } finally {
+            profile = endNotifyProfile();
+        }
+        expect(profile?.derivedRebuildCount).toBe(0);
+    });
+
+
+    it('rebuilds when a listener reads getDerivedState() unconditionally (old shape)', async () => {
+        const unsubscribe = useTaskStore.subscribe((state) => state.getDerivedState());
+        beginNotifyProfile();
+        let profile: ReturnType<typeof endNotifyProfile>;
+        try {
+            await useTaskStore.getState().updateTask('perf-task-4444', { title: 'canary edit' });
+        } finally {
+            profile = endNotifyProfile();
+            unsubscribe();
+        }
+        expect(profile?.derivedRebuildCount).toBeGreaterThan(0);
+    });
+});

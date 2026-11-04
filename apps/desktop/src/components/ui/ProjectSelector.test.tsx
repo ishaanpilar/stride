@@ -1,0 +1,502 @@
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { Project } from '@stride/core';
+
+import { ProjectSelector } from './ProjectSelector';
+
+const projects: Project[] = [
+    { id: 'p1', title: 'Alpha', status: 'active', color: '#3b82f6', order: 0, tagIds: [], createdAt: '', updatedAt: '' },
+    { id: 'p2', title: 'Work Project', status: 'active', color: '#10b981', order: 1, tagIds: [], areaId: 'a1', createdAt: '', updatedAt: '' },
+];
+const originalInnerHeight = window.innerHeight;
+let restoreGeometryMock: (() => void) | undefined;
+
+
+function setInputValue(input: HTMLInputElement, value: string) {
+    const proto = Object.getPrototypeOf(Object.getPrototypeOf(input));
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    act(() => {
+        if (nativeSetter) {
+            nativeSetter.call(input, value);
+        } else {
+            (input as any).value = value;
+        }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+}
+
+function mockSelectorGeometry({
+    dropdownHeight,
+    triggerBottom,
+    triggerTop,
+    viewportHeight,
+}: {
+    dropdownHeight: number;
+    triggerBottom: number;
+    triggerTop: number;
+    viewportHeight: number;
+}) {
+    Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: viewportHeight,
+    });
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        if (this instanceof HTMLElement && this.classList.contains('relative')) {
+            return {
+                bottom: triggerBottom,
+                height: triggerBottom - triggerTop,
+                left: 0,
+                right: 320,
+                top: triggerTop,
+                width: 320,
+                x: 0,
+                y: triggerTop,
+                toJSON: () => ({}),
+            } as DOMRect;
+        }
+        if (this instanceof HTMLElement && this.dataset.selectorDropdown === 'true') {
+            return {
+                bottom: triggerBottom + dropdownHeight,
+                height: dropdownHeight,
+                left: 0,
+                right: 320,
+                top: triggerBottom,
+                width: 320,
+                x: 0,
+                y: triggerBottom,
+                toJSON: () => ({}),
+            } as DOMRect;
+        }
+        return new DOMRect();
+    });
+    restoreGeometryMock = () => spy.mockRestore();
+}
+
+afterEach(() => {
+    restoreGeometryMock?.();
+    restoreGeometryMock = undefined;
+    Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+    });
+});
+
+describe('ProjectSelector', () => {
+    it('offers a distinct leading Keep choice alongside No project', () => {
+        const onChange = vi.fn();
+        const { getByRole } = render(
+            <ProjectSelector
+                projects={projects}
+                value="__KEEP__"
+                onChange={onChange}
+                leadingOption={{ value: '__KEEP__', label: 'Keep project' }}
+                noProjectValue="__NONE__"
+                noProjectLabel="No project"
+                ariaLabel="Project"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Project' }));
+
+        expect(getByRole('option', { name: 'Keep project' })).toHaveAttribute('aria-selected', 'true');
+        fireEvent.click(getByRole('option', { name: 'No project' }));
+        expect(onChange).toHaveBeenCalledWith('__NONE__');
+    });
+
+    it('hides archived and legacy completed projects from the selectable options', () => {
+        const inactiveProjects: Project[] = [
+            ...projects,
+            { id: 'p3', title: 'Archived Project', status: 'archived', color: '#64748b', order: 2, tagIds: [], createdAt: '', updatedAt: '' },
+            { id: 'p4', title: 'Completed Project', status: 'completed' as Project['status'], color: '#64748b', order: 3, tagIds: [], createdAt: '', updatedAt: '' },
+        ];
+
+        const { getByRole, queryByRole } = render(
+            <ProjectSelector
+                projects={inactiveProjects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+
+        expect(getByRole('option', { name: 'Alpha' })).toBeInTheDocument();
+        expect(queryByRole('option', { name: 'Archived Project' })).not.toBeInTheDocument();
+        expect(queryByRole('option', { name: 'Completed Project' })).not.toBeInTheDocument();
+    });
+
+    it('renders the dropdown above nearby panels', () => {
+        const { getByRole } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+
+        const dropdown = getByRole('listbox', { name: 'Select project' }).closest('[data-selector-dropdown="true"]');
+        expect(dropdown).toHaveClass('z-[70]');
+        expect(dropdown?.parentElement).toBe(document.body);
+        expect(dropdown).toHaveStyle({ position: 'fixed' });
+    });
+
+    it('keeps the menu below the selector when compact vertical space is available', async () => {
+        mockSelectorGeometry({
+            dropdownHeight: 260,
+            triggerBottom: 280,
+            triggerTop: 250,
+            viewportHeight: 520,
+        });
+        const { getByRole } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+
+        const listbox = getByRole('listbox', { name: 'Select project' });
+        const dropdown = listbox.closest('[data-selector-dropdown="true"]');
+        await waitFor(() => {
+            expect(listbox.querySelector('[style*="max-height"]')).toHaveStyle({ maxHeight: '148px' });
+            expect(dropdown).toHaveStyle({
+                position: 'fixed',
+                top: '284px',
+                bottom: 'auto',
+                left: '8px',
+                width: '320px',
+            });
+        });
+    });
+
+    it('opens above only when the minimum usable menu cannot fit below', async () => {
+        mockSelectorGeometry({
+            dropdownHeight: 260,
+            triggerBottom: 300,
+            triggerTop: 260,
+            viewportHeight: 420,
+        });
+        const { getByRole } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+
+        const listbox = getByRole('listbox', { name: 'Select project' });
+        const dropdown = listbox.closest('[data-selector-dropdown="true"]');
+        await waitFor(() => {
+            expect(listbox.querySelector('[style*="max-height"]')).toHaveStyle({ maxHeight: '168px' });
+            expect(dropdown).toHaveStyle({
+                position: 'fixed',
+                top: 'auto',
+                bottom: '164px',
+                left: '8px',
+                width: '320px',
+            });
+        });
+    });
+
+    it('suppresses create when an exact match exists outside the filtered list', () => {
+        const { getByRole, getByLabelText, queryByText } = render(
+            <ProjectSelector
+                projects={[projects[0]]}
+                allProjects={projects}
+                value=""
+                onChange={vi.fn()}
+                onCreateProject={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+                createProjectLabel="Create project"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+        setInputValue(getByLabelText('Search projects') as HTMLInputElement, 'Work Project');
+
+        expect(queryByText(/Create project/i)).not.toBeInTheDocument();
+    });
+
+    it('searches every selectable project while the browse list stays area-scoped (#987)', () => {
+        const archivedElsewhere: Project = {
+            id: 'p3', title: 'Archived Elsewhere', status: 'archived', color: '#64748b', order: 2, tagIds: [], areaId: 'a1', createdAt: '', updatedAt: '',
+        };
+        const { getByRole, getByLabelText, queryByRole } = render(
+            <ProjectSelector
+                projects={[projects[0]]}
+                allProjects={[...projects, archivedElsewhere]}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+
+        expect(getByRole('option', { name: 'Alpha' })).toBeInTheDocument();
+        expect(queryByRole('option', { name: 'Work Project' })).not.toBeInTheDocument();
+
+        const input = getByLabelText('Search projects') as HTMLInputElement;
+        setInputValue(input, 'Work');
+        expect(getByRole('option', { name: 'Work Project' })).toBeInTheDocument();
+
+        setInputValue(input, 'Archived');
+        expect(queryByRole('option', { name: 'Archived Elsewhere' })).not.toBeInTheDocument();
+
+        setInputValue(input, '');
+        expect(queryByRole('option', { name: 'Work Project' })).not.toBeInTheDocument();
+    });
+
+    it('lists active projects first, then Someday / Waiting under a heading, and keys follow that order (#1467)', () => {
+        const onChange = vi.fn();
+        const grouped: Project[] = [
+            { ...projects[0], id: 's1', title: 'Garden someday', status: 'someday' },
+            { ...projects[0], id: 'a1', title: 'Garden active', status: 'active' },
+            { ...projects[0], id: 'w1', title: 'Garden waiting', status: 'waiting' },
+        ];
+        const { getByRole, getByLabelText, getAllByRole, getByText } = render(
+            <ProjectSelector projects={grouped} value="" onChange={onChange} placeholder="Select project"
+                searchPlaceholder="Search projects" deferredLabel="Someday / Waiting" />,
+        );
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+        const items = () => getAllByRole('option').filter((option) => option.getAttribute('data-selector-option-kind') === 'item');
+        expect(items().map((option) => option.textContent)).toEqual(['Garden active', 'Garden someday', 'Garden waiting']);
+        const heading = getByText('Someday / Waiting');
+        expect(heading.compareDocumentPosition(getByRole('option', { name: 'Garden active' })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(heading.compareDocumentPosition(getByRole('option', { name: 'Garden someday' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+
+        const input = getByLabelText('Search projects') as HTMLInputElement;
+        setInputValue(input, 'garden');
+        expect(items().map((option) => option.textContent)).toEqual(['Garden active', 'Garden someday', 'Garden waiting']);
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+        expect(getByRole('option', { name: 'Garden active' })).toHaveFocus();
+        fireEvent.keyDown(getByRole('option', { name: 'Garden active' }), { key: 'ArrowDown' });
+        expect(getByRole('option', { name: 'Garden someday' })).toHaveFocus();
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(onChange).toHaveBeenCalledWith('a1');
+    });
+
+    it('selects the first matching project from the search input with Enter', () => {
+        const onChange = vi.fn();
+        const { getByRole, getByLabelText } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={onChange}
+                onCreateProject={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+                createProjectLabel="Create project"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+        const input = getByLabelText('Search projects') as HTMLInputElement;
+        setInputValue(input, 'Work');
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(onChange).toHaveBeenCalledWith('p2');
+    });
+
+    it('moves from typed search to the first matching project with ArrowDown', () => {
+        const { getByRole, getByLabelText } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={vi.fn()}
+                onCreateProject={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+                createProjectLabel="Create project"
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Select project' }));
+        const input = getByLabelText('Search projects') as HTMLInputElement;
+        setInputValue(input, 'Work');
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+        expect(getByRole('option', { name: 'Work Project' })).toHaveFocus();
+    });
+
+    it('keeps matching project results reachable in the tab order', async () => {
+        const user = userEvent.setup();
+        const { getByRole, getByLabelText } = render(
+            <ProjectSelector
+                projects={projects}
+                value=""
+                onChange={vi.fn()}
+                onCreateProject={vi.fn()}
+                placeholder="Select project"
+                noProjectLabel="No project"
+                searchPlaceholder="Search projects"
+                createProjectLabel="Create project"
+            />
+        );
+
+        await user.click(getByRole('button', { name: 'Select project' }));
+        setInputValue(getByLabelText('Search projects') as HTMLInputElement, 'Work');
+
+        await user.tab();
+        expect(getByRole('option', { name: 'Work Project' })).toHaveFocus();
+        await user.tab();
+        expect(getByRole('option', { name: 'Create project "Work"' })).toHaveFocus();
+        await user.tab();
+        expect(getByRole('option', { name: 'No project' })).toHaveFocus();
+    });
+
+    it('prefers the empty label and falls back to the no-matches label', () => {
+        const first = render(
+            <ProjectSelector
+                projects={[]}
+                allProjects={projects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+                noMatchesLabel="No matches"
+                emptyLabel="No projects in this area."
+            />
+        );
+
+        fireEvent.click(first.getByRole('button', { name: 'Select project' }));
+        first.getByText('No projects in this area.');
+        first.unmount();
+
+        const second = render(
+            <ProjectSelector
+                projects={[]}
+                allProjects={projects}
+                value=""
+                onChange={vi.fn()}
+                placeholder="Select project"
+                searchPlaceholder="Search projects"
+                noMatchesLabel="No matches"
+            />
+        );
+
+        fireEvent.click(second.getByRole('button', { name: 'Select project' }));
+        second.getByText('No matches');
+    });
+
+    describe('while searching (#1461)', () => {
+
+        const fooBarBaz: Project[] = [
+            { ...projects[0], id: 'p-foo', title: 'foo', order: 0 },
+            { ...projects[0], id: 'p-bar', title: 'bar', order: 1 },
+            { ...projects[0], id: 'p-baz', title: 'baz', order: 2 },
+        ];
+        const renderSearching = (onChange = vi.fn(), onCreateProject = vi.fn(async () => 'p-new')) => {
+            const view = render(
+                <ProjectSelector
+                    projects={fooBarBaz}
+                    value=""
+                    onChange={onChange}
+                    onCreateProject={onCreateProject}
+                    placeholder="Select project"
+                    noProjectLabel="No project"
+                    searchPlaceholder="Search projects"
+                    createProjectLabel="Create project"
+                />
+            );
+            fireEvent.click(view.getByRole('button', { name: 'Select project' }));
+            const input = view.getByLabelText('Search projects') as HTMLInputElement;
+            const names = () => view.getAllByRole('option').map((option) => option.textContent);
+            const highlighted = () => view.getAllByRole('option')
+                .filter((option) => option.className.includes('bg-primary/10'))
+                .map((option) => option.textContent);
+            return { ...view, input, names, highlighted, onChange, onCreateProject };
+        };
+
+        it('keeps No project first with an empty search', () => {
+            const { names, highlighted } = renderSearching();
+            expect(names()).toEqual(['No project', 'foo', 'bar', 'baz']);
+            expect(highlighted()).toEqual([]);
+        });
+
+        it('lists matches, then Create, then No project last, and highlights the Enter target', () => {
+            const { input, names, highlighted, getByRole } = renderSearching();
+
+            setInputValue(input, 'f');
+            expect(names()).toEqual(['foo', 'Create project "f"', 'No project']);
+            expect(highlighted()).toEqual(['foo']);
+            expect(input).toHaveAttribute('aria-activedescendant', getByRole('option', { name: 'foo' }).id);
+
+            setInputValue(input, 'ba');
+            expect(names()).toEqual(['bar', 'baz', 'Create project "ba"', 'No project']);
+            expect(highlighted()).toEqual(['bar']);
+
+            setInputValue(input, 'barb');
+            expect(names()).toEqual(['Create project "barb"', 'No project']);
+            expect(highlighted()).toEqual(['Create project "barb"']);
+        });
+
+        it('shows No matches only when no Create row is offered', () => {
+            const withCreate = renderSearching();
+            setInputValue(withCreate.input, 'barb');
+            expect(withCreate.queryByText('No matches')).toBeNull();
+            withCreate.unmount();
+
+            const { getByRole, getByLabelText, getByText } = render(
+                <ProjectSelector projects={fooBarBaz} value="" onChange={vi.fn()}
+                    placeholder="Select project" searchPlaceholder="Search projects" />
+            );
+            fireEvent.click(getByRole('button', { name: 'Select project' }));
+            setInputValue(getByLabelText('Search projects') as HTMLInputElement, 'barb');
+            expect(getByText('No matches')).toBeInTheDocument();
+        });
+
+        it('Enter picks the highlighted first match', () => {
+            const { input, onChange } = renderSearching();
+
+            setInputValue(input, 'ba');
+            fireEvent.keyDown(input, { key: 'Enter' });
+            expect(onChange).toHaveBeenCalledExactlyOnceWith('p-bar');
+        });
+
+        it('Enter creates when Create is the highlighted row', async () => {
+            const { input, onChange, onCreateProject } = renderSearching();
+
+            setInputValue(input, 'barb');
+            fireEvent.keyDown(input, { key: 'Enter' });
+            await waitFor(() => expect(onCreateProject).toHaveBeenCalledWith('barb'));
+            await waitFor(() => expect(onChange).toHaveBeenCalledWith('p-new'));
+        });
+
+        it('moves through the new order with the arrow keys', () => {
+            const { input, getByRole } = renderSearching();
+
+            setInputValue(input, 'ba');
+            fireEvent.keyDown(input, { key: 'ArrowDown' });
+            expect(getByRole('option', { name: 'bar' })).toHaveFocus();
+            fireEvent.keyDown(getByRole('option', { name: 'bar' }), { key: 'ArrowDown' });
+            expect(getByRole('option', { name: 'baz' })).toHaveFocus();
+            fireEvent.keyDown(getByRole('option', { name: 'baz' }), { key: 'ArrowDown' });
+            expect(getByRole('option', { name: 'Create project "ba"' })).toHaveFocus();
+            fireEvent.keyDown(getByRole('option', { name: 'Create project "ba"' }), { key: 'ArrowDown' });
+            expect(getByRole('option', { name: 'No project' })).toHaveFocus();
+
+            expect(getByRole('option', { name: 'bar' }).className).not.toContain('bg-primary/10');
+        });
+    });
+});

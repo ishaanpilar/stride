@@ -1,0 +1,65 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { ContextualHelp } from './ContextualHelp';
+import { dismissDesktopOnboardingHint } from '../lib/desktop-onboarding-events';
+import { LanguageProvider, useLanguage } from '../contexts/language-context';
+
+function SwitchLanguage() {
+    const { setLanguage } = useLanguage();
+    return <button onClick={() => setLanguage('fr')}>French docs</button>;
+}
+
+const t = (key: string) => key;
+describe('ContextualHelp', () => {
+    beforeEach(() => localStorage.clear());
+    it('collapses on dismissal, survives remount, and can be reopened', () => {
+        const { unmount } = render(<ContextualHelp topic="focus" t={t} autoReveal />);
+        expect(screen.getByText('onboarding.focusHint')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'common.dismiss' }));
+        expect(screen.queryByText('onboarding.focusHint')).not.toBeInTheDocument();
+        unmount();
+        render(<ContextualHelp topic="focus" t={t} autoReveal />);
+        const help = screen.getByRole('button', { name: 'onboarding.help: agenda.title' });
+        expect(help).toHaveAttribute('aria-expanded', 'false');
+        fireEvent.click(help);
+        expect(help).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/ishaanpilar/stride/tree/main/docs');
+    });
+    it('keeps the previous Inbox dismissal and does not transfer it to other topics', () => {
+        dismissDesktopOnboardingHint('inbox-project');
+        const { rerender } = render(<ContextualHelp topic="inbox-project" t={t} autoReveal />);
+        expect(screen.queryByText('inbox.projectHint')).not.toBeInTheDocument();
+        rerender(<ContextualHelp topic="scheduling" t={t} autoReveal />);
+        expect(screen.getByText('onboarding.schedulingHint')).toBeInTheDocument();
+    });
+    it('updates the open guide when language and help topic change', () => {
+        const { rerender } = render(
+            <LanguageProvider persistLanguage={false}>
+                <SwitchLanguage />
+                <ContextualHelp topic="inbox-project" t={t} autoReveal />
+            </LanguageProvider>,
+        );
+        expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/ishaanpilar/stride/tree/main/docs');
+        fireEvent.click(screen.getByRole('button', { name: 'French docs' }));
+        expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/ishaanpilar/stride/tree/main/docs');
+        rerender(
+            <LanguageProvider persistLanguage={false}>
+                <SwitchLanguage />
+                <ContextualHelp topic="scheduling" t={t} autoReveal />
+            </LanguageProvider>,
+        );
+        expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/ishaanpilar/stride/tree/main/docs');
+    });
+    it('defaults to an icon-only editor control and never reopens on remount', () => {
+        const { unmount } = render(<ContextualHelp topic="details" t={t} />);
+        expect(screen.queryByText('onboarding.detailsHint')).not.toBeInTheDocument();
+        const help = screen.getByRole('button', { name: 'onboarding.help: taskEdit.details' });
+        expect(help).toHaveAttribute('aria-expanded', 'false');
+        expect(help.textContent).toBe('');
+        fireEvent.click(help);
+        expect(screen.getByText('onboarding.detailsHint')).toBeInTheDocument();
+        unmount();
+        render(<ContextualHelp topic="details" t={t} />);
+        expect(screen.queryByText('onboarding.detailsHint')).not.toBeInTheDocument();
+    });
+});

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+    <metadata>
+        <id>stride</id>
+        <version>0.0.0</version>
+        <title>Stride</title>
+        <authors>Ishaan Pilar</authors>
+        <owners>Ishaan Pilar</owners>
+        <projectUrl>https://github.com/ishaanpilar/stride</projectUrl>
+        <iconUrl>https://cdn.jsdelivr.net/gh/ishaanpilar/stride@main/metadata/en-US/images/icon.png</iconUrl>
+        <copyright>Copyright 2026 Dongda Li; Copyright 2026 Ishaan Pilar</copyright>
+        <licenseUrl>https://github.com/ishaanpilar/stride/blob/main/LICENSE</licenseUrl>
+        <requireLicenseAcceptance>false</requireLicenseAcceptance>
+        <projectSourceUrl>https://github.com/ishaanpilar/stride</projectSourceUrl>
+        <packageSourceUrl>https://github.com/ishaanpilar/stride/tree/main/metadata/chocolatey</packageSourceUrl>
+        <docsUrl>https://github.com/ishaanpilar/stride#readme</docsUrl>
+        <bugTrackerUrl>https://github.com/ishaanpilar/stride/issues</bugTrackerUrl>
+        <tags>stride gtd productivity task-management organiser ai pomodoro tauri local-first</tags>
+        <summary>AI-powered personal organiser: capture, AI morning briefing, assistant chat, GTD lists, Pomodoro.</summary>
+        <description>Stride is an AI-powered personal organiser. Capture tasks and ideas in seconds, get an AI morning briefing, chat with a built-in assistant (using your own AI provider), and keep GTD lists (Inbox, Next, Waiting For, Someday/Maybe, Projects, Contexts) with a guided weekly review and a Pomodoro focus timer. Works offline with no account, and your data stays on your device. Optional sync through Dropbox, WebDAV, a folder, or a self-hosted server.</description>
+        <releaseNotes>https://github.com/ishaanpilar/stride/releases</releaseNotes>
+    </metadata>
+</package>

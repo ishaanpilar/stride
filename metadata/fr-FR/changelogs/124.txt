@@ -1,0 +1,4 @@
+- Les résultats de recherche restent stables pendant la saisie.
+- Enregistrer et modifier revient au bon projet, la liste reste au point de dépôt et Annuler ne couvre plus les onglets.
+- Dropbox lance la première synchronisation après connexion et restaure la dernière configuration validée en cas d'échec.
+- Les listes ignorent les lignes vides, les domaines gagnent six couleurs et le japonais est complet.

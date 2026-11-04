@@ -1,0 +1,106 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Call Mom",
+      "status": "inbox",
+      "tags": [],
+      "contexts": [
+        "@home"
+      ],
+      "createdAt": "2025-11-24T10:00:00.000Z",
+      "updatedAt": "2025-11-24T10:00:00.000Z"
+    },
+    {
+      "id": "t2",
+      "title": "Process email inbox",
+      "status": "next",
+      "tags": [],
+      "contexts": [
+        "@work"
+      ],
+      "createdAt": "2025-11-24T09:00:00.000Z",
+      "updatedAt": "2025-11-24T09:00:00.000Z",
+      "dueDate": "2025-11-25T17:00:00.000Z"
+    },
+    {
+      "id": "t3",
+      "title": "Draft project proposal",
+      "status": "next",
+      "tags": [],
+      "contexts": [
+        "@work"
+      ],
+      "projectId": "p1",
+      "createdAt": "2025-11-24T09:30:00.000Z",
+      "updatedAt": "2025-11-24T09:30:00.000Z",
+      "dueDate": "2025-11-26T12:00:00.000Z"
+    },
+    {
+      "id": "t4",
+      "title": "Buy paint samples",
+      "status": "next",
+      "tags": [],
+      "contexts": [
+        "@errands"
+      ],
+      "projectId": "p2",
+      "createdAt": "2025-11-24T11:00:00.000Z",
+      "updatedAt": "2025-11-24T11:00:00.000Z"
+    },
+    {
+      "id": "t5",
+      "title": "Waiting for design approval",
+      "status": "waiting",
+      "tags": [],
+      "contexts": [
+        "@work"
+      ],
+      "projectId": "p1",
+      "createdAt": "2025-11-23T14:00:00.000Z",
+      "updatedAt": "2025-11-23T14:00:00.000Z"
+    },
+    {
+      "id": "t6",
+      "title": "Learn to play guitar",
+      "status": "someday",
+      "tags": [],
+      "contexts": [
+        "@home"
+      ],
+      "createdAt": "2025-11-20T10:00:00.000Z",
+      "updatedAt": "2025-11-20T10:00:00.000Z"
+    },
+    {
+      "id": "t7",
+      "title": "Weekly Grocery Run",
+      "status": "next",
+      "tags": [],
+      "contexts": [
+        "@errands"
+      ],
+      "createdAt": "2025-11-24T08:00:00.000Z",
+      "updatedAt": "2025-11-24T08:00:00.000Z",
+      "dueDate": "2025-11-24T18:00:00.000Z"
+    }
+  ],
+  "projects": [
+    {
+      "id": "p1",
+      "title": "Website Redesign",
+      "status": "active",
+      "color": "#3b82f6",
+      "createdAt": "2025-11-20T09:00:00.000Z",
+      "updatedAt": "2025-11-20T09:00:00.000Z"
+    },
+    {
+      "id": "p2",
+      "title": "Home Renovation",
+      "status": "active",
+      "color": "#10b981",
+      "createdAt": "2025-11-22T10:00:00.000Z",
+      "updatedAt": "2025-11-22T10:00:00.000Z"
+    }
+  ],
+  "settings": {}
+}

@@ -1,0 +1,4 @@
+- SQLite nativo mantiene ágiles las bibliotecas grandes y acelera el guardado y la sincronización.
+- Los proyectos recuerdan el orden; mejoran Enfoque, filtros y grupos por fecha de finalización.
+- Los avisos repetidos llegan a su hora, con mejores widgets, texto grande y teclado.
+- Copias, restauración, credenciales seguras y tareas repetidas son más fiables.

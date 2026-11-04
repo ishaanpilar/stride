@@ -1,0 +1,1145 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Platform } from 'react-native';
+import {
+  AudioModule,
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  type AudioRecorder as ExpoAudioRecorder,
+} from 'expo-audio';
+import { Directory, File, Paths } from 'expo-file-system';
+import {
+  applySpeechResult as applySpeechResultInStore,
+  buildAudioNoteTitle,
+  buildQuickCaptureAudioAttachment,
+  discardEmptySpeechTask as discardEmptySpeechTaskInStore,
+  generateUUID,
+  isQuickCaptureSpeechReady,
+  isSandboxMode,
+  resolveQuickCaptureAudioFormat,
+  safeFormatDate,
+  shouldSaveQuickCaptureAudio,
+  type AppSettings,
+  type Attachment,
+  type CaptureSessionCoordinator,
+  type CaptureSessionId,
+  type SpeechApplyResult,
+  type SpeechToTextSettings,
+  type Task,
+  useTaskStore,
+} from '@stride/core';
+import { loadAIKey } from '../lib/ai-config';
+import { logInfo } from '../lib/app-log';
+import { persistAttachmentLocally } from '../lib/attachment-sync';
+import { getAttachmentsDir } from '../lib/attachment-sync-utils';
+import { showInvalidDateCommandToast } from '../lib/quick-add-toast';
+import { useToast } from '../contexts/toast-context';
+import {
+  ensureWhisperModelPathForConfigAsync,
+  prepareAudioForLocalWhisper,
+  preloadWhisperContext,
+  processAudioCapture,
+  resolveSpeechToTextRuntimeSettings,
+  startWhisperRealtimeCapture,
+  transcribeLocalWhisper,
+  type LocalWhisperAudio,
+  type SpeechToTextConfig,
+  type SpeechToTextResult,
+} from '../lib/speech-to-text';
+import {
+  buildCaptureDirectoryUri,
+  buildCaptureFileUri,
+  getCaptureFileExtension,
+  getCaptureMimeType,
+  selectExistingCaptureFile,
+  selectQuickCaptureSettings,
+} from './quick-capture-sheet.utils';
+
+type SpeechSettings = SpeechToTextSettings;
+type BuildTaskPropsResult = {
+  title: string;
+  props: Partial<Task>;
+  invalidDateCommands?: string[];
+};
+
+export type RecordingState =
+  | { kind: 'expo'; recorder: ExpoAudioRecorder }
+  | {
+      kind: 'whisper';
+      stop: () => Promise<void>;
+      result: Promise<SpeechToTextResult>;
+      file: File;
+      allowRealtimeFallback: boolean;
+    };
+
+type UseQuickCaptureAudioParams = {
+  addTask: (title: string, props?: Partial<Task>) => Promise<{ success: boolean; id?: string }>;
+  autoRecord?: boolean;
+  beginActivitySubmission: (
+    recoveryAttachments: Attachment[],
+    fallbackValue?: string,
+    additionalOwnedAttachmentUris?: string[],
+  ) => number;
+  buildTaskProps: (fallbackTitle: string, extraProps?: Partial<Task>) => Promise<BuildTaskPropsResult>;
+  getActiveSubmissionSession: () => CaptureSessionId | null;
+  handleClose: () => void;
+  initialAttachments?: Attachment[];
+  onError: (message: string, error?: unknown) => void;
+  onSubmissionBusyChange: (busy: boolean) => void;
+  onWarn: (message: string, error?: unknown) => void;
+  settings: AppSettings;
+  settleActivitySubmission: (
+    submissionId: number,
+    options: { durableSucceeded: boolean; keepEditing: boolean; sessionCurrent: boolean },
+  ) => boolean;
+  submissionCoordinator: CaptureSessionCoordinator;
+  submissionKey?: string | number;
+  t: (key: string) => string;
+  updateActivitySubmission: (
+    submissionId: number,
+    recoveryAttachments: Attachment[],
+    fallbackValue?: string,
+    additionalOwnedAttachmentUris?: string[],
+  ) => boolean;
+  updateSpeechSettings: (next: Partial<SpeechSettings>) => void;
+  visible: boolean;
+};
+
+const getWhisperCapturePlatform = (): 'ios' | 'android' => (Platform.OS === 'ios' ? 'ios' : 'android');
+
+let recordingDeviceQueue: Promise<void> = Promise.resolve();
+
+const queueRecordingDeviceOperation = <T,>(operation: () => Promise<T>): Promise<T> => {
+  const result = recordingDeviceQueue.catch(() => undefined).then(operation);
+  recordingDeviceQueue = result.then(() => undefined, () => undefined);
+  return result;
+};
+
+const createExpoAudioRecorder = (): ExpoAudioRecorder => {
+  const preset = RecordingPresets.HIGH_QUALITY;
+  const platformOptions = Platform.OS === 'ios'
+    ? preset.ios
+    : Platform.OS === 'android'
+      ? preset.android
+      : preset.web;
+
+
+  // eslint-disable-next-line import/namespace
+  return new AudioModule.AudioRecorder({
+    extension: preset.extension,
+    sampleRate: preset.sampleRate,
+    numberOfChannels: preset.numberOfChannels,
+    bitRate: preset.bitRate,
+    isMeteringEnabled: false,
+    ...platformOptions,
+  });
+};
+
+const stopAndReleaseExpoRecorder = async (recorder: ExpoAudioRecorder) => {
+  let error: unknown;
+  try {
+    await recorder.stop();
+  } catch (stopError) {
+    error = stopError;
+  }
+  const uri = recorder.uri;
+  recorder.release();
+  return { error, uri };
+};
+
+const releaseRecordingOnTeardown = async (recording: RecordingState) => {
+  if (recording.kind === 'expo') {
+    const stopped = await stopAndReleaseExpoRecorder(recording.recorder);
+    return stopped.uri ? new File(stopped.uri) : null;
+  }
+  try {
+    await recording.stop();
+  } catch {
+
+  }
+  void recording.result.catch(() => undefined);
+  return recording.file;
+};
+
+const runWhisperLocalTranscription = async (input: LocalWhisperAudio, config: SpeechToTextConfig): Promise<SpeechToTextResult> => ({
+  transcript: await transcribeLocalWhisper(input, config),
+});
+
+const describeAttachmentCacheInfo = (uri: string): Record<string, string> => {
+  try {
+    const info = new File(uri).info() as { exists?: boolean; isDirectory?: boolean; size?: number };
+    return {
+      uri,
+      exists: String(Boolean(info?.exists)),
+      isDirectory: String(Boolean(info?.isDirectory)),
+      size: typeof info?.size === 'number' ? String(info.size) : 'unknown',
+    };
+  } catch (error) {
+    return {
+      uri,
+      exists: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
+const cacheAudioAttachmentOrThrow = async (attachment: Attachment): Promise<Attachment> => {
+  const cached = await persistAttachmentLocally(attachment);
+  const attachmentsDir = await getAttachmentsDir();
+  const cachedInfo = describeAttachmentCacheInfo(cached.uri);
+  const cachedInManagedDir = Boolean(attachmentsDir && cached.uri.startsWith(attachmentsDir));
+  if (!cachedInManagedDir || cachedInfo.exists !== 'true' || cachedInfo.isDirectory === 'true') {
+    throw new Error(`Audio attachment was not cached into managed storage: ${cached.uri}`);
+  }
+  return cached;
+};
+
+export function useQuickCaptureAudio({
+  addTask,
+  autoRecord,
+  beginActivitySubmission,
+  buildTaskProps,
+  getActiveSubmissionSession,
+  handleClose,
+  initialAttachments,
+  onError,
+  onSubmissionBusyChange,
+  onWarn,
+  settings,
+  settleActivitySubmission,
+  submissionCoordinator,
+  submissionKey,
+  t,
+  updateActivitySubmission,
+  updateSpeechSettings,
+  visible,
+}: UseQuickCaptureAudioParams) {
+  const { showToast } = useToast();
+  const [recording, setRecording] = useState<RecordingState | null>(null);
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [recordingReady, setRecordingReady] = useState(false);
+  const recordingStartOwnerRef = useRef<{ id: number; session: CaptureSessionId } | null>(null);
+  const recordingStartSequenceRef = useRef(0);
+  const automaticStartAttemptedRef = useRef(false);
+  const activeRecordingRef = useRef<RecordingState | null>(null);
+  const safeDeleteFileRef = useRef<(file: File, reason: string) => void>(() => undefined);
+
+  useEffect(() => () => {
+    recordingStartOwnerRef.current = null;
+    const activeRecording = activeRecordingRef.current;
+    activeRecordingRef.current = null;
+    if (activeRecording) {
+      void queueRecordingDeviceOperation(() => releaseRecordingOnTeardown(activeRecording))
+        .then((file) => {
+          if (file) safeDeleteFileRef.current(file, 'recording_unmount');
+        })
+        .catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    recordingStartOwnerRef.current = null;
+    setRecordingBusy(false);
+    onSubmissionBusyChange(false);
+  }, [onSubmissionBusyChange, submissionKey, visible]);
+
+  const ensureAudioDirectory = useCallback(async () => {
+    const candidates: Directory[] = [];
+    try {
+      candidates.push(Paths.document);
+    } catch (error) {
+      onWarn('Document directory unavailable', error);
+    }
+    try {
+      candidates.push(Paths.cache);
+    } catch (error) {
+      onWarn('Cache directory unavailable', error);
+    }
+    for (const root of candidates) {
+      try {
+        const directoryUri = buildCaptureDirectoryUri(root.uri, 'audio-captures');
+        const dir = new Directory(directoryUri);
+        dir.create({ intermediates: true, idempotent: true });
+        return dir;
+      } catch (error) {
+        onWarn('Failed to create audio directory', error);
+      }
+    }
+    return null;
+  }, [onWarn]);
+
+  const stripFileScheme = useCallback((uri: string) => {
+    if (uri.startsWith('file://')) return uri.slice(7);
+    if (uri.startsWith('file:/')) return uri.replace(/^file:\//, '/');
+    return uri;
+  }, []);
+
+  const isUnsafeDeleteTarget = useCallback((uri: string) => {
+    if (!uri) return true;
+    const normalized = stripFileScheme(uri).replace(/\/+$/, '');
+    const docBase = stripFileScheme(Paths.document?.uri ?? '').replace(/\/+$/, '');
+    const cacheBase = stripFileScheme(Paths.cache?.uri ?? '').replace(/\/+$/, '');
+    if (!normalized) return true;
+    if (normalized === '/' || normalized === docBase || normalized === cacheBase) return true;
+    return false;
+  }, [stripFileScheme]);
+
+  const safeDeleteFile = useCallback((file: File, reason: string) => {
+    try {
+      const uri = file.uri ?? '';
+      if (isUnsafeDeleteTarget(uri)) {
+        onWarn('Refusing to delete unsafe file target', new Error(`${reason}:${uri}`));
+        return;
+      }
+      const info = Paths.info(uri);
+      if (info?.exists && info.isDirectory) {
+        onWarn('Refusing to delete directory target', new Error(`${reason}:${uri}`));
+        return;
+      }
+      file.delete();
+    } catch (error) {
+      onWarn('Audio cleanup failed', error);
+    }
+  }, [isUnsafeDeleteTarget, onWarn]);
+  safeDeleteFileRef.current = safeDeleteFile;
+
+  const isSpeechSettingsLeaseCurrent = useCallback((
+    expectedProvider: string,
+    expectedModel: string,
+    expectedModelPath?: string,
+  ) => {
+    const latestSettings = selectQuickCaptureSettings(settings, useTaskStore.getState().settings);
+    const latestRuntime = resolveSpeechToTextRuntimeSettings(latestSettings.ai?.speechToText);
+    return latestRuntime.provider === expectedProvider
+      && latestRuntime.model === expectedModel
+      && stripFileScheme(latestRuntime.modelPath ?? '') === stripFileScheme(expectedModelPath ?? '');
+  }, [settings, stripFileScheme]);
+
+  const resolveWhisperModelAsync = useCallback(async (
+    modelId: string,
+    storedPath?: string,
+    canApply: () => boolean = () => true,
+  ) => {
+    const resolved = await ensureWhisperModelPathForConfigAsync(modelId, storedPath);
+    if (resolved.exists && canApply()) {
+      const currentPath = storedPath ? stripFileScheme(storedPath) : '';
+      const resolvedPath = stripFileScheme(resolved.uri);
+      if (!currentPath || currentPath !== resolvedPath) {
+        updateSpeechSettings({ model: modelId, offlineModelPath: resolved.uri });
+      }
+    }
+    return resolved;
+  }, [stripFileScheme, updateSpeechSettings]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const speech = settings.ai?.speechToText;
+    const speechRuntime = resolveSpeechToTextRuntimeSettings(speech);
+    if (!speechRuntime.enabled || speechRuntime.provider !== 'whisper') return;
+    const { model, modelPath } = speechRuntime;
+    let cancelled = false;
+    void resolveWhisperModelAsync(model, modelPath, () => (
+      !cancelled && isSpeechSettingsLeaseCurrent('whisper', model, modelPath)
+    ))
+      .then((resolved) => {
+        if (cancelled || !resolved.exists) return undefined;
+        return preloadWhisperContext({ model, modelPath: resolved.path });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        onWarn('Failed to preload whisper model', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSpeechSettingsLeaseCurrent, onWarn, resolveWhisperModelAsync, settings.ai?.speechToText, visible]);
+
+
+  const applySpeechResult = useCallback((taskId: string, result: SpeechToTextResult, titleAtSave?: string): Promise<SpeechApplyResult> => (
+    applySpeechResultInStore(taskId, result, useTaskStore, { titleAtSave })
+  ), []);
+
+  const discardEmptySpeechTask = useCallback((taskId: string, files: (File | null | undefined)[], reason = 'empty_transcript') => (
+    discardEmptySpeechTaskInStore(taskId, files, reason, { store: useTaskStore, deleteFile: safeDeleteFile, onWarn })
+  ), [onWarn, safeDeleteFile]);
+
+  const startRecording = useCallback((): Promise<void> => {
+    if (isSandboxMode()) {
+      showToast({
+        title: t('common.notice'),
+        message: t('sandbox.unavailable'),
+        tone: 'warning',
+        durationMs: 4200,
+      });
+      return Promise.resolve();
+    }
+    if (recording || recordingBusy || recordingStartOwnerRef.current !== null) return Promise.resolve();
+    const session = getActiveSubmissionSession();
+    if (session === null || !submissionCoordinator.isCurrent(session)) return Promise.resolve();
+    const owner = { id: recordingStartSequenceRef.current + 1, session };
+    recordingStartSequenceRef.current = owner.id;
+    recordingStartOwnerRef.current = owner;
+    setRecordingBusy(true);
+    setRecordingReady(false);
+    const isStartCurrent = () => (
+      recordingStartOwnerRef.current === owner
+      && getActiveSubmissionSession() === session
+      && submissionCoordinator.isCurrent(session)
+    );
+    const runStart = async () => {
+      try {
+
+
+        const guardSettings = selectQuickCaptureSettings(settings, useTaskStore.getState().settings);
+        const guardRuntime = resolveSpeechToTextRuntimeSettings(guardSettings.ai?.speechToText);
+        const guardApiKey = guardRuntime.provider === 'whisper'
+          ? ''
+          : await loadAIKey(guardRuntime.provider).catch(() => '');
+        if (!isStartCurrent()) return;
+        const guardWhisper = guardRuntime.provider === 'whisper'
+          ? await resolveWhisperModelAsync(guardRuntime.model, guardRuntime.modelPath, () => (
+            isStartCurrent()
+            && isSpeechSettingsLeaseCurrent(guardRuntime.provider, guardRuntime.model, guardRuntime.modelPath)
+          )).catch(() => null)
+          : null;
+        if (!isStartCurrent()) return;
+        const speechConfigured = isQuickCaptureSpeechReady({
+          speechEnabled: guardRuntime.enabled,
+          provider: guardRuntime.provider,
+          apiKey: guardApiKey,
+          baseUrl: guardRuntime.baseUrl,
+          whisperModelReady: guardRuntime.provider === 'whisper' ? Boolean(guardWhisper?.exists) : false,
+        });
+        if (!speechConfigured) {
+
+          if (guardRuntime.provider === 'whisper' && guardRuntime.enabled && guardRuntime.modelPath && !guardWhisper?.exists) {
+            void logInfo('Quick capture Whisper model file missing', {
+              scope: 'capture',
+              force: true,
+              extra: { releaseCheck: 'v1.3.8/whisper-model-missing', outcome: 'not-configured' },
+            });
+          }
+          showToast({
+            title: t('common.notice'),
+            message: t('quickAdd.speechNotConfigured'),
+            tone: 'warning',
+            durationMs: 4200,
+          });
+          return;
+        }
+        const permission = await requestRecordingPermissionsAsync();
+        if (!isStartCurrent()) return;
+        if (!permission.granted) {
+          Alert.alert(t('quickAdd.audioPermissionTitle'), t('quickAdd.audioPermissionBody'));
+          return;
+        }
+        const currentSettings = selectQuickCaptureSettings(settings, useTaskStore.getState().settings);
+        const speech = currentSettings.ai?.speechToText;
+        const speechRuntime = resolveSpeechToTextRuntimeSettings(speech);
+        const { provider, model, modelPath } = speechRuntime;
+        const whisperResolved = provider === 'whisper'
+          ? await resolveWhisperModelAsync(model, modelPath, () => (
+            isStartCurrent() && isSpeechSettingsLeaseCurrent(provider, model, modelPath)
+          ))
+          : null;
+        if (!isStartCurrent()) return;
+        const whisperModelReady = provider === 'whisper' ? Boolean(whisperResolved?.exists) : false;
+        const resolvedModelPath = provider === 'whisper'
+          ? (whisperResolved?.exists ? whisperResolved.path : modelPath)
+          : undefined;
+        const useWhisperRealtime = resolveQuickCaptureAudioFormat({
+          speechEnabled: speechRuntime.enabled,
+          provider,
+          whisperModelReady,
+        }) === 'wav';
+        if (useWhisperRealtime) {
+          try {
+            const now = new Date();
+            const timestamp = safeFormatDate(now, 'yyyyMMdd-HHmmss');
+            const directory = await ensureAudioDirectory();
+            if (!isStartCurrent()) return;
+            const fileName = `stride-audio-${timestamp}-${generateUUID()}.wav`;
+            const buildOutputFile = (base?: Directory | null) => {
+              if (!base?.uri) return null;
+              return new File(buildCaptureFileUri(base.uri, fileName));
+            };
+            let outputFile: File | null = buildOutputFile(directory);
+            if (!outputFile) {
+              try {
+                outputFile = buildOutputFile(Paths.cache);
+              } catch (error) {
+                onWarn('Whisper cache directory unavailable', error);
+              }
+            }
+            if (!outputFile) {
+              try {
+                outputFile = buildOutputFile(Paths.document);
+              } catch (error) {
+                onWarn('Whisper document directory unavailable', error);
+              }
+            }
+            if (!outputFile) throw new Error('Whisper audio output path unavailable');
+            const outputPath = stripFileScheme(outputFile.uri);
+            const handle = await queueRecordingDeviceOperation(async () => {
+              if (!isStartCurrent()) return null;
+              await setAudioModeAsync({
+                allowsRecording: true,
+                playsInSilentMode: true,
+                interruptionMode: 'duckOthers',
+                interruptionModeAndroid: 'duckOthers',
+              });
+              if (!isStartCurrent()) return null;
+              const acquired = await startWhisperRealtimeCapture(outputPath, {
+                provider,
+                model,
+                modelPath: resolvedModelPath,
+                isFossBuild: speechRuntime.isFossBuild,
+                language: speechRuntime.language,
+                mode: speechRuntime.mode,
+                fieldStrategy: speechRuntime.fieldStrategy,
+              });
+              if (!isStartCurrent()) {
+                await acquired.stop().catch((error) => onWarn('Failed to clean up stale Whisper start', error));
+                void acquired.result.catch((error) => onWarn('Stale Whisper result failed', error));
+                safeDeleteFile(outputFile, 'stale_whisper_start');
+                return null;
+              }
+              return acquired;
+            });
+            if (!handle) return;
+            if (!isStartCurrent()) {
+              await queueRecordingDeviceOperation(async () => {
+                await handle.stop().catch((error) => onWarn('Failed to clean up stale Whisper start', error));
+                void handle.result.catch((error) => onWarn('Stale Whisper result failed', error));
+                safeDeleteFile(outputFile, 'stale_whisper_start');
+              });
+              return;
+            }
+            const nextRecording: RecordingState = {
+              kind: 'whisper',
+              stop: handle.stop,
+              result: handle.result,
+              file: outputFile,
+              allowRealtimeFallback: handle.hasRealtimeTranscript,
+            };
+            activeRecordingRef.current = nextRecording;
+            setRecording(nextRecording);
+            setRecordingReady(true);
+            return;
+          } catch (error) {
+            if (!isStartCurrent()) return;
+            onWarn('Whisper realtime start failed, falling back to audio recording', error);
+          }
+        }
+
+        const recorder = await queueRecordingDeviceOperation(async () => {
+          if (!isStartCurrent()) return null;
+          await setAudioModeAsync({
+            allowsRecording: true,
+            playsInSilentMode: true,
+            interruptionMode: 'duckOthers',
+            interruptionModeAndroid: 'duckOthers',
+          });
+          if (!isStartCurrent()) return null;
+          const acquired = createExpoAudioRecorder();
+          try {
+            await acquired.prepareToRecordAsync();
+            if (!isStartCurrent()) {
+              const staleUri = acquired.uri;
+              acquired.release();
+              if (staleUri) safeDeleteFile(new File(staleUri), 'stale_expo_prepare');
+              return null;
+            }
+            acquired.record();
+            return acquired;
+          } catch (error) {
+            acquired.release();
+            throw error;
+          }
+        });
+        if (!recorder) return;
+        if (!isStartCurrent()) {
+          const stopped = await queueRecordingDeviceOperation(() => stopAndReleaseExpoRecorder(recorder));
+          if (stopped.error) onWarn('Failed to clean up stale Expo start', stopped.error);
+          if (stopped.uri) safeDeleteFile(new File(stopped.uri), 'stale_expo_start');
+          return;
+        }
+        const nextRecording: RecordingState = { kind: 'expo', recorder };
+        activeRecordingRef.current = nextRecording;
+        setRecording(nextRecording);
+        setRecordingReady(true);
+      } catch (error) {
+        if (!isStartCurrent()) return;
+        onError('Failed to start recording', error);
+        Alert.alert(t('quickAdd.audioErrorTitle'), t('quickAdd.audioErrorBody'));
+        setRecordingReady(false);
+      } finally {
+        if (recordingStartOwnerRef.current === owner) {
+          const ownsCurrentSurface = getActiveSubmissionSession() === session
+            && submissionCoordinator.isCurrent(session);
+          recordingStartOwnerRef.current = null;
+          if (ownsCurrentSurface) setRecordingBusy(false);
+        }
+      }
+    };
+    return runStart();
+  }, [
+    ensureAudioDirectory,
+    getActiveSubmissionSession,
+    isSpeechSettingsLeaseCurrent,
+    onError,
+    onWarn,
+    recording,
+    recordingBusy,
+    resolveWhisperModelAsync,
+    safeDeleteFile,
+    settings,
+    showToast,
+    stripFileScheme,
+    submissionCoordinator,
+    t,
+  ]);
+
+  const stopRecording = useCallback(async ({ saveTask }: { saveTask: boolean }) => {
+    if (recordingBusy) return;
+    const currentRecording = activeRecordingRef.current ?? recording;
+    if (!currentRecording) return;
+    const ownedSubmissionFiles = new Map<string, File>();
+    let activitySubmissionId: number | null = null;
+    let durableSucceeded = false;
+    let recoveryAttachments: Attachment[] = [];
+    let submissionFilesAdopted = false;
+    const trackSubmissionFile = (file: File): File => {
+      if (file.uri) ownedSubmissionFiles.set(file.uri, new File(file.uri));
+      return file;
+    };
+    const forgetSubmissionFile = (uri: string) => {
+      ownedSubmissionFiles.delete(uri);
+    };
+    const cleanupAbandonedSubmissionFiles = (reason: string, retainedUris = new Set<string>()) => {
+      for (const [uri, file] of ownedSubmissionFiles) {
+        if (retainedUris.has(uri)) continue;
+        safeDeleteFile(file, reason);
+      }
+      ownedSubmissionFiles.clear();
+    };
+    const captureSurfaceSession = getActiveSubmissionSession();
+    const submissionSession = saveTask ? captureSurfaceSession : null;
+    if (saveTask) {
+      if (submissionSession === null || !submissionCoordinator.tryBeginSubmission(submissionSession)) return;
+      onSubmissionBusyChange(true);
+    }
+    const isSubmissionCurrent = () => (
+      captureSurfaceSession === null || submissionCoordinator.isCurrent(captureSurfaceSession)
+    );
+    setRecordingBusy(true);
+    setRecordingReady(false);
+    activeRecordingRef.current = null;
+    setRecording(null);
+    try {
+      if (currentRecording.kind === 'whisper') {
+        try {
+          await queueRecordingDeviceOperation(() => currentRecording.stop());
+        } catch (error) {
+          onWarn('Failed to stop whisper recording', error);
+        }
+        const finalFile = trackSubmissionFile(currentRecording.file);
+        if (!saveTask) {
+          if (currentRecording.allowRealtimeFallback) {
+            void currentRecording.result.catch((error) => onWarn('Speech-to-text failed', error));
+          }
+          safeDeleteFile(currentRecording.file, 'whisper_cancel');
+          forgetSubmissionFile(finalFile.uri);
+          return;
+        }
+        let fileInfo: { exists?: boolean; size?: number } | null = null;
+        try {
+          fileInfo = finalFile.info();
+        } catch (error) {
+          onWarn('Audio info lookup failed', error);
+        }
+        const now = new Date();
+        const displayTitle = buildAudioNoteTitle(t('quickAdd.audioNoteTitle'), now, safeFormatDate);
+        const recoveryAudioAttachment: Attachment = buildQuickCaptureAudioAttachment({
+          title: displayTitle,
+          uri: finalFile.uri,
+          mimeType: getCaptureMimeType('.wav'),
+          size: fileInfo?.exists && fileInfo.size ? fileInfo.size : undefined,
+          now,
+          newId: generateUUID,
+        });
+        recoveryAttachments = [...(initialAttachments ?? []), recoveryAudioAttachment];
+        activitySubmissionId = beginActivitySubmission(
+          recoveryAttachments,
+          displayTitle,
+          [recoveryAudioAttachment.uri],
+        );
+        if (!isSubmissionCurrent()) return;
+
+        const currentSettings = selectQuickCaptureSettings(settings, useTaskStore.getState().settings);
+        const speech = currentSettings.ai?.speechToText;
+        const speechRuntime = resolveSpeechToTextRuntimeSettings(speech);
+        const { provider, model, modelPath } = speechRuntime;
+        const apiKey = provider === 'whisper' ? '' : await loadAIKey(provider).catch(() => '');
+        const whisperResolved = provider === 'whisper'
+          ? await resolveWhisperModelAsync(model, modelPath, () => (
+            isSubmissionCurrent() && isSpeechSettingsLeaseCurrent(provider, model, modelPath)
+          ))
+          : null;
+        const whisperModelReady = provider === 'whisper' ? Boolean(whisperResolved?.exists) : false;
+        const resolvedModelPath = provider === 'whisper'
+          ? (whisperResolved?.exists ? whisperResolved.path : modelPath)
+          : undefined;
+        if (!isSubmissionCurrent()) return;
+
+        const speechReady = isQuickCaptureSpeechReady({
+          speechEnabled: speechRuntime.enabled,
+          provider,
+          apiKey,
+          baseUrl: speechRuntime.baseUrl,
+          whisperModelReady,
+        });
+        let realtimeResult: SpeechToTextResult | null = null;
+        let realtimeTranscriptReady = false;
+        if (speechReady && provider === 'whisper' && currentRecording.allowRealtimeFallback) {
+          try {
+            const result = await currentRecording.result;
+            if (result.transcript?.trim()) {
+              realtimeResult = result;
+              realtimeTranscriptReady = true;
+            }
+          } catch (error) {
+            onWarn('Whisper realtime transcription failed', error);
+          }
+        }
+        const localWhisperInput = speechReady && provider === 'whisper' && !realtimeTranscriptReady
+          ? await prepareAudioForLocalWhisper({
+            uri: finalFile.uri,
+            platform: getWhisperCapturePlatform(),
+            source: 'pcm-recorder',
+            extension: '.wav',
+          })
+          : null;
+        if (!isSubmissionCurrent()) return;
+        const canTranscribeSpeech = provider === 'whisper'
+          ? realtimeTranscriptReady || Boolean(localWhisperInput)
+          : speechReady;
+        const saveAudioAttachments = shouldSaveQuickCaptureAudio(currentSettings, canTranscribeSpeech);
+
+        let attachment: Attachment | null = saveAudioAttachments ? recoveryAudioAttachment : null;
+        if (attachment) {
+          try {
+            attachment = await cacheAudioAttachmentOrThrow(attachment);
+            trackSubmissionFile(new File(attachment.uri));
+          } catch (error) {
+            onWarn('Failed to persist audio attachment', error);
+            throw error;
+          }
+        }
+        recoveryAttachments = [
+          ...(initialAttachments ?? []),
+          attachment ?? recoveryAudioAttachment,
+        ];
+        updateActivitySubmission(
+          activitySubmissionId,
+          recoveryAttachments,
+          displayTitle,
+          [(attachment ?? recoveryAudioAttachment).uri],
+        );
+        if (!isSubmissionCurrent()) return;
+
+        const attachments = [...(initialAttachments ?? [])];
+        if (attachment) attachments.push(attachment);
+        const { title, props, invalidDateCommands } = await buildTaskProps(displayTitle, { attachments });
+        if (!isSubmissionCurrent()) return;
+        if (invalidDateCommands && invalidDateCommands.length > 0) {
+          showInvalidDateCommandToast(showToast, t, invalidDateCommands);
+          return;
+        }
+        if (!title.trim()) return;
+
+        const addTaskResult = await addTask(title, props);
+        durableSucceeded = Boolean(addTaskResult.success && addTaskResult.id);
+        if (durableSucceeded) submissionFilesAdopted = true;
+        if (!addTaskResult.success || !addTaskResult.id) return;
+        if (isSubmissionCurrent()) handleClose();
+        const taskId = addTaskResult.id;
+        const titleAtSave = useTaskStore.getState().tasks.find((task) => task.id === taskId)?.title;
+        const shouldCleanupSource = !attachment || attachment.uri !== finalFile.uri;
+
+        if (canTranscribeSpeech) {
+          const timeZone = typeof Intl === 'object' && typeof Intl.DateTimeFormat === 'function'
+            ? Intl.DateTimeFormat().resolvedOptions().timeZone
+            : undefined;
+          const transcriptionUri = stripFileScheme(attachment?.uri ?? finalFile.uri);
+          const speechConfig = {
+            provider,
+            apiKey,
+            baseUrl: speechRuntime.baseUrl,
+            model,
+            modelPath: resolvedModelPath,
+            isFossBuild: speechRuntime.isFossBuild,
+            language: speechRuntime.language,
+            mode: speechRuntime.mode,
+            fieldStrategy: speechRuntime.fieldStrategy,
+            parseModel: provider === 'openai' && currentSettings.ai?.provider === 'openai' ? currentSettings.ai?.model : undefined,
+            now: new Date(),
+            timeZone,
+          } satisfies SpeechToTextConfig;
+          if (provider === 'whisper' && realtimeResult) {
+            void Promise.resolve(realtimeResult)
+              .then(async (result) => {
+                const applyResult = await applySpeechResult(taskId, result, titleAtSave);
+                if (applyResult === 'empty') {
+                  await discardEmptySpeechTask(taskId, [
+                    finalFile,
+                    attachment?.uri ? new File(attachment.uri) : null,
+                  ], 'whisper_empty_realtime');
+                }
+              })
+              .catch((error) => onWarn('Speech-to-text failed', error))
+              .finally(() => {
+                if (shouldCleanupSource) {
+                  safeDeleteFile(finalFile, 'whisper_realtime_cleanup');
+                }
+              });
+            return;
+          }
+          const speechPromise = provider === 'whisper' && localWhisperInput
+            ? runWhisperLocalTranscription(localWhisperInput, speechConfig)
+            : processAudioCapture(transcriptionUri, speechConfig);
+          void speechPromise
+            .then(async (result) => {
+              const applyResult = await applySpeechResult(taskId, result, titleAtSave);
+              if (applyResult === 'empty') {
+                await discardEmptySpeechTask(taskId, [
+                  finalFile,
+                  attachment?.uri ? new File(attachment.uri) : null,
+                ], 'whisper_empty_transcript');
+              }
+            })
+            .catch((error) => {
+              if (!currentRecording.allowRealtimeFallback) {
+                onWarn('Whisper offline transcription failed', error);
+                return undefined;
+              }
+              onWarn('Whisper offline transcription failed, using realtime result', error);
+              return currentRecording.result
+                .then(async (result) => {
+                  const applyResult = await applySpeechResult(taskId, result, titleAtSave);
+                  if (applyResult === 'empty') {
+                    await discardEmptySpeechTask(taskId, [
+                      finalFile,
+                      attachment?.uri ? new File(attachment.uri) : null,
+                    ], 'whisper_empty_realtime_fallback');
+                  }
+                })
+                .catch((realtimeError) => onWarn('Speech-to-text failed', realtimeError));
+            })
+            .finally(() => {
+              if (shouldCleanupSource) {
+                safeDeleteFile(finalFile, 'whisper_cleanup');
+              }
+            });
+        } else {
+          if (shouldCleanupSource) {
+            safeDeleteFile(finalFile, 'whisper_skip_cleanup');
+          }
+        }
+        return;
+      }
+
+      const stopped = await queueRecordingDeviceOperation(
+        () => stopAndReleaseExpoRecorder(currentRecording.recorder),
+      );
+      if (stopped.error) {
+        const error = stopped.error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes('not recording') && !message.includes('already')) {
+          throw error;
+        }
+      }
+      const uri = stopped.uri;
+      if (!uri) {
+        throw new Error('Recording URI missing');
+      }
+      const sourceFile = trackSubmissionFile(new File(uri));
+      if (!saveTask) {
+        safeDeleteFile(sourceFile, 'expo_cancel');
+        forgetSubmissionFile(uri);
+        return;
+      }
+      const now = new Date();
+      const timestamp = safeFormatDate(now, 'yyyyMMdd-HHmmss');
+      const extension = getCaptureFileExtension(uri);
+      const fileName = `stride-audio-${timestamp}-${generateUUID()}${extension}`;
+      const displayTitle = buildAudioNoteTitle(t('quickAdd.audioNoteTitle'), now, safeFormatDate);
+      let recoveryAudioAttachment: Attachment = buildQuickCaptureAudioAttachment({
+        title: displayTitle,
+        uri: sourceFile.uri,
+        mimeType: getCaptureMimeType(extension),
+        now,
+        newId: generateUUID,
+      });
+      recoveryAttachments = [...(initialAttachments ?? []), recoveryAudioAttachment];
+      activitySubmissionId = beginActivitySubmission(
+        recoveryAttachments,
+        displayTitle,
+        [recoveryAudioAttachment.uri],
+      );
+      if (!isSubmissionCurrent()) return;
+
+      const shouldRelocateRecording = Platform.OS !== 'ios';
+      const directory = shouldRelocateRecording ? await ensureAudioDirectory() : null;
+      const destinationFile = directory ? new File(buildCaptureFileUri(directory.uri, fileName)) : null;
+      let captureCandidates: (File | null)[] = [sourceFile];
+
+      if (destinationFile) {
+        try {
+          sourceFile.move(destinationFile);
+          forgetSubmissionFile(uri);
+          trackSubmissionFile(destinationFile);
+          captureCandidates = [sourceFile, destinationFile];
+        } catch (error) {
+          onWarn('Move recording failed, falling back to copy', error);
+          try {
+            sourceFile.copy(destinationFile);
+            trackSubmissionFile(destinationFile);
+            captureCandidates = [destinationFile, sourceFile];
+            const copiedDestination = selectExistingCaptureFile([destinationFile]);
+            if (copiedDestination) {
+              safeDeleteFile(sourceFile, 'recording_copy_cleanup');
+              forgetSubmissionFile(uri);
+            }
+          } catch (copyError) {
+            onWarn('Copy recording failed, using original file', copyError);
+            captureCandidates = [sourceFile];
+          }
+        }
+      }
+
+      const verifiedCapture = selectExistingCaptureFile(captureCandidates);
+      if (!verifiedCapture) {
+        throw new Error(`Recording file missing after save: ${captureCandidates.map((file) => file?.uri ?? '').filter(Boolean).join(', ')}`);
+      }
+      const finalFile = verifiedCapture.file;
+      trackSubmissionFile(finalFile);
+      const fileInfo = verifiedCapture.info;
+      recoveryAudioAttachment = {
+        ...recoveryAudioAttachment,
+        uri: finalFile.uri,
+        size: fileInfo?.exists && fileInfo.size ? fileInfo.size : undefined,
+      };
+      recoveryAttachments = [...(initialAttachments ?? []), recoveryAudioAttachment];
+      updateActivitySubmission(
+        activitySubmissionId,
+        recoveryAttachments,
+        displayTitle,
+        [recoveryAudioAttachment.uri],
+      );
+      const currentSettings = selectQuickCaptureSettings(settings, useTaskStore.getState().settings);
+      const speech = currentSettings.ai?.speechToText;
+      const speechRuntime = resolveSpeechToTextRuntimeSettings(speech);
+      const { provider, model, modelPath } = speechRuntime;
+      const apiKey = provider === 'whisper' ? '' : await loadAIKey(provider).catch(() => '');
+      const whisperResolved = provider === 'whisper'
+        ? await resolveWhisperModelAsync(model, modelPath, () => (
+          isSubmissionCurrent() && isSpeechSettingsLeaseCurrent(provider, model, modelPath)
+        ))
+        : null;
+      const whisperModelReady = provider === 'whisper' ? Boolean(whisperResolved?.exists) : false;
+      const resolvedModelPath = provider === 'whisper'
+        ? (whisperResolved?.exists ? whisperResolved.path : modelPath)
+        : undefined;
+      if (!isSubmissionCurrent()) return;
+
+      const speechReady = isQuickCaptureSpeechReady({
+        speechEnabled: speechRuntime.enabled,
+        provider,
+        apiKey,
+        baseUrl: speechRuntime.baseUrl,
+        whisperModelReady,
+      });
+      const audioUri = finalFile.uri;
+      const localWhisperInput = speechReady && provider === 'whisper'
+        ? await prepareAudioForLocalWhisper({
+          uri: audioUri,
+          platform: getWhisperCapturePlatform(),
+          source: 'expo-recorder',
+          extension,
+        })
+        : null;
+      if (!isSubmissionCurrent()) return;
+      const canTranscribeSpeech = provider === 'whisper' ? Boolean(localWhisperInput) : speechReady;
+      const saveAudioAttachments = shouldSaveQuickCaptureAudio(currentSettings, canTranscribeSpeech);
+
+      let attachment: Attachment | null = saveAudioAttachments ? recoveryAudioAttachment : null;
+      if (attachment) {
+        try {
+          attachment = await cacheAudioAttachmentOrThrow(attachment);
+          trackSubmissionFile(new File(attachment.uri));
+        } catch (error) {
+          onWarn('Failed to persist audio attachment', error);
+          throw error;
+        }
+      }
+      recoveryAttachments = [
+        ...(initialAttachments ?? []),
+        attachment ?? recoveryAudioAttachment,
+      ];
+      updateActivitySubmission(
+        activitySubmissionId,
+        recoveryAttachments,
+        displayTitle,
+        [(attachment ?? recoveryAudioAttachment).uri],
+      );
+      if (!isSubmissionCurrent()) return;
+
+      const attachments = [...(initialAttachments ?? [])];
+      if (attachment) attachments.push(attachment);
+      const { title, props, invalidDateCommands } = await buildTaskProps(displayTitle, { attachments });
+      if (!isSubmissionCurrent()) return;
+      if (invalidDateCommands && invalidDateCommands.length > 0) {
+        showInvalidDateCommandToast(showToast, t, invalidDateCommands);
+        return;
+      }
+      if (!title.trim()) return;
+
+      const addTaskResult = await addTask(title, props);
+      durableSucceeded = Boolean(addTaskResult.success && addTaskResult.id);
+      if (durableSucceeded) submissionFilesAdopted = true;
+      if (!addTaskResult.success || !addTaskResult.id) return;
+      if (isSubmissionCurrent()) handleClose();
+      const taskId = addTaskResult.id;
+      const titleAtSave = useTaskStore.getState().tasks.find((task) => task.id === taskId)?.title;
+      const shouldCleanupSource = !attachment || attachment.uri !== finalFile.uri;
+
+      if (canTranscribeSpeech) {
+        const timeZone = typeof Intl === 'object' && typeof Intl.DateTimeFormat === 'function'
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : undefined;
+        const speechConfig = {
+          provider,
+          apiKey,
+          baseUrl: speechRuntime.baseUrl,
+          model,
+          modelPath: resolvedModelPath,
+          isFossBuild: speechRuntime.isFossBuild,
+          language: speechRuntime.language,
+          mode: speechRuntime.mode,
+          fieldStrategy: speechRuntime.fieldStrategy,
+          parseModel: provider === 'openai' && currentSettings.ai?.provider === 'openai' ? currentSettings.ai?.model : undefined,
+          now: new Date(),
+          timeZone,
+        } satisfies SpeechToTextConfig;
+        const speechPromise = provider === 'whisper' && localWhisperInput
+          ? runWhisperLocalTranscription(localWhisperInput, speechConfig)
+          : processAudioCapture(stripFileScheme(attachment?.uri ?? audioUri), speechConfig);
+        void speechPromise
+          .then(async (result) => {
+            const applyResult = await applySpeechResult(taskId, result, titleAtSave);
+            if (applyResult === 'empty') {
+              await discardEmptySpeechTask(taskId, [
+                finalFile,
+                attachment?.uri ? new File(attachment.uri) : null,
+              ], 'speech_empty_transcript');
+            }
+          })
+          .catch((error) => onWarn('Speech-to-text failed', error))
+          .finally(() => {
+            if (shouldCleanupSource) {
+              safeDeleteFile(finalFile, 'expo_cleanup');
+            }
+          });
+      } else {
+        if (shouldCleanupSource) {
+          safeDeleteFile(finalFile, 'expo_skip_cleanup');
+        }
+      }
+    } catch (error) {
+      if (!isSubmissionCurrent()) return;
+      onError('Failed to save recording', error);
+      Alert.alert(t('quickAdd.audioErrorTitle'), t('quickAdd.audioErrorBody'));
+    } finally {
+      const sessionCurrent = submissionSession === null
+        ? isSubmissionCurrent()
+        : submissionCoordinator.finishSubmission(submissionSession);
+      let activitySubmissionManaged = false;
+      if (activitySubmissionId !== null) {
+        activitySubmissionManaged = settleActivitySubmission(activitySubmissionId, {
+          durableSucceeded,
+          keepEditing: !durableSucceeded,
+          sessionCurrent,
+        });
+      }
+      if (!submissionFilesAdopted) {
+        cleanupAbandonedSubmissionFiles(
+          'stale_audio_submission',
+          activitySubmissionManaged
+            ? new Set(recoveryAttachments.map((attachment) => attachment.uri))
+            : undefined,
+        );
+      }
+      if (submissionSession === null) {
+        if (sessionCurrent) {
+          setRecordingBusy(false);
+        }
+      } else if (sessionCurrent) {
+        setRecordingBusy(false);
+        onSubmissionBusyChange(false);
+      }
+    }
+  }, [
+    addTask,
+    applySpeechResult,
+    beginActivitySubmission,
+    buildTaskProps,
+    discardEmptySpeechTask,
+    ensureAudioDirectory,
+    getActiveSubmissionSession,
+    handleClose,
+    initialAttachments,
+    isSpeechSettingsLeaseCurrent,
+    onError,
+    onSubmissionBusyChange,
+    onWarn,
+    recording,
+    recordingBusy,
+    resolveWhisperModelAsync,
+    safeDeleteFile,
+    settings,
+    settleActivitySubmission,
+    showToast,
+    stripFileScheme,
+    submissionCoordinator,
+    t,
+    updateActivitySubmission,
+  ]);
+
+  useEffect(() => {
+    automaticStartAttemptedRef.current = false;
+  }, [submissionKey, visible]);
+
+  useEffect(() => {
+    if (isSandboxMode() || !visible || !autoRecord || recording || recordingBusy || automaticStartAttemptedRef.current) {
+      return undefined;
+    }
+    const handle = setTimeout(() => {
+      if (automaticStartAttemptedRef.current) return;
+      automaticStartAttemptedRef.current = true;
+      void logInfo('Quick capture audio automatic start attempted', {
+        scope: 'capture',
+      });
+      void startRecording();
+    }, 150);
+    return () => clearTimeout(handle);
+  }, [autoRecord, recording, recordingBusy, startRecording, submissionKey, visible]);
+
+  return {
+    recording,
+    recordingBusy,
+    recordingReady,
+    startRecording,
+    stopRecording,
+  };
+}

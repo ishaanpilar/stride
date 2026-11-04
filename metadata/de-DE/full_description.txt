@@ -1,0 +1,18 @@
+Stride ist ein persönlicher Organizer mit KI. Erfasse Aufgaben und Ideen sofort, starte den Tag mit einem KI-Morgenbriefing und lass dir vom integrierten Assistenten bei der Planung helfen.
+
+DAS BIETET STRIDE
+
+- Erfassen: Aufgaben und Notizen in Sekunden hinzufügen, per Schnellerfassung, Widgets, Teilen aus anderen Apps oder Sprache.
+- KI-Morgenbriefing: eine kurze Zusammenfassung dessen, was heute zählt, aus deinen eigenen Aufgaben.
+- Assistenten-Chat: Fragen zu Aufgaben, Projekten und Terminen stellen oder Hilfe bei der Tagesplanung bekommen. Nutzt dein eigenes KI-Anbieter-Konto.
+- Menüleisten-Panel: auf dem Mac Aufgaben in der Menüleiste ansehen und hinzufügen, ohne die ganze App zu öffnen.
+- GTD-Listen: Inbox, Next, Warten, Irgendwann/Vielleicht, Projekte, Bereiche und Kontexte plus geführter Wochenrückblick.
+- Pomodoro: ein integrierter Fokus-Timer für deine nächsten Aktionen.
+- Erinnerungen, Wiederholungen, Checklisten, Markdown-Notizen und Anhänge.
+- Listen-, Kalender- und Kanban-Ansichten.
+
+DEINE DATEN, DEINE ENTSCHEIDUNG
+
+Funktioniert offline, kein Konto nötig. Deine Aufgaben bleiben auf deinem Gerät. Sync ist optional: Dropbox, ein eigener Ordner, WebDAV, dein eigener Server oder iCloud auf Apple-Geräten. KI-Funktionen sind optional und laufen nur, wenn du einen Anbieter einrichtest.
+
+Kostenlos und Open Source unter AGPL-3.0.

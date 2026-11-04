@@ -1,0 +1,521 @@
+import { isValidProjectColorOverride } from './color-constants';
+import type { NativeHostResult } from './native-host-contract';
+import { projectReviewPickerValue } from './project-details-presentation';
+import { normalizeProjectTag } from './project-tags';
+import { resolveI18nText, type I18nTemplateValues, type TranslateFn } from './i18n';
+import { revisionOf } from './native-request-receipts';
+import { createProjectToSectionPreviewer, getProjectToSectionEligibility, planProjectToSection, type ProjectToSectionReceipt } from './project-to-section';
+import { projectDuplicateId } from './native-host-contract-project-duplicate';
+import { useTaskStore } from './store';
+import { PROJECT_TASK_SORT_OPTIONS } from './task-list-sort-options';
+import { deterministicHash128 } from './uuid';
+import { ensureDeviceId } from './store-helpers';
+import { getProjectAccentColor } from './task-accent-color';
+import { isNativeJsonWithinBytes } from './native-host-contract-task-view';
+import { getProjectFlowMode } from './task-utils';
+import { planProjectMove } from './project-grouping';
+import type { Project, ProjectFlowMode } from './types';
+
+
+export type NativeProjectEdit = { requestId: string; projectId: string } & (
+    | { kind: 'title'; title: string }
+    | { kind: 'status'; status: 'active' | 'waiting' | 'someday' }
+    | { kind: 'type'; sequential: boolean }
+    | { kind: 'scope'; scope: 'project' | 'section' }
+
+    | { kind: 'flowMode'; mode: ProjectFlowMode }
+    | { kind: 'area'; areaId: string | null }
+    | { kind: 'color'; colorOverride: string | null }
+    | { kind: 'tag'; tag: string; present: boolean }
+    | { kind: 'notes'; text: string }
+    | { kind: 'date'; field: 'startDate' | 'dueDate' | 'reviewAt'; value: string | null; opened: string | null }
+    | { kind: 'sectionCreate'; title: string }
+    | { kind: 'sectionRename'; sectionId: string; title: string }
+    | { kind: 'sectionDelete'; sectionId: string }
+    | { kind: 'sectionMove'; sectionId: string; direction: 'up' | 'down'; order: string[] }
+
+    | { kind: 'sectionFlow'; sectionId: string; sequential: boolean }
+
+    | { kind: 'move'; direction: 'up' | 'down'; order: string[] }
+
+    | { kind: 'lifecycle'; action: 'complete' | 'cancel' | 'reactivate' }
+    | { kind: 'duplicate' }
+    | { kind: 'delete' }
+    | { kind: 'deleteUndo'; deleteRequestId: string }
+
+    | { kind: 'toSection'; destinationProjectId: string; title: string; expected: string }
+    | { kind: 'toSectionUndo'; convertRequestId: string }
+
+    | { kind: 'sort'; sortBy: string }
+
+    | { kind: 'taskOrder'; taskId: string; after: { type: 'task' | 'section'; id: string } | null; showCompleted: boolean;
+        filters: Record<string, unknown>; expectedOrder: string });
+
+export type NativeProjectEditResult = { id: string; kind: NativeProjectEdit['kind']; outcome: 'saved' | 'unchanged' | 'blocked'; reply?: unknown };
+
+type Reply = NativeHostResult<unknown>;
+type Json = Record<string, unknown>;
+
+type Port = Record<string, unknown>;
+
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const ATTEMPTS = 4;
+const fail = (code: 'INVALID_INPUT' | 'STALE_REVISION' | 'SAVE_FAILED', message: string): NativeHostResult<never> =>
+    ({ ok: false, error: { code, message } });
+const text = (value: unknown, max = 100_000): value is string => typeof value === 'string' && value.length <= max;
+const id = (value: unknown): value is string => text(value, 500) && value.length > 0;
+const keys = (input: Json, names: string[]) => Object.keys(input).length === names.length + 3
+    && ['requestId', 'projectId', 'kind', ...names].every((name) => Object.prototype.hasOwnProperty.call(input, name));
+
+const valid = (input: unknown): input is NativeProjectEdit => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+    const edit = input as Json;
+    if (typeof edit.requestId !== 'string' || !UUID.test(edit.requestId) || !id(edit.projectId)) return false;
+    switch (edit.kind) {
+        case 'title': case 'sectionCreate': return keys(edit, ['title']) && text(edit.title);
+        case 'status': return keys(edit, ['status']) && ['active', 'waiting', 'someday'].includes(edit.status as string);
+        case 'type': return keys(edit, ['sequential']) && typeof edit.sequential === 'boolean';
+        case 'scope': return keys(edit, ['scope']) && (edit.scope === 'project' || edit.scope === 'section');
+        case 'flowMode': return keys(edit, ['mode']) && ['parallel', 'sequential', 'perSection'].includes(edit.mode as string);
+        case 'sectionFlow': return keys(edit, ['sectionId', 'sequential']) && id(edit.sectionId) && typeof edit.sequential === 'boolean';
+        case 'color': return keys(edit, ['colorOverride']) && edit.colorOverride !== undefined && isValidProjectColorOverride(edit.colorOverride);
+        case 'area': return keys(edit, ['areaId']) && (edit.areaId === null || id(edit.areaId));
+        case 'tag': return keys(edit, ['tag', 'present']) && text(edit.tag) && typeof edit.present === 'boolean';
+        case 'notes': return keys(edit, ['text']) && text(edit.text, 2_000_000);
+        case 'date': return keys(edit, ['field', 'value', 'opened']) && ['startDate', 'dueDate', 'reviewAt'].includes(edit.field as string)
+            && (edit.value === null || text(edit.value, 100)) && (edit.opened === null || (edit.field === 'reviewAt' && text(edit.opened, 100)));
+        case 'sectionRename': return keys(edit, ['sectionId', 'title']) && id(edit.sectionId) && text(edit.title);
+        case 'sectionDelete': return keys(edit, ['sectionId']) && id(edit.sectionId);
+        case 'move': return keys(edit, ['direction', 'order']) && (edit.direction === 'up' || edit.direction === 'down')
+            && Array.isArray(edit.order) && edit.order.length <= 100_000 && edit.order.every(id);
+        case 'sectionMove': return keys(edit, ['sectionId', 'direction', 'order']) && id(edit.sectionId)
+            && (edit.direction === 'up' || edit.direction === 'down') && Array.isArray(edit.order)
+            && edit.order.length <= 1_000 && edit.order.every(id);
+        case 'lifecycle': return keys(edit, ['action']) && ['complete', 'cancel', 'reactivate'].includes(edit.action as string);
+        case 'duplicate': case 'delete': return keys(edit, []);
+        case 'deleteUndo': return keys(edit, ['deleteRequestId']) && typeof edit.deleteRequestId === 'string'
+            && UUID.test(edit.deleteRequestId) && edit.deleteRequestId !== edit.requestId;
+        case 'toSection': return keys(edit, ['destinationProjectId', 'title', 'expected']) && id(edit.destinationProjectId) && text(edit.title, 500)
+            && text(edit.expected, 200);
+        case 'taskOrder': {
+            const after = edit.after as Json | null;
+            return keys(edit, ['taskId', 'after', 'showCompleted', 'filters', 'expectedOrder']) && id(edit.taskId)
+                && (after === null || (typeof after === 'object' && !Array.isArray(after) && Object.keys(after).length === 2
+                    && (after.type === 'task' || after.type === 'section') && id(after.id)))
+                && typeof edit.showCompleted === 'boolean' && !!edit.filters && typeof edit.filters === 'object' && !Array.isArray(edit.filters)
+
+                && typeof edit.expectedOrder === 'string' && edit.expectedOrder.length > 0 && isNativeJsonWithinBytes(edit.expectedOrder);
+        }
+        case 'sort': return keys(edit, ['sortBy']) && (PROJECT_TASK_SORT_OPTIONS as readonly string[]).includes(edit.sortBy as string);
+        case 'toSectionUndo': return keys(edit, ['convertRequestId']) && typeof edit.convertRequestId === 'string'
+            && UUID.test(edit.convertRequestId) && edit.convertRequestId !== edit.requestId;
+        default: return false;
+    }
+};
+
+
+const moved = (order: string[], sectionId: string, direction: 'up' | 'down'): string[] | null => {
+    const from = order.indexOf(sectionId);
+    const to = from + (direction === 'up' ? -1 : 1);
+    if (from < 0 || to < 0 || to >= order.length) return null;
+    const next = [...order];
+    [next[from], next[to]] = [next[to], next[from]];
+    return next;
+};
+const same = (a: string[], b: string[] | null) => b !== null && a.length === b.length && a.every((value, index) => value === b[index]);
+
+
+export function createProjectEditMethods(deps: {
+    readiness: () => NativeHostResult<null>;
+    save: () => Promise<NativeHostResult<null>>;
+    contract: () => Port;
+    t: () => TranslateFn;
+}) {
+    const word = (key: string, values?: I18nTemplateValues) => resolveI18nText(deps.t(), key, values ? { values } : undefined);
+    const call = async (name: string, input: unknown): Promise<Reply> => {
+        const port = deps.contract();
+        return await (port[name] as (value: unknown) => Reply | Promise<Reply>).call(port, input);
+    };
+    const token = (options: Json): Json => {
+        const { id: _id, ...expected } = options.project as Json;
+        return expected;
+    };
+    type Plan = { outcome: 'unchanged' | 'blocked'; reply?: Json } | { command: string; request: Json } | { conflict: string }
+
+        | { run: () => Promise<NativeHostResult<Json>> };
+
+
+    const deletes = new Map<string, Json>();
+
+    const conversions = new Map<string, ProjectToSectionReceipt>();
+
+
+    const preparedBy = new Map<string, { command: string; request: Json; prepared: Json }>();
+
+    const convertPlans = new Map<string, Parameters<ReturnType<typeof useTaskStore.getState>['convertProjectToSection']>[0]>();
+
+    const convertToken = (projectId: string, destinationId: string): string => {
+        const state = useTaskStore.getState();
+        const rows = [state._projectsById.get(projectId), state._projectsById.get(destinationId),
+            ...state._allTasks.filter((row) => row.projectId === projectId || row.projectId === destinationId),
+            ...state._allSections.filter((row) => row.projectId === projectId || row.projectId === destinationId)]
+            .map((row) => row ? `${row.id}@${revisionOf(row)}` : '-').sort();
+        return deterministicHash128(JSON.stringify([projectId, destinationId, rows])).map((part) => part.toString(16)).join('');
+    };
+    const remember = <T,>(map: Map<string, T>, key: string, value: T) => {
+        map.set(key, value);
+        if (map.size > 20) map.delete(map.keys().next().value as string);
+    };
+
+
+    type ShownGroup = { areaId: string | null; shown: string[] };
+    const shownGroup = (projectId: string): NativeHostResult<ShownGroup | null> => {
+        const port = deps.contract();
+        const read = (port.getProjects as () => NativeHostResult<Record<'active' | 'deferred' | 'archived', Array<{ areaId: string | null; projects: Json[] }>>>)
+            .call(port);
+        if (!read.ok) return read;
+        const group = [...read.value.active, ...read.value.deferred, ...read.value.archived]
+            .find((entry) => entry.projects.some((row) => row.id === projectId));
+        return { ok: true, value: group ? { areaId: group.areaId, shown: group.projects.map((row) => row.id as string) } : null };
+    };
+
+    const planShownMove = (group: ShownGroup, projectId: string, direction: 'up' | 'down') => {
+        const state = useTaskStore.getState();
+        const projects = group.shown.map((id) => state._projectsById.get(id)).filter((row): row is Project => Boolean(row));
+        return planProjectMove({ areaId: group.areaId ?? undefined, projects }, state._allProjects, projectId, direction);
+    };
+
+
+    const plan = async (edit: NativeProjectEdit): Promise<NativeHostResult<Plan>> => {
+        const base = { requestId: edit.requestId, projectId: edit.projectId };
+        const project = { projectId: edit.projectId };
+        const options = async (name: string, input: Json = project): Promise<NativeHostResult<Json>> =>
+            await call(name, input) as NativeHostResult<Json>;
+        switch (edit.kind) {
+            case 'title': {
+                const read = await options('getProjectRenameOptions');
+                if (!read.ok) return read;
+                return { ok: true, value: read.value.canRename === false ? { outcome: 'blocked' }
+                    : { command: 'ProjectRename', request: { ...base, title: edit.title, expected: token(read.value) } } };
+            }
+            case 'status': {
+                const read = await options('getProjectStatusOptions');
+                if (!read.ok) return read;
+                return { ok: true, value: read.value.canChange === false ? { outcome: 'blocked' }
+                    : { command: 'ProjectStatus', request: { ...base, status: edit.status, expected: token(read.value) } } };
+            }
+            case 'type': case 'scope': {
+                const read = await options('getProjectFlowOptions');
+                if (!read.ok) return read;
+                if (read.value.canChange === false) return { ok: true, value: { outcome: 'blocked' } };
+                const flow = read.value.project as Json;
+                if (edit.kind === 'type' && (flow.isSequential === true) === edit.sequential) return { ok: true, value: { outcome: 'unchanged' } };
+                const action = edit.kind === 'type' ? { kind: 'toggleType' } : { kind: 'setScope', scope: edit.scope };
+                return { ok: true, value: { command: 'ProjectFlow', request: { ...base, action, expected: token(read.value) } } };
+            }
+            case 'flowMode': {
+                const read = await options('getProjectFlowOptions', { ...project, flowMode: true });
+                if (!read.ok) return read;
+                if (read.value.canChange === false) return { ok: true, value: { outcome: 'blocked' } };
+                if (read.value.flowMode === edit.mode) return { ok: true, value: { outcome: 'unchanged' } };
+
+                return { ok: true, value: { run: async () => {
+                    const result = await useTaskStore.getState().setProjectFlowMode(edit.projectId, edit.mode);
+                    return result.success ? { ok: true, value: {} } : fail('STALE_REVISION', result.error ?? 'Project flow could not be changed');
+                } } };
+            }
+            case 'sectionFlow': {
+                const state = useTaskStore.getState();
+                const parent = state._projectsById.get(edit.projectId);
+                if (!parent || parent.deletedAt || parent.purgedAt) return { ok: true, value: { conflict: 'The Project is no longer there' } };
+
+                if (parent.status === 'archived' || getProjectFlowMode(parent) !== 'perSection') return { ok: true, value: { outcome: 'blocked' } };
+                const current = state._allSections.find((row) => row.id === edit.sectionId);
+                if (!current || current.deletedAt || current.projectId !== edit.projectId) return { ok: true, value: { conflict: 'The Section is no longer there' } };
+                if ((current.isSequential === true) === edit.sequential) return { ok: true, value: { outcome: 'unchanged' } };
+                return { ok: true, value: { run: async () => {
+                    const result = await useTaskStore.getState().updateSection(edit.sectionId, { isSequential: edit.sequential });
+                    return result.success ? { ok: true, value: {} } : fail('STALE_REVISION', result.error ?? 'The Section is no longer there');
+                } } };
+            }
+            case 'color': case 'area': {
+                const read = await options('getProjectAreaOptions');
+                if (!read.ok) return read;
+                if (read.value.canEdit === false) return { ok: true, value: { outcome: 'blocked' } };
+                const areaId = edit.kind === 'area' ? edit.areaId : (read.value.project as Json).areaId;
+                const area = areaId === null ? null : (read.value.areas as Json[]).find((row) => row.id === areaId);
+                if (area === undefined) return { ok: true, value: { conflict: 'The Area is no longer there' } };
+                return { ok: true, value: { command: 'ProjectArea', request: { ...base, areaId, ...(edit.kind === 'color' ? { colorOverride: edit.colorOverride } : {}), expected: token(read.value),
+                    selectedArea: area === null ? null : { id: area.id, name: area.label } } } };
+            }
+            case 'tag': {
+                const read = await options('getProjectTagsEditOptions');
+                if (!read.ok) return read;
+                if (read.value.canEdit === false) return { ok: true, value: { outcome: 'blocked' } };
+                const tag = normalizeProjectTag(edit.tag);
+                const has = ((read.value.project as Json).tagIds as string[]).includes(tag);
+                if (!tag || has === edit.present) return { ok: true, value: { outcome: 'unchanged' } };
+
+                return { ok: true, value: { command: 'ProjectTagsWrite', request: { ...base,
+                    intent: { kind: edit.present ? 'add' : 'toggle', input: tag }, expected: token(read.value) } } };
+            }
+            case 'notes': {
+                const read = await options('getProjectNotesEditOptions');
+                if (!read.ok) return read;
+                return { ok: true, value: read.value.canEdit === false ? { outcome: 'blocked' }
+                    : { command: 'ProjectNotesWrite', request: { ...base, text: edit.text, expected: token(read.value) } } };
+            }
+            case 'date': {
+
+                const value = edit.value !== null && edit.opened !== null ? projectReviewPickerValue(edit.value, edit.opened) : edit.value;
+                if (edit.value !== null && value === null) return fail('INVALID_INPUT', 'A picked review day and the picker instant are required');
+                const read = await options('getProjectDateOptions', { ...project, field: edit.field });
+                if (!read.ok) return read;
+                return { ok: true, value: read.value.canEdit === false ? { outcome: 'blocked' }
+                    : { command: 'ProjectDate', request: { ...base, field: edit.field, value, expected: token(read.value) } } };
+            }
+            case 'sectionCreate': {
+
+                if (useTaskStore.getState()._allSections.some((row) => row.id === edit.requestId)) return { ok: true, value: { outcome: 'unchanged' } };
+                const read = await options('getProjectSectionOptions');
+                if (!read.ok) return read;
+                return { ok: true, value: read.value.canCreate === false ? { outcome: 'blocked' }
+                    : { command: 'ProjectSectionCreate', request: { ...base, title: edit.title } } };
+            }
+            case 'sectionRename': case 'sectionDelete': {
+                const current = useTaskStore.getState()._allSections.find((row) => row.id === edit.sectionId);
+                if (!current || current.deletedAt) {
+                    return { ok: true, value: edit.kind === 'sectionDelete' ? { outcome: 'unchanged' } : { conflict: 'The Section is no longer there' } };
+                }
+                const isRename = edit.kind === 'sectionRename';
+                const read = await options(isRename ? 'getProjectSectionRenameOptions' : 'getProjectSectionDeleteOptions',
+                    { ...project, sectionId: edit.sectionId });
+                if (!read.ok) return read;
+                if (read.value[isRename ? 'canRename' : 'canDelete'] === false) return { ok: true, value: { outcome: 'blocked' } };
+                return { ok: true, value: isRename
+                    ? { command: 'ProjectSectionRename', request: { ...base, sectionId: edit.sectionId, title: edit.title, expected: read.value.token } }
+                    : { command: 'ProjectSectionDelete', request: { ...base, sectionId: edit.sectionId, expected: read.value.token } } };
+            }
+            case 'move': {
+                const first = shownGroup(edit.projectId);
+                if (!first.ok) return first;
+                if (!first.value) return { ok: true, value: { conflict: 'The Project is no longer in the list' } };
+                if (same(first.value.shown, moved(edit.order, edit.projectId, edit.direction))) return { ok: true, value: { outcome: 'unchanged' } };
+                if (!same(first.value.shown, edit.order)) return { ok: true, value: { conflict: 'The Projects changed since they were shown' } };
+                if (!planShownMove(first.value, edit.projectId, edit.direction)) return { ok: true, value: { outcome: 'blocked' } };
+                return { ok: true, value: { run: async () => {
+
+
+                    const read = shownGroup(edit.projectId);
+                    if (!read.ok) return read;
+                    const planned = read.value && same(read.value.shown, edit.order) ? planShownMove(read.value, edit.projectId, edit.direction) : null;
+                    if (!planned) return fail('STALE_REVISION', 'The Projects changed since they were shown');
+                    await useTaskStore.getState().reorderProjects(planned.orderedIds, planned.areaId);
+                    return { ok: true, value: {} };
+                } } };
+            }
+            case 'sectionMove': {
+                const read = await options('getProjectSectionOrderOptions');
+                if (!read.ok) return read;
+                if (read.value.canReorder === false) return { ok: true, value: { outcome: 'blocked' } };
+                const shown = (read.value.sections as Json[]).map((row) => row.id as string);
+                if (same(shown, moved(edit.order, edit.sectionId, edit.direction))) return { ok: true, value: { outcome: 'unchanged' } };
+                if (!same(shown, edit.order)) return { ok: true, value: { conflict: 'The Sections changed since they were shown' } };
+                return { ok: true, value: { command: 'ProjectSectionOrder', request: { ...base, sectionId: edit.sectionId,
+                    direction: edit.direction, expectedSections: read.value.token } } };
+            }
+            case 'taskOrder': {
+                const read = await options('getProjectTaskOrderView', { projectId: edit.projectId, offset: 0, limit: 1,
+                    showCompleted: edit.showCompleted, filters: edit.filters });
+                if (!read.ok) return read;
+                if (read.value.canReorder === false) return { ok: true, value: { outcome: 'blocked' } };
+                const current = read.value.orderToken as string | null;
+                const request = { ...base, taskId: edit.taskId, after: edit.after, showCompleted: edit.showCompleted, filters: edit.filters,
+                    expectedOrder: current ?? edit.expectedOrder };
+                if (current === edit.expectedOrder) return { ok: true, value: { command: 'ProjectTaskOrder', request } };
+
+                const probe = await call('prepareProjectTaskOrder', request) as NativeHostResult<Json>;
+                return { ok: true, value: probe.ok && probe.value.kind === 'noop' ? { outcome: 'unchanged' }
+                    : { conflict: 'Project task order changed; refresh before moving' } };
+            }
+            case 'sort': {
+                const read = await options('getProjectTaskSortOptions');
+                if (!read.ok) return read;
+                if (read.value.canEdit === false) return { ok: true, value: { outcome: 'blocked' } };
+                const expected = token(read.value);
+                if ((expected.taskSortBy ?? 'default') === edit.sortBy) return { ok: true, value: { outcome: 'unchanged' } };
+                return { ok: true, value: { command: 'ProjectTaskSort', request: { ...base, sortBy: edit.sortBy, expected } } };
+            }
+            case 'toSection': {
+                const converted = (destinationProjectId: string, sectionId: string) => ({ destinationProjectId, sectionId,
+                    title: word('common.done'), message: word('projects.convertSuccess'), undoLabel: word('common.undo') });
+
+
+                if (useTaskStore.getState()._allSections.some((row) => row.id === edit.requestId)) {
+                    return { ok: true, value: { outcome: 'unchanged', ...(conversions.has(edit.requestId) ? { reply: converted(edit.destinationProjectId, edit.requestId) } : {}) } };
+                }
+                const cached = convertPlans.get(edit.requestId);
+
+                if (!cached && convertToken(edit.projectId, edit.destinationProjectId) !== edit.expected) return { ok: true, value: { conflict: word('projects.convertFailure.conflict') } };
+                return { ok: true, value: { run: async () => {
+                    const state = useTaskStore.getState();
+                    const device = ensureDeviceId(state.settings);
+                    const planned = cached ? { ok: true as const, command: cached } : planProjectToSection(state, edit.projectId, edit.destinationProjectId, edit.title, edit.requestId,
+                        new Date().toISOString(), state.settings.deviceId ?? null, device.updated ? device.deviceId : null);
+                    if (!planned.ok) return fail('STALE_REVISION', word(`projects.convertBlocked.${planned.reason}`));
+                    remember(convertPlans, edit.requestId, planned.command);
+                    const result = await state.convertProjectToSection(planned.command);
+                    if (!result.success) {
+                        if (result.reason !== 'save-failed') convertPlans.delete(edit.requestId);
+                        return fail(result.reason === 'save-failed' ? 'SAVE_FAILED' : 'STALE_REVISION', word(`projects.convertFailure.${result.reason}`));
+                    }
+                    remember(conversions, edit.requestId, result.receipt);
+                    return { ok: true, value: converted(result.destinationProjectId, result.sectionId) };
+                } } };
+            }
+            case 'toSectionUndo': {
+                const source = useTaskStore.getState()._projectsById.get(edit.projectId);
+                if (source && !source.deletedAt && !source.purgedAt) return { ok: true, value: { outcome: 'unchanged', reply: { sourceProjectId: source.id } } };
+                const receipt = conversions.get(edit.convertRequestId);
+                if (!receipt) return { ok: true, value: { conflict: word('projects.convertUndoFailure.invalid') } };
+                return { ok: true, value: { run: async () => {
+                    const result = await useTaskStore.getState().undoProjectToSection(receipt);
+                    if (!result.success) return fail(result.reason === 'save-failed' ? 'SAVE_FAILED' : 'STALE_REVISION', word(`projects.convertUndoFailure.${result.reason}`));
+                    conversions.delete(edit.convertRequestId);
+                    return { ok: true, value: { sourceProjectId: result.sourceProjectId } };
+                } } };
+            }
+            case 'lifecycle': case 'duplicate': case 'delete': case 'deleteUndo': {
+                const current = useTaskStore.getState()._projectsById.get(edit.projectId);
+                const gone = !current || Boolean(current.deletedAt) || Boolean(current.purgedAt);
+                if (edit.kind === 'deleteUndo') {
+
+                    return { ok: true, value: !gone ? { outcome: 'unchanged' }
+                        : !deletes.has(edit.deleteRequestId) ? { conflict: 'The Delete can no longer be undone' }
+                            : { command: 'ProjectDeleteUndo', request: { requestId: edit.requestId, deleteRequestId: edit.deleteRequestId } } };
+                }
+                if (gone) return { ok: true, value: edit.kind === 'delete' ? { outcome: 'unchanged' } : { conflict: 'The Project is no longer there' } };
+                const request = { ...base, projectRevision: revisionOf(current) };
+                if (edit.kind === 'delete') return { ok: true, value: { command: 'ProjectDelete', request } };
+
+                if (edit.kind === 'duplicate') {
+
+                    const made = new Set(Array.from({ length: (current.attachments?.length ?? 0) + 1 }, (_, index) => projectDuplicateId(edit.requestId, index)));
+                    const copy = useTaskStore.getState()._allProjects.find((row) => made.has(row.id));
+                    return { ok: true, value: copy ? { outcome: 'unchanged', reply: { id: copy.id, message: word('projects.duplicated') } }
+                        : { command: 'ProjectDuplicate', request } };
+                }
+                const done = edit.action === 'reactivate' ? current.status !== 'archived'
+                    : current.status === 'archived' && Boolean(current.cancelledAt) === (edit.action === 'cancel');
+                return { ok: true, value: done ? { outcome: 'unchanged' } : { command: 'ProjectLifecycle', request: { ...request, action: edit.action } } };
+            }
+        }
+    };
+
+    return {
+
+
+        getProjectToSectionOptions(input: { projectId: string; destinationId: string | null; title: string }): NativeHostResult<Json> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            if (!input || typeof input !== 'object' || !id(input.projectId) || !(input.destinationId === null || id(input.destinationId))
+                || !text(input.title, 500) || Object.keys(input).length !== 3) return fail('INVALID_INPUT', 'A project, a destination or null, and a title are required');
+            const state = useTaskStore.getState();
+            const source = state._projectsById.get(input.projectId);
+            const eligible = getProjectToSectionEligibility(state, input.projectId);
+            const previewer = createProjectToSectionPreviewer(state, input.projectId);
+            const areaById = new Map(state._allAreas.map((area) => [area.id, area]));
+            const destinations = eligible.ok ? state._allProjects.filter((row) => !row.deletedAt && previewer(row.id).ok)
+                .map((row) => ({ id: row.id, title: row.title, color: getProjectAccentColor(row, areaById) ?? null })) : [];
+            const preview = input.destinationId === null ? null : previewer(input.destinationId);
+            const destination = input.destinationId === null ? undefined : state._projectsById.get(input.destinationId);
+            const area = destination?.areaId ? state._allAreas.find((row) => row.id === destination.areaId && !row.deletedAt) : undefined;
+            return { ok: true, value: {
+                row: { label: word('projects.convertToSection'), eligible: eligible.ok, blocked: eligible.ok ? null : word(`projects.convertBlocked.${eligible.reason}`) },
+                sequentialNote: source?.isSequential ? word('projects.convertBlocked.destination-section-sequence') : null,
+                words: { title: word('projects.convertToSection'), destination: word('projects.convertDestination'), choose: word('projects.convertChooseDestination'),
+                    sectionName: word('projects.convertSectionName'), cancel: word('common.cancel'), back: word('common.back'), next: word('common.next'),
+                    convert: word('projects.convertToSection') },
+                destinations,
+                preview: preview?.ok && destination ? {
+                    named: word('projects.convertNamedSection', { name: input.title.trim() }),
+                    lines: [word('projects.convertSummary', { count: preview.taskCount, completed: preview.completedCount, archived: preview.archivedCount,
+                        source: preview.sourceTitle, destination: preview.destinationTitle }),
+                    ...(source?.supportNotes ? [word('projects.convertNotes')] : []),
+                    word('projects.convertArea', { area: area?.name ?? word('projects.noArea') }),
+                    word('projects.convertDestinationColor'), word('projects.convertColor'), word('projects.convertSettings'), word('projects.convertTrash')],
+                    color: getProjectAccentColor(destination, areaById) ?? null,
+
+                    token: convertToken(input.projectId, destination.id),
+                } : null,
+                blocked: preview && !preview.ok ? word(`projects.convertBlocked.${preview.reason}`) : null,
+            } };
+        },
+
+        async runProjectEdit(input: NativeProjectEdit): Promise<NativeHostResult<NativeProjectEditResult>> {
+            const ready = deps.readiness();
+            if (!ready.ok) return ready;
+            if (!valid(input)) return fail('INVALID_INPUT', 'A bounded Project details edit is required');
+            const answer = (outcome: NativeProjectEditResult['outcome']) => ({ id: input.projectId, kind: input.kind, outcome });
+
+            try {
+                if (useTaskStore.getState().persistenceFailure) await useTaskStore.getState().retryPersistence();
+            } catch (error) { return fail('SAVE_FAILED', error instanceof Error ? error.message : String(error)); }
+            let stale = 'Project changed; the edit could not be applied';
+            const replied = (outcome: NativeProjectEditResult['outcome'], reply: unknown) =>
+                (['duplicate', 'delete'].includes(input.kind) && reply !== undefined ? { ...answer(outcome), reply } : answer(outcome));
+            const commit = async (entry: { command: string; request: Json; prepared: Json }): Promise<Reply> => {
+                const committed = await call(`commitPrepared${entry.command}`, { request: entry.request, prepared: entry.prepared });
+                if (committed.ok || committed.error.code === 'SAVE_FAILED') {
+                    if (entry.command === 'ProjectDelete') remember(deletes, input.requestId, { request: entry.request, prepared: entry.prepared });
+                }
+
+                if (committed.ok || committed.error.code !== 'SAVE_FAILED') preparedBy.delete(input.requestId);
+                return committed;
+            };
+            const retried = preparedBy.get(input.requestId);
+            if (retried) {
+                const committed = await commit(retried);
+                return committed.ok ? { ok: true, value: replied('saved', committed.value) } : committed as NativeHostResult<never>;
+            }
+            for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+                const planned = await plan(input);
+                if (!planned.ok) {
+                    if (planned.error.code !== 'STALE_REVISION') return planned;
+                    stale = planned.error.message;
+                    continue;
+                }
+                const step = planned.value;
+                if ('conflict' in step) return fail('STALE_REVISION', step.conflict);
+                if ('run' in step) {
+                    const ran = await step.run();
+                    if (!ran.ok) return ran;
+                    const saved = await deps.save();
+                    return saved.ok ? { ok: true, value: { ...answer('saved'), reply: ran.value } } : saved;
+                }
+                if ('outcome' in step) {
+                    const saved = await deps.save();
+                    return saved.ok ? { ok: true, value: step.reply ? { ...answer(step.outcome), reply: step.reply } : answer(step.outcome) } : saved;
+                }
+                const prepared = await call(`prepare${step.command}`, step.command === 'ProjectDeleteUndo'
+                    ? { request: step.request, delete: deletes.get(step.request.deleteRequestId as string) } : step.request) as NativeHostResult<Json>;
+                if (!prepared.ok) {
+                    if (prepared.error.code !== 'STALE_REVISION') return prepared;
+                    stale = prepared.error.message;
+                    continue;
+                }
+                if (prepared.value.kind !== 'prepared') {
+                    const saved = await deps.save();
+                    return saved.ok ? { ok: true, value: answer(prepared.value.kind === 'blocked' ? 'blocked' : 'unchanged') } : saved;
+                }
+                const entry = { command: step.command, request: step.request, prepared: prepared.value.prepared as Json };
+                remember(preparedBy, input.requestId, entry);
+                const committed = await commit(entry);
+                if (committed.ok) return { ok: true, value: replied('saved', committed.value) };
+                if (committed.error.code !== 'STALE_REVISION') return committed as NativeHostResult<never>;
+                stale = committed.error.message;
+            }
+            return fail('STALE_REVISION', stale);
+        },
+    };
+}

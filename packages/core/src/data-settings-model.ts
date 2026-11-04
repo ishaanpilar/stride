@@ -1,0 +1,286 @@
+
+
+
+import { getArchiveRetentionPreview, isArchiveRetentionDays } from './archive-retention';
+import { isDiagnosticsLoggingEnabled } from './diagnostics-log';
+import { getDocsGuideUrl } from './docs-guidance';
+import { createSyncSettingsTranslator } from './sync-settings-model';
+import type { ImportPickerSourceId } from './import-runner';
+import type { AppSettings, Project, Section, Task } from './types';
+
+type Translate = (key: string) => string;
+
+
+export const DATA_TRANSFER_TOAST_MS = { replace: 5000, merge: 5600, todoist: 5600, ticktick: 6200, dgt: 6200, omnifocus: 6200, csv: 6200 } as const;
+
+
+export const IMPORT_PICKER_MIME_TYPES: Readonly<Record<ImportPickerSourceId, readonly string[]>> = {
+    todoist: [
+        'text/csv',
+        'text/comma-separated-values',
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ],
+    ticktick: [
+        'text/csv',
+        'text/comma-separated-values',
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ],
+    dgt: [
+        'application/json',
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ],
+    omnifocus: [
+        'text/csv',
+        'text/comma-separated-values',
+        'application/json',
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ],
+    'stride-csv': [
+        'text/csv',
+        'text/comma-separated-values',
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ],
+};
+
+
+export type DataImportRow = {
+    key: ImportPickerSourceId; mode: 'todoist' | 'ticktick' | 'dgt' | 'omnifocus' | 'csv';
+    label: string; description: string; mimeTypes: readonly string[];
+};
+
+export type DataSettingsEdit = { type: 'debugLogging'; value: boolean } | { type: 'analyticsOptOut'; value: boolean }
+    | { type: 'archiveRetentionDays'; value: number };
+
+export type DataSettingsModel = {
+    title: string;
+    backup: {
+
+        title: string; foldDescription: string; exportLabel: string; description: string; failed: string;
+
+        errorTitle: string;
+        csvLabel: string; csvDescription: string; csvFailed: string;
+        csvImportLabel: string; csvImportDescription: string;
+        restoreFileLabel: string; restoreFileDescription: string;
+        todoistImportLabel: string; todoistImportDescription: string;
+        ticktickImportLabel: string; ticktickImportDescription: string;
+        dgtImportLabel: string; dgtImportDescription: string;
+        omnifocusImportLabel: string; omnifocusImportDescription: string;
+        tasknotesLabel: string; tasknotesDescription: string; tasknotesFailed: string;
+        mergeLabel: string; mergeDescription: string; mergeFailed: string; snapshotsLabel: string; restoreLabel: string;
+
+        restoreFailed: string;
+
+
+        gettingStarted: { label: string; description: string; language: string; ready: string; notCreated: string; failed: string; open: string };
+    };
+
+
+    archiveRetention: {
+        title: string; description: string; safety: string; current: string; days: number; daysLabel: string; invalid: string;
+        save: string; never: { label: string; edit: DataSettingsEdit }; saveFailed: string;
+    };
+
+    importData: { title: string; description: string; guide: { title: string; description: string; url: string }; failed: string; rows: DataImportRow[] };
+    diagnostics: {
+        title: string;
+
+
+        analytics: {
+            label: string; description: string; value: boolean; edit: DataSettingsEdit;
+            confirm: { title: string; message: string; keepLabel: string; disableLabel: string };
+        } | null;
+        debugLogging: { label: string; description: string; value: boolean; edit: DataSettingsEdit };
+        shareLog: { label: string; description: string } | null;
+        clearLog: { label: string } | null;
+
+        toastTitle: string;
+        logMissing: string;
+        shareUnavailable: string;
+        logCleared: string;
+        logClearFailed: string;
+    };
+};
+
+
+export function buildGettingStartedRow(t: Translate, language: string) {
+    return {
+        label: t('settings.gettingStartedContentAction'),
+        description: t('settings.gettingStartedContentDesc'),
+        language,
+        ready: t('onboarding.toastReady'),
+        notCreated: t('onboarding.toastNotCreated'),
+        failed: t('onboarding.toastFailed'),
+        open: t('common.open'),
+    };
+}
+
+
+export const archiveRetentionDaysOf = (settings: AppSettings): number => {
+    const days = settings.gtd?.archiveRetentionDays;
+    return isArchiveRetentionDays(days) ? days : 0;
+};
+
+
+export type ArchiveRetentionReview = {
+    days: number; title: string; description: string; counts: string; legacy: string; heading: string; lines: string[];
+    cancel: string; confirm: string; edit: DataSettingsEdit;
+};
+
+
+export function buildArchiveRetentionReview(
+    data: { tasks: Task[]; projects: Project[]; sections: Section[]; settings: AppSettings },
+    nextDays: number,
+    t: Translate,
+    nowMs = Date.now(),
+): ArchiveRetentionReview | null {
+    const days = archiveRetentionDaysOf(data.settings);
+    if (!(nextDays > 0 && (days === 0 || nextDays < days))) return null;
+    const tr = createSyncSettingsTranslator(t);
+    const preview = getArchiveRetentionPreview(data, nextDays, nowMs);
+    const taskTitles = new Map(data.tasks.map((task) => [task.id, task.title]));
+    const projectTitles = new Map(data.projects.map((project) => [project.id, project.title]));
+    const sectionTitles = new Map(data.sections.map((section) => [section.id, section.title]));
+    const lines = [
+        ...preview.projectIds.map((id) => `${tr('projects.title')}: ${projectTitles.get(id) ?? id}`),
+        ...preview.sectionIds.map((id) => `${tr('settings.archiveRetentionSection')}: ${sectionTitles.get(id) ?? id}`),
+        ...preview.taskIds.map((id) => `${tr('calendar.tasks')}: ${taskTitles.get(id) ?? id}`),
+    ];
+    return {
+        days: nextDays,
+        title: tr('settings.archiveRetentionConfirmTitle'),
+        description: tr('settings.archiveRetentionConfirmDescription', { days: nextDays }),
+        counts: tr('settings.archiveRetentionCounts', {
+            tasks: preview.taskIds.length, projects: preview.projectIds.length, sections: preview.sectionIds.length,
+        }),
+        legacy: tr('settings.archiveRetentionLegacyCount', { count: preview.legacyTaskIds.length + preview.legacyProjectIds.length }),
+        heading: lines.length ? tr('settings.archiveRetentionCandidates') : tr('settings.archiveRetentionNoCandidates'),
+        lines,
+        cancel: tr('common.cancel'),
+        confirm: tr('settings.archiveRetentionConfirmAction'),
+        edit: { type: 'archiveRetentionDays', value: nextDays },
+    };
+}
+
+export function buildDataSettingsModel(settings: AppSettings, t: Translate, analyticsAvailable = false, language = 'en'): DataSettingsModel {
+    const on = isDiagnosticsLoggingEnabled(settings);
+    const optedOut = analyticsAvailable && !isAnalyticsHeartbeatEnabled(settings);
+    const tr = createSyncSettingsTranslator(t);
+    const retentionDays = archiveRetentionDaysOf(settings);
+    return {
+        title: t('settings.data'),
+        backup: {
+            title: t('settings.backup'),
+            foldDescription: t('settings.backupDesc'),
+            exportLabel: t('settings.exportBackup'),
+            description: t('settings.saveToSyncFolder'),
+            failed: t('settings.backupMobile.failedToExportBackup'),
+            errorTitle: tr('settings.syncMobile.error'),
+            csvLabel: t('settings.exportCsv'),
+            csvDescription: t('settings.exportCsvDesc'),
+            csvFailed: t('settings.exportCsvFailed'),
+            csvImportLabel: tr('settings.syncMobile.importFromStrideCsv'),
+            csvImportDescription: tr('settings.syncMobile.importStrideCsvFileIntoStrideAreasProjectsAndTasks'),
+            restoreFileLabel: tr('settings.syncMobile.restoreBackup'),
+            restoreFileDescription: tr('settings.syncMobile.replaceLocalDataFromABackupJsonFile'),
+            todoistImportLabel: tr('settings.syncMobile.importFromTodoist'),
+            todoistImportDescription: tr('settings.syncMobile.importTodoistCsvOrZipExportsIntoStrideProjects'),
+            ticktickImportLabel: tr('settings.syncMobile.importFromTicktick'),
+            ticktickImportDescription: tr('settings.syncMobile.importTicktickCsvOrZipBackupsIntoStrideAreas'),
+            dgtImportLabel: tr('settings.syncMobile.importFromDgtGtd'),
+            dgtImportDescription: tr('settings.syncMobile.importDgtGtdJsonOrZipExportsIntoStrideAreas'),
+            omnifocusImportLabel: tr('settings.syncMobile.importFromOmnifocus'),
+            omnifocusImportDescription: tr('settings.syncMobile.importOmnifocusCsvJsonOrZipExportsIntoStrideProjects'),
+            tasknotesLabel: t('settings.exportTaskNotes'),
+            tasknotesDescription: t('settings.exportTaskNotesDesc'),
+            tasknotesFailed: t('settings.exportTaskNotesFailed'),
+            mergeLabel: t('settings.mergeBackup'),
+            mergeDescription: t('settings.mergeBackupDesc'),
+            mergeFailed: t('settings.mergeBackupFailed'),
+            snapshotsLabel: t('settings.recoverySnapshots'),
+            restoreLabel: t('settings.recoverySnapshotsRestore'),
+            restoreFailed: t('settings.backupMobile.restoreFailed'),
+            gettingStarted: buildGettingStartedRow(t, language),
+        },
+        archiveRetention: {
+            title: tr('settings.archiveRetention'),
+            description: tr('settings.archiveRetentionDesc'),
+            safety: tr('settings.archiveRetentionSafety'),
+            current: `${tr('settings.archiveRetentionCurrent')}: ${retentionDays > 0
+                ? tr('settings.archiveRetentionDays', { days: retentionDays }) : tr('settings.archiveRetentionNever')}`,
+            days: retentionDays,
+            daysLabel: tr('settings.archiveRetentionDaysLabel'),
+            invalid: tr('settings.archiveRetentionInvalid'),
+            save: tr('settings.archiveRetentionSave'),
+            never: { label: tr('settings.archiveRetentionNever'), edit: { type: 'archiveRetentionDays', value: 0 } },
+            saveFailed: tr('settings.archiveRetentionSaveFailed'),
+        },
+        importData: {
+            title: t('settings.importData'),
+            description: t('settings.importDataDesc'),
+            guide: { title: t('settings.importSetupGuideTitle'), description: t('settings.importSetupGuideDesc'), url: getDocsGuideUrl('import/', language) },
+            failed: t('settings.backupMobile.importFailed'),
+            rows: [
+                { key: 'todoist', mode: 'todoist', label: tr('settings.syncMobile.importFromTodoist'), description: tr('settings.syncMobile.importTodoistCsvOrZipExportsIntoStrideProjects') },
+                { key: 'ticktick', mode: 'ticktick', label: tr('settings.syncMobile.importFromTicktick'), description: tr('settings.syncMobile.importTicktickCsvOrZipBackupsIntoStrideAreas') },
+                { key: 'dgt', mode: 'dgt', label: tr('settings.syncMobile.importFromDgtGtd'), description: tr('settings.syncMobile.importDgtGtdJsonOrZipExportsIntoStrideAreas') },
+                { key: 'omnifocus', mode: 'omnifocus', label: tr('settings.syncMobile.importFromOmnifocus'), description: tr('settings.syncMobile.importOmnifocusCsvJsonOrZipExportsIntoStrideProjects') },
+                { key: 'stride-csv', mode: 'csv', label: tr('settings.syncMobile.importFromStrideCsv'), description: tr('settings.syncMobile.importStrideCsvFileIntoStrideAreasProjectsAndTasks') },
+            ].map((row) => ({ ...row, mimeTypes: IMPORT_PICKER_MIME_TYPES[row.key as ImportPickerSourceId] })) as DataImportRow[],
+        },
+        diagnostics: {
+            title: t('settings.diagnostics'),
+            analytics: analyticsAvailable ? {
+                label: t('settings.analyticsHeartbeat'),
+                description: t('settings.analyticsHeartbeatDesc'),
+                value: optedOut,
+                edit: { type: 'analyticsOptOut', value: !optedOut },
+                confirm: {
+                    title: t('settings.analyticsHeartbeatDisableTitle'),
+                    message: t('settings.analyticsHeartbeatDisableDesc'),
+                    keepLabel: t('settings.analyticsHeartbeatKeepEnabled'),
+                    disableLabel: t('settings.analyticsHeartbeatDisableConfirm'),
+                },
+            } : null,
+            debugLogging: {
+                label: t('settings.debugLogging'),
+                description: t('settings.debugLoggingDesc'),
+                value: on,
+                edit: { type: 'debugLogging', value: !on },
+            },
+            shareLog: on ? { label: t('settings.shareLog'), description: t('settings.logFile') } : null,
+            clearLog: on ? { label: t('settings.clearLog') } : null,
+            toastTitle: t('settings.debugLogging'),
+            logMissing: t('settings.logMissing'),
+            shareUnavailable: t('settings.shareUnavailable'),
+            logCleared: t('settings.logCleared'),
+            logClearFailed: t('settings.logClearFailed'),
+        },
+    };
+}
+
+
+export const isAnalyticsHeartbeatEnabled = (settings: AppSettings): boolean => settings.analytics?.heartbeatEnabled !== false;
+
+export const isDataSettingStored = (settings: AppSettings, edit: DataSettingsEdit): boolean => (
+    edit.type === 'archiveRetentionDays' ? archiveRetentionDaysOf(settings) === edit.value
+        : edit.type === 'analyticsOptOut'
+            ? !isAnalyticsHeartbeatEnabled(settings) === edit.value
+            : isDiagnosticsLoggingEnabled(settings) === edit.value
+);
+
+
+export const buildDataSettingsUpdate = (settings: AppSettings, edit: Exclude<DataSettingsEdit, { type: 'archiveRetentionDays' }>): Partial<AppSettings> => (
+    edit.type === 'analyticsOptOut'
+        ? { analytics: { ...(settings.analytics ?? {}), heartbeatEnabled: !edit.value } }
+        : { diagnostics: { ...(settings.diagnostics ?? {}), loggingEnabled: edit.value } }
+);

@@ -1,0 +1,134 @@
+import Foundation
+import XCTest
+@testable import StrideWatchCaptureState
+@testable import StrideWatchProtocolCore
+
+final class WatchPendingCaptureTests: XCTestCase {
+    func testChecklistPersistsOfflineAndOverlaysOldSnapshotsUntilSettlement() throws {
+        let item = StrideWatchChecklistItem(id: "milk", title: "Milk 🥛", isCompleted: false)
+        let task = StrideWatchFocusTask(id: "shopping", title: "Shopping", createdAt: "2026-10-07T00:00:00.000Z",
+                                        description: "Keep chilled\nCheck expiry", checklist: [item])
+        let payload = try XCTUnwrap(StrideWatchProtocol.checklistCommand(task: task, item: item, completed: true))
+        let id = try XCTUnwrap(payload["id"] as? String)
+        defer { StrideWatchOutbox.remove(id: id, removeAudio: false) }
+        try StrideWatchOutbox.save(payload: payload, transport: .command)
+        let reloaded = try XCTUnwrap(StrideWatchOutbox.records().first { $0.id == id })
+        XCTAssertNil(reloaded.settledAt)
+        XCTAssertTrue(StrideWatchProtocol.overlay([reloaded.payload], on: task).checklist![0].isCompleted)
+        try StrideWatchOutbox.save(payload: reloaded.payload, transport: .command, settledAt: 123)
+        XCTAssertEqual(StrideWatchOutbox.records().first { $0.id == id }?.settledAt, 123)
+        var unchecked = payload
+        unchecked["isCompleted"] = false
+        XCTAssertFalse(StrideWatchProtocol.overlay([payload, unchecked], on: task).checklist![0].isCompleted)
+        var ambiguous = task
+        ambiguous.checklist = [item, item]
+        XCTAssertNil(StrideWatchProtocol.checklistCommand(task: ambiguous, item: item, completed: true))
+        let old = try JSONDecoder().decode(StrideWatchFocusTask.self, from: Data(#"{"id":"old","title":"Old snapshot"}"#.utf8))
+        XCTAssertNil(old.checklist)
+        XCTAssertEqual(try JSONDecoder().decode(StrideWatchFocusTask.self, from: JSONEncoder().encode(task)), task)
+    }
+
+    func testFailedTextCaptureRetryKeepsIdentityUntilSaveSucceeds() throws {
+        let id = UUID(uuidString: "42fe1a71-9232-4976-bf09-bebcb875b370")!
+        let createdAt = Date(timeIntervalSince1970: 1_789_000_000)
+        var owner = StrideWatchPendingCaptureOwner()
+        let original = owner.prepareText("Call the dentist", id: id, createdAt: createdAt)
+        var attempts: [StrideWatchPendingCapture] = []
+
+        XCTAssertFalse(owner.persistPending { capture in
+            attempts.append(capture)
+            return false
+        })
+        let failed = try XCTUnwrap(owner.pending)
+        XCTAssertEqual(failed.id, original.id)
+        XCTAssertEqual(failed.createdAt, original.createdAt)
+        XCTAssertEqual(failed.content, original.content)
+        XCTAssertTrue(failed.outboxRetried)
+
+        let retry = owner.prepareText("Call the dentist")
+        XCTAssertEqual(retry, failed)
+        XCTAssertTrue(owner.persistPending { capture in
+            attempts.append(capture)
+            return true
+        })
+
+        XCTAssertEqual(attempts, [original, failed])
+        XCTAssertNil(owner.pending)
+    }
+
+    func testEditingRejectedTextCreatesANewCaptureIdentity() {
+        let firstId = UUID(uuidString: "42fe1a71-9232-4976-bf09-bebcb875b370")!
+        let secondId = UUID(uuidString: "b318ba50-f58a-4492-8e94-93f1ac704e26")!
+        let firstDate = Date(timeIntervalSince1970: 1_789_000_000)
+        let secondDate = Date(timeIntervalSince1970: 1_789_000_100)
+        var owner = StrideWatchPendingCaptureOwner()
+
+        let original = owner.prepareText("Call the dentist", id: firstId, createdAt: firstDate)
+        XCTAssertFalse(owner.persistPending { _ in false })
+        let edited = owner.prepareText("Call the dentist tomorrow", id: secondId, createdAt: secondDate)
+
+        XCTAssertNotEqual(edited, original)
+        XCTAssertEqual(edited.id, secondId)
+        XCTAssertEqual(edited.createdAt, secondDate)
+        XCTAssertFalse(edited.outboxRetried)
+        XCTAssertEqual(owner.pending, edited)
+    }
+
+    func testFailedAudioCaptureRetryKeepsFileAndPublishesOnlyOnce() throws {
+        let id = UUID(uuidString: "5586b34b-1fe9-4224-a2d0-1df28f644390")!
+        let createdAt = Date(timeIntervalSince1970: 1_789_100_000)
+        let fileURL = URL(fileURLWithPath: "/captures/recording.m4a")
+        var owner = StrideWatchPendingCaptureOwner()
+        let original = owner.prepareAudio(fileURL: fileURL, id: id, createdAt: createdAt)
+        var attempts: [StrideWatchPendingCapture] = []
+
+        XCTAssertFalse(owner.persistPending { capture in
+            attempts.append(capture)
+            return false
+        })
+        let failed = try XCTUnwrap(owner.pending)
+        XCTAssertEqual(failed.id, original.id)
+        XCTAssertEqual(failed.createdAt, original.createdAt)
+        XCTAssertEqual(failed.content, original.content)
+        XCTAssertTrue(failed.outboxRetried)
+        XCTAssertTrue(owner.persistPending { capture in
+            attempts.append(capture)
+            return true
+        })
+        XCTAssertFalse(owner.persistPending { capture in
+            attempts.append(capture)
+            return true
+        })
+
+        XCTAssertEqual(attempts, [original, failed])
+        XCTAssertNil(owner.pending)
+    }
+
+    func testProtocolAddsRetryMarkerOnlyWhenRequestedForCaptures() throws {
+        let id = UUID(uuidString: "42fe1a71-9232-4976-bf09-bebcb875b370")!
+        let createdAt = Date(timeIntervalSince1970: 1_789_000_000)
+
+        let firstText = try XCTUnwrap(StrideWatchProtocol.textCapture(
+            title: "First attempt",
+            id: id,
+            createdAt: createdAt
+        ))
+        XCTAssertNil(firstText["outboxRetried"])
+
+        let retriedText = try XCTUnwrap(StrideWatchProtocol.textCapture(
+            title: "Retry",
+            id: id,
+            createdAt: createdAt,
+            outboxRetried: true
+        ))
+        XCTAssertEqual(retriedText["outboxRetried"] as? Bool, true)
+
+        let retriedAudio = StrideWatchProtocol.audioMetadata(
+            id: id,
+            createdAt: createdAt,
+            outboxRetried: true
+        )
+        XCTAssertEqual(retriedAudio["outboxRetried"] as? Bool, true)
+        XCTAssertNil(StrideWatchProtocol.command(kind: .complete)["outboxRetried"])
+    }
+}

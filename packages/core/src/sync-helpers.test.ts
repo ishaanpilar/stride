@@ -1,0 +1,1217 @@
+import { describe, expect, it } from 'vitest';
+import {
+    areSyncPayloadsEqual,
+    assertNoPendingAttachmentUploads,
+    computeCoveredSettingsFingerprint,
+    computeSyncChangeFingerprint,
+    computeStableValueFingerprint,
+    computeSyncPayloadFingerprint,
+    findPendingAttachmentUploads,
+    hasPendingSyncSideEffects,
+    normalizeCloudUrl,
+    normalizeWebdavUrl,
+    sanitizeAppDataForRemote,
+    toStableSyncJson,
+} from './sync-helpers';
+import { GTD_SYNCED_FIELD_KEYS, type GtdSyncedFieldKey } from './settings-options';
+import { mergeSettingsForSync } from './sync-merge-settings';
+import { toRemoteSyncDocument } from './sync-document';
+import { normalizeAiSettingsForSync } from './store-helpers';
+import type { AppData, Attachment, GtdSettings } from './types';
+import { withQuickJsArgumentLimit } from './quickjs-test-utils';
+
+describe('stable sync property-order reuse', () => {
+
+
+    const originalNormalize = (value: unknown): unknown => {
+        if (Array.isArray(value)) {
+            const items = value.map(originalNormalize);
+            if (items.length > 1 && items.every((item) => item && typeof item === 'object'
+                && typeof (item as { id?: unknown }).id === 'string')) {
+                items.sort((left, right) => {
+                    const a = (left as { id: string }).id;
+                    const b = (right as { id: string }).id;
+                    return a < b ? -1 : a > b ? 1 : 0;
+                });
+            }
+            return items;
+        }
+        if (value && typeof value === 'object') {
+            const result: Record<string, unknown> = {};
+            for (const property of Object.keys(value).sort()) {
+                result[property] = originalNormalize((value as Record<string, unknown>)[property]);
+            }
+            return result;
+        }
+        return value;
+    };
+
+    it('preserves exact bytes across nested shapes, unusual names, and cache eviction', () => {
+        const values: unknown[] = [undefined, null, NaN, Infinity, -0, true, '', 'text',
+            [undefined, null], ['b', 'a'], [{ id: 'b' }, { id: 'a' }],
+            [{ id: 'same', value: 2 }, { id: 'same', value: 1 }],
+            new Date('2026-01-01'), JSON.parse('{"__proto__":{"id":"a"},"constructor":2}')];
+        for (let round = 0; round < 30; round++) {
+            const records = values.map((value, index) => Object.fromEntries([
+                ['z', value], [`field-${index % (round + 1)}`, index], ['id', `id-${index % 3}`],
+                ['a,b', { 'a': 1, 'b,c': value }], ['a', { 'a,b': 1, 'c': value }],
+                ['10', 10], ['2', 2],
+            ].slice().reverse()));
+            const input = { records, repeated: records.slice().reverse(), values };
+            expect(toStableSyncJson(input)).toBe(JSON.stringify(originalNormalize(input)));
+        }
+    });
+
+    it('reuses no entity values and leaves inputs unchanged across edits', () => {
+        const first = { z: 1, a: { id: 'b', title: 'first' } };
+        const second = { z: 2, a: { id: 'a', title: 'second' } };
+        const before = structuredClone([first, second]);
+        expect(toStableSyncJson([first, second])).toBe(JSON.stringify(originalNormalize(before)));
+        expect([first, second]).toEqual(before);
+        first.a.title = 'edited';
+        const withNewField = { ...second, added: 'new field' };
+        expect(toStableSyncJson([first, withNewField]))
+            .toBe(JSON.stringify(originalNormalize([first, withNewField])));
+        expect(toStableSyncJson([first, withNewField])).not.toBe(toStableSyncJson(before));
+    });
+});
+
+
+const GTD_SYNCED_FIELD_SAMPLE_VALUES: Record<GtdSyncedFieldKey, GtdSettings[GtdSyncedFieldKey]> = {
+    timeEstimatePresets: ['15min', '1hr'],
+    autoArchiveDays: 14,
+    archiveRetentionDays: 30,
+    defaultCaptureMethod: 'audio',
+    defaultScheduleTime: '09:30',
+    defaultAreaMode: 'fixed',
+    defaultAreaId: 'area-1',
+    focusTaskLimit: 5,
+    focusIncludeStartDates: false,
+    focusGroupBy: 'project',
+    defaultProjectFlowMode: 'sequential',
+    naturalLanguageDates: false,
+    taskEditor: {
+        order: ['status', 'priority'],
+        hidden: ['energyLevel'],
+        sectionOpen: { scheduling: true },
+        defaultsVersion: 4,
+    },
+    viewSections: {
+        someday: [{ id: 'books', title: 'Books to read', order: 0 }],
+    },
+    saveAudioAttachments: false,
+    weeklyReview: { includeContextStep: false },
+    dailyReview: { includeFocusStep: false },
+    pomodoro: {
+        customDurations: { focusMinutes: 50, breakMinutes: 10 },
+        linkTask: true,
+        autoStartBreaks: true,
+        autoStartFocus: false,
+        completionAlert: false,
+    },
+};
+
+const now = '2026-02-19T00:00:00.000Z';
+
+const fileAttachment = (overrides: Partial<Attachment> = {}): Attachment => ({
+    id: 'att-1',
+    kind: 'file',
+    title: 'photo.jpg',
+    uri: '/tmp/photo.jpg',
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+});
+
+const createData = (attachments: Attachment[]): AppData => ({
+    tasks: [
+        {
+            id: 'task-1',
+            title: 'Task',
+            status: 'inbox',
+            tags: [],
+            contexts: [],
+            attachments,
+            createdAt: now,
+            updatedAt: now,
+        },
+    ],
+    projects: [],
+    sections: [],
+    areas: [],
+    settings: {},
+});
+
+describe('sync-helpers normalizeCloudUrl', () => {
+    it('appends /v1/data to a bare self-hosted base URL', () => {
+        expect(normalizeCloudUrl('https://example.com')).toBe('https://example.com/v1/data');
+        expect(normalizeCloudUrl('https://example.com/stride/')).toBe('https://example.com/stride/v1/data');
+    });
+
+    it('appends /data when the versioned API base is already provided', () => {
+        expect(normalizeCloudUrl('https://example.com/v1')).toBe('https://example.com/v1/data');
+        expect(normalizeCloudUrl('https://example.com/api/v2/')).toBe('https://example.com/api/v2/data');
+    });
+
+    it('preserves full data endpoints for compatibility', () => {
+        expect(normalizeCloudUrl('https://example.com/v1/data')).toBe('https://example.com/v1/data');
+        expect(normalizeCloudUrl('https://example.com/data/')).toBe('https://example.com/data');
+    });
+});
+
+describe('sync-helpers normalizeWebdavUrl', () => {
+    it('strips cache-busting query strings before appending data.json', () => {
+        expect(normalizeWebdavUrl('https://dav.example.com/stride?_=1782668355219')).toBe(
+            'https://dav.example.com/stride/data.json'
+        );
+        expect(normalizeWebdavUrl('https://dav.example.com/stride/#sync')).toBe(
+            'https://dav.example.com/stride/data.json#sync'
+        );
+    });
+
+    it('strips cache-busting query strings from existing WebDAV data file URLs', () => {
+        expect(normalizeWebdavUrl('https://dav.example.com/stride/data.json?_=1782668355219')).toBe(
+            'https://dav.example.com/stride/data.json'
+        );
+    });
+});
+
+describe('sync-helpers pending attachment uploads', () => {
+    it('detects file attachments with local uri and missing cloud key', () => {
+        const data = createData([fileAttachment()]);
+        const pending = findPendingAttachmentUploads(data);
+
+        expect(pending).toEqual([
+            {
+                ownerType: 'task',
+                ownerId: 'task-1',
+                attachmentId: 'att-1',
+                title: 'photo.jpg',
+                uriScheme: 'file',
+                localStatus: undefined,
+                reason: 'missing-cloud-key',
+            },
+        ]);
+    });
+
+    it('lists one task\'s and one project\'s 65536 pending uploads each, more than a QuickJS call takes arguments', () => {
+        const attachments = Array.from({ length: 65_536 }, (_, index) => fileAttachment({ id: `att-${index}` }));
+        const data = createData(attachments);
+        data.projects = [{ id: 'project-1', title: 'Project', status: 'active', color: '#000000', order: 0, tagIds: [],
+            attachments, createdAt: now, updatedAt: now }];
+        expect(withQuickJsArgumentLimit(() => findPendingAttachmentUploads(data))).toHaveLength(2 * 65_536);
+    });
+
+    it('ignores attachments that are already uploaded, remote links, or marked missing', () => {
+        const data = createData([
+            fileAttachment({ id: 'uploaded', cloudKey: 'attachments/uploaded.jpg' }),
+            fileAttachment({ id: 'remote', uri: 'https://example.com/photo.jpg' }),
+            fileAttachment({ id: 'missing', localStatus: 'missing' }),
+            {
+                id: 'link-1',
+                kind: 'link',
+                title: 'Web',
+                uri: 'https://example.com',
+                createdAt: now,
+                updatedAt: now,
+            },
+        ]);
+
+        expect(findPendingAttachmentUploads(data)).toHaveLength(0);
+    });
+
+    it('keeps a deferred content replacement pending even when it has a cloud key', () => {
+        const data = createData([
+            fileAttachment({
+                cloudKey: 'attachments/uploaded.jpg',
+                pendingContentUpload: true,
+            }),
+        ]);
+
+        expect(findPendingAttachmentUploads(data)).toEqual([
+            expect.objectContaining({
+                attachmentId: 'att-1',
+                reason: 'content-replacement',
+            }),
+        ]);
+        expect(hasPendingSyncSideEffects(data)).toBe(true);
+        expect(sanitizeAppDataForRemote(data).tasks[0]?.attachments?.[0]?.pendingContentUpload).toBeUndefined();
+    });
+
+    it('keeps a deferred replacement pending when its local bytes become unavailable', () => {
+        const data = createData([
+            fileAttachment({
+                cloudKey: 'attachments/uploaded.jpg',
+                localStatus: 'missing',
+                pendingContentUpload: true,
+                uri: '',
+            }),
+        ]);
+
+        expect(findPendingAttachmentUploads(data)).toEqual([
+            expect.objectContaining({
+                attachmentId: 'att-1',
+                reason: 'content-replacement',
+            }),
+        ]);
+        expect(hasPendingSyncSideEffects(data)).toBe(true);
+    });
+
+    it('ignores attachments whose parent task is deleted', () => {
+        const data = createData([fileAttachment()]);
+        data.tasks[0].deletedAt = now;
+
+        expect(findPendingAttachmentUploads(data)).toHaveLength(0);
+    });
+
+    it('throws a clear error when pending uploads remain before remote write', () => {
+        const data = createData([
+            fileAttachment({ id: 'att-1' }),
+            fileAttachment({ id: 'att-2', uri: 'content://attachment/att-2' }),
+        ]);
+
+        expect(() => assertNoPendingAttachmentUploads(data)).toThrow(
+            'Attachment upload incomplete: 2 file attachment(s) are still pending upload'
+        );
+    });
+});
+
+describe('sync-helpers pending sync side effects', () => {
+    it('stays false for clean sync data', () => {
+        expect(hasPendingSyncSideEffects(createData([]))).toBe(false);
+    });
+
+    it('detects pending remote writes, uploads, and remote deletes', () => {
+        const pendingWrite = createData([]);
+        pendingWrite.settings.pendingRemoteWriteAt = now;
+        expect(hasPendingSyncSideEffects(pendingWrite)).toBe(true);
+
+        expect(hasPendingSyncSideEffects(createData([fileAttachment()]))).toBe(true);
+
+        const pendingDelete = createData([]);
+        pendingDelete.settings.attachments = {
+            pendingRemoteDeletes: [{
+                attachmentId: 'att-1',
+                cloudKey: 'attachments/att-1.jpg',
+                queuedAt: now,
+                ownerType: 'task',
+                ownerId: 'task-1',
+            }],
+        };
+        expect(hasPendingSyncSideEffects(pendingDelete)).toBe(true);
+    });
+});
+
+describe('sync-helpers sanitizeAppDataForRemote', () => {
+    it('keeps only sync-eligible settings groups for remote payloads', () => {
+        const data: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                gtd: { autoArchiveDays: 7 },
+                features: { priorities: true },
+                notificationsEnabled: false,
+                weeklyReviewEnabled: true,
+                window: { decorations: false, closeBehavior: 'tray' },
+                diagnostics: { loggingEnabled: true },
+                analytics: { heartbeatEnabled: false },
+                network: { proxyUrl: 'http://user:pass@proxy.local:8080' },
+                taskSortBy: 'updatedAt',
+                sidebarCollapsed: true,
+                deviceId: 'local-device-id',
+                analyticsProfileId: 'profile-1',
+                supportPrompt: { lastShownAt: now },
+                lastSyncAt: now,
+                lastSyncStatus: 'success',
+                lastSyncError: 'x',
+                lastSyncHistory: [
+                    {
+                        at: now,
+                        status: 'success',
+                        conflicts: 0,
+                        conflictIds: [],
+                        maxClockSkewMs: 0,
+                        timestampAdjustments: 0,
+                    },
+                ],
+                syncPreferences: {
+                    appearance: true,
+                    language: false,
+                    externalCalendars: true,
+                    savedFilters: true,
+                    ai: true,
+                },
+                syncPreferencesUpdatedAt: {
+                    appearance: now,
+                    language: now,
+                    externalCalendars: now,
+                    savedFilters: now,
+                    ai: now,
+                    preferences: now,
+                },
+                theme: 'dark',
+                appearance: { density: 'compact', textSize: 'small', mobileQuickAccessView: 'contexts' },
+                keybindingStyle: 'emacs',
+                globalQuickAddShortcut: 'ctrl+alt+m',
+                language: 'zh',
+                weekStart: 'monday',
+                dateFormat: 'yyyy-MM-dd',
+                timeFormat: '24h',
+                externalCalendars: [
+                    { id: 'cal-1', name: 'Work', url: 'https://example.com/work.ics', enabled: true, areaIds: ['work'] },
+                    { id: 'cal-local', name: 'Local', url: 'file:///home/user/agenda.ics', enabled: true, areaIds: ['home'] },
+                    { id: 'cal-android-local', name: 'Android Local', url: 'content://com.android.providers.media.documents/document/calendar.ics', enabled: true },
+                ],
+                savedFilters: [{
+                    id: 'filter-1',
+                    name: 'Desk',
+                    view: 'focus',
+                    criteria: { contexts: ['@desk'] },
+                    createdAt: now,
+                    updatedAt: now,
+                }],
+                ai: {
+                    enabled: true,
+                    provider: 'openai',
+                    apiKey: 'secret',
+                    baseUrl: 'http://localhost:1234/v1',
+                    openAIExtraBodyParams: { keep: true },
+                    requestTimeoutSeconds: 120,
+                    speechToText: {
+                        enabled: true,
+                        provider: 'whisper',
+                        baseUrl: 'http://localhost:8000/v1',
+                        offlineModelPath: '/tmp/model.bin',
+                    },
+                },
+            },
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.syncPreferences).toEqual({
+            ...data.settings.syncPreferences,
+            gtd: true,
+        });
+        expect(sanitized.settings.syncPreferencesUpdatedAt).toEqual({
+            ...data.settings.syncPreferencesUpdatedAt,
+            preferences: '2026-02-19T00:00:00.001Z',
+        });
+        expect(sanitized.settings.theme).toBe('dark');
+        expect(sanitized.settings.appearance).toEqual({ density: 'compact', textSize: 'small', mobileQuickAccessView: 'contexts' });
+        expect(sanitized.settings.keybindingStyle).toBe('emacs');
+        expect(sanitized.settings.externalCalendars).toEqual([
+            { id: 'cal-1', name: 'Work', url: 'https://example.com/work.ics', enabled: true, areaIds: ['work'] },
+        ]);
+        expect(sanitized.settings.savedFilters).toEqual(data.settings.savedFilters);
+
+        expect(sanitized.settings.language).toBeUndefined();
+        expect(sanitized.settings.weekStart).toBeUndefined();
+        expect(sanitized.settings.dateFormat).toBeUndefined();
+        expect(sanitized.settings.timeFormat).toBeUndefined();
+
+        expect(sanitized.settings.ai?.apiKey).toBeUndefined();
+        expect(sanitized.settings.ai?.requestTimeoutSeconds).toBe(120);
+        expect(sanitized.settings.ai?.speechToText?.offlineModelPath).toBeUndefined();
+        expect(sanitized.settings.ai?.baseUrl).toBeUndefined();
+        expect(sanitized.settings.ai?.openAIExtraBodyParams).toBeUndefined();
+        expect(sanitized.settings.ai?.speechToText?.baseUrl).toBeUndefined();
+
+        expect(sanitized.settings.globalQuickAddShortcut).toBeUndefined();
+        expect(sanitized.settings.deviceId).toBeUndefined();
+
+        expect(sanitized.settings.analyticsProfileId).toBe('profile-1');
+        expect(sanitized.settings.supportPrompt).toEqual({ lastShownAt: now });
+        expect(sanitized.settings.lastSyncAt).toBeUndefined();
+        expect(sanitized.settings.lastSyncStatus).toBeUndefined();
+        expect(sanitized.settings.lastSyncError).toBeUndefined();
+        expect(sanitized.settings.lastSyncHistory).toBeUndefined();
+        expect(sanitized.settings.window).toBeUndefined();
+        expect(sanitized.settings.notificationsEnabled).toBeUndefined();
+        expect(sanitized.settings.diagnostics).toBeUndefined();
+        expect(sanitized.settings.analytics).toBeUndefined();
+        expect(sanitized.settings.network).toBeUndefined();
+        expect(sanitized.settings.gtd).toEqual({ autoArchiveDays: 7 });
+        expect(sanitized.settings.features).toEqual({ priorities: true });
+        expect(sanitized.settings.taskSortBy).toBeUndefined();
+        expect(sanitized.settings.sidebarCollapsed).toBeUndefined();
+    });
+
+    it('includes synced GTD preferences', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { gtd: true, language: true },
+            gtd: {
+                defaultScheduleTime: '09:30',
+                defaultAreaMode: 'fixed',
+                defaultAreaId: 'area-1',
+                focusTaskLimit: 5,
+                focusGroupBy: 'project',
+                defaultProjectFlowMode: 'sequential',
+                inboxProcessing: { scheduleEnabled: true },
+            },
+            language: 'en',
+            timeFormat: '24h',
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.gtd).toEqual({
+            defaultScheduleTime: '09:30',
+            defaultAreaMode: 'fixed',
+            defaultAreaId: 'area-1',
+            focusTaskLimit: 5,
+            focusGroupBy: 'project',
+            defaultProjectFlowMode: 'sequential',
+            inboxProcessing: { scheduleEnabled: true },
+        });
+        expect(sanitized.settings.language).toBe('en');
+        expect(sanitized.settings.timeFormat).toBe('24h');
+    });
+
+    it('syncs GTD and capture settings by default while omitting device-local presentation state', () => {
+        const data = createData([]);
+        data.settings = {
+            gtd: {
+                timeEstimatePresets: ['15min', '1hr'],
+                autoArchiveDays: 14,
+                defaultCaptureMethod: 'audio',
+                saveAudioAttachments: false,
+                inboxProcessing: {
+                    defaultMode: 'quick',
+                    twoMinuteEnabled: false,
+                    twoMinuteFirst: true,
+                    projectFirst: true,
+                    contextStepEnabled: false,
+                    scheduleEnabled: true,
+                    referenceEnabled: true,
+                },
+                weeklyReview: { includeContextStep: false },
+                dailyReview: { includeFocusStep: false },
+                pomodoro: {
+                    customDurations: { focusMinutes: 50, breakMinutes: 10 },
+                    linkTask: true,
+                    autoStartBreaks: true,
+                    autoStartFocus: false,
+                    completionAlert: false,
+                },
+            },
+            quickAddAutoClean: true,
+            markdownEditorAssist: false,
+            features: {
+                priorities: false,
+                timeEstimates: true,
+                pomodoro: true,
+            },
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.syncPreferences?.gtd).toBe(true);
+        expect(sanitized.settings.syncPreferencesUpdatedAt?.preferences).toBe(
+            '1970-01-01T00:00:00.001Z',
+        );
+        expect(data.settings.syncPreferencesUpdatedAt).toBeUndefined();
+        expect(sanitized.settings.gtd).toEqual({
+            timeEstimatePresets: ['15min', '1hr'],
+            autoArchiveDays: 14,
+            defaultCaptureMethod: 'audio',
+            saveAudioAttachments: false,
+            inboxProcessing: {
+                twoMinuteEnabled: false,
+                twoMinuteFirst: true,
+                projectFirst: true,
+                contextStepEnabled: false,
+                scheduleEnabled: true,
+                referenceEnabled: true,
+            },
+            weeklyReview: { includeContextStep: false },
+            dailyReview: { includeFocusStep: false },
+            pomodoro: {
+                customDurations: { focusMinutes: 50, breakMinutes: 10 },
+                linkTask: true,
+                autoStartBreaks: true,
+                autoStartFocus: false,
+                completionAlert: false,
+            },
+        });
+        expect(sanitized.settings.quickAddAutoClean).toBe(true);
+        expect(sanitized.settings.markdownEditorAssist).toBe(false);
+        expect(sanitized.settings.features).toEqual({
+            priorities: false,
+            timeEstimates: true,
+            pomodoro: true,
+        });
+    });
+
+    it('materializes default-on GTD in remote snapshots so an RC.2 peer preserves custom values', () => {
+        const source = createData([]);
+        source.settings = {
+            gtd: { defaultScheduleTime: '09:30' },
+            syncPreferencesUpdatedAt: {
+                preferences: '2026-08-01T12:00:00.000Z',
+                gtd: '2026-08-29T12:00:00.000Z',
+            },
+        };
+        const sourceBefore = structuredClone(source);
+        const firstPayload = sanitizeAppDataForRemote(source);
+
+
+        const rc2Settings: AppData['settings'] = {
+            syncPreferences: { language: true },
+            syncPreferencesUpdatedAt: {
+                preferences: '2026-08-30T12:00:00.000Z',
+                gtd: '2026-08-10T12:00:00.000Z',
+            },
+            gtd: { defaultScheduleTime: '08:00' },
+        };
+        const mergedOnRc2 = mergeSettingsForSync(rc2Settings, firstPayload.settings);
+        const sanitizeSettingsLikeRc2 = (settings: AppData['settings']): AppData['settings'] => ({
+            syncPreferences: { ...(settings.syncPreferences ?? {}) },
+            syncPreferencesUpdatedAt: settings.syncPreferencesUpdatedAt
+                ? { ...settings.syncPreferencesUpdatedAt }
+                : undefined,
+            ...(settings.syncPreferences?.gtd === true
+                ? { gtd: settings.gtd ? { ...settings.gtd } : settings.gtd }
+                : {}),
+        });
+        const firstRc2Payload = sanitizeSettingsLikeRc2(mergedOnRc2);
+        const learnedCurrent = createData([]);
+        learnedCurrent.settings = mergeSettingsForSync(source.settings, firstRc2Payload);
+        const retryPayload = sanitizeAppDataForRemote(learnedCurrent);
+        const convergedRc2 = mergeSettingsForSync(mergedOnRc2, retryPayload.settings);
+        const convergedRc2Payload = sanitizeSettingsLikeRc2(convergedRc2);
+        const convergedCurrent = createData([]);
+        convergedCurrent.settings = mergeSettingsForSync(learnedCurrent.settings, convergedRc2Payload);
+        const convergedCurrentPayload = sanitizeAppDataForRemote(convergedCurrent);
+
+        expect(firstPayload.settings.syncPreferences?.gtd).toBe(true);
+        expect(firstPayload.settings.syncPreferencesUpdatedAt?.preferences).toBe(
+            '2026-08-29T12:00:00.001Z',
+        );
+        expect(mergedOnRc2.syncPreferences?.gtd).toBeUndefined();
+        expect(firstRc2Payload.gtd).toBeUndefined();
+        expect(learnedCurrent.settings.gtd?.defaultScheduleTime).toBe('09:30');
+        expect(retryPayload.settings.syncPreferencesUpdatedAt?.preferences).toBe(
+            '2026-08-30T12:00:00.001Z',
+        );
+        expect(convergedRc2.syncPreferences?.gtd).toBe(true);
+        expect(convergedRc2Payload.gtd?.defaultScheduleTime).toBe('09:30');
+        expect(convergedCurrentPayload.settings).toEqual(convergedRc2Payload);
+        expect(source).toEqual(sourceBefore);
+    });
+
+    it('keeps the expanded GTD group local after an explicit opt-out', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { gtd: false },
+            syncPreferencesUpdatedAt: {
+                preferences: '2026-08-01T12:00:00.000Z',
+                gtd: '2026-08-29T12:00:00.000Z',
+            },
+            gtd: {
+                defaultCaptureMethod: 'audio',
+                weeklyReview: { includeContextStep: false },
+            },
+            quickAddAutoClean: true,
+            markdownEditorAssist: false,
+            features: { pomodoro: true },
+        };
+        const before = structuredClone(data);
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.syncPreferences?.gtd).toBe(false);
+        expect(sanitized.settings.syncPreferencesUpdatedAt?.preferences).toBe(
+            '2026-08-01T12:00:00.000Z',
+        );
+        expect(sanitized.settings.gtd).toBeUndefined();
+        expect(sanitized.settings.quickAddAutoClean).toBeUndefined();
+        expect(sanitized.settings.markdownEditorAssist).toBeUndefined();
+        expect(sanitized.settings.features).toBeUndefined();
+        expect(data).toEqual(before);
+
+        const noTimestampOptOut = createData([]);
+        noTimestampOptOut.settings = {
+            syncPreferences: { gtd: false },
+            gtd: { defaultScheduleTime: '09:30' },
+        };
+        const noTimestampSanitized = sanitizeAppDataForRemote(noTimestampOptOut);
+        expect(noTimestampSanitized.settings.syncPreferences?.gtd).toBe(false);
+        expect(noTimestampSanitized.settings.syncPreferencesUpdatedAt).toBeUndefined();
+    });
+
+    it('converges the expanded GTD payload across peers without dropping explicit values', () => {
+        const source = createData([]);
+        source.settings = {
+            gtd: {
+                defaultCaptureMethod: 'audio',
+                inboxProcessing: { twoMinuteEnabled: false, scheduleEnabled: true },
+                weeklyReview: { includeContextStep: false },
+            },
+            quickAddAutoClean: true,
+            features: { pomodoro: true },
+            syncPreferencesUpdatedAt: { gtd: '2026-08-29T12:00:00.000Z' },
+        };
+        const firstPayload = sanitizeAppDataForRemote(source);
+        const peerSettings: AppData['settings'] = {
+            gtd: {
+                inboxProcessing: { defaultMode: 'quick', twoMinuteEnabled: true },
+            },
+            syncPreferencesUpdatedAt: { gtd: '2026-08-28T12:00:00.000Z' },
+        };
+
+        const mergedPeerSettings = mergeSettingsForSync(peerSettings, firstPayload.settings);
+        const peer = createData([]);
+        peer.settings = mergedPeerSettings;
+        const secondPayload = sanitizeAppDataForRemote(peer);
+
+        expect(secondPayload.settings).toEqual(firstPayload.settings);
+        expect(mergedPeerSettings.gtd?.inboxProcessing?.defaultMode).toBe('quick');
+    });
+
+    it('uploads a default area that is the only GTD preference set (#default-area-sync)', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { gtd: true },
+            gtd: { defaultAreaId: 'area-1', defaultAreaMode: 'fixed' },
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.gtd).toEqual({
+            defaultAreaMode: 'fixed',
+            defaultAreaId: 'area-1',
+        });
+    });
+
+    it('does not include the default schedule time after GTD sync is explicitly disabled', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { language: true, gtd: false },
+            gtd: {
+                defaultScheduleTime: '09:30',
+            },
+            language: 'en',
+            timeFormat: '24h',
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.gtd).toBeUndefined();
+        expect(sanitized.settings.language).toBe('en');
+        expect(sanitized.settings.timeFormat).toBe('24h');
+    });
+
+
+    for (const key of GTD_SYNCED_FIELD_KEYS) {
+        it(`uploads the gtd.${key} field in isolation`, () => {
+            const data = createData([]);
+            data.settings = {
+                syncPreferences: { gtd: true },
+                gtd: { [key]: GTD_SYNCED_FIELD_SAMPLE_VALUES[key] },
+            };
+
+            const sanitized = sanitizeAppDataForRemote(data);
+
+            expect(sanitized.settings.gtd).toEqual({ [key]: GTD_SYNCED_FIELD_SAMPLE_VALUES[key] });
+        });
+    }
+
+    it('uploads gtd.naturalLanguageDates: false — false is meaningful and must not be dropped as falsy', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { gtd: true },
+            gtd: { naturalLanguageDates: false, focusTaskLimit: 5 },
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.settings.gtd).toEqual({ naturalLanguageDates: false, focusTaskLimit: 5 });
+    });
+
+    it('round-trips gtd.naturalLanguageDates: false through sanitize then merge into an older peer', () => {
+        const data = createData([]);
+        data.settings = {
+            syncPreferences: { gtd: true },
+            syncPreferencesUpdatedAt: { gtd: '2026-07-20T00:00:00.000Z' },
+            gtd: { naturalLanguageDates: false },
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        const peerSettings: AppData['settings'] = {
+            gtd: { naturalLanguageDates: true },
+            syncPreferencesUpdatedAt: { gtd: '2026-07-01T00:00:00.000Z' },
+        };
+
+        const merged = mergeSettingsForSync(peerSettings, sanitized.settings);
+
+        expect(merged.gtd?.naturalLanguageDates).toBe(false);
+    });
+
+    it('sanitizes file attachment URIs while preserving cloud metadata', () => {
+        const data: AppData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Task',
+                    status: 'inbox',
+                    tags: [],
+                    contexts: [],
+                    createdAt: now,
+                    updatedAt: now,
+                    attachments: [
+                        {
+                            id: 'att-1',
+                            kind: 'file',
+                            title: 'a.pdf',
+                            uri: '/storage/a.pdf',
+                            cloudKey: 'attachments/a.pdf',
+                            fileHash: 'hash-a',
+                            localStatus: 'available',
+                            createdAt: now,
+                            updatedAt: now,
+                        },
+                    ],
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+
+        const sanitized = sanitizeAppDataForRemote(data);
+        const attachment = sanitized.tasks[0]?.attachments?.[0];
+
+        expect(attachment).toMatchObject({
+            id: 'att-1',
+            kind: 'file',
+            uri: '',
+            cloudKey: 'attachments/a.pdf',
+            fileHash: 'hash-a',
+        });
+        expect(attachment?.localStatus).toBeUndefined();
+    });
+
+    it('omits permanently deleted content from remote payloads', () => {
+        const data = createData([fileAttachment({ id: 'private-attachment' })]);
+        data.tasks[0] = {
+            ...data.tasks[0],
+            title: 'Private task',
+            description: 'Private task notes',
+            deletedAt: now,
+            purgedAt: now,
+        };
+        data.projects = [{
+            id: 'private-project',
+            title: 'Private project',
+            status: 'active',
+            color: '#000000',
+            order: 0,
+            tagIds: [],
+            supportNotes: 'Private project notes',
+            createdAt: now,
+            updatedAt: now,
+            deletedAt: now,
+            purgedAt: now,
+        }];
+        data.sections = [{
+            id: 'private-section',
+            projectId: 'private-project',
+            title: 'Private section',
+            description: 'Private section notes',
+            order: 0,
+            createdAt: now,
+            updatedAt: now,
+            deletedAt: now,
+        }];
+
+        const sanitized = sanitizeAppDataForRemote(data);
+
+        expect(sanitized.tasks[0].title).toBe('(deleted)');
+        expect(sanitized.tasks[0].description).toBeUndefined();
+        expect(sanitized.tasks[0].attachments).toBeUndefined();
+        expect(sanitized.projects[0].title).toBe('(deleted)');
+        expect(sanitized.projects[0].supportNotes).toBeUndefined();
+        expect(sanitized.sections[0].title).toBe('');
+        expect(sanitized.sections[0].description).toBeUndefined();
+        expect(JSON.stringify(sanitized)).not.toContain('Private');
+    });
+
+    it('keeps live file attachments that have neither uri nor cloudKey unless marked missing', () => {
+        const data = createData([
+            fileAttachment({
+                id: 'missing-reference',
+                uri: '',
+                cloudKey: undefined,
+            }),
+        ]);
+
+        const sanitized = sanitizeAppDataForRemote(data);
+        const attachment = sanitized.tasks[0]?.attachments?.[0];
+        expect(attachment).toBeDefined();
+        expect(attachment?.deletedAt).toBeUndefined();
+        expect(attachment?.uri).toBe('');
+        expect(attachment?.cloudKey).toBeUndefined();
+    });
+
+    it('tombstones missing local file attachments that have no cloud key', () => {
+        const data = createData([
+            fileAttachment({
+                id: 'missing-local-file',
+                uri: '',
+                cloudKey: undefined,
+                localStatus: 'missing',
+            }),
+        ]);
+
+        const sanitized = sanitizeAppDataForRemote(data);
+        const attachment = sanitized.tasks[0]?.attachments?.[0];
+        expect(attachment).toBeDefined();
+        expect(attachment?.deletedAt).toBeDefined();
+        expect(attachment?.uri).toBe('');
+        expect(attachment?.cloudKey).toBeUndefined();
+        expect(attachment?.localStatus).toBeUndefined();
+    });
+
+    it('tombstones local-only file attachments on deleted tasks before remote sync', () => {
+        const data = createData([fileAttachment({ id: 'deleted-parent-attachment' })]);
+        data.tasks[0].deletedAt = now;
+
+        const sanitized = sanitizeAppDataForRemote(data);
+        const attachment = sanitized.tasks[0]?.attachments?.[0];
+
+        expect(attachment).toBeDefined();
+        expect(attachment?.deletedAt).toBe(now);
+        expect(attachment?.uri).toBe('');
+        expect(attachment?.cloudKey).toBeUndefined();
+        expect(attachment?.localStatus).toBeUndefined();
+    });
+});
+
+describe('sync-helpers areSyncPayloadsEqual', () => {
+    it('treats payloads as equal when object key order differs', () => {
+        const left: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                syncPreferences: { appearance: true, language: true },
+                syncPreferencesUpdatedAt: {
+                    language: now,
+                    appearance: now,
+                },
+                theme: 'dark',
+            },
+        };
+        const right: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                theme: 'dark',
+                syncPreferencesUpdatedAt: {
+                    appearance: now,
+                    language: now,
+                },
+                syncPreferences: { language: true, appearance: true },
+            },
+        };
+
+        expect(areSyncPayloadsEqual(left, right)).toBe(true);
+    });
+
+    it('detects real payload differences', () => {
+        const left: AppData = {
+            tasks: [{
+                id: 't1',
+                title: 'A',
+                status: 'inbox',
+                tags: [],
+                contexts: [],
+                createdAt: now,
+                updatedAt: now,
+            }],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        const right: AppData = {
+            ...left,
+            tasks: [{ ...left.tasks[0], title: 'B' }],
+        };
+
+        expect(areSyncPayloadsEqual(left, right)).toBe(false);
+    });
+});
+
+describe('sync-helpers computeCoveredSettingsFingerprint', () => {
+    it('changes when a device-local field like the area filter changes (#316)', () => {
+        const before = computeCoveredSettingsFingerprint({
+            filters: { areaIds: ['area-1'] },
+        } as AppData['settings']);
+        const after = computeCoveredSettingsFingerprint({
+            filters: { areaIds: ['area-2'] },
+        } as AppData['settings']);
+        expect(after).not.toBe(before);
+    });
+
+    it('ignores sync status bookkeeping fields the running cycle rewrites', () => {
+        const before = computeCoveredSettingsFingerprint({
+            filters: { areaIds: ['area-1'] },
+            lastSyncAt: '2026-04-01T00:00:00.000Z',
+            lastSyncStatus: 'success',
+        } as AppData['settings']);
+        const after = computeCoveredSettingsFingerprint({
+            filters: { areaIds: ['area-1'] },
+            lastSyncAt: '2026-04-02T00:00:00.000Z',
+            lastSyncStatus: 'error',
+            lastSyncError: 'offline',
+        } as AppData['settings']);
+        expect(after).toBe(before);
+    });
+
+    it('changes when the device proxy changes during a sync cycle', () => {
+        const before = computeCoveredSettingsFingerprint({
+            network: { proxyUrl: 'http://proxy-one.local:8080' },
+        } as AppData['settings']);
+        const after = computeCoveredSettingsFingerprint({
+            network: { proxyUrl: 'http://proxy-two.local:8080' },
+        } as AppData['settings']);
+        expect(after).not.toBe(before);
+    });
+});
+
+describe('sync-helpers computeSyncPayloadFingerprint', () => {
+    it('ignores device-local sync status fields', () => {
+        const left: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                lastSyncAt: '2026-04-01T00:00:00.000Z',
+                lastSyncStatus: 'success',
+                lastSyncError: undefined,
+            },
+        };
+        const right: AppData = {
+            ...left,
+            settings: {
+                lastSyncAt: '2026-04-02T00:00:00.000Z',
+                lastSyncStatus: 'error',
+                lastSyncError: 'temporary network error',
+            },
+        };
+
+        expect(computeSyncPayloadFingerprint(left)).toBe(computeSyncPayloadFingerprint(right));
+    });
+
+    it('changes when sync-eligible content changes', () => {
+        const left = createData([]);
+        const right = createData([]);
+        right.tasks[0].title = 'Changed';
+
+        expect(computeSyncPayloadFingerprint(left)).not.toBe(computeSyncPayloadFingerprint(right));
+    });
+
+    it('agrees with the cheap change fingerprint on what counts as a change', () => {
+        const unchanged = createData([]);
+        const edited = createData([]);
+        edited.tasks[0].updatedAt = '2026-02-20T00:00:00.000Z';
+        edited.tasks[0].rev = 2;
+
+        expect(computeSyncChangeFingerprint(unchanged)).toBe(computeSyncChangeFingerprint(createData([])));
+        expect(computeSyncChangeFingerprint(unchanged)).not.toBe(computeSyncChangeFingerprint(edited));
+    });
+
+    it('cheap change fingerprint ignores device-local sync status churn', () => {
+        const before = createData([]);
+        const after: AppData = {
+            ...before,
+            settings: {
+                ...before.settings,
+                lastSyncAt: '2026-04-02T00:00:00.000Z',
+                lastSyncStatus: 'error',
+                lastSyncError: 'temporary network error',
+                lastSyncHistory: [{ at: '2026-04-02T00:00:00.000Z', status: 'error' }],
+            } as AppData['settings'],
+        };
+
+        expect(computeSyncChangeFingerprint(after)).toBe(computeSyncChangeFingerprint(before));
+    });
+
+    it('cheap change fingerprint notices added, removed and deleted entities', () => {
+        const base = createData([]);
+        const added: AppData = { ...base, tasks: [...base.tasks, { ...base.tasks[0], id: 'task-2' }] };
+        const removed: AppData = { ...base, tasks: [] };
+        const deleted: AppData = { ...base, tasks: [{ ...base.tasks[0], deletedAt: now }] };
+        const entityAdditions: AppData[] = [
+            {
+                ...base,
+                projects: [{
+                    id: 'project-1',
+                    title: 'P',
+                    status: 'active',
+                    color: '#fff',
+                    order: 0,
+                    tagIds: [],
+                    createdAt: now,
+                    updatedAt: now,
+                }],
+            },
+            {
+                ...base,
+                sections: [{
+                    id: 'section-1',
+                    projectId: 'project-1',
+                    title: 'S',
+                    order: 0,
+                    createdAt: now,
+                    updatedAt: now,
+                }],
+            },
+            {
+                ...base,
+                areas: [{ id: 'area-1', name: 'A', order: 0, createdAt: now, updatedAt: now }],
+            },
+            {
+                ...base,
+                people: [{ id: 'person-1', name: 'P', createdAt: now, updatedAt: now }],
+            },
+            {
+                ...base,
+                settings: { syncPreferences: { appearance: true }, theme: 'dark' },
+            },
+        ];
+
+        const baseFingerprint = computeSyncChangeFingerprint(base);
+        expect(computeSyncChangeFingerprint(added)).not.toBe(baseFingerprint);
+        expect(computeSyncChangeFingerprint(removed)).not.toBe(baseFingerprint);
+        expect(computeSyncChangeFingerprint(deleted)).not.toBe(baseFingerprint);
+        for (const changed of entityAdditions) {
+            expect(computeSyncChangeFingerprint(changed)).not.toBe(baseFingerprint);
+        }
+    });
+
+    it('uses a deterministic fallback timestamp for missing file attachments', () => {
+        const data = createData([
+            fileAttachment({
+                updatedAt: '',
+                localStatus: 'missing',
+                cloudKey: undefined,
+            }),
+        ]);
+
+        const sanitized = sanitizeAppDataForRemote(data);
+        const attachment = sanitized.tasks[0].attachments?.[0];
+        expect(attachment?.updatedAt).toBe('1970-01-01T00:00:00.000Z');
+        expect(attachment?.deletedAt).toBe('1970-01-01T00:00:00.000Z');
+        expect(computeSyncPayloadFingerprint(data)).toBe(computeSyncPayloadFingerprint(data));
+    });
+});
+
+describe('sync comparison ignores the order of id-keyed lists (#1136)', () => {
+    const attachment = (id: string): Attachment => ({
+        id,
+        kind: 'file',
+        title: `${id}.pdf`,
+        uri: '',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const task = (id: string, attachments: Attachment[]) => ({
+        id,
+        title: id,
+        status: 'inbox' as const,
+        tags: [],
+        contexts: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        attachments,
+    });
+    const doc = (tasks: ReturnType<typeof task>[]): AppData => ({
+        tasks: tasks as unknown as AppData['tasks'],
+        projects: [],
+        sections: [],
+        areas: [],
+        people: [],
+        settings: {},
+    });
+
+    it('treats a merge that listed the same records local-first on each device as equal', () => {
+        const phone = doc([task('t2', [attachment('a2'), attachment('a1')]), task('t1', [])]);
+        const server = doc([task('t1', []), task('t2', [attachment('a1'), attachment('a2')])]);
+
+        expect(areSyncPayloadsEqual(phone, server)).toBe(true);
+        expect(computeStableValueFingerprint(phone)).toBe(computeStableValueFingerprint(server));
+        expect(computeSyncPayloadFingerprint(phone)).toBe(computeSyncPayloadFingerprint(server));
+    });
+
+    it('still sees a content difference behind a reorder', () => {
+        const phone = doc([task('t2', [attachment('a2'), attachment('a1')])]);
+        const server = doc([task('t2', [attachment('a1'), { ...attachment('a2'), deletedAt: '2026-01-02T00:00:00.000Z' }])]);
+
+        expect(areSyncPayloadsEqual(phone, server)).toBe(false);
+    });
+
+    it('keeps primitive lists positional', () => {
+        expect(areSyncPayloadsEqual(
+            { ...doc([]), settings: { contexts: ['a', 'b'] } as AppData['settings'] },
+            { ...doc([]), settings: { contexts: ['b', 'a'] } as AppData['settings'] },
+        )).toBe(false);
+    });
+});
+
+
+describe('device-local AI endpoint fields', () => {
+    const baseData = (ai: AppData['settings']['ai']): AppData => ({
+        tasks: [],
+        projects: [],
+        sections: [],
+        areas: [],
+        people: [],
+        settings: { syncPreferences: { ai: true }, ai },
+    });
+
+    it('produces the same remote document whether or not the local copy carries them', () => {
+        const withFields = baseData({
+            enabled: true,
+            provider: 'openai',
+            baseUrl: 'http://localhost:1234/v1',
+            openAIExtraBodyParams: { keep: true },
+            speechToText: { enabled: true, provider: 'openai', baseUrl: 'http://localhost:8000/v1' },
+        });
+        const withoutFields = baseData({
+            enabled: true,
+            provider: 'openai',
+            speechToText: { enabled: true, provider: 'openai' },
+        });
+
+        expect(JSON.parse(JSON.stringify(toRemoteSyncDocument(withFields))))
+            .toEqual(JSON.parse(JSON.stringify(toRemoteSyncDocument(withoutFields))));
+    });
+
+    it('does not count an endpoint-only edit as an AI settings change', () => {
+        expect(normalizeAiSettingsForSync({
+            enabled: true,
+            provider: 'openai',
+            baseUrl: 'http://localhost:1234/v1',
+            openAIExtraBodyParams: { keep: true },
+            speechToText: { enabled: true, baseUrl: 'http://localhost:8000/v1' },
+        })).toEqual(normalizeAiSettingsForSync({
+            enabled: true,
+            provider: 'openai',
+            baseUrl: 'https://other-host.example/v1',
+            openAIExtraBodyParams: { x: 1 },
+            speechToText: { enabled: true, baseUrl: 'https://other-host.example/v1' },
+        }));
+    });
+});

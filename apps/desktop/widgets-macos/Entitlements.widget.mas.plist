@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+
+
+        <string>__STRIDE_MACOS_APP_GROUP__</string>
+    </array>
+
+    <key>com.apple.application-identifier</key>
+    <string>__STRIDE_MACOS_TEAM_ID__.com.ishaanpilar.stride.StrideWidgets</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>__STRIDE_MACOS_TEAM_ID__</string>
+</dict>
+</plist>

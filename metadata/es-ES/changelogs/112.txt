@@ -1,0 +1,4 @@
+- Archivo añade búsqueda, filtros, orden, grupos y encabezados plegables.
+- Calendario muestra tareas completadas, conserva colores y separa categorías.
+- Fusionar copia combina una copia con los datos actuales; el archivado automático se ejecuta al iniciar.
+- SQLite guarda datos temporales en memoria y evita errores de escritura en Android.

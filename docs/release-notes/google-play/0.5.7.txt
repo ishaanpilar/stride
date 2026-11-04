@@ -1,0 +1,15 @@
+<en-US>
+- Project sections now group tasks inside projects.
+- Assign a section from the task editor for clearer project structure.
+- Project task list shows section headers and a "No Section" group.
+</en-US>
+<zh-CN>
+- 项目内新增分区分组，任务更有条理。
+- 任务编辑器支持选择分区。
+- 项目任务列表显示分区标题与"无分区"。
+</zh-CN>
+<es-ES>
+- Secciones dentro de proyectos para organizar tareas.
+- Asigna una sección desde el editor de tareas.
+- La lista del proyecto muestra encabezados de sección y "Sin sección".
+</es-ES>

@@ -1,0 +1,786 @@
+import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { ErrorBoundary } from '../ErrorBoundary';
+import {
+    createTaskFilterPredicate,
+    formatTimeEstimateLabel,
+    getListSearchChipLabel,
+    getTaskMetadataFilterVisibility,
+    hasActiveFilterCriteria,
+    projectMatchesAreaFilterSelection,
+    resolveFeatureFlags,
+    safeFormatDate,
+    shallow,
+    sortDoneTasksForListView,
+    sortTasksBy,
+    taskMatchesAreaFilterSelection,
+    tFallback,
+    TIME_ESTIMATE_OPTIONS,
+    useTaskStore,
+} from '@stride/core';
+import type { FilterCriteria, Task, Project, TimeEstimate } from '@stride/core';
+
+import { CheckSquare, Filter, SlidersHorizontal, Undo2, Trash2 } from 'lucide-react';
+import { useLanguage } from '../../contexts/language-context';
+import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
+import { checkBudget } from '../../config/performanceBudgets';
+import { useConfirmDialog } from '../../hooks/useConfirmDialog';
+import { cn } from '../../lib/utils';
+import {
+    LIST_VIRTUALIZATION_THRESHOLD,
+    LIST_VIRTUAL_HEADER_ESTIMATE,
+    LIST_VIRTUAL_OVERSCAN_ROWS,
+    LIST_VIRTUAL_ROW_ESTIMATE,
+} from './list/virtual-list';
+import { StoreTaskItem } from './list/StoreTaskItem';
+import { BulkSelectionToolbar } from './list/BulkSelectionToolbar';
+import { GroupedTaskList } from './list/GroupedTaskSections';
+import { useCollapsedGroupsViewState, useTaskGroupCollapse } from './list/useTaskGroupCollapse';
+import { ListFiltersPanel } from './list/ListFiltersPanel';
+import type { DesktopActiveFilterChip } from './list/FilterDisclosure';
+import { DONE_TASK_LIST_SORT_OPTIONS, LIST_END_GAP, ToolbarButton, VIEW_FILTER_INPUT } from './list/list-toolbar';
+import { ViewControls } from './list/ViewControls';
+import { ViewHeaderActions } from './list/ViewHeaderActions';
+import {
+    PRIORITY_FILTER_OPTIONS,
+    useListFilterControls,
+} from './list/list-filter-controls';
+import { buildActiveFilterChips, type ActiveFilterChipDeps } from './list/active-filter-chips';
+import {
+    DONE_AXES,
+    groupTasks,
+    type DoneGroupBy,
+    type TaskGroup,
+} from './list/next-grouping';
+import { focusTaskRowWhenMounted, useTaskListScope } from './list/task-list-scope';
+import { useTaskSelection } from './list/useTaskSelection';
+import { useUiStore } from '../../store/ui-store';
+import { useLocalDayKey } from '../../hooks/useLocalDayKey';
+import { useAreaVisibility } from '../../hooks/useVisibleTaskContext';
+import { resolveDoneTaskSortBy } from '@stride/core';
+import { dispatchNavigateEvent } from '../../lib/navigation-events';
+
+type ArchiveProjectRowProps = {
+    project: Project;
+    areaName?: string;
+    onOpen: (projectId: string) => void;
+    onRestore: (projectId: string) => void;
+    onDelete: (project: Project) => void;
+    t: (key: string) => string;
+};
+
+const ArchiveProjectRow = memo(function ArchiveProjectRow({
+    project,
+    areaName,
+    onOpen,
+    onRestore,
+    onDelete,
+    t,
+}: ArchiveProjectRowProps) {
+    const handleOpen = useCallback(() => onOpen(project.id), [onOpen, project.id]);
+    const handleRestore = useCallback(() => onRestore(project.id), [onRestore, project.id]);
+    const handleDelete = useCallback(() => onDelete(project), [onDelete, project]);
+    const outcomeTimestamp = project.cancelledAt || project.updatedAt;
+    const archivedText = `${project.cancelledAt
+        ? tFallback(t, 'projects.cancelled', 'Cancelled')
+        : tFallback(t, 'list.done', 'Completed')}: ${outcomeTimestamp ? safeFormatDate(outcomeTimestamp, 'Pp', outcomeTimestamp) : 'Unknown'}`;
+
+    return (
+        <div className="rounded-lg px-3 py-3 flex items-center justify-between group hover:bg-muted/50 transition-colors">
+            <div className="flex min-w-0 items-center gap-3">
+                <button
+                    type="button"
+                    aria-label={project.title}
+                    onClick={handleOpen}
+                    className="min-w-0 rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                >
+                    <h3 className={cn('font-medium text-foreground opacity-70', !project.cancelledAt && 'line-through')}>{project.title}</h3>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        {archivedText}
+                        {areaName ? ` • ${areaName}` : ''}
+                    </p>
+                </button>
+            </div>
+            <div className="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+                <button
+                    onClick={handleRestore}
+                    className="p-2 hover:bg-muted rounded-md text-muted-foreground hover:text-primary transition-colors"
+                    title={tFallback(t, 'archived.restoreProject', 'Restore project')}
+                >
+                    <Undo2 className="w-4 h-4" />
+                </button>
+                <button
+                    onClick={handleDelete}
+                    className="p-2 hover:bg-destructive/10 rounded-md text-muted-foreground hover:text-destructive transition-colors"
+                    title={t('common.delete')}
+                >
+                    <Trash2 className="w-4 h-4" />
+                </button>
+            </div>
+        </div>
+    );
+});
+
+type ArchiveSegment = 'tasks' | 'projects';
+
+
+const ARCHIVE_VIEW_STATE_STORAGE_KEY = 'stride:view:archive:v1';
+
+
+const HIGHLIGHT_FLASH_MS = 4000;
+
+export function ArchiveView() {
+    const perf = usePerformanceMonitor('ArchiveView');
+    const {
+        _allTasks,
+        projects,
+        areas,
+        updateProject,
+        deleteProject,
+        batchMoveTasks,
+        batchDeleteTasks,
+        restoreTask,
+        settings,
+        highlightTaskId,
+        setHighlightTask,
+    } = useTaskStore(
+        (state) => ({
+            _allTasks: state._allTasks,
+            projects: state.projects,
+            areas: state.areas,
+            updateProject: state.updateProject,
+            deleteProject: state.deleteProject,
+            batchMoveTasks: state.batchMoveTasks,
+            batchDeleteTasks: state.batchDeleteTasks,
+            restoreTask: state.restoreTask,
+            settings: state.settings,
+            highlightTaskId: state.highlightTaskId,
+            setHighlightTask: state.setHighlightTask,
+        }),
+        shallow
+    );
+    const { t } = useLanguage();
+    const showToast = useUiStore((state) => state.showToast);
+    const { requestConfirmation, confirmModal } = useConfirmDialog();
+    const [segment, setSegment] = useState<ArchiveSegment>('tasks');
+    const [searchQuery, setSearchQuery] = useState('');
+    const { collapsedGroups, setCollapsedGroups } = useCollapsedGroupsViewState(
+        ARCHIVE_VIEW_STATE_STORAGE_KEY,
+        DONE_AXES,
+    );
+    const listScrollRef = useRef<HTMLDivElement>(null);
+    const scrolledHighlightIdRef = useRef<string | null>(null);
+    const {
+        criteria: listFilterCriteria,
+        filtersOpen,
+        selectedTokens,
+        excludedTokens,
+        selectedPriorities,
+        selectedTimeEstimates,
+        contextMatchMode,
+        tagMatchMode,
+        toggleToken,
+        togglePriority,
+        toggleEstimate,
+        setMatchMode,
+        removeFilterChip,
+        clearFilters,
+        setFiltersOpen,
+        setListFilters,
+    } = useListFilterControls();
+    const archivedGroupBy = useUiStore((state) => state.listOptions.archivedGroupBy);
+    const archivedSortBy = useUiStore((state) => state.listOptions.archivedSortBy);
+    const setListOptions = useUiStore((state) => state.setListOptions);
+
+
+    const sortBy = resolveDoneTaskSortBy(settings?.taskSortBy, archivedSortBy, settings);
+    const { areaById, projectById, resolvedAreaFilter } = useAreaVisibility();
+
+    useEffect(() => {
+        if (!perf.enabled) return;
+        const timer = window.setTimeout(() => {
+            checkBudget('ArchiveView', perf.metrics, 'simple');
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [perf.enabled]);
+
+
+    const archivedBaseTasks = useMemo(
+        () => _allTasks.filter((task) => (
+            task.status === 'archived'
+            && !task.deletedAt
+            && taskMatchesAreaFilterSelection(task, resolvedAreaFilter, projectById, areaById)
+        )),
+        [_allTasks, areaById, projectById, resolvedAreaFilter]
+    );
+
+    const { priorities: prioritiesEnabled, timeEstimates: timeEstimatesEnabled } = resolveFeatureFlags(settings);
+    const metadataFilterVisibility = useMemo(
+        () => getTaskMetadataFilterVisibility(archivedBaseTasks, { prioritiesEnabled, timeEstimatesEnabled }),
+        [archivedBaseTasks, prioritiesEnabled, timeEstimatesEnabled]
+    );
+    const showPriorityFilters = metadataFilterVisibility.priority;
+    const showTimeEstimateFilters = metadataFilterVisibility.timeEstimate;
+    const activeFilterCriteria = useMemo<FilterCriteria>(() => ({
+        ...listFilterCriteria,
+        priority: showPriorityFilters ? selectedPriorities : undefined,
+        timeEstimates: showTimeEstimateFilters ? selectedTimeEstimates : undefined,
+        timeEstimateRange: showTimeEstimateFilters ? listFilterCriteria.timeEstimateRange : undefined,
+    }), [listFilterCriteria, selectedPriorities, selectedTimeEstimates, showPriorityFilters, showTimeEstimateFilters]);
+
+    const { allTokens, tokenCounts } = useMemo(() => {
+        const counts: Record<string, number> = {};
+        for (const task of archivedBaseTasks) {
+            const matched = new Set<string>();
+            for (const token of [...(task.contexts ?? []), ...(task.tags ?? [])]) {
+                matched.add(token);
+                for (let index = token.indexOf('/'); index !== -1; index = token.indexOf('/', index + 1)) {
+                    matched.add(token.slice(0, index));
+                }
+            }
+            for (const token of matched) {
+                counts[token] = (counts[token] ?? 0) + 1;
+            }
+        }
+
+
+        return {
+            allTokens: [...new Set([...Object.keys(counts), ...selectedTokens, ...excludedTokens])].sort(),
+            tokenCounts: counts,
+        };
+    }, [archivedBaseTasks, excludedTokens, selectedTokens]);
+
+    const archivedTasks = useMemo(() => {
+        const criteriaPredicate = hasActiveFilterCriteria(activeFilterCriteria)
+            ? createTaskFilterPredicate(activeFilterCriteria, { projects, tokenMatchMode: 'all' })
+            : null;
+        const query = searchQuery.trim().toLowerCase();
+        const filtered = archivedBaseTasks.filter((task) => {
+            if (criteriaPredicate && !criteriaPredicate(task)) return false;
+            if (query && !task.title.toLowerCase().includes(query)) return false;
+            return true;
+        });
+        return sortBy === 'default' ? sortDoneTasksForListView(filtered) : sortTasksBy(filtered, sortBy);
+    }, [activeFilterCriteria, archivedBaseTasks, projects, searchQuery, sortBy]);
+
+    const areaNameById = useMemo(
+        () => new Map(areas.filter((area) => !area.deletedAt).map((area) => [area.id, area.name])),
+        [areas]
+    );
+
+    const archivedProjects = useMemo(() => {
+        const filtered = projects
+            .filter((project) => (
+                project.status === 'archived'
+                && projectMatchesAreaFilterSelection(project, resolvedAreaFilter, areaById)
+            ))
+            .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+        if (!searchQuery) return filtered;
+        const query = searchQuery.toLowerCase();
+        return filtered.filter((project) => project.title.toLowerCase().includes(query));
+    }, [areaById, projects, resolvedAreaFilter, searchQuery]);
+    const isGrouping = archivedGroupBy !== 'none';
+    const localDayKey = useLocalDayKey(archivedGroupBy === 'completedDate');
+    const groupedTasks = useMemo<TaskGroup[]>(
+        () => (isGrouping ? groupTasks(archivedGroupBy, { tasks: archivedTasks, areas, projectMap: projectById, t, theme: settings?.theme }) : []),
+        [archivedGroupBy, archivedTasks, areas, isGrouping, localDayKey, projectById, settings?.theme, t]
+    );
+    const {
+        collapsedGroupIds,
+        getSectionDomId,
+        toggleGroup,
+        virtualRows: groupedVirtualRows,
+
+
+        visibleTasks: orderedTasks,
+    } = useTaskGroupCollapse({
+        axis: archivedGroupBy,
+        groups: groupedTasks,
+        tasks: archivedTasks,
+        idPrefix: 'archived-group',
+        collapsedGroups,
+        setCollapsedGroups,
+    });
+    const archivedTaskIds = useMemo(() => orderedTasks.map((task) => task.id), [orderedTasks]);
+    const {
+        allVisibleTasksSelected: allVisibleSelected,
+        clearTaskSelection: clearSelection,
+        deleteSelectedTasks,
+        exitSelectionMode,
+        multiSelectedIds: selectedIds,
+        moveSelectedTasks,
+        selectionMode,
+        selectAllVisibleTasks: selectAllVisible,
+        toggleMultiSelect: toggleTaskSelection,
+        toggleSelectionMode,
+    } = useTaskSelection(archivedTaskIds, {
+        batchDeleteTasks,
+        batchMoveTasks,
+        restoreTask,
+        showToast,
+        t,
+        undoNotificationsEnabled: settings?.undoNotificationsEnabled !== false,
+    });
+    const virtualRowCount = groupedVirtualRows?.length ?? archivedTasks.length;
+    const shouldVirtualize = virtualRowCount > LIST_VIRTUALIZATION_THRESHOLD;
+
+
+    const shouldVirtualizeFlatTasks = !isGrouping && archivedTasks.length > LIST_VIRTUALIZATION_THRESHOLD;
+    const shouldFillAvailableHeight = segment === 'tasks' ? shouldVirtualize : shouldVirtualizeFlatTasks;
+
+
+    const rowVirtualizer = useVirtualizer({
+        count: shouldVirtualize ? virtualRowCount : 0,
+        getScrollElement: () => listScrollRef.current,
+        estimateSize: (index) => (
+            groupedVirtualRows?.[index]?.kind === 'header'
+                ? LIST_VIRTUAL_HEADER_ESTIMATE
+                : LIST_VIRTUAL_ROW_ESTIMATE
+        ),
+        overscan: LIST_VIRTUAL_OVERSCAN_ROWS,
+        getItemKey: (index) => {
+            const row = groupedVirtualRows?.[index];
+            if (!row) return archivedTasks[index]?.id ?? index;
+            if (!row) return index;
+            return row.kind === 'header'
+                ? `group:${row.group.id}`
+                : `task:${row.group.id}:${row.task.id}`;
+        },
+    });
+
+    const [selectedTaskIndex, setSelectedTaskIndex] = useState(0);
+    useTaskListScope({
+
+
+        getTasks: () => (segment === 'tasks' ? orderedTasks : []),
+        getSelectedIds: () => selectedIds,
+        getSelectedIndex: () => selectedTaskIndex,
+        setSelectedIndex: setSelectedTaskIndex,
+        t,
+        toggleSelect: (task) => toggleTaskSelection(task.id),
+    });
+
+    const handleBulkRestore = useCallback(async () => {
+        await moveSelectedTasks('inbox');
+    }, [moveSelectedTasks]);
+
+    const handleBulkDelete = useCallback(async () => {
+        await deleteSelectedTasks({
+            confirm: () => requestConfirmation({
+                title: t('bulk.confirmDeleteTitle'),
+                description: t('bulk.confirmDeleteBody'),
+                confirmLabel: t('common.delete'),
+                cancelLabel: tFallback(t, 'common.cancel', 'Cancel'),
+            }),
+        });
+    }, [deleteSelectedTasks, requestConfirmation, t]);
+
+    const handleRestoreProject = useCallback((projectId: string) => {
+        void updateProject(projectId, { status: 'active' });
+    }, [updateProject]);
+
+    const handleOpenProject = useCallback((projectId: string) => {
+        useUiStore.getState().setProjectView({ selectedProjectId: projectId });
+        dispatchNavigateEvent('projects');
+    }, []);
+
+    const handleDeleteProject = useCallback(async (project: Project) => {
+        const confirmed = await requestConfirmation({
+            title: project.title,
+            description: t('projects.deleteConfirm'),
+            confirmLabel: t('common.delete'),
+            cancelLabel: tFallback(t, 'common.cancel', 'Cancel'),
+        });
+        if (!confirmed) return;
+        await deleteProject(project.id);
+    }, [deleteProject, requestConfirmation, t]);
+
+
+    const renderArchiveRow = useCallback((task: Task) => (
+        <StoreTaskItem
+            key={task.id}
+            taskId={task.id}
+            readOnly
+            selectionMode={selectionMode}
+            isMultiSelected={selectedIds.has(task.id)}
+            onToggleSelectId={toggleTaskSelection}
+            showQuickDone={false}
+            showProjectBadgeInActions={false}
+        />
+    ), [selectedIds, selectionMode, toggleTaskSelection]);
+
+    const formatEstimate = useCallback(
+        (value: TimeEstimate) => formatTimeEstimateLabel(value, { t }),
+        [t]
+    );
+    const excludedLabel = tFallback(t, 'filters.excluded', 'Excluded');
+    const chipDeps: ActiveFilterChipDeps = {
+        t,
+        resolveText: (key, fallback) => tFallback(t, key, fallback),
+        getProject: (projectId) => projectById.get(projectId),
+        getAreaColor: (areaId) => areaById.get(areaId)?.color,
+        getAreaLabel: (areaId) => areaById.get(areaId)?.name,
+    };
+    const activeFilterChips: DesktopActiveFilterChip[] = [];
+    if (searchQuery.trim()) {
+        activeFilterChips.push({
+            id: 'search',
+            label: getListSearchChipLabel(searchQuery.trim(), t),
+            onRemove: () => setSearchQuery(''),
+        });
+    }
+
+
+    buildActiveFilterChips(listFilterCriteria, chipDeps, { appliedCriteria: activeFilterCriteria })
+        .forEach((chip) => {
+            activeFilterChips.push({ ...chip, onRemove: () => removeFilterChip(chip.id) });
+        });
+    const filterSummary = activeFilterChips
+        .filter((chip) => !chip.inactive)
+        .map((chip) => (chip.excluded ? `${excludedLabel}: ${chip.label}` : chip.label));
+
+
+    const hasFilters = filterSummary.length > 0;
+    const hasFilterChips = activeFilterChips.length > 0;
+    const filterSummaryLabel = filterSummary.slice(0, 3).join(', ');
+    const filterSummarySuffix = filterSummary.length > 3 ? ` +${filterSummary.length - 3}` : '';
+
+    const handleSegmentChange = useCallback((next: ArchiveSegment) => {
+        setSegment((current) => {
+            if (current === next) return current;
+            exitSelectionMode();
+            return next;
+        });
+    }, [exitSelectionMode]);
+
+
+    useEffect(() => {
+        if (!highlightTaskId) {
+            scrolledHighlightIdRef.current = null;
+            return;
+        }
+        const flashTimer = window.setTimeout(() => setHighlightTask(null), HIGHLIGHT_FLASH_MS);
+        return () => window.clearTimeout(flashTimer);
+    }, [highlightTaskId, setHighlightTask]);
+
+
+    useEffect(() => {
+        if (!highlightTaskId) return;
+        if (!archivedBaseTasks.some((task) => task.id === highlightTaskId)) return;
+
+        if (segment !== 'tasks') {
+            handleSegmentChange('tasks');
+            return;
+        }
+
+        if (!archivedTasks.some((task) => task.id === highlightTaskId)) {
+
+
+            if (!hasActiveFilterCriteria(activeFilterCriteria) && !searchQuery.trim()) return;
+            clearFilters();
+            setSearchQuery('');
+            showToast(tFallback(
+                t,
+                'archive.filtersClearedForTask',
+                'Cleared the archive filters so the selected task is visible.',
+            ), 'info');
+            return;
+        }
+
+        if (isGrouping) {
+
+
+            if (!orderedTasks.some((task) => task.id === highlightTaskId)) {
+                const collapsedGroup = groupedTasks.find((group) => (
+                    collapsedGroupIds.has(group.id) && group.tasks.some((task) => task.id === highlightTaskId)
+                ));
+                if (collapsedGroup) {
+                    toggleGroup(collapsedGroup.id);
+                    return;
+                }
+            }
+        }
+
+
+        if (scrolledHighlightIdRef.current === highlightTaskId) return;
+
+        if (shouldVirtualize) {
+            const rowIndex = groupedVirtualRows
+                ? groupedVirtualRows.findIndex((row) => row.kind === 'task' && row.task.id === highlightTaskId)
+                : archivedTasks.findIndex((task) => task.id === highlightTaskId);
+            if (rowIndex < 0) return;
+            rowVirtualizer.scrollToIndex(rowIndex, { align: 'center' });
+            scrolledHighlightIdRef.current = highlightTaskId;
+            focusTaskRowWhenMounted(highlightTaskId);
+            return;
+        }
+
+        let retryTimer: number | null = null;
+        let cancelled = false;
+        let attempts = 0;
+        const scrollHighlightedTask = () => {
+            if (cancelled) return;
+            const element = document.querySelector(`[data-task-id="${highlightTaskId}"]`) as HTMLElement | null;
+            if (element && typeof element.scrollIntoView === 'function') {
+                element.scrollIntoView({ block: 'center' });
+                scrolledHighlightIdRef.current = highlightTaskId;
+                focusTaskRowWhenMounted(highlightTaskId);
+                return;
+            }
+
+            if (attempts >= 8) return;
+            attempts += 1;
+            retryTimer = window.setTimeout(scrollHighlightedTask, 50);
+        };
+        scrollHighlightedTask();
+
+        return () => {
+            cancelled = true;
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
+        };
+    }, [
+        activeFilterCriteria,
+        archivedBaseTasks,
+        archivedTasks,
+        clearFilters,
+        collapsedGroupIds,
+        groupedTasks,
+        groupedVirtualRows,
+        handleSegmentChange,
+        highlightTaskId,
+        isGrouping,
+        orderedTasks,
+        rowVirtualizer,
+        searchQuery,
+        segment,
+        shouldVirtualize,
+        showToast,
+        t,
+        toggleGroup,
+    ]);
+
+    return (
+        <ErrorBoundary>
+            <div className={shouldFillAvailableHeight ? "flex h-full min-h-0 flex-col gap-6" : "flex flex-col gap-6"}>
+            <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                    <h2 className="text-3xl font-bold tracking-tight">{t('archived.title')}</h2>
+                    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5">
+                        <button
+                            type="button"
+                            onClick={() => handleSegmentChange('tasks')}
+                            className={cn(
+                                'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                                segment === 'tasks'
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'text-muted-foreground hover:text-foreground'
+                            )}
+                        >
+                            {tFallback(t, 'archived.tasksSegment', 'Tasks')}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleSegmentChange('projects')}
+                            className={cn(
+                                'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                                segment === 'projects'
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'text-muted-foreground hover:text-foreground'
+                            )}
+                        >
+                            {t('projects.title')}
+                        </button>
+                    </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
+                    <span>
+                        {segment === 'tasks'
+                            ? `${archivedTasks.length} ${t('common.tasks')}`
+                            : `${archivedProjects.length} ${t('projects.title')}`}
+                    </span>
+                    {segment === 'tasks' && hasFilters && (
+                        <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary sm:max-w-[420px]">
+                            <SlidersHorizontal className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span className="truncate">{filterSummaryLabel}{filterSummarySuffix}</span>
+                        </span>
+                    )}
+                </div>
+                </div>
+
+                {segment === 'tasks' && (
+                    <ViewHeaderActions>
+                        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+                            <ToolbarButton
+                                active={filtersOpen}
+                                onClick={() => setFiltersOpen(!filtersOpen)}
+                                aria-expanded={filtersOpen}
+                                aria-controls="list-filters-panel"
+                                icon={<Filter className="h-3.5 w-3.5" aria-hidden="true" />}
+                            >
+                                {t('filters.label')}
+                            </ToolbarButton>
+                            {archivedTasks.length > 0 && (
+                                <ToolbarButton
+                                    active={selectionMode}
+                                    onClick={toggleSelectionMode}
+                                    aria-pressed={selectionMode}
+                                    icon={<CheckSquare className="h-3.5 w-3.5" aria-hidden="true" />}
+                                >
+                                    {selectionMode ? t('common.done') : t('bulk.select')}
+                                </ToolbarButton>
+                            )}
+                            <ViewControls
+                                sortBy={sortBy}
+                                defaultSortBy="default"
+                                sortByOptions={DONE_TASK_LIST_SORT_OPTIONS}
+                                onChangeSortBy={(value) => setListOptions({ archivedSortBy: value })}
+                                groupBy={archivedGroupBy}
+                                defaultGroupBy="none"
+                                groupByOptions={DONE_AXES}
+                                onChangeGroupBy={(value) => setListOptions({ archivedGroupBy: value as DoneGroupBy })}
+                                t={t}
+                            />
+                        </div>
+                    </ViewHeaderActions>
+                )}
+            </header>
+
+            {segment === 'tasks' && (filtersOpen || hasFilterChips) && (
+                <ListFiltersPanel
+                    anyDateRange={listFilterCriteria.anyDateRange}
+                    onAnyDateRangeChange={(value) => setListFilters({ criteria: { ...listFilterCriteria, anyDateRange: value } })}
+                    t={t}
+                    activeFilterChips={activeFilterChips}
+                    hasFilters={hasFilterChips}
+                    showFiltersPanel={filtersOpen}
+                    onClose={() => setFiltersOpen(false)}
+                    onClearFilters={() => {
+                        clearFilters();
+                        setSearchQuery('');
+                    }}
+                    allTokens={allTokens}
+                    selectedTokens={selectedTokens}
+                    excludedTokens={excludedTokens}
+                    tokenCounts={tokenCounts}
+                    onToggleToken={toggleToken}
+                    contextMatchMode={contextMatchMode}
+                    tagMatchMode={tagMatchMode}
+                    onContextMatchModeChange={(mode) => setMatchMode('context', mode)}
+                    onTagMatchModeChange={(mode) => setMatchMode('tag', mode)}
+                    showPriorityFilters={showPriorityFilters}
+                    priorityOptions={PRIORITY_FILTER_OPTIONS}
+                    selectedPriorities={selectedPriorities}
+                    onTogglePriority={togglePriority}
+                    showTimeEstimateFilters={showTimeEstimateFilters}
+                    timeEstimateOptions={TIME_ESTIMATE_OPTIONS}
+                    selectedTimeEstimates={selectedTimeEstimates}
+                    onToggleEstimate={toggleEstimate}
+                    formatEstimate={formatEstimate}
+                />
+            )}
+
+            {segment === 'tasks' && selectionMode && (
+                <div className="space-y-2">
+                    <BulkSelectionToolbar
+                        selectionCount={selectedIds.size}
+                        totalCount={archivedTasks.length}
+                        allSelected={allVisibleSelected}
+                        onSelectAll={selectAllVisible}
+                        onClearSelection={clearSelection}
+                        t={t}
+                    />
+                    <div className="flex flex-wrap justify-end gap-2">
+                        <button
+                            type="button"
+                            onClick={() => { void handleBulkRestore(); }}
+                            disabled={selectedIds.size === 0}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Undo2 className="h-3.5 w-3.5" />
+                            {t('trash.restoreToInbox')}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { void handleBulkDelete(); }}
+                            disabled={selectedIds.size === 0}
+                            className="inline-flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            {t('common.delete')}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            <div className="relative">
+                <input
+                    type="text"
+
+
+                    data-view-filter-input
+                    placeholder={segment === 'projects'
+                        ? tFallback(t, 'archived.searchProjectsPlaceholder', 'Search archived projects...')
+                        : t('archived.searchPlaceholder')}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className={VIEW_FILTER_INPUT}
+                />
+            </div>
+
+            {segment === 'projects' ? (
+                <div className={shouldVirtualizeFlatTasks ? "flex-1 min-h-0 overflow-y-auto" : undefined}>
+                    <div data-list-end className={LIST_END_GAP}>
+                    {archivedProjects.length === 0 ? (
+                        <div className="px-1 py-8 text-left text-sm text-muted-foreground">
+                            <p>{tFallback(t, 'archived.emptyProjects', 'No archived projects')}</p>
+                            <p className="text-xs mt-2">{tFallback(t, 'archived.emptyProjectsHint', 'Projects you archive will appear here')}</p>
+                        </div>
+                    ) : (
+                        <div className="divide-y divide-border/30">
+                            {archivedProjects.map((project) => (
+                                <ArchiveProjectRow
+                                    key={project.id}
+                                    project={project}
+                                    areaName={project.areaId ? areaNameById.get(project.areaId) : undefined}
+                                    onOpen={handleOpenProject}
+                                    onRestore={handleRestoreProject}
+                                    onDelete={handleDeleteProject}
+                                    t={t}
+                                />
+                            ))}
+                        </div>
+                    )}
+                    </div>
+                </div>
+            ) : (
+            <div
+                ref={listScrollRef}
+                className={shouldVirtualize ? "flex-1 min-h-0 overflow-y-auto" : undefined}
+            >
+                <div data-list-end className={LIST_END_GAP}>
+                {archivedTasks.length === 0 ? (
+                    <div className="px-1 py-8 text-left text-sm text-muted-foreground">
+                        <p>{t('archived.noTasksFound')}</p>
+                        <p className="text-xs mt-2">{t('archived.emptyHint')}</p>
+                    </div>
+                ) : (
+                    <GroupedTaskList
+                        groups={groupedTasks}
+                        tasks={archivedTasks}
+                        virtualRows={groupedVirtualRows}
+                        virtualizer={shouldVirtualize ? rowVirtualizer : null}
+                        collapsedGroupIds={collapsedGroupIds}
+                        onToggleGroup={toggleGroup}
+                        getSectionDomId={getSectionDomId}
+                        renderTask={renderArchiveRow}
+                    />
+                )}
+                </div>
+            </div>
+            )}
+            </div>
+            {confirmModal}
+        </ErrorBoundary>
+    );
+}

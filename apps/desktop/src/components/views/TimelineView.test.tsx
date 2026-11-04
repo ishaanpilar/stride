@@ -1,0 +1,784 @@
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { TimelineView, resolveTimelineTrack, taskBarTint } from './TimelineView';
+import { LanguageProvider } from '../../contexts/language-context';
+import { DEFAULT_PROJECT_COLOR, configureDateFormatting, useTaskStore, type Area, type Project, type Section, type Task } from '@stride/core';
+
+const iso = (offsetDays: number): string => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() + offsetDays);
+    return date.toISOString();
+};
+
+const makeTask = (overrides: Partial<Task> & { id: string; title: string }): Task => ({
+    status: 'next',
+    tags: [],
+    contexts: [],
+    createdAt: iso(-30),
+    updatedAt: iso(-30),
+    ...overrides,
+} as Task);
+
+const setStore = ({
+    tasks = [],
+    projects = [],
+    areas = [],
+    sections = [],
+}: { tasks?: Task[]; projects?: Project[]; areas?: Area[]; sections?: Section[] }) => {
+    useTaskStore.setState({
+        tasks,
+        projects,
+        areas,
+        sections,
+        settings: {},
+        _allTasks: tasks,
+        _allProjects: projects,
+        _allAreas: areas,
+        _allSections: sections,
+    });
+};
+
+const renderTimeline = () => render(
+    <LanguageProvider>
+        <TimelineView />
+    </LanguageProvider>
+);
+
+const bars = () => Array.from(document.querySelectorAll('[data-testid="timeline-bar"]')) as HTMLElement[];
+const projectBarFor = (projectId: string) => document.querySelector(
+    `[data-testid="timeline-project-bar"][data-project-id="${projectId}"]`,
+) as HTMLElement | null;
+
+const projectBarDays = (projectId: string) => {
+    const bar = projectBarFor(projectId);
+    if (!bar) return null;
+    return {
+        from: Number.parseFloat(bar.style.left) / 32,
+        days: Number.parseFloat(bar.style.width) / 32,
+    };
+};
+const barFor = (taskId: string) => document.querySelector(`[data-testid="timeline-bar"][data-task-id="${taskId}"]`) as HTMLElement | null;
+const axisWidth = () => Number.parseFloat(
+    screen.getAllByTestId('timeline-axis-major')[0].parentElement?.style.width ?? '0',
+);
+
+const rowLabels = () => Array.from(
+    document.querySelectorAll('[data-testid="timeline-group"], [data-testid="timeline-row-label"]'),
+).map((node) => node.textContent);
+const axisLabels = (tier: 'major' | 'minor') => Array.from(
+    document.querySelectorAll(`[data-testid="timeline-axis-${tier}"]`),
+).map((node) => node.textContent ?? '');
+
+describe('resolveTimelineTrack (#1111)', () => {
+    it('stretches a range that fits the pane and scrolls one that does not', () => {
+
+        expect(resolveTimelineTrack(30, 4, 1200)).toEqual({ dayWidth: 40, trackWidth: 1200, fitted: true });
+
+        expect(resolveTimelineTrack(400, 4, 1200)).toEqual({ dayWidth: 4, trackWidth: 1600, fitted: false });
+
+        expect(resolveTimelineTrack(100, 12, 1200).fitted).toBe(true);
+        expect(resolveTimelineTrack(30, 4, 0)).toEqual({ dayWidth: 4, trackWidth: 120, fitted: false });
+        expect(resolveTimelineTrack(0, 4, 1200)).toEqual({ dayWidth: 4, trackWidth: 0, fitted: false });
+    });
+});
+
+describe('TimelineView (#1111)', () => {
+    beforeEach(() => {
+        window.localStorage.clear();
+        setStore({});
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        configureDateFormatting({ language: 'en', calendarSystem: 'gregorian' });
+    });
+
+    it('draws a span bar for a task with both a start and a due date', () => {
+        setStore({
+            tasks: [makeTask({ id: 'span', title: 'Span task', startTime: iso(-2), dueDate: iso(3) })],
+        });
+        renderTimeline();
+        const bar = barFor('span');
+        expect(bar).not.toBeNull();
+        expect(bar?.dataset.variant).toBe('bar');
+
+        expect(bar?.style.width).toBe('72px');
+    });
+
+    it('contains a task span that crosses both ends of the bounded axis', () => {
+        setStore({
+            tasks: [makeTask({
+                id: 'crossing-span',
+                title: 'Long-running task',
+                startTime: iso(-1000),
+                dueDate: iso(1000),
+            })],
+        });
+        renderTimeline();
+
+        const bar = barFor('crossing-span');
+        const left = Number.parseFloat(bar?.style.left ?? '0');
+        const right = left + Number.parseFloat(bar?.style.width ?? '0');
+        expect(left).toBeGreaterThanOrEqual(0);
+        expect(right).toBeLessThanOrEqual(axisWidth());
+    });
+
+    it('exposes the horizontal track as a focusable named region and names the zoom group', () => {
+        setStore({
+            tasks: [makeTask({ id: 'span', title: 'Span task', startTime: iso(-2), dueDate: iso(3) })],
+        });
+        renderTimeline();
+
+        const track = screen.getByRole('region', { name: 'Timeline track' });
+        expect(track).toBe(screen.getByTestId('timeline-scroller'));
+        expect(track).toHaveAttribute('tabindex', '0');
+        track.focus();
+        expect(document.activeElement).toBe(track);
+
+        expect(screen.getByRole('group', { name: 'Timeline zoom' })).toBeInTheDocument();
+    });
+
+    it('draws a compact mini-bar for a task dated on only one side', () => {
+        setStore({
+            tasks: [
+                makeTask({ id: 'start-only', title: 'Start only', startTime: iso(1) }),
+                makeTask({ id: 'due-only', title: 'Due only', dueDate: iso(4) }),
+            ],
+        });
+        renderTimeline();
+        expect(barFor('start-only')?.dataset.variant).toBe('mini');
+        expect(barFor('due-only')?.dataset.variant).toBe('mini');
+        expect(barFor('start-only')?.style.width).toBe('12px');
+    });
+
+    it('contains compact task markers on the final day of the axis', () => {
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ zoom: 'month' }));
+        setStore({
+            tasks: [
+                makeTask({ id: 'axis-start', title: 'Axis start', dueDate: iso(600) }),
+                makeTask({ id: 'axis-end', title: 'Axis end', dueDate: iso(1000) }),
+                makeTask({ id: 'axis-end-bar', title: 'Axis end bar', startTime: iso(1000), dueDate: iso(1000) }),
+            ],
+        });
+        renderTimeline();
+
+        const marker = barFor('axis-end');
+        const minimumBar = barFor('axis-end-bar');
+        expect(Number.parseFloat(marker?.style.width ?? '0')).toBe(12);
+        expect(Number.parseFloat(minimumBar?.style.width ?? '0')).toBe(10);
+        for (const compactBar of [marker, minimumBar]) {
+            const left = Number.parseFloat(compactBar?.style.left ?? '0');
+            const width = Number.parseFloat(compactBar?.style.width ?? '0');
+            expect(left + width).toBeLessThanOrEqual(axisWidth());
+        }
+    });
+
+    it.each([
+        { day: 18, minorDays: [7], gridDays: [7, 14] },
+        { day: 19, minorDays: [6, 20], gridDays: [6, 13, 20] },
+    ])('draws task bars thinner than the solid project bar and gridlines as real elements, not a gradient (October $day)', ({ day, minorDays, gridDays }) => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 9, day, 12));
+        setStore({
+            projects: [{ id: 'p1', title: 'Remodel', status: 'active', startDate: iso(0), dueDate: iso(20), createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+            tasks: [makeTask({ id: 't1', title: 'Tiles', projectId: 'p1', startTime: iso(1), dueDate: iso(6) })],
+        });
+        useTaskStore.setState({ settings: { weekStart: 'sunday' } });
+        renderTimeline();
+        const projectHeight = Number.parseFloat(projectBarFor('p1')?.style.height ?? '0');
+        const taskHeight = Number.parseFloat(barFor('t1')?.style.height ?? '0');
+        expect(projectHeight).toBeGreaterThan(taskHeight);
+
+        const gridlines = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="timeline-gridline-minor"]'));
+        expect(gridlines.map((line) => Number.parseFloat(line.style.left))).toEqual(minorDays.map((days) => days * 12));
+        const allGridlines = Array.from(gridlines[0]?.parentElement?.children ?? []) as HTMLElement[];
+        expect(allGridlines.map((line) => Number.parseFloat(line.style.left)).sort((a, b) => a - b))
+            .toEqual(gridDays.map((days) => days * 12));
+        const withGradient = Array.from(document.querySelectorAll<HTMLElement>('div'))
+            .filter((element) => element.style.backgroundImage.includes('gradient'));
+        expect(withGradient).toHaveLength(0);
+    });
+
+    it('leaves out undated, done and deleted tasks', () => {
+        setStore({
+            tasks: [
+                makeTask({ id: 'dated', title: 'Dated', dueDate: iso(1) }),
+                makeTask({ id: 'undated', title: 'Undated' }),
+                makeTask({ id: 'finished', title: 'Finished', status: 'done', dueDate: iso(1) }),
+                makeTask({ id: 'gone', title: 'Gone', dueDate: iso(1), deletedAt: iso(0) }),
+            ],
+        });
+        renderTimeline();
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(['dated']);
+    });
+
+    it('keeps active statuses selected by default and persists a multi-status selection across zoom and remount', () => {
+        setStore({ tasks: [
+            ...(['inbox', 'next', 'waiting', 'someday', 'done', 'reference'] as const).map((status) =>
+                makeTask({ id: status, title: status, status, dueDate: iso(1) })),
+            makeTask({ id: 'archived', title: 'archived', status: 'archived', dueDate: iso(1) }),
+            makeTask({ id: 'cancelled', title: 'cancelled', status: 'archived', cancelledAt: iso(0), dueDate: iso(1) }),
+        ] });
+        const view = renderTimeline();
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(['inbox', 'next', 'waiting', 'someday']);
+        fireEvent.click(screen.getByRole('button', { name: 'Status' }));
+        const filter = screen.getByRole('dialog', { name: 'Status' });
+        for (const name of ['Inbox', 'Next', 'Someday']) {
+            fireEvent.click(within(filter).getByRole('checkbox', { name }));
+        }
+        fireEvent.click(within(filter).getByRole('checkbox', { name: 'Completed' }));
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(['waiting', 'done', 'archived']);
+        fireEvent.keyDown(filter, { key: 'Escape' });
+        expect(screen.getByRole('button', { name: 'Status' })).toHaveFocus();
+        fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+        expect(JSON.parse(window.localStorage.getItem('stride:view:timeline:v1') ?? '{}')).toEqual({
+            zoom: 'day', statuses: ['waiting', 'done'],
+        });
+        view.unmount();
+        renderTimeline();
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(['waiting', 'done', 'archived']);
+    });
+
+    it.each([
+        { saved: { statuses: ['done', 'reference', 'done', null, 1], zoom: 'invalid' }, expected: ['done'] },
+        { saved: { statuses: 'done' }, expected: ['next'] },
+        { saved: { statuses: ['invalid'] }, expected: ['next'] },
+        { saved: { statuses: [] }, expected: [] },
+    ])('sanitizes saved status selection $saved', ({ saved, expected }) => {
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify(saved));
+        setStore({ tasks: [
+            makeTask({ id: 'next', title: 'Next', dueDate: iso(1) }),
+            makeTask({ id: 'done', title: 'Done', status: 'done', dueDate: iso(1) }),
+        ] });
+        renderTimeline();
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(expected);
+        expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('allows an empty selection and resets to the default statuses', () => {
+        setStore({ tasks: [makeTask({ id: 'next', title: 'Next', dueDate: iso(1) })] });
+        renderTimeline();
+        fireEvent.click(screen.getByRole('button', { name: 'Status' }));
+        const filter = screen.getByRole('dialog', { name: 'Status' });
+        for (const input of within(filter).getAllByRole('checkbox')) {
+            if ((input as HTMLInputElement).checked) fireEvent.click(input);
+        }
+        expect(bars()).toHaveLength(0);
+        expect(JSON.parse(window.localStorage.getItem('stride:view:timeline:v1') ?? '{}').statuses).toEqual([]);
+        fireEvent.click(within(filter).getByRole('button', { name: 'Reset' }));
+        expect(barFor('next')).not.toBeNull();
+    });
+
+    it('retains archived project names, dates and area color for completed history while honoring the area filter', () => {
+        const projects: Project[] = [
+            { id: 'closed', title: 'Finished project', status: 'archived', areaId: 'work', startDate: iso(-3), dueDate: iso(2), createdAt: iso(-30), updatedAt: iso(0) } as Project,
+            { id: 'deleted', title: 'Deleted project', status: 'archived', deletedAt: iso(0), startDate: iso(-3), dueDate: iso(2), createdAt: iso(-30), updatedAt: iso(0) } as Project,
+        ];
+        setStore({ projects, areas: [{ id: 'work', name: 'Work', color: '#ff0000' } as Area], tasks: [
+            makeTask({ id: 'completed', title: 'Completed work', status: 'archived', projectId: 'closed', startTime: iso(-1), dueDate: iso(1) }),
+            makeTask({ id: 'other', title: 'Other area', status: 'done', dueDate: iso(1) }),
+            makeTask({ id: 'deleted-task', title: 'Deleted task', status: 'done', deletedAt: iso(0), dueDate: iso(1) }),
+        ] });
+        useTaskStore.setState((state) => ({ settings: { ...state.settings, filters: { areaIds: ['work'] } } }));
+        renderTimeline();
+        expect(rowLabels()).not.toContain('Finished project');
+        fireEvent.click(screen.getByRole('button', { name: 'Status' }));
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Completed' }));
+        expect(rowLabels()).toEqual(['Finished project', 'Completed work']);
+        expect(projectBarFor('closed')).not.toBeNull();
+        expect(projectBarFor('deleted')).toBeNull();
+        expect(barFor('completed')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
+        expect(projectBarFor('closed')?.style.backgroundColor).toBe('rgb(255, 0, 0)');
+        expect(useTaskStore.getState()._allProjects.find((project) => project.id === 'closed')?.status).toBe('archived');
+    });
+
+    it('opens archived completed tasks as read-only history', () => {
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ statuses: ['done'] }));
+        setStore({ tasks: [makeTask({ id: 'archived', title: 'Completed work', status: 'archived', dueDate: iso(1) })] });
+        renderTimeline();
+        fireEvent.click(screen.getByTestId('timeline-row-label'));
+        const dialog = screen.getByRole('dialog');
+        expect(within(dialog).getByText('Completed work')).toBeInTheDocument();
+        expect(dialog.querySelector('[data-task-edit-trigger]')).toBeDisabled();
+        expect(within(dialog).queryByRole('button', { name: /Restore|Delete|Duplicate/i })).toBeNull();
+        fireEvent.keyDown(dialog, { key: 'e' });
+        expect(dialog.querySelector('input')).toBeNull();
+        expect(useTaskStore.getState()._allTasks[0].status).toBe('archived');
+    });
+
+    it('labels status icons and ignores invalid task dates without breaking valid bars', () => {
+        setStore({ tasks: [
+            makeTask({ id: 'waiting', title: 'Waiting task', status: 'waiting', dueDate: iso(1) }),
+            makeTask({ id: 'invalid', title: 'Invalid dates', startTime: 'invalid', dueDate: 'invalid' }),
+        ] });
+        renderTimeline();
+        const taskLabel = screen.getByTestId('timeline-row-label');
+        expect(taskLabel).toHaveAccessibleName(/Waiting task.*Waiting/);
+        expect(within(taskLabel).getByRole('img', { name: 'Waiting' })).toHaveAttribute('title', 'Waiting');
+        expect(bars().map((bar) => bar.dataset.taskId)).toEqual(['waiting']);
+    });
+
+    it('tints a bar with the same accent the calendar gives that task', () => {
+        setStore({
+            tasks: [
+                makeTask({ id: 'in-area', title: 'In area', projectId: 'p1', startTime: iso(0), dueDate: iso(1) }),
+                makeTask({ id: 'plain', title: 'Plain', projectId: 'p2', startTime: iso(0), dueDate: iso(1) }),
+
+
+                makeTask({ id: 'loose', title: 'Loose', areaId: 'a1', startTime: iso(0), dueDate: iso(1) }),
+            ],
+            projects: [
+                { id: 'p1', title: 'Area project', status: 'active', areaId: 'a1', createdAt: iso(-60), updatedAt: iso(-60) } as Project,
+                { id: 'p2', title: 'Colored project', status: 'active', color: '#00ff00', createdAt: iso(-60), updatedAt: iso(-60) } as Project,
+            ],
+            areas: [{ id: 'a1', name: 'Work', color: '#ff0000', createdAt: iso(-60), updatedAt: iso(-60) } as unknown as Area],
+        });
+        renderTimeline();
+
+        expect(barFor('in-area')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
+        expect(barFor('plain')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
+        expect(barFor('loose')?.style.backgroundColor).toBe('rgba(255, 0, 0, 0.25)');
+        expect(barFor('plain')?.style.border).toBe('1px solid rgba(0, 255, 0, 0.7)');
+    });
+
+    it('gives a project with no area and no color the grey group dot (#1422)', () => {
+        setStore({
+            tasks: [makeTask({ id: 'plain', title: 'Plain', projectId: 'p1', startTime: iso(0), dueDate: iso(1) })],
+            projects: [{ id: 'p1', title: 'Plain project', status: 'active', createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+        });
+        renderTimeline();
+        const dot = screen.getByTestId('timeline-group').querySelector('.rounded-full') as HTMLElement;
+        expect(dot.style.backgroundColor).toBe('rgb(148, 163, 184)');
+    });
+
+    it('groups rows by project with unassigned tasks last', () => {
+        setStore({
+            tasks: [
+                makeTask({ id: 'loose', title: 'Loose task', dueDate: iso(1) }),
+                makeTask({ id: 'owned', title: 'Owned task', projectId: 'p1', dueDate: iso(1) }),
+            ],
+            projects: [{ id: 'p1', title: 'Area project', status: 'active', createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+        });
+        renderTimeline();
+        expect(rowLabels()).toEqual(['Area project', 'Owned task', 'No project', 'Loose task']);
+    });
+
+    it('uses Projects section and manual task order, independent of dates, with named row handles', () => {
+        setStore({
+            projects: [{ id: 'p1', title: 'Ordered project', status: 'active', order: 0, createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+            sections: [
+                { id: 'second', projectId: 'p1', title: 'Second section', order: 1024, createdAt: iso(-60), updatedAt: iso(-60) },
+                { id: 'first', projectId: 'p1', title: 'First section', order: 0, createdAt: iso(-60), updatedAt: iso(-60) },
+            ],
+            tasks: [
+                makeTask({ id: 'b', title: 'Second task', projectId: 'p1', sectionId: 'first', order: 1024, dueDate: iso(-4) }),
+                makeTask({ id: 'other', title: 'Other section', projectId: 'p1', sectionId: 'second', order: 0, dueDate: iso(-8) }),
+                makeTask({ id: 'a', title: 'First task', projectId: 'p1', sectionId: 'first', order: 0, dueDate: iso(4) }),
+            ],
+        });
+        renderTimeline();
+        expect(rowLabels()).toEqual(['Ordered project', 'First task', 'Second task', 'Other section']);
+        expect(screen.getByRole('button', { name: 'Reorder task: First task' })).toHaveAttribute('data-testid', 'timeline-reorder-task');
+        expect(screen.getByRole('button', { name: 'Reorder project: Ordered project' })).toBeInTheDocument();
+    });
+
+    it('honors an explicit project task sort and omits task handles', () => {
+        setStore({
+            projects: [{ id: 'p1', title: 'Sorted project', status: 'active', taskSortBy: 'due', createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+            tasks: [
+                makeTask({ id: 'a', title: 'Manual first', projectId: 'p1', order: 0, dueDate: iso(4) }),
+                makeTask({ id: 'b', title: 'Earlier due', projectId: 'p1', order: 1024, dueDate: iso(-4) }),
+            ],
+        });
+        renderTimeline();
+        expect(rowLabels()).toEqual(['Sorted project', 'Earlier due', 'Manual first']);
+        expect(screen.queryAllByTestId('timeline-reorder-task')).toHaveLength(0);
+    });
+
+    it('shows area order before project order and keeps no-project and completed tasks read-only for ordering', () => {
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ statuses: ['next', 'done'] }));
+        setStore({
+            areas: [
+                { id: 'a2', name: 'Second area', color: '#00ff00', order: 1024, createdAt: iso(-60), updatedAt: iso(-60) },
+                { id: 'a1', name: 'First area', color: '#0000ff', order: 0, createdAt: iso(-60), updatedAt: iso(-60) },
+            ],
+            projects: [
+                { id: 'p2', title: 'Second area project', status: 'active', areaId: 'a2', order: 0, createdAt: iso(-60), updatedAt: iso(-60) } as Project,
+                { id: 'p1', title: 'First area project', status: 'active', areaId: 'a1', order: 1024, createdAt: iso(-60), updatedAt: iso(-60) } as Project,
+            ],
+            tasks: [
+                makeTask({ id: 'done', title: 'Completed task', projectId: 'p1', status: 'done', dueDate: iso(0) }),
+                makeTask({ id: 'live', title: 'Active task', projectId: 'p2', dueDate: iso(0) }),
+                makeTask({ id: 'loose', title: 'No project task', dueDate: iso(0) }),
+            ],
+        });
+        renderTimeline();
+        expect(rowLabels()).toEqual(['First area project', 'Completed task', 'Second area project', 'Active task', 'No project', 'No project task']);
+        expect(screen.getAllByTestId('timeline-reorder-task')).toHaveLength(1);
+        expect(screen.getByTestId('timeline-reorder-task')).toHaveAttribute('data-task-id', 'live');
+    });
+
+    describe('project bars', () => {
+
+        beforeEach(() => {
+            window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ zoom: 'day' }));
+        });
+
+        const projectWithDates = (dates: Partial<Project>): Project => ({
+            id: 'p1',
+            title: 'Rebuild the deck',
+            status: 'active',
+            color: '#00ff00',
+            createdAt: iso(-60),
+            updatedAt: iso(-60),
+            ...dates,
+        } as Project);
+
+
+        const groupTasks = () => [
+            makeTask({ id: 't1', title: 'Task', projectId: 'p1', startTime: iso(0), dueDate: iso(2) }),
+        ];
+
+        it('spans start to due when the project carries both dates', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({ startDate: iso(-3).slice(0, 10), dueDate: iso(6).slice(0, 10) })],
+            });
+            renderTimeline();
+
+            expect(projectBarDays('p1')).toEqual({ from: 0, days: 10 });
+        });
+
+        it('borrows the missing end from the tasks under it', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({ startDate: iso(-3).slice(0, 10) })],
+            });
+            renderTimeline();
+
+            expect(projectBarDays('p1')).toEqual({ from: 0, days: 6 });
+        });
+
+        it('borrows the missing start from the tasks under it', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({ dueDate: iso(6).slice(0, 10) })],
+            });
+            renderTimeline();
+
+            expect(projectBarDays('p1')).toEqual({ from: 0, days: 7 });
+        });
+
+        it('draws no bar for a project with neither date', () => {
+            setStore({ tasks: groupTasks(), projects: [projectWithDates({})] });
+            renderTimeline();
+            expect(projectBarFor('p1')).toBeNull();
+            expect(barFor('t1')).not.toBeNull();
+        });
+
+        it('stretches the axis to a project deadline past every task', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({ dueDate: iso(40).slice(0, 10) })],
+            });
+            renderTimeline();
+
+
+            expect(projectBarDays('p1')).toEqual({ from: 0, days: 41 });
+        });
+
+        it('draws a dated project with no dated tasks as a bare group row', () => {
+            setStore({
+                tasks: [makeTask({ id: 'undated', title: 'No dates yet', projectId: 'p1' })],
+                projects: [projectWithDates({ startDate: iso(0).slice(0, 10), dueDate: iso(4).slice(0, 10) })],
+            });
+            renderTimeline();
+
+
+            expect(projectBarDays('p1')).toEqual({ from: 0, days: 5 });
+            expect(rowLabels()).toEqual(['Rebuild the deck']);
+            expect(bars()).toHaveLength(0);
+        });
+
+        it('shows nothing for an undated project whose tasks are undated too', () => {
+            setStore({
+                tasks: [makeTask({ id: 'undated', title: 'No dates yet', projectId: 'p1' })],
+                projects: [projectWithDates({})],
+            });
+            renderTimeline();
+
+            expect(projectBarFor('p1')).toBeNull();
+            expect(rowLabels()).toEqual([]);
+            expect(screen.getByText('Nothing scheduled yet')).toBeTruthy();
+        });
+
+        it('uses the project color and opens the project from its name', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({ startDate: iso(0).slice(0, 10), dueDate: iso(2).slice(0, 10) })],
+            });
+            renderTimeline();
+
+            expect(projectBarFor('p1')?.style.backgroundColor).toBe('rgb(0, 255, 0)');
+            const groupButton = screen.getByTestId('timeline-group');
+            expect(groupButton).toHaveAccessibleName(/Rebuild the deck.*Start date: .+Due date: .+/);
+            expect(groupButton.dataset.projectId).toBe('p1');
+
+            const navigations: string[] = [];
+            const listener = (event: Event) => navigations.push((event as CustomEvent<{ view: string }>).detail.view);
+            window.addEventListener('stride:navigate', listener as EventListener);
+            fireEvent.click(groupButton);
+            window.removeEventListener('stride:navigate', listener as EventListener);
+            expect(navigations).toEqual(['projects']);
+        });
+
+
+        it('paints a never-recolored project with its area color instead of the placeholder grey', () => {
+            setStore({
+                tasks: groupTasks(),
+                projects: [projectWithDates({
+                    color: DEFAULT_PROJECT_COLOR,
+                    areaId: 'a1',
+                    startDate: iso(0).slice(0, 10),
+                    dueDate: iso(2).slice(0, 10),
+                })],
+                areas: [{ id: 'a1', name: 'Home', color: '#8b5cf6', order: 0, createdAt: iso(-60), updatedAt: iso(-60) } as Area],
+            });
+            renderTimeline();
+
+            expect(projectBarFor('p1')?.style.backgroundColor).toBe('rgb(139, 92, 246)');
+        });
+    });
+
+    describe('project group and task bar hierarchy', () => {
+        const twoProjectStore = () => setStore({
+            tasks: [
+                makeTask({ id: 'owned', title: 'Owned task', projectId: 'p1', startTime: iso(0), dueDate: iso(3) }),
+                makeTask({ id: 'other', title: 'Other task', projectId: 'p2', startTime: iso(0), dueDate: iso(3) }),
+                makeTask({ id: 'loose', title: 'Loose task', startTime: iso(0), dueDate: iso(3) }),
+            ],
+            projects: [
+                { id: 'p1', title: 'First', status: 'active', color: '#00ff00', startDate: iso(0).slice(0, 10), dueDate: iso(3).slice(0, 10), createdAt: iso(-60), updatedAt: iso(-60) } as Project,
+                { id: 'p2', title: 'Second', status: 'active', color: '#0000ff', createdAt: iso(-59), updatedAt: iso(-59) } as Project,
+            ],
+        });
+
+        it('rules off every project group but the first', () => {
+            twoProjectStore();
+            renderTimeline();
+
+
+            expect(rowLabels()).toEqual(['First', 'Owned task', 'Second', 'Other task', 'No project', 'Loose task']);
+            expect(screen.getAllByTestId('timeline-group-separator')).toHaveLength(2);
+        });
+
+        it('draws a task bar as a tint of the project bar, with no title on it', () => {
+            twoProjectStore();
+            renderTimeline();
+
+            const projectBar = projectBarFor('p1');
+            const taskBar = barFor('owned');
+            expect(projectBar?.style.backgroundColor).toBe('rgb(0, 255, 0)');
+            expect(taskBar?.style.backgroundColor).not.toBe(projectBar?.style.backgroundColor);
+            expect(taskBar?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
+
+            expect(taskBar?.textContent).toBe('');
+            expect(screen.getAllByText('Owned task')).toHaveLength(1);
+        });
+
+        it('tints a mini marker and an accent-colored bar the same way', () => {
+            setStore({
+                tasks: [
+                    makeTask({ id: 'mini', title: 'One sided', projectId: 'p1', dueDate: iso(1) }),
+                    makeTask({ id: 'accent', title: 'No color', startTime: iso(0), dueDate: iso(2) }),
+                ],
+                projects: [{ id: 'p1', title: 'First', status: 'active', color: '#00ff00', createdAt: iso(-60), updatedAt: iso(-60) } as Project],
+            });
+            renderTimeline();
+
+            expect(barFor('mini')?.dataset.variant).toBe('mini');
+            expect(barFor('mini')?.style.backgroundColor).toBe('rgba(0, 255, 0, 0.25)');
+
+            expect(barFor('accent')?.style.backgroundColor).toBe('hsl(var(--primary) / 0.25)');
+            expect(bars().every((bar) => bar.textContent === '')).toBe(true);
+        });
+
+        it('falls back to the accent token for a color it cannot read', () => {
+            expect(taskBarTint('#00ff00')).toEqual({ fill: 'rgba(0, 255, 0, 0.25)', border: 'rgba(0, 255, 0, 0.7)' });
+
+            expect(taskBarTint('#0f0').fill).toBe('rgba(0, 255, 0, 0.25)');
+            expect(taskBarTint('#00ff00ff').fill).toBe('rgba(0, 255, 0, 0.25)');
+            expect(taskBarTint(undefined).fill).toBe('hsl(var(--primary) / 0.25)');
+            expect(taskBarTint('not a color').border).toBe('hsl(var(--primary) / 0.7)');
+        });
+    });
+
+    it('splits the month-zoom axis into a year tier and month ticks, and floors thin bars', () => {
+
+
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ zoom: 'month' }));
+        setStore({
+            tasks: [
+                makeTask({ id: 'long', title: 'Long haul', startTime: iso(-60), dueDate: iso(90) }),
+                makeTask({ id: 'oneday', title: 'One day', startTime: iso(5), dueDate: iso(5) }),
+            ],
+        });
+        renderTimeline();
+
+        expect(axisLabels('major').every((label) => /^\d{4}$/.test(label))).toBe(true);
+        const minor = axisLabels('minor');
+        expect(minor.length).toBeGreaterThan(2);
+        expect(minor.every((label) => /^[A-Za-z]+$/.test(label))).toBe(true);
+
+        expect(barFor('oneday')?.style.width).toBe('10px');
+    });
+
+    it('opens centered on today and re-centers when the zoom changes', () => {
+        const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+        const scrollLeft = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollLeft');
+        const positions = new WeakMap<Element, number>();
+        Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1000 });
+        Object.defineProperty(Element.prototype, 'scrollLeft', {
+            configurable: true,
+            get() { return positions.get(this) ?? 0; },
+            set(value: number) { positions.set(this, value); },
+        });
+        try {
+
+            setStore({
+                tasks: [
+                    makeTask({ id: 'past', title: 'Past', startTime: iso(-200), dueDate: iso(-190) }),
+                    makeTask({ id: 'future', title: 'Future', startTime: iso(100), dueDate: iso(150) }),
+                ],
+            });
+            renderTimeline();
+            const scroller = screen.getByTestId('timeline-scroller');
+
+            expect(scroller.scrollLeft).toBe(224 + 200 * 12 - 500);
+            fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+            expect(scroller.scrollLeft).toBe(224 + 200 * 32 - 500);
+        } finally {
+            if (clientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidth);
+            else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+            if (scrollLeft) Object.defineProperty(Element.prototype, 'scrollLeft', scrollLeft);
+        }
+    });
+
+    it('marks today and shows the empty state when nothing is dated', () => {
+        setStore({ tasks: [makeTask({ id: 'dated', title: 'Dated', dueDate: iso(1) })] });
+        const { unmount } = renderTimeline();
+        expect(document.querySelector('[data-testid="timeline-today-line"]')).not.toBeNull();
+        unmount();
+
+        setStore({ tasks: [makeTask({ id: 'undated', title: 'Undated' })] });
+        renderTimeline();
+        expect(bars()).toHaveLength(0);
+        expect(screen.getByText('Nothing scheduled yet')).toBeTruthy();
+    });
+
+    it('counts a project windowed entirely out instead of drawing an empty row for it', () => {
+        setStore({
+            projects: [{
+                id: 'gone',
+                title: 'Finished remodel',
+                status: 'active',
+                startDate: iso(-365),
+                dueDate: iso(-360),
+                createdAt: iso(-400),
+                updatedAt: iso(-400),
+            } as Project],
+            tasks: [
+                makeTask({ id: 'old', title: 'Old task', projectId: 'gone', dueDate: iso(-364) }),
+                makeTask({ id: 'visible', title: 'Visible task', dueDate: iso(150) }),
+            ],
+        });
+        renderTimeline();
+
+        expect(rowLabels()).not.toContain('Finished remodel');
+        expect(projectBarFor('gone')).toBeNull();
+        expect(barFor('old')).toBeNull();
+        expect(barFor('visible')).not.toBeNull();
+
+        expect(screen.getByTestId('timeline-omitted-notice')).toHaveTextContent('2 more');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Earlier' }));
+        expect(rowLabels()).toContain('Finished remodel');
+    });
+
+    it('keeps scheduled tasks recoverable when the bounded window omits them', () => {
+        setStore({
+            tasks: [
+                makeTask({ id: 'early', title: 'Early task', dueDate: iso(-365) }),
+                makeTask({ id: 'late', title: 'Late task', dueDate: iso(365) }),
+            ],
+        });
+        renderTimeline();
+
+        expect(screen.queryByText('Nothing scheduled yet')).toBeNull();
+        expect(screen.getByTestId('timeline-omitted-notice')).toHaveTextContent('2 more');
+        expect(bars()).toHaveLength(0);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Earlier' }));
+        expect(barFor('early')).not.toBeNull();
+        expect(barFor('late')).toBeNull();
+        expect(screen.getByTestId('timeline-omitted-notice')).toHaveTextContent('1 more');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Later' }));
+        expect(barFor('early')).toBeNull();
+        expect(barFor('late')).not.toBeNull();
+    });
+
+    it('advances the today marker when the local day rolls over', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 6, 27, 23, 59, 59, 900));
+        setStore({
+            tasks: [makeTask({ id: 'span', title: 'Spanning task', startTime: iso(-2), dueDate: iso(2) })],
+        });
+        renderTimeline();
+
+        const before = screen.getByTestId('timeline-today-line').style.left;
+        act(() => {
+            vi.advanceTimersByTime(200);
+        });
+        expect(screen.getByTestId('timeline-today-line').style.left).not.toBe(before);
+    });
+
+    it('uses Jalali month and year boundaries when that calendar is selected', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 2, 20, 12, 0, 0));
+        configureDateFormatting({ language: 'fa', calendarSystem: 'jalali' });
+        window.localStorage.setItem('stride:view:timeline:v1', JSON.stringify({ zoom: 'month' }));
+        const start = new Date(2026, 2, 20, 12, 0, 0);
+        const due = new Date(2026, 2, 23, 12, 0, 0);
+        setStore({
+            tasks: [makeTask({ id: 'new-year', title: 'New year span', startTime: start.toISOString(), dueDate: due.toISOString() })],
+        });
+        useTaskStore.setState((state) => ({
+            ...state,
+            settings: { ...state.settings, calendarSystem: 'jalali', language: 'fa' },
+        }));
+        renderTimeline();
+
+        expect(axisLabels('major')).toContain('۱۴۰۵');
+        expect(axisLabels('major')).not.toContain('2026');
+        expect(axisLabels('minor')).toContain('فروردین');
+    });
+
+    it('exposes one task action with localized start and due semantics', () => {
+        setStore({
+            tasks: [makeTask({
+                id: 'accessible',
+                title: 'Accessible task',
+                startTime: iso(-2).slice(0, 10),
+                dueDate: iso(3).slice(0, 10),
+            })],
+        });
+        renderTimeline();
+
+        const taskActions = screen.getAllByRole('button').filter((button) => button.dataset.taskId === 'accessible');
+        expect(taskActions).toHaveLength(1);
+        expect(taskActions[0]).toHaveAccessibleName(/Accessible task.*Start date: .+Due date: .+/);
+        expect(barFor('accessible')?.querySelector('[data-testid="timeline-move-task"]')).toHaveAccessibleName(/Move task dates.*Accessible task.*Start date/);
+    });
+});

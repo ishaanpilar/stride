@@ -1,0 +1,62 @@
+import Foundation
+
+
+public enum NativeLaunchSelection: Sendable {
+    case standard(databaseURL: URL, containerURL: URL, namespace: String)
+    case isolated(databaseURL: URL, containerURL: URL, namespace: String, identifier: UUID)
+    case rehearsal(containerURL: URL, databaseURL: URL, bundleIdentifier: String)
+
+    public enum BuildMode: Sendable {
+        case simulatorDebug
+        case simulatorRelease
+        case deviceTest
+        case unavailable
+    }
+
+    private struct SelectionFailure: LocalizedError {
+        var errorDescription: String? { "Native iOS launch selection is unavailable." }
+    }
+
+
+    public static func resolve(arguments: [String], bundleIdentifier: String?, supportURL: URL, homeURL: URL,
+                               mode: BuildMode) throws -> NativeLaunchSelection {
+        switch mode {
+        case .unavailable:
+            throw SelectionFailure()
+        case .deviceTest:
+            guard bundleIdentifier == "com.ishaanpilar.stride.native.dev",
+                  !arguments.contains("--native-app-lock-auth"), !arguments.contains("--native-rn-rehearsal") else {
+                throw SelectionFailure()
+            }
+        case .simulatorDebug, .simulatorRelease:
+            break
+        }
+        guard supportURL.isFileURL else { throw SelectionFailure() }
+        if mode != .simulatorRelease {
+            let positions = arguments.indices.filter { arguments[$0] == "--native-ui-test-library" }
+            if let position = positions.first {
+                guard positions.count == 1, !arguments.contains("--native-rn-rehearsal"), position + 1 < arguments.count,
+                      let identifier = UUID(uuidString: arguments[position + 1]),
+                      identifier.uuidString.lowercased() == arguments[position + 1] else { throw SelectionFailure() }
+                let name = identifier.uuidString.lowercased()
+                let directory = supportURL.appendingPathComponent("NativeUITests", isDirectory: true)
+                    .appendingPathComponent(name, isDirectory: true)
+                let namespace = "com.ishaanpilar.stride.native-ui." + name
+                guard NativeReminderRequest.validNamespace(namespace) else { throw SelectionFailure() }
+                return .isolated(databaseURL: directory.appendingPathComponent("stride.sqlite"),
+                    containerURL: directory, namespace: namespace, identifier: identifier)
+            }
+            if arguments.contains("--native-rn-rehearsal") {
+                guard let bundleIdentifier, !bundleIdentifier.isEmpty else { throw SelectionFailure() }
+                let container = supportURL.appendingPathComponent("NativeRNRehearsal", isDirectory: true)
+                return .rehearsal(containerURL: container,
+                    databaseURL: container.appendingPathComponent("Documents/SQLite/stride.db"), bundleIdentifier: bundleIdentifier)
+            }
+        }
+        guard homeURL.isFileURL, let bundleIdentifier, NativeReminderRequest.validNamespace(bundleIdentifier) else {
+            throw SelectionFailure()
+        }
+        return .standard(databaseURL: supportURL.appendingPathComponent("NativeFoundation", isDirectory: true)
+            .appendingPathComponent("stride.sqlite"), containerURL: homeURL, namespace: bundleIdentifier)
+    }
+}

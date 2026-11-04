@@ -1,0 +1,5 @@
+- Opt-in time tracking: linked Pomodoro focus sessions add minutes to a synced Time Spent field.
+- Undo replaces delete and archive confirmations; the calendar week follows your locale.
+- Capture with the %person token, share files into the capture sheet, and pin a Quick capture notification.
+- Faster sync and smoother lists on large libraries; checklists independent from notes.
+- Clearer sync conflict reporting and new safeguards against data loss.

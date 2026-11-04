@@ -1,0 +1,30 @@
+<en-US>
+- Repeating tasks show every occurrence across the visible calendar range.
+- Focus and Next hide timed-start tasks until the exact time.
+- Faster task rows, stable drag reordering, clearer accessibility, and better project return navigation.
+- Sync setup validates remote data and attachments before switching.
+</en-US>
+<de-DE>
+- Wiederholende Aufgaben erscheinen im gesamten sichtbaren Kalenderbereich.
+- Fokus und Nächste blenden Aufgaben bis zur genauen Startzeit aus.
+- Schnellere Listen, stabiles Ziehen, klarere Bedienungshilfen und bessere Projektnavigation.
+- Sync-Ziele werden vor dem Wechsel samt Anhängen geprüft.
+</de-DE>
+<es-ES>
+- Las tareas repetidas muestran todas sus apariciones en el calendario visible.
+- Enfoque y Siguiente ocultan tareas hasta su hora exacta de inicio.
+- Listas más rápidas, arrastre estable, mejor accesibilidad y regreso correcto al proyecto.
+- La sincronización valida datos y adjuntos antes de cambiar.
+</es-ES>
+<fr-FR>
+- Les tâches répétées affichent toutes leurs occurrences dans le calendrier visible.
+- Focus et Suivant masquent les tâches jusqu’à leur heure de début exacte.
+- Listes plus rapides, glisser stable, accessibilité claire et meilleur retour au projet.
+- La synchro valide données et pièces jointes avant le changement.
+</fr-FR>
+<zh-CN>
+- 重复任务会在可见日历范围内显示每一次发生。
+- “聚焦”和“下一步”会把任务隐藏到准确开始时间。
+- 任务列表更快，拖动更稳定，无障碍提示和项目返回导航更清晰。
+- 切换同步目标前会验证远端数据和附件。
+</zh-CN>

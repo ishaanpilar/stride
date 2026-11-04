@@ -1,0 +1,18 @@
+<en-US>
+- Added a global area switcher and time estimate filters for faster task triage.
+- Added focus toggles in daily review and improved sync activity handling when offline or backgrounded.
+- Made external calendar loading cancellable with timeouts to avoid stuck review screens.
+- Hardened sync merge handling and server validation for more reliable cross-device sync.
+</en-US>
+<zh-CN>
+- 新增全局区域切换器与时长预估筛选，更快整理任务。
+- 每日回顾新增焦点切换，并改进离线或切到后台时的同步处理。
+- 外部日历加载现已支持取消与超时，减少回顾页面卡住的情况。
+- 强化同步合并处理与服务端校验，提升跨设备同步可靠性。
+</zh-CN>
+<es-ES>
+- Anadimos un selector global de areas y filtros de estimacion de tiempo para revisar tareas mas rapido.
+- Anadimos cambios de foco en la revision diaria y mejoramos el manejo del sync sin conexion o en segundo plano.
+- La carga del calendario externo ahora admite cancelacion y timeout para evitar revisiones bloqueadas.
+- Reforzamos el merge del sync y la validacion del servidor para un sync entre dispositivos mas fiable.
+</es-ES>

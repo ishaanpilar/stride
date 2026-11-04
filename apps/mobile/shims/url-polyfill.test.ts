@@ -1,0 +1,350 @@
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { DOMParser } from '@xmldom/xmldom';
+import { parseWebdavAttachmentInventory } from '../../../packages/core/src/webdav-attachment-inventory';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { probeWebdavSyncCompatibility, webdavGetSyncDocument } from '@stride/core';
+
+vi.mock('../lib/app-log', () => ({
+    logWarn: vi.fn(),
+}));
+
+import { logWarn } from '../lib/app-log';
+import * as shim from './url-polyfill';
+
+const originalURL = globalThis.URL;
+const originalURLSearchParams = globalThis.URLSearchParams;
+const nodeRequire = createRequire(import.meta.url);
+const urlPolyfillModulePath = nodeRequire.resolve('./url-polyfill.js');
+
+const loadFreshUrlPolyfill = (): typeof shim => {
+    delete nodeRequire.cache[urlPolyfillModulePath];
+    return nodeRequire(urlPolyfillModulePath) as typeof shim;
+};
+
+const clearUrlPolyfillCache = () => {
+    delete nodeRequire.cache[urlPolyfillModulePath];
+};
+
+describe('URL Polyfill Shim', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        globalThis.URL = originalURL;
+        globalThis.URLSearchParams = originalURLSearchParams;
+        clearUrlPolyfillCache();
+    });
+
+    test('exports URL and URLSearchParams', () => {
+        expect(shim.URL).toBeDefined();
+        expect(shim.URLSearchParams).toBeDefined();
+    });
+
+    test('fallback resolves DAV references and keeps inventory confinement (#1342)', () => {
+        globalThis.URL = undefined as unknown as typeof URL;
+        const FallbackURL = loadFreshUrlPolyfill().URL as unknown as typeof URL;
+        const base = 'https://dav.example.test/remote.php/dav/files/account/stride/attachments/';
+        const path = '/remote.php/dav/files/account/stride/attachments/';
+        for (const href of [base, path, 'a.pdf', './a.pdf', '../attachments/a.pdf',
+            '//dav.example.test' + path, '?download=1', '#fragment', '',
+            '../../outside/', '%2e%2e/outside/', '/other/../folder/', 'folder/..']) {
+            const expected = new originalURL(href, base);
+            const actual = new FallbackURL(href, base);
+            expect([actual.href, actual.origin, actual.pathname, actual.search, actual.hash])
+                .toEqual([expected.href, expected.origin, expected.pathname, expected.search, expected.hash]);
+        }
+        const response = (href: string, collection = false) => `<d:response><d:href>${href}</d:href>`
+            + `<d:propstat><d:prop><d:resourcetype>${collection ? '<d:collection/>' : ''}</d:resourcetype>`
+            + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>';
+        const inventory = (child?: string) => '<d:multistatus xmlns:d="DAV:">'
+            + response(path, true) + (child ? response(child) : '') + '</d:multistatus>';
+        const parse = (xml: string) => parseWebdavAttachmentInventory(xml, base, source => ({
+            document: new DOMParser().parseFromString(source, 'application/xml') as unknown as Document,
+        }));
+        expect(parse(inventory())).toEqual([]);
+
+        expect(parse('<d:multistatus xmlns:d="DAV:">' + response(path.slice(0, -1), true)
+            + response(path + 'example.pdf') + '</d:multistatus>')).toEqual(['attachments/example.pdf']);
+        expect(parse(inventory(path + 'example.pdf'))).toEqual(['attachments/example.pdf']);
+        for (const child of ['example.pdf', base + 'example.pdf', './example.pdf',
+            'https://DAV.example.test:443' + path + 'example.pdf']) {
+            expect(parse(inventory(child))).toEqual(['attachments/example.pdf']);
+        }
+        for (const child of ['../outside.pdf', '%2e%2e/outside.pdf', '/elsewhere/example.pdf',
+            'https://other.example.test' + path + 'example.pdf',
+            '//other.example.test' + path + 'example.pdf', 'example.pdf?download=1', 'example.pdf#fragment']) {
+            expect(() => parse(inventory(child))).toThrow(/WebDAV attachment inventory/);
+        }
+    });
+
+    test('fallback accepts Synology mod_dav namespaces and root-relative audio paths (#1342)', () => {
+        const xml = readFileSync(fileURLToPath(new originalURL('./__fixtures__/synology-webdav-inventory.xml', import.meta.url).href), 'utf8');
+        globalThis.URL = undefined as unknown as typeof URL;
+        loadFreshUrlPolyfill();
+        expect(parseWebdavAttachmentInventory(xml,
+            'https://nas.example.test:5006/DataUser/__Stride/attachments/',
+            source => ({ document: new DOMParser().parseFromString(source, 'application/xml') as unknown as Document }),
+        )).toEqual([
+            'attachments/11111111-1111-4111-8111-111111111111.m4a',
+            'attachments/22222222-2222-4222-8222-222222222222.wav',
+        ]);
+    });
+
+    test('fallback URL resolves an absolute path against the bases expo-router uses', async () => {
+
+
+        vi.resetModules();
+        const OriginalURL = globalThis.URL;
+        // @ts-expect-error simulate a runtime without a native URL
+        globalThis.URL = undefined;
+        try {
+            const shimModule = loadFreshUrlPolyfill();
+            const FallbackURL = shimModule.URL as unknown as typeof URL;
+            expect(new FallbackURL('/focus', 'file:').pathname).toBe('/focus');
+            const resolved = new FallbackURL('/focus', 'exp://127.0.0.1:8081');
+            expect(resolved.pathname).toBe('/focus');
+            expect(resolved.href).toBe('exp://127.0.0.1:8081/focus');
+            expect(new FallbackURL('exp://127.0.0.1:8081/--/focus?x=1').pathname).toBe('/--/focus');
+        } finally {
+            globalThis.URL = OriginalURL;
+            vi.resetModules();
+        }
+    });
+
+    test('fallback search params read a value as WHATWG does: all after the first "=", and "+" as a space', () => {
+
+
+        const { URLSearchParams: WhatwgSearchParams } = nodeRequire('node:url') as typeof import('node:url');
+        const OriginalURL = globalThis.URL;
+        const OriginalSearchParams = globalThis.URLSearchParams;
+        // @ts-expect-error simulate a runtime without a native URL or URLSearchParams
+        globalThis.URL = undefined;
+        // @ts-expect-error same
+        globalThis.URLSearchParams = undefined;
+        try {
+            const shimModule = loadFreshUrlPolyfill();
+            const FallbackURL = shimModule.URL as unknown as typeof URL;
+            const FallbackSearchParams = shimModule.URLSearchParams as unknown as typeof URLSearchParams;
+            const query = 'title=a=b&note=Buy+milk+%2B+eggs&empty=&flag&x%20y=1+2&x+y=3';
+            const whatwg = new WhatwgSearchParams(query);
+            const fromUrl = new FallbackURL(`stride:///capture?${query}`).searchParams;
+            for (const key of ['title', 'note', 'empty', 'flag', 'x y']) expect([key, fromUrl.get(key)]).toEqual([key, whatwg.get(key)]);
+            expect([...new FallbackSearchParams(query).entries()]).toEqual([...whatwg.entries()]);
+        } finally {
+            globalThis.URL = OriginalURL;
+            globalThis.URLSearchParams = OriginalSearchParams;
+        }
+    });
+
+    test('does not mutate existing timer globals', async () => {
+        vi.resetModules();
+        const originalSetImmediate = (globalThis as any).setImmediate;
+        const originalClearImmediate = (globalThis as any).clearImmediate;
+        await import('./url-polyfill');
+        expect((globalThis as any).setImmediate).toBe(originalSetImmediate);
+        expect((globalThis as any).clearImmediate).toBe(originalClearImmediate);
+    });
+
+    test('shimmed URL has createObjectURL that is safe (mocked environment)', async () => {
+
+        vi.resetModules();
+
+
+        const OriginalURL = globalThis.URL;
+
+
+        // @ts-ignore - MockURL matching OriginalURL structure for tests
+        class MockURL extends OriginalURL {
+            // @ts-ignore - Intentionally removing static method to simulate Hermes
+            static createObjectURL = undefined;
+            // @ts-ignore - Intentionally removing static method to simulate Hermes
+            static revokeObjectURL = undefined;
+        }
+
+
+        globalThis.URL = MockURL as unknown as typeof URL;
+
+
+        const shimModule = await import('./url-polyfill');
+        shimModule.setupURLPolyfill();
+
+
+        expect(typeof globalThis.URL.createObjectURL).toBe('function');
+
+
+        const result = globalThis.URL.createObjectURL({} as any);
+        expect(result).toBe('');
+
+        const warnMock = vi.mocked(logWarn);
+        if (warnMock.mock.calls.length > 0) {
+            expect(warnMock).toHaveBeenCalledWith(
+                expect.stringContaining('not supported'),
+                expect.any(Object)
+            );
+        }
+
+
+        globalThis.URL = OriginalURL;
+    });
+
+    test('shimmed URL has revokeObjectURL', () => {
+        expect(typeof shim.URL.revokeObjectURL).toBe('function');
+
+        shim.URL.revokeObjectURL('some-url');
+    });
+
+    test('URLSearchParams basic functionality', () => {
+        const params = new shim.URLSearchParams!('foo=1&bar=2');
+        expect(params.get('foo')).toBe('1');
+        expect(params.get('bar')).toBe('2');
+        expect(params.has('foo')).toBe(true);
+        expect(params.has('baz')).toBe(false);
+    });
+
+    test('fallback URL exposes origin and host fields for the Expo location polyfill', async () => {
+
+
+        const OriginalURL = globalThis.URL;
+        try {
+            vi.resetModules();
+            globalThis.URL = undefined as unknown as typeof URL;
+            const fallbackModule = loadFreshUrlPolyfill();
+            const FallbackURL = fallbackModule.URL as unknown as typeof URL;
+            const bundle = new FallbackURL('http://127.0.0.1:8081/apps/mobile/index.bundle//&platform=android&dev=true');
+            expect(bundle.origin).toBe('http://127.0.0.1:8081');
+            expect(bundle.host).toBe('127.0.0.1:8081');
+            expect(bundle.hostname).toBe('127.0.0.1');
+            expect(bundle.port).toBe('8081');
+            expect(bundle.pathname).toBe('/apps/mobile/index.bundle//&platform=android&dev=true');
+            const dav = new FallbackURL('https://user:pw@dav.example.com/remote.php/dav/');
+            expect(dav.origin).toBe('https://dav.example.com');
+            expect(dav.hostname).toBe('dav.example.com');
+            expect(dav.port).toBe('');
+            expect(new FallbackURL('file:///focus').origin).toBe('null');
+            expect(new FallbackURL('stride:///focus').host).toBe('');
+        } finally {
+            globalThis.URL = OriginalURL;
+            vi.resetModules();
+        }
+    });
+
+    test('fallback URL keeps href writable for navigation libraries', async () => {
+        const OriginalURL = globalThis.URL;
+        const OriginalURLSearchParams = globalThis.URLSearchParams;
+
+        try {
+            vi.resetModules();
+            globalThis.URL = undefined as unknown as typeof URL;
+
+            const fallbackModule = loadFreshUrlPolyfill();
+            const routeUrl = new fallbackModule.URL!('stride:///focus');
+            routeUrl.href = 'stride:///inbox';
+
+            expect(routeUrl.toString()).toBe('stride:///inbox');
+        } finally {
+            globalThis.URL = OriginalURL;
+            globalThis.URLSearchParams = OriginalURLSearchParams;
+            vi.resetModules();
+        }
+    });
+
+    test('fallback URL keeps the WebDAV capability probe off data.json', async () => {
+        const OriginalURL = globalThis.URL;
+        const OriginalURLSearchParams = globalThis.URLSearchParams;
+
+        try {
+            vi.resetModules();
+            globalThis.URL = undefined as unknown as typeof URL;
+            loadFreshUrlPolyfill();
+
+            const documentUrl = 'https://example.com/dav/data.json';
+            const files = new Map<string, { bytes: Uint8Array; version: number }>();
+            const staleAfterDelete = new Map<string, { bytes: Uint8Array; version: number }>();
+            const responseBody = (bytes: Uint8Array): ArrayBuffer => {
+                const body = new ArrayBuffer(bytes.byteLength);
+                new Uint8Array(body).set(bytes);
+                return body;
+            };
+            const fetcherMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = String(input);
+                const method = init?.method ?? 'GET';
+                const headers = new Headers(init?.headers);
+                const current = files.get(url);
+
+                if (method === 'GET') {
+                    const stale = staleAfterDelete.get(url);
+                    if (stale) {
+                        staleAfterDelete.delete(url);
+                        return new Response(responseBody(stale.bytes), {
+                            status: 200,
+                            headers: { etag: `"v${stale.version}"` },
+                        });
+                    }
+                    if (!current) return new Response(null, { status: 404 });
+                    return new Response(responseBody(current.bytes), {
+                        status: 200,
+                        headers: { etag: `"v${current.version}"` },
+                    });
+                }
+
+                if (method === 'PUT') {
+                    if (current && headers.get('if-none-match') === '*') {
+                        return new Response(null, { status: 412 });
+                    }
+                    const ifMatch = headers.get('if-match');
+                    if (ifMatch && (!current || ifMatch !== `"v${current.version}"`)) {
+                        return new Response(null, { status: 412 });
+                    }
+                    const body = init?.body;
+                    if (!(body instanceof Uint8Array)) throw new Error('expected byte probe body');
+                    files.set(url, {
+                        bytes: new Uint8Array(body),
+                        version: (current?.version ?? 0) + 1,
+                    });
+                    return new Response(null, { status: current ? 204 : 201 });
+                }
+
+                if (method === 'DELETE') {
+                    const ifMatch = headers.get('if-match');
+                    if (!current || ifMatch !== `"v${current.version}"`) {
+                        return new Response(null, { status: 412 });
+                    }
+                    staleAfterDelete.set(url, current);
+                    files.delete(url);
+                    return new Response(null, { status: 204 });
+                }
+
+                throw new Error(`unexpected ${method}`);
+            });
+            const fetcher = fetcherMock as unknown as typeof fetch;
+
+            await probeWebdavSyncCompatibility(
+                documentUrl,
+                { fetcher },
+                { requireStrongEtag: true },
+            );
+
+            const mutationUrls = fetcherMock.mock.calls
+                .filter(([, init]) => init?.method === 'PUT' || init?.method === 'DELETE')
+                .map(([input]) => String(input));
+            expect(mutationUrls).not.toHaveLength(0);
+            expect(mutationUrls.every((url) => (
+                /^https:\/\/example\.com\/dav\/data\.json\.stride-etag-probe-[^?#]+$/.test(url)
+            ))).toBe(true);
+
+            await expect(webdavGetSyncDocument(documentUrl, { fetcher })).resolves.toEqual({
+                state: 'data',
+                data: null,
+                exists: false,
+                strongEtag: null,
+            });
+        } finally {
+            globalThis.URL = OriginalURL;
+            globalThis.URLSearchParams = OriginalURLSearchParams;
+            vi.resetModules();
+        }
+    });
+});

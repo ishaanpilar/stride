@@ -1,0 +1,30 @@
+<en-US>
+- Archive adds search, filters, sorting, grouping, and collapsible groups.
+- Calendar can show completed work, preserve feed colors, and split category feeds.
+- Merge Backup combines a backup with current data; auto-archive runs at launch.
+- SQLite keeps scratch data in memory on Android, preventing disk I/O write failures.
+</en-US>
+<de-DE>
+- Das Archiv bietet Suche, Filter, Sortierung, Gruppen und einklappbare Überschriften.
+- Der Kalender zeigt Erledigtes, übernimmt Feed-Farben und trennt Kategorien.
+- „Backup zusammenführen“ verbindet Sicherung und lokale Daten; Auto-Archiv läuft beim Start.
+- SQLite hält Hilfsdaten im Speicher und verhindert Android-Schreibfehler.
+</de-DE>
+<es-ES>
+- Archivo añade búsqueda, filtros, orden, grupos y encabezados plegables.
+- Calendario muestra tareas completadas, conserva colores y separa categorías.
+- Fusionar copia combina una copia con los datos actuales; el archivado automático se ejecuta al iniciar.
+- SQLite guarda datos temporales en memoria y evita errores de escritura en Android.
+</es-ES>
+<fr-FR>
+- Archive ajoute recherche, filtres, tri, groupes et en-têtes repliables.
+- Calendrier affiche les tâches finies, garde les couleurs et sépare les catégories.
+- Fusionner la sauvegarde combine sauvegarde et données locales; l’archivage auto s’exécute au démarrage.
+- SQLite garde ses données temporaires en mémoire et évite les erreurs d’écriture Android.
+</fr-FR>
+<zh-CN>
+- 归档新增搜索、筛选、排序、分组和可折叠标题。
+- 日历可显示已完成任务、保留订阅颜色并按类别拆分。
+- “合并备份”会把备份与当前数据合并；自动归档在启动时运行。
+- Android 上的 SQLite 临时数据改存内存，避免磁盘 I/O 写入失败。
+</zh-CN>

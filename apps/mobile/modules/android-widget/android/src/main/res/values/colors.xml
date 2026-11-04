@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+
+<resources>
+    <color name="stride_widget_background">#F8FAFC</color>
+    <color name="stride_widget_card">#FFFFFF</color>
+    <color name="stride_widget_text">#0F172A</color>
+    <color name="stride_widget_muted_text">#475569</color>
+    <color name="stride_widget_accent">#2563EB</color>
+    <color name="stride_widget_border">#CBD5E1</color>
+    <color name="stride_widget_warning">#D97706</color>
+    <color name="stride_widget_on_accent">#FFFFFF</color>
+</resources>

@@ -1,0 +1,15 @@
+<en-US>
+- Fixed a crash when cancelling the date picker.
+- Long task titles now stay left-aligned in edit and inbox views.
+- File attachments now sync more reliably between devices.
+</en-US>
+<zh-CN>
+- 修复了取消日期选择器导致的崩溃。
+- 长任务标题在编辑与收件箱处理中保持左对齐。
+- 文件附件设备间同步更可靠。
+</zh-CN>
+<es-ES>
+- Se corrigió un fallo al cancelar el selector de fecha.
+- Los títulos largos ahora se mantienen alineados a la izquierda.
+- Los archivos adjuntos se sincronizan de forma más fiable.
+</es-ES>

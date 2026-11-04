@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Entitlements for a local, ad-hoc signed Stride.app (bun run desktop:build:local).
+  Only entitlements that need no Apple provisioning profile are listed here:
+  iCloud/CloudKit, push and app groups would make macOS refuse to launch an
+  ad-hoc build, so iCloud sync is unavailable in this build (the CloudKit
+  bridge detects the missing entitlement and reports "unsupported").
+-->
+<dict>
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,48 @@
+services:
+
+
+  stride-cloud:
+    image: ghcr.io/ishaanpilar/stride-cloud:latest
+    build:
+      context: ..
+      dockerfile: docker/cloud/Dockerfile
+    container_name: stride-cloud
+    hostname: stride-cloud
+    restart: always
+    cpus: "1.0"
+    mem_limit: 512m
+    ports:
+      - 8787:8787
+    environment:
+
+
+      - STRIDE_CLOUD_AUTH_TOKENS=${STRIDE_CLOUD_AUTH_TOKENS:-}
+      - STRIDE_CLOUD_CORS_ORIGIN=${STRIDE_CLOUD_CORS_ORIGIN:?STRIDE_CLOUD_CORS_ORIGIN must be set}
+
+
+      - STRIDE_CLOUD_MAX_DATA_BODY_BYTES
+    volumes:
+      - ./data:/app/cloud_data
+
+
+  stride-app:
+    image: ghcr.io/ishaanpilar/stride-app:latest
+    build:
+      context: ..
+      dockerfile: docker/app/Dockerfile
+    container_name: stride-app
+    hostname: stride-app
+    restart: always
+    cpus: "1.0"
+    mem_limit: 512m
+
+
+    environment:
+
+
+      - STRIDE_PWA_ENABLED=${STRIDE_PWA_ENABLED:-true}
+    depends_on:
+      stride-cloud:
+        condition: service_healthy
+    ports:
+      - 5173:5173

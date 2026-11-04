@@ -1,0 +1,4 @@
+- Archive adds search, filters, sorting, grouping, and collapsible groups.
+- Calendar can show completed work, preserve feed colors, and split category feeds.
+- Merge Backup combines a backup with current data; auto-archive runs at launch.
+- SQLite keeps scratch data in memory on Android, preventing disk I/O write failures.

@@ -1,0 +1,790 @@
+import type { ReactNode } from 'react';
+import React from 'react';
+import { ActivityIndicator, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { translateWithFallback } from '@stride/core';
+
+import type { ThemeColors } from '@/hooks/use-theme-colors';
+import {
+  getSyncEncryptionDiagnosticsLines,
+  logSyncEncryptionDiagnosticsBlock,
+} from '@/lib/sync-encryption-state';
+import type { BackupAction } from './use-sync-settings-backup-actions';
+
+import { styles } from './settings.styles';
+
+type Translate = (key: string) => string;
+type SettingsTranslator = (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string;
+
+function renderDecorativeActivityIndicator(color: string) {
+  return (
+    <ActivityIndicator
+      size="small"
+      color={color}
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    />
+  );
+}
+
+type SyncLastStatusCardProps = {
+  conflictCount: number;
+  conflictIds: string[];
+  conflictLines: string[];
+  historyContent?: ReactNode;
+  lastSyncAt?: string;
+  lastSyncError?: string;
+  lastSyncStatus?: 'idle' | 'syncing' | 'success' | 'error' | 'conflict';
+  maxClockSkewLabel?: string;
+  showLastSyncStats: boolean;
+  t: Translate;
+  tc: ThemeColors;
+  timestampAdjustments: number;
+};
+
+export function SyncLastStatusCard({
+  conflictCount,
+  conflictIds,
+  conflictLines,
+  historyContent,
+  lastSyncAt,
+  lastSyncError,
+  lastSyncStatus,
+  maxClockSkewLabel,
+  showLastSyncStats,
+  t,
+  tc,
+  timestampAdjustments,
+}: SyncLastStatusCardProps) {
+  return (
+    <View style={[styles.settingCard, { backgroundColor: tc.cardBg, marginTop: 12 }]}>
+      <View style={styles.settingRow}>
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.lastSync')}</Text>
+          <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+            {lastSyncAt ? new Date(lastSyncAt).toLocaleString() : t('settings.lastSyncNever')}
+            {lastSyncStatus === 'error' && t('settings.syncStatusFailedSuffix')}
+            {lastSyncStatus === 'conflict' && t('settings.syncStatusConflictsSuffix')}
+          </Text>
+          {showLastSyncStats && (
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.lastSyncConflicts')}: {conflictCount}
+            </Text>
+          )}
+          {showLastSyncStats && maxClockSkewLabel && (
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.lastSyncSkew')}: {maxClockSkewLabel}
+            </Text>
+          )}
+          {showLastSyncStats && timestampAdjustments > 0 && (
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.lastSyncAdjusted')}: {timestampAdjustments}
+            </Text>
+          )}
+          {showLastSyncStats && conflictLines.map((line, index) => (
+            <Text key={`${index}-${line}`} style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {line}
+            </Text>
+          ))}
+          {showLastSyncStats && conflictLines.length === 0 && conflictIds.length > 0 && (
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.lastSyncConflictIds')}: {conflictIds.join(', ')}
+            </Text>
+          )}
+          {lastSyncStatus === 'error' && lastSyncError && (
+            <Text style={[styles.settingDescription, { color: tc.danger }]}>{lastSyncError}</Text>
+          )}
+          {historyContent}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+type SyncBackupSectionProps = {
+  backupAction: BackupAction;
+  handleAddGettingStartedContent: () => void;
+  handleBackup: () => void;
+  handleExportCsv: () => void;
+  handleExportTaskNotes: () => void;
+  handleImportDgt: () => void;
+  handleImportStrideCsv: () => void;
+  handleImportOmniFocus: () => void;
+  handleImportTickTick: () => void;
+  handleImportTodoist: () => void;
+  handleMergeBackup: () => void;
+  handleRestoreBackup: () => void;
+
+
+  importGuide?: ReactNode;
+  isBackupBusy: boolean;
+  isGettingStartedDisabled: boolean;
+  isGettingStartedBusy: boolean;
+  isSyncing: boolean;
+  tr: SettingsTranslator;
+  t: Translate;
+  tc: ThemeColors;
+};
+
+
+export function SyncBackupSection({
+  backupAction,
+  handleAddGettingStartedContent,
+  handleBackup,
+  handleExportCsv,
+  handleExportTaskNotes,
+  handleImportDgt,
+  handleImportStrideCsv,
+  handleImportOmniFocus,
+  handleImportTickTick,
+  handleImportTodoist,
+  handleMergeBackup,
+  handleRestoreBackup,
+  importGuide,
+  isBackupBusy,
+  isGettingStartedDisabled,
+  isGettingStartedBusy,
+  isSyncing,
+  tr,
+  t,
+  tc,
+}: SyncBackupSectionProps) {
+  const [backupOpen, setBackupOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
+
+  const dataRowsDisabled = isSyncing || isBackupBusy || isGettingStartedBusy;
+
+  return (
+    <>
+      <View style={[styles.settingCard, { backgroundColor: tc.cardBg, marginTop: 24 }]}>
+        <TouchableOpacity
+          style={[styles.gtdNavigationRow, { borderTopWidth: 0 }]}
+          onPress={() => setBackupOpen((prev) => !prev)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: backupOpen }}
+          activeOpacity={0.75}
+          testID="backup-disclosure"
+        >
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.backup')}</Text>
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.backupDesc')}
+            </Text>
+          </View>
+          <Ionicons
+            name={backupOpen ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={tc.secondaryText}
+            accessible={false}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          />
+        </TouchableOpacity>
+        {backupOpen && (
+        <>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleBackup}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.exportBackup')}
+            accessibilityHint={t('settings.saveToSyncFolder')}
+            accessibilityState={{ busy: backupAction === 'export', disabled: dataRowsDisabled }}
+            testID="data-transfer-export"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: '#3B82F6' }]}>{t('settings.exportBackup')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.saveToSyncFolder')}</Text>
+            </View>
+            {backupAction === 'export' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleExportCsv}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.exportCsv')}
+            accessibilityHint={t('settings.exportCsvDesc')}
+            accessibilityState={{ busy: backupAction === 'export:csv', disabled: dataRowsDisabled }}
+            testID="data-transfer-export-csv"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: '#3B82F6' }]}>{t('settings.exportCsv')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.exportCsvDesc')}</Text>
+            </View>
+            {backupAction === 'export:csv' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleExportTaskNotes}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.exportTaskNotes')}
+            accessibilityHint={t('settings.exportTaskNotesDesc')}
+            accessibilityState={{ busy: backupAction === 'export:tasknotes', disabled: dataRowsDisabled }}
+            testID="data-transfer-export-tasknotes"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: '#3B82F6' }]}>{t('settings.exportTaskNotes')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.exportTaskNotesDesc')}</Text>
+            </View>
+            {backupAction === 'export:tasknotes' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleRestoreBackup}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.restoreBackup')}
+            accessibilityHint={tr('settings.syncMobile.replaceLocalDataFromABackupJsonFile')}
+            accessibilityState={{ busy: backupAction === 'restore', disabled: dataRowsDisabled }}
+            testID="data-transfer-restore"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.restoreBackup')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.replaceLocalDataFromABackupJsonFile')}
+              </Text>
+            </View>
+            {backupAction === 'restore' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleMergeBackup}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.mergeBackup')}
+            accessibilityHint={t('settings.mergeBackupDesc')}
+            accessibilityState={{ busy: backupAction === 'merge', disabled: dataRowsDisabled }}
+            testID="data-transfer-merge"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{t('settings.mergeBackup')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {t('settings.mergeBackupDesc')}
+              </Text>
+            </View>
+            {backupAction === 'merge' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleAddGettingStartedContent}
+            disabled={isGettingStartedDisabled || isSyncing || isBackupBusy}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.gettingStartedContentAction')}
+            accessibilityHint={t('settings.gettingStartedContentDesc')}
+            accessibilityState={{
+              busy: isGettingStartedBusy,
+              disabled: isGettingStartedDisabled || isSyncing || isBackupBusy,
+            }}
+            testID="add-getting-started-content"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{t('settings.gettingStartedContentAction')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.gettingStartedContentDesc')}</Text>
+            </View>
+            {isGettingStartedBusy && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+        </>
+        )}
+      </View>
+
+      <View style={[styles.settingCard, { backgroundColor: tc.cardBg, marginTop: 16 }]}>
+        <TouchableOpacity
+          style={[styles.gtdNavigationRow, { borderTopWidth: 0 }]}
+          onPress={() => setImportOpen((prev) => !prev)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: importOpen }}
+          activeOpacity={0.75}
+          testID="import-disclosure"
+        >
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.importData')}</Text>
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+              {t('settings.importDataDesc')}
+            </Text>
+          </View>
+          <Ionicons
+            name={importOpen ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={tc.secondaryText}
+            accessible={false}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          />
+        </TouchableOpacity>
+        {importOpen && (
+        <>
+          {importGuide ? (
+            <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+              {importGuide}
+            </View>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleImportTodoist}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.importFromTodoist')}
+            accessibilityHint={tr('settings.syncMobile.importTodoistCsvOrZipExportsIntoStrideProjects')}
+            accessibilityState={{ busy: backupAction === 'import:todoist', disabled: dataRowsDisabled }}
+            testID="data-transfer-import-todoist"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.importFromTodoist')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.importTodoistCsvOrZipExportsIntoStrideProjects')}
+              </Text>
+            </View>
+            {backupAction === 'import:todoist' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleImportTickTick}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.importFromTicktick')}
+            accessibilityHint={tr('settings.syncMobile.importTicktickCsvOrZipBackupsIntoStrideAreas')}
+            accessibilityState={{ busy: backupAction === 'import:ticktick', disabled: dataRowsDisabled }}
+            testID="data-transfer-import-ticktick"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.importFromTicktick')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.importTicktickCsvOrZipBackupsIntoStrideAreas')}
+              </Text>
+            </View>
+            {backupAction === 'import:ticktick' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleImportDgt}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.importFromDgtGtd')}
+            accessibilityHint={tr('settings.syncMobile.importDgtGtdJsonOrZipExportsIntoStrideAreas')}
+            accessibilityState={{ busy: backupAction === 'import:dgt', disabled: dataRowsDisabled }}
+            testID="data-transfer-import-dgt"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.importFromDgtGtd')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.importDgtGtdJsonOrZipExportsIntoStrideAreas')}
+              </Text>
+            </View>
+            {backupAction === 'import:dgt' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleImportOmniFocus}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.importFromOmnifocus')}
+            accessibilityHint={tr('settings.syncMobile.importOmnifocusCsvJsonOrZipExportsIntoStrideProjects')}
+            accessibilityState={{ busy: backupAction === 'import:omnifocus', disabled: dataRowsDisabled }}
+            testID="data-transfer-import-omnifocus"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.importFromOmnifocus')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.importOmnifocusCsvJsonOrZipExportsIntoStrideProjects')}
+              </Text>
+            </View>
+            {backupAction === 'import:omnifocus' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+            onPress={handleImportStrideCsv}
+            disabled={dataRowsDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={tr('settings.syncMobile.importFromStrideCsv')}
+            accessibilityHint={tr('settings.syncMobile.importStrideCsvFileIntoStrideAreasProjectsAndTasks')}
+            accessibilityState={{ busy: backupAction === 'import:stride-csv', disabled: dataRowsDisabled }}
+            testID="data-transfer-import-stride-csv"
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.tint }]}>{tr('settings.syncMobile.importFromStrideCsv')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {tr('settings.syncMobile.importStrideCsvFileIntoStrideAreasProjectsAndTasks')}
+              </Text>
+            </View>
+            {backupAction === 'import:stride-csv' && renderDecorativeActivityIndicator(tc.tint)}
+          </TouchableOpacity>
+        </>
+        )}
+      </View>
+    </>
+  );
+}
+
+type RecoverySnapshotsCardProps = {
+  backupAction: BackupAction;
+  formatRecoverySnapshotLabel: (fileName: string) => string;
+  handleRestoreRecoverySnapshot: (snapshotName: string) => void;
+  isBackupBusy: boolean;
+  isLoadingRecoverySnapshots: boolean;
+  isSyncing: boolean;
+  tr: SettingsTranslator;
+  recoverySnapshots: string[];
+  recoverySnapshotsOpen: boolean;
+  setRecoverySnapshotsOpen: (open: boolean) => void;
+  t: Translate;
+  tc: ThemeColors;
+};
+
+export function RecoverySnapshotsCard({
+  backupAction,
+  formatRecoverySnapshotLabel,
+  handleRestoreRecoverySnapshot,
+  isBackupBusy,
+  isLoadingRecoverySnapshots,
+  isSyncing,
+  tr,
+  recoverySnapshots,
+  recoverySnapshotsOpen,
+  setRecoverySnapshotsOpen,
+  t,
+  tc,
+}: RecoverySnapshotsCardProps) {
+  return (
+    <View style={[styles.settingCard, { backgroundColor: tc.cardBg, marginTop: 16 }]}>
+      <TouchableOpacity
+        style={styles.settingRow}
+        onPress={() => setRecoverySnapshotsOpen(!recoverySnapshotsOpen)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: recoverySnapshotsOpen }}
+        testID="recovery-snapshots-disclosure"
+      >
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.recoverySnapshots')}</Text>
+          <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+            {tr('settings.syncMobile.savedAutomaticallyBeforeRestoreAndImportOperations')}
+          </Text>
+        </View>
+        <Text
+          style={[styles.chevron, { color: tc.secondaryText }]}
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          testID="recovery-snapshots-chevron"
+        >
+          {recoverySnapshotsOpen ? '▾' : '▸'}
+        </Text>
+      </TouchableOpacity>
+      {recoverySnapshotsOpen && (
+        <>
+          {isLoadingRecoverySnapshots && (
+            <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {t('settings.recoverySnapshotsLoading')}
+              </Text>
+            </View>
+          )}
+          {!isLoadingRecoverySnapshots && recoverySnapshots.length === 0 && (
+            <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
+                {t('settings.recoverySnapshotsEmpty')}
+              </Text>
+            </View>
+          )}
+          {!isLoadingRecoverySnapshots &&
+            recoverySnapshots.map((snapshot) => {
+              const displayLabel = formatRecoverySnapshotLabel(snapshot);
+              const accessibilityName = displayLabel === snapshot
+                ? snapshot
+                : `${displayLabel} (${snapshot})`;
+              return (
+              <TouchableOpacity
+                key={snapshot}
+                style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+                onPress={() => handleRestoreRecoverySnapshot(snapshot)}
+                disabled={isSyncing || isBackupBusy}
+                accessibilityRole="button"
+                accessibilityLabel={tr('settings.recoverySnapshotsRestoreNamed', {
+                  snapshotName: accessibilityName,
+                })}
+                accessibilityHint={tr('settings.recoverySnapshotsConfirm', { snapshot })}
+                accessibilityState={{
+                  busy: backupAction === `snapshot:${snapshot}`,
+                  disabled: isSyncing || isBackupBusy,
+                }}
+                testID={`recovery-snapshot-${snapshot}`}
+              >
+                <View style={styles.settingInfo}>
+                  <Text style={[styles.settingLabel, { color: tc.text }]} numberOfLines={1}>
+                    {displayLabel}
+                  </Text>
+                  <Text style={[styles.settingDescription, { color: tc.secondaryText }]} numberOfLines={1}>
+                    {snapshot}
+                  </Text>
+                </View>
+                {backupAction === `snapshot:${snapshot}` ? (
+                  renderDecorativeActivityIndicator(tc.tint)
+                ) : (
+                  <Text style={[styles.settingLabel, { color: tc.tint }]}>{t('settings.recoverySnapshotsRestore')}</Text>
+                )}
+              </TouchableOpacity>
+              );
+            })}
+        </>
+      )}
+    </View>
+  );
+}
+
+type SyncPreferencesCardProps = {
+  syncAiEnabled: boolean;
+  syncAppearanceEnabled: boolean;
+  syncExternalCalendarsEnabled: boolean;
+  syncGtdEnabled: boolean;
+  syncLanguageEnabled: boolean;
+  syncSavedFiltersEnabled: boolean;
+  syncOptionsOpen: boolean;
+  t: Translate;
+  tc: ThemeColors;
+  toggleSyncOptionsOpen: () => void;
+  updateSyncPreferences: (partial: { ai?: boolean; appearance?: boolean; externalCalendars?: boolean; gtd?: boolean; language?: boolean; savedFilters?: boolean }) => void;
+};
+
+export function SyncPreferencesCard({
+  syncAiEnabled,
+  syncAppearanceEnabled,
+  syncExternalCalendarsEnabled,
+  syncGtdEnabled,
+  syncLanguageEnabled,
+  syncSavedFiltersEnabled,
+  syncOptionsOpen,
+  t,
+  tc,
+  toggleSyncOptionsOpen,
+  updateSyncPreferences,
+}: SyncPreferencesCardProps) {
+  return (
+    <View style={[styles.settingCard, { backgroundColor: tc.cardBg, marginTop: 16 }]}>
+      <TouchableOpacity
+        style={styles.settingRow}
+        onPress={toggleSyncOptionsOpen}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: syncOptionsOpen }}
+        testID="sync-preferences-disclosure"
+      >
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferences')}</Text>
+          <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.syncPreferencesDesc')}</Text>
+        </View>
+        <Text
+          style={[styles.chevron, { color: tc.secondaryText }]}
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          testID="sync-preferences-chevron"
+        >
+          {syncOptionsOpen ? '▾' : '▸'}
+        </Text>
+      </TouchableOpacity>
+      {syncOptionsOpen && (
+        <>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferenceAppearance')}</Text>
+            </View>
+            <Switch
+              value={syncAppearanceEnabled}
+              onValueChange={(value) => updateSyncPreferences({ appearance: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferenceLanguage')}</Text>
+            </View>
+            <Switch
+              value={syncLanguageEnabled}
+              onValueChange={(value) => updateSyncPreferences({ language: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferenceGtd')}</Text>
+            </View>
+            <Switch
+              value={syncGtdEnabled}
+              onValueChange={(value) => updateSyncPreferences({ gtd: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>
+                {translateWithFallback(t, 'settings.syncPreferenceSavedFilters', 'Saved filters')}
+              </Text>
+            </View>
+            <Switch
+              value={syncSavedFiltersEnabled}
+              onValueChange={(value) => updateSyncPreferences({ savedFilters: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferenceExternalCalendars')}</Text>
+            </View>
+            <Switch
+              value={syncExternalCalendarsEnabled}
+              onValueChange={(value) => updateSyncPreferences({ externalCalendars: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncPreferenceAi')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.syncPreferenceAiHint')}</Text>
+            </View>
+            <Switch
+              value={syncAiEnabled}
+              onValueChange={(value) => updateSyncPreferences({ ai: value })}
+              trackColor={{ false: '#767577', true: '#3B82F6' }}
+            />
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+type SyncDiagnosticsCardProps = {
+  analyticsHeartbeatAvailable: boolean;
+  analyticsHeartbeatOptedOut: boolean;
+  handleClearLog: () => void;
+  handleShareLog: () => void;
+  loggingEnabled: boolean;
+  toggleAnalyticsHeartbeatOptOut: (value: boolean) => void;
+  t: Translate;
+  tc: ThemeColors;
+  toggleDebugLogging: (value: boolean) => void;
+};
+
+
+function SyncEncryptionDiagnosticsBlock({ t, tc }: { t: Translate; tc: ThemeColors }) {
+  const [lines, setLines] = React.useState<string[] | null>(null);
+  const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const next = await getSyncEncryptionDiagnosticsLines().catch(() => null);
+      if (!cancelled) setLines(next);
+
+
+      await logSyncEncryptionDiagnosticsBlock().catch(() => undefined);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!lines) return null;
+
+
+  return (
+    <>
+      <TouchableOpacity
+        style={[styles.gtdNavigationRow, { borderTopWidth: 1, borderTopColor: tc.border }]}
+        onPress={() => setOpen((prev) => !prev)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        activeOpacity={0.75}
+        testID="sync-encryption-diagnostics-disclosure"
+      >
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.syncEncryption')}</Text>
+        </View>
+        <Ionicons
+          name={open ? 'chevron-up' : 'chevron-down'}
+          size={18}
+          color={tc.secondaryText}
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        />
+      </TouchableOpacity>
+      {open && (
+        <View style={styles.settingRow}>
+          <View style={styles.settingInfo}>
+            {lines.map((line) => (
+              <Text
+                key={line}
+                selectable
+                style={[styles.settingDescription, { color: tc.secondaryText, fontFamily: 'monospace' }]}
+              >
+                {line}
+              </Text>
+            ))}
+          </View>
+        </View>
+      )}
+    </>
+  );
+}
+
+export function SyncDiagnosticsCard({
+  analyticsHeartbeatAvailable,
+  analyticsHeartbeatOptedOut,
+  handleClearLog,
+  handleShareLog,
+  loggingEnabled,
+  toggleAnalyticsHeartbeatOptOut,
+  t,
+  tc,
+  toggleDebugLogging,
+}: SyncDiagnosticsCardProps) {
+  return (
+    <>
+      <Text style={[styles.sectionTitle, { color: tc.text, marginTop: 24 }]}>{t('settings.diagnostics')}</Text>
+      <View style={[styles.settingCard, { backgroundColor: tc.cardBg }]}>
+        {analyticsHeartbeatAvailable && (
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.analyticsHeartbeat')}</Text>
+              <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.analyticsHeartbeatDesc')}</Text>
+            </View>
+            <Switch
+              value={analyticsHeartbeatOptedOut}
+              onValueChange={toggleAnalyticsHeartbeatOptOut}
+              trackColor={{ false: '#767577', true: '#71717A' }}
+              thumbColor="#F4F4F5"
+            />
+          </View>
+        )}
+        <SyncEncryptionDiagnosticsBlock t={t} tc={tc} />
+        <View style={[
+          styles.settingRow,
+          { borderTopWidth: 1, borderTopColor: tc.border },
+        ]}>
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.debugLogging')}</Text>
+            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.debugLoggingDesc')}</Text>
+          </View>
+          <Switch value={loggingEnabled} onValueChange={toggleDebugLogging} trackColor={{ false: '#767577', true: '#3B82F6' }} />
+        </View>
+        {loggingEnabled && (
+          <>
+            <TouchableOpacity style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]} onPress={handleShareLog}>
+              <View style={styles.settingInfo}>
+                <Text style={[styles.settingLabel, { color: tc.tint }]}>{t('settings.shareLog')}</Text>
+                <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{t('settings.logFile')}</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]} onPress={handleClearLog}>
+              <View style={styles.settingInfo}>
+                <Text style={[styles.settingLabel, { color: tc.secondaryText }]}>{t('settings.clearLog')}</Text>
+              </View>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    </>
+  );
+}

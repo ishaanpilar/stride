@@ -1,0 +1,5 @@
+- Optionale Zeiterfassung: verknuepfte Pomodoro-Sitzungen zaehlen Minuten zu einem synchronisierten Feld.
+- Undo ersetzt Loesch- und Archivbestaetigungen; die Kalenderwoche folgt deiner Region.
+- Erfassen mit %Person-Token, Dateien in die Erfassung teilen, dauerhafte Schnellerfassungs-Benachrichtigung.
+- Schnellerer Sync und fluessigere Listen bei grossen Bibliotheken; Checklisten unabhaengig von Notizen.
+- Klarere Sync-Konfliktberichte und neuer Schutz vor Datenverlust.

@@ -1,0 +1,5 @@
+- Registro de tiempo opcional: las sesiones Pomodoro vinculadas suman minutos a un campo sincronizado.
+- Deshacer sustituye las confirmaciones de eliminar y archivar; la semana sigue tu region.
+- Captura con el token %persona, comparte archivos y fija una notificacion de captura rapida.
+- Sincronizacion mas rapida y listas mas fluidas en bibliotecas grandes; listas de verificacion separadas de las notas.
+- Informes de conflictos mas claros y nuevas protecciones contra perdida de datos.

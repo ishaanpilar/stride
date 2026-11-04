@@ -1,0 +1,483 @@
+import {
+    buildSaveSnapshot,
+    computeStableValueFingerprint,
+    type AppData,
+    SQLITE_SCHEMA_VERSION,
+    type StorageAdapter,
+    type Task,
+    type TaskQueryOptions,
+    useTaskStore,
+} from '@stride/core';
+import { invokeNative } from './tauri-invoke';
+import { logInfo, logWarn } from './app-log';
+import { reportError } from './report-error';
+import { markLocalSqliteWrite, markLocalWrite } from './local-data-watcher';
+import {
+    advanceSaveProvenance,
+    buildChangedEntityBaseline,
+    rebaseQueuedSettings,
+} from './storage-save-baseline';
+
+const STORAGE_SCHEMA_VERSION_KEY = 'stride-storage-schema-version';
+let storageInitLogged = false;
+type SaveQueueOutcome = {
+    canonical: AppData | null;
+    confirmedBefore: AppData | null;
+    provenance: AppData | null;
+    failed: boolean;
+    error?: unknown;
+};
+type SaveOperationResult = {
+    canonical: AppData | null;
+    attempted: AppData | null;
+};
+type NativeTaskSaveResult = {
+    committed: true;
+    canonical: AppData | null;
+    canonicalReloadRequired: boolean;
+};
+let saveQueue: Promise<SaveQueueOutcome> = Promise.resolve({
+    canonical: null,
+    confirmedBefore: null,
+    provenance: null,
+    failed: false,
+});
+let pendingSaveCount = 0;
+let lastSaveFailed = false;
+let lastObservedData: AppData | null = null;
+let lastPersistedData: AppData | null = null;
+let saveVersion = 0;
+let pendingCanonicalReconciliationCleanup: (() => void) | null = null;
+
+export type DesktopSaveStatus = {
+    pending: number;
+    generation: number;
+    failed: boolean;
+    reconciliationPending: boolean;
+};
+
+
+export const getDesktopSaveStatus = (): DesktopSaveStatus => ({
+    pending: pendingSaveCount,
+    generation: saveVersion,
+    failed: lastSaveFailed,
+    reconciliationPending: pendingCanonicalReconciliationCleanup !== null,
+});
+
+
+export async function waitForDesktopStorageIdleSnapshot(timeoutMs: number): Promise<DesktopSaveStatus | null> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        const status = getDesktopSaveStatus();
+        if (status.pending === 0 && !status.reconciliationPending) return status;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    return null;
+}
+
+export async function waitForDesktopStorageIdle(timeoutMs: number): Promise<boolean> {
+    return (await waitForDesktopStorageIdleSnapshot(timeoutMs)) !== null;
+}
+
+const beginSaveGeneration = (): number => {
+    const cleanup = pendingCanonicalReconciliationCleanup;
+    pendingCanonicalReconciliationCleanup = null;
+    cleanup?.();
+    saveVersion += 1;
+    return saveVersion;
+};
+
+const scheduleCanonicalReconciliation = (
+    attempted: AppData | null,
+    canonical: AppData | null,
+    attemptedSaveVersion: number,
+): void => {
+    if (!attempted) return;
+    const attemptedFingerprint = computeStableValueFingerprint(attempted);
+    if (canonical && attemptedFingerprint === computeStableValueFingerprint(canonical)) return;
+    if (saveVersion !== attemptedSaveVersion) return;
+
+
+    let initialTimer: ReturnType<typeof setTimeout> | null = null;
+    let unsubscribe: (() => void) | null = null;
+    const cleanup = () => {
+        if (initialTimer !== null) clearTimeout(initialTimer);
+        initialTimer = null;
+        unsubscribe?.();
+        unsubscribe = null;
+        if (pendingCanonicalReconciliationCleanup === cleanup) {
+            pendingCanonicalReconciliationCleanup = null;
+        }
+    };
+    pendingCanonicalReconciliationCleanup?.();
+    pendingCanonicalReconciliationCleanup = cleanup;
+
+    initialTimer = setTimeout(() => {
+        initialTimer = null;
+        const reconcileIfReady = (): 'finished' | 'waiting' => {
+            if (saveVersion !== attemptedSaveVersion) return 'finished';
+            const state = useTaskStore.getState();
+            let currentFingerprint: string;
+            try {
+                currentFingerprint = computeStableValueFingerprint(buildSaveSnapshot(state));
+            } catch {
+                return 'finished';
+            }
+            if (currentFingerprint !== attemptedFingerprint) return 'finished';
+            if (state.editLockCount > 0) return 'waiting';
+
+
+            cleanup();
+            const options = canonical
+                ? { silent: true, preloadedData: canonical }
+                : { silent: true };
+            Promise.resolve(state.fetchData(options)).catch((error) => {
+                reportError('canonical storage reconciliation failure', error, {
+                    category: 'storage',
+                    scope: 'storage',
+                });
+            });
+            return 'finished';
+        };
+
+        if (reconcileIfReady() === 'finished') {
+            cleanup();
+            return;
+        }
+        unsubscribe = useTaskStore.subscribe(() => {
+            if (reconcileIfReady() === 'finished') cleanup();
+        });
+
+
+        if (reconcileIfReady() === 'finished') cleanup();
+    }, 0);
+};
+
+
+const SAVE_STUCK_WARNING_MS = 15_000;
+
+const buildStuckSaveMessage = (label: string): string => (
+    `${label} has not completed after ${SAVE_STUCK_WARNING_MS / 1000}s. `
+    + 'Recent changes may not be saved yet.'
+);
+
+const setStorageWarning = (message: string | null) => {
+    try {
+        useTaskStore.getState().setError(message);
+    } catch {
+
+    }
+};
+
+
+const withStuckSaveWarning = async <T>(command: string, label: string, run: () => Promise<T>): Promise<T> => {
+    let stuckMessage: string | null = null;
+    const stuckTimer = setTimeout(() => {
+        stuckMessage = buildStuckSaveMessage(label);
+        void logWarn(`${command} invoke has not completed`, {
+            scope: 'storage',
+            extra: { thresholdMs: SAVE_STUCK_WARNING_MS },
+        });
+        setStorageWarning(stuckMessage);
+    }, SAVE_STUCK_WARNING_MS);
+    try {
+        return await run();
+    } finally {
+        clearTimeout(stuckTimer);
+
+
+        if (stuckMessage) {
+            try {
+                if (useTaskStore.getState().error === stuckMessage) {
+                    setStorageWarning(null);
+                }
+            } catch {
+
+            }
+        }
+    }
+};
+
+const enqueueSave = (
+    operation: (
+        predecessor: SaveQueueOutcome | null,
+        recordPersisted: (result: SaveOperationResult) => void,
+    ) => Promise<SaveOperationResult>,
+): Promise<AppData | null> => {
+    const predecessor: Promise<SaveQueueOutcome | null> = pendingSaveCount > 0
+        ? saveQueue
+        : Promise.resolve(null);
+    const confirmedAtEnqueue = lastPersistedData;
+    pendingSaveCount += 1;
+    const outcome = predecessor.then(async (previous): Promise<SaveQueueOutcome> => {
+        const confirmedBefore = previous ? previous.confirmedBefore : confirmedAtEnqueue;
+        const provenanceBefore = previous ? previous.provenance : confirmedAtEnqueue;
+        const progress: { persisted: SaveOperationResult | null } = { persisted: null };
+        try {
+            const result = await operation(previous, (persisted) => {
+                progress.persisted = persisted;
+            });
+            return {
+                canonical: result.canonical,
+                confirmedBefore,
+                provenance: provenanceBefore && result.attempted && result.canonical
+                    ? advanceSaveProvenance(provenanceBefore, result.attempted, result.canonical)
+                    : provenanceBefore,
+                failed: false,
+            };
+        } catch (error) {
+            const persistedResult = progress.persisted;
+            return {
+                canonical: null,
+                confirmedBefore,
+                provenance: provenanceBefore && persistedResult?.attempted && persistedResult.canonical
+                    ? advanceSaveProvenance(
+                        provenanceBefore,
+                        persistedResult.attempted,
+                        persistedResult.canonical,
+                    )
+                    : provenanceBefore,
+                failed: true,
+                error,
+            };
+        }
+    });
+    saveQueue = outcome;
+    return outcome.then((result) => {
+        pendingSaveCount -= 1;
+        lastSaveFailed = result.failed;
+        if (result.failed) throw result.error;
+        return result.canonical;
+    });
+};
+
+const invokeWithError = async <T>(
+    action: string,
+    command: string,
+    args?: Record<string, unknown>
+): Promise<T> => {
+    try {
+        return await invokeNative<T>(command, args);
+    } catch (error) {
+        reportError(`Failed to ${action}`, error, { category: 'storage', scope: 'storage' });
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to ${action}: ${detail}`);
+    }
+};
+
+const logStorageInitIfNeeded = () => {
+    if (storageInitLogged) return;
+    storageInitLogged = true;
+    const schemaVersion = String(SQLITE_SCHEMA_VERSION);
+    try {
+        const previousSchemaVersion = localStorage.getItem(STORAGE_SCHEMA_VERSION_KEY);
+        if (previousSchemaVersion && previousSchemaVersion !== schemaVersion) {
+            void logInfo('Schema migration', {
+                scope: 'storage',
+                extra: { from: previousSchemaVersion, to: schemaVersion },
+            });
+        }
+        localStorage.setItem(STORAGE_SCHEMA_VERSION_KEY, schemaVersion);
+    } catch (error) {
+
+        void error;
+    }
+    void logInfo('Storage init complete', {
+        scope: 'storage',
+        extra: {
+            storageType: 'sqlite',
+            schemaVersion,
+        },
+    });
+};
+
+export const tauriStorage: StorageAdapter = {
+    getData: async (): Promise<AppData> => {
+        try {
+            const data = await invokeNative<AppData>('get_data');
+            lastObservedData = data;
+            lastPersistedData = data;
+            logStorageInitIfNeeded();
+            return data;
+        } catch (error) {
+            try {
+                const data = await invokeNative<AppData>('read_data_json');
+                lastObservedData = data;
+                lastPersistedData = data;
+                void logWarn('getData fallback triggered', {
+                    scope: 'storage',
+                    extra: {
+                        fallback: 'data_json',
+                        error: error instanceof Error ? error.message : String(error),
+                    },
+                });
+                logStorageInitIfNeeded();
+                return data;
+            } catch {
+                reportError('getData failure', error, { category: 'storage', scope: 'storage' });
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Failed to load data: ${detail}`);
+            }
+        }
+    },
+    saveData: async (data: AppData): Promise<AppData> => {
+
+
+        const observedBeforeSave = lastObservedData;
+        const baselineEntities = observedBeforeSave
+            ? buildChangedEntityBaseline(observedBeforeSave, data)
+            : undefined;
+        lastObservedData = data;
+        const queuedSaveVersion = beginSaveGeneration();
+        const canonical = await enqueueSave((predecessor, recordPersisted) => withStuckSaveWarning('save_data', 'Save', async () => {
+            const provenance = predecessor?.provenance;
+            const effectiveData = predecessor?.confirmedBefore && provenance
+                ? {
+                    ...data,
+                    settings: rebaseQueuedSettings(
+                        predecessor.confirmedBefore.settings,
+                        data.settings,
+                        provenance.settings,
+                    ),
+                }
+                : data;
+            markLocalWrite(effectiveData);
+            markLocalSqliteWrite();
+            try {
+
+
+                const effectiveBaseline = provenance
+                    ? buildChangedEntityBaseline(provenance, effectiveData)
+                    : baselineEntities;
+                const args = effectiveBaseline
+                    ? { data: effectiveData, baselineEntities: effectiveBaseline }
+                    : { data: effectiveData };
+                let canonical = await invokeNative<AppData>('save_data', args);
+                lastPersistedData = canonical;
+                recordPersisted({ canonical, attempted: effectiveData });
+                const settingsBaseline = provenance ?? observedBeforeSave;
+                if (settingsBaseline) {
+                    const replayedSettings = rebaseQueuedSettings(
+                        settingsBaseline.settings,
+                        effectiveData.settings,
+                        canonical.settings,
+                    );
+                    if (
+                        computeStableValueFingerprint(replayedSettings)
+                        !== computeStableValueFingerprint(canonical.settings)
+                    ) {
+
+
+                        const retryData: AppData = { ...canonical, settings: replayedSettings };
+                        const retryBaseline = buildChangedEntityBaseline(canonical, retryData);
+                        markLocalWrite(retryData);
+                        markLocalSqliteWrite();
+                        canonical = await invokeNative<AppData>('save_data', {
+                            data: retryData,
+                            baselineEntities: retryBaseline,
+                        } as any);
+                        lastPersistedData = canonical;
+                        recordPersisted({ canonical, attempted: effectiveData });
+                    }
+                }
+                if (saveVersion === queuedSaveVersion) {
+                    lastObservedData = canonical;
+                }
+                scheduleCanonicalReconciliation(data, canonical, queuedSaveVersion);
+                markLocalSqliteWrite();
+                logStorageInitIfNeeded();
+                return { canonical, attempted: effectiveData };
+            } catch (error) {
+                if (saveVersion === queuedSaveVersion) {
+                    lastObservedData = lastPersistedData;
+                }
+                reportError('saveData failure', error, { category: 'storage', scope: 'storage' });
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Failed to save data: ${detail}`);
+            }
+        }));
+        if (!canonical) throw new Error('save_data returned no canonical data');
+        return canonical;
+    },
+    saveTask: async (task: Task): Promise<void> => {
+        const baselineTask = lastObservedData && Array.isArray(lastObservedData.tasks)
+            ? lastObservedData.tasks.find((item) => item.id === task.id)
+            : undefined;
+        let attemptedData = lastObservedData;
+        if (attemptedData && Array.isArray(attemptedData.tasks)) {
+            attemptedData = {
+                ...attemptedData,
+                tasks: baselineTask
+                    ? attemptedData.tasks.map((item) => item.id === task.id ? task : item)
+                    : [...attemptedData.tasks, task],
+            };
+            lastObservedData = attemptedData;
+        }
+        const queuedSaveVersion = beginSaveGeneration();
+        await enqueueSave((predecessor, recordPersisted) => withStuckSaveWarning('save_task', 'Task save', async () => {
+            markLocalSqliteWrite();
+            try {
+                const effectiveBaselineTask = predecessor?.provenance
+                    ? predecessor.provenance.tasks.find((item) => item.id === task.id)
+                    : baselineTask;
+                const args = effectiveBaselineTask ? { task, baselineTask: effectiveBaselineTask } : { task };
+                const nativeResult = await invokeNative<AppData | NativeTaskSaveResult>('save_task', args);
+                if (
+                    nativeResult
+                    && typeof nativeResult === 'object'
+                    && 'committed' in nativeResult
+                    && nativeResult.committed === true
+                    && 'canonicalReloadRequired' in nativeResult
+                ) {
+                    const canonical = nativeResult.canonical;
+                    if (!canonical && nativeResult.canonicalReloadRequired) {
+
+
+                        if (saveVersion === queuedSaveVersion) {
+                            lastObservedData = attemptedData;
+                        }
+                        scheduleCanonicalReconciliation(attemptedData, null, queuedSaveVersion);
+                        markLocalSqliteWrite();
+                        logStorageInitIfNeeded();
+                        return { canonical: null, attempted: attemptedData };
+                    }
+                    if (!canonical) {
+                        throw new Error('save_task returned no canonical data');
+                    }
+                    lastPersistedData = canonical;
+                    recordPersisted({ canonical, attempted: attemptedData });
+                    if (saveVersion === queuedSaveVersion) {
+                        lastObservedData = canonical;
+                    }
+                    scheduleCanonicalReconciliation(attemptedData, canonical, queuedSaveVersion);
+                    markLocalSqliteWrite();
+                    logStorageInitIfNeeded();
+                    return { canonical, attempted: attemptedData };
+                }
+                const canonical = nativeResult as AppData;
+                lastPersistedData = canonical;
+                recordPersisted({ canonical, attempted: attemptedData });
+                if (saveVersion === queuedSaveVersion) {
+                    lastObservedData = canonical;
+                }
+                scheduleCanonicalReconciliation(attemptedData, canonical, queuedSaveVersion);
+                markLocalSqliteWrite();
+                logStorageInitIfNeeded();
+                return { canonical, attempted: attemptedData };
+            } catch (error) {
+                if (saveVersion === queuedSaveVersion) {
+                    lastObservedData = lastPersistedData;
+                }
+                reportError('saveTask failure', error, { category: 'storage', scope: 'storage' });
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Failed to save task: ${detail}`);
+            }
+        }));
+    },
+    queryTasks: async (options: TaskQueryOptions) => {
+        return invokeWithError('query tasks', 'query_tasks', { options });
+    },
+    searchAll: async (query: string) => {
+        return invokeWithError('search', 'search_fts', { query });
+    },
+};

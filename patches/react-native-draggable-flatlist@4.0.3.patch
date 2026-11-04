@@ -1,0 +1,43 @@
+diff --git a/src/components/CellRendererComponent.tsx b/src/components/CellRendererComponent.tsx
+index e4e861a6663ae59838af08c965ab6782fc41f8b0..44bb09da4ffd9ab287f8c6f6a5d8550dde3b83b1 100644
+--- a/src/components/CellRendererComponent.tsx
++++ b/src/components/CellRendererComponent.tsx
+@@ -3,6 +3,7 @@ import {
+   findNodeHandle,
+   LayoutChangeEvent,
+   MeasureLayoutOnSuccessCallback,
++  Platform,
+   StyleProp,
+   ViewStyle,
+ } from "react-native";
+@@ -105,14 +106,28 @@ function CellRendererComponent<T>(props: Props<T>) {
+   });
+ 
+   useEffect(() => {
+-    if (isWeb) {
+-      // onLayout isn't called on web when the cell index changes, so we manually re-measure
++    if (isWeb || Platform.OS === "android") {
++      // onLayout can be skipped when a cell's index changes, so manually re-measure.
+       requestAnimationFrame(() => {
+         onCellLayout();
+       });
+     }
+   }, [index, onCellLayout]);
+ 
++  const prevActiveKeyRef = useRef<string | null>(activeKey);
++  useEffect(() => {
++    // The held translate above is only cleared by onCellLayout, and a cell
++    // whose index did not change gets no onLayout after a drag ends — it
++    // stays displaced until some later layout pass, which on a quiet list is
++    // never (permanent gap/overlap). Reset every cell when the drag clears.
++    if (prevActiveKeyRef.current !== null && activeKey === null && !isWeb) {
++      requestAnimationFrame(() => {
++        onCellLayout();
++      });
++    }
++    prevActiveKeyRef.current = activeKey;
++  }, [activeKey, onCellLayout]);
++
+   const baseStyle = useMemo(() => {
+     return {
+       elevation: isActive ? 1 : 0,

@@ -1,0 +1,8 @@
+{
+  "platforms": ["ios"],
+  "ios": {
+    "podspecPath": "ios/StrideNativeUtf8Text.podspec",
+    "swiftModuleName": "StrideNativeUtf8Text",
+    "modules": ["StrideNativeUtf8TextModule"]
+  }
+}

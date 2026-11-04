@@ -1,0 +1,393 @@
+
+
+
+import { prepareRestoredBackupDataForSync, validateBackupJson, type BackupValidation } from './backup-transfer';
+import {
+    runDataTransferTransaction,
+    type DataTransferStaleDetails,
+    type DataTransferApplication,
+} from './data-transfer-transaction';
+import {
+    applyDgtImport,
+    parseDgtImportSource,
+    type DgtImportParseResult,
+    type ParsedDgtImportData,
+} from './dgt-import';
+import { addBreadcrumb } from './log-breadcrumbs';
+import { createImportDiagnostics, type ImportDiagnostic } from './import-diagnostics';
+import type { ImportSourceInput } from './import-source-reader';
+import type { LocalAttachmentPresence } from './attachment-transfer';
+import {
+    applyStrideCsvImport,
+    parseStrideCsvImportSource,
+    type StrideCsvImportParseResult,
+    type ParsedStrideCsvImportData,
+} from './stride-csv-import';
+import {
+    applyOmniFocusImport,
+    parseOmniFocusImportSource,
+    type OmniFocusImportParseResult,
+    type ParsedOmniFocusImportData,
+} from './omnifocus-import';
+import { mergeAppDataWithStats } from './sync';
+import { normalizeAttachmentsForSyncMerge } from './sync-normalization';
+import type { EntityMergeStats, MergeResult } from './sync-types';
+import {
+    applyTickTickImport,
+    parseTickTickImportSource,
+    type ParsedTickTickImportData,
+    type TickTickImportParseResult,
+} from './ticktick-import';
+import {
+    applyTodoistImport,
+    parseTodoistImportSource,
+    type ParsedTodoistProject,
+    type TodoistImportParseResult,
+} from './todoist-import';
+import type { AppData, Attachment } from './types';
+import { retainTaxonomyEffects } from './taxonomy-catalog';
+
+export type ImportSourceId = 'backup' | 'backup-merge' | 'dgt' | 'stride-csv' | 'omnifocus' | 'ticktick' | 'todoist';
+export type ImportPickerSourceId = Exclude<ImportSourceId, 'backup' | 'backup-merge'>;
+
+export type ImportDescriptorInput = ImportSourceInput & {
+    appVersion?: string | null;
+    lastModified?: number | null;
+};
+
+type RawImportSourceParseResultMap = {
+    backup: BackupValidation;
+    'backup-merge': BackupValidation;
+    dgt: DgtImportParseResult;
+    'stride-csv': StrideCsvImportParseResult;
+    omnifocus: OmniFocusImportParseResult;
+    ticktick: TickTickImportParseResult;
+    todoist: TodoistImportParseResult;
+};
+
+export type ImportSourceParseResultMap = {
+    [S in keyof RawImportSourceParseResultMap]: RawImportSourceParseResultMap[S] & {
+        diagnostics: ImportDiagnostic[];
+    };
+};
+
+export type DataTransferBoundaries = {
+    createRecoverySnapshot: (currentData: AppData) => Promise<string | null>;
+    flushPendingSave: () => Promise<void>;
+    getCurrentChangeAt: () => number;
+    onStale?: (details: DataTransferStaleDetails) => void;
+    persistData: (data: AppData) => Promise<void>;
+    readCurrentData: () => Promise<AppData>;
+    refreshData: () => Promise<void>;
+    getLocalAttachmentPresence?: (uri: string) => Promise<LocalAttachmentPresence>;
+};
+
+export type TransferLogInfo = (
+    message: string,
+    context?: { extra?: Record<string, unknown>; scope?: string }
+) => unknown;
+export type TransferLogError = (
+    error: unknown,
+    context: { extra?: Record<string, unknown>; scope: string }
+) => unknown;
+
+export type ImportRunnerLog = {
+    logError: TransferLogError;
+    logInfo: TransferLogInfo;
+};
+
+
+type ImportTypeMap = {
+    backup: { parsed: AppData; result: AppData };
+    'backup-merge': { parsed: AppData; result: MergeResult };
+    todoist: { parsed: ParsedTodoistProject[]; result: ReturnType<typeof applyTodoistImport> };
+    ticktick: { parsed: ParsedTickTickImportData; result: ReturnType<typeof applyTickTickImport> };
+    dgt: { parsed: ParsedDgtImportData; result: ReturnType<typeof applyDgtImport> };
+    'stride-csv': { parsed: ParsedStrideCsvImportData; result: ReturnType<typeof applyStrideCsvImport> };
+    omnifocus: { parsed: ParsedOmniFocusImportData; result: ReturnType<typeof applyOmniFocusImport> };
+};
+
+type ImportDescriptor<S extends ImportSourceId> = {
+    apply: (data: AppData, parsed: ImportTypeMap[S]['parsed']) => { data: AppData; result: ImportTypeMap[S]['result'] };
+    completeLabel: string;
+    countExtra: (result: ImportTypeMap[S]['result']) => Record<string, string>;
+    operation: string;
+    parse: (input: ImportDescriptorInput) => RawImportSourceParseResultMap[S];
+    source: S;
+    startLabel: string;
+};
+
+const toBackupCountExtra = (data: AppData): Record<string, string> => ({
+    tasks: String(data.tasks.filter((task) => !task.deletedAt).length),
+    projects: String(data.projects.filter((project) => !project.deletedAt).length),
+    sections: String(data.sections.filter((section) => !section.deletedAt).length),
+    areas: String(data.areas.filter((area) => !area.deletedAt).length),
+});
+
+
+const filterAdditiveBackupAttachments = (
+    incoming: Attachment[] | undefined,
+    current: Attachment[] | undefined,
+): Attachment[] | undefined => {
+    const locallyDeletedIds = new Set(current?.filter((item) => item.deletedAt).map((item) => item.id));
+    return normalizeAttachmentsForSyncMerge(
+        incoming?.filter((item) => !item.deletedAt && !locallyDeletedIds.has(item.id)),
+    );
+};
+
+
+export const summarizeBackupMerge = (result: MergeResult): { added: number; updated: number } => ({
+    added: result.stats.tasks.incomingOnly,
+    updated: Math.max(0, result.stats.tasks.resolvedUsingIncoming - result.stats.tasks.incomingOnly),
+});
+
+const toMergeCountExtra = (entity: string, stats: EntityMergeStats): Record<string, string> => ({
+    [`${entity}Added`]: String(stats.incomingOnly),
+    [`${entity}Updated`]: String(Math.max(0, stats.resolvedUsingIncoming - stats.incomingOnly)),
+});
+
+const parseBackupInput = (input: ImportDescriptorInput): BackupValidation => validateBackupJson(
+    input.text ?? new TextDecoder().decode(input.bytes ?? undefined),
+    {
+        appVersion: input.appVersion,
+        fileModifiedAt: input.lastModified,
+        fileName: input.fileName,
+    },
+);
+
+const IMPORT_DESCRIPTORS: { [S in ImportSourceId]: ImportDescriptor<S> } = {
+    backup: {
+        operation: 'restoreBackup',
+        source: 'backup',
+        startLabel: 'Backup restore started',
+        completeLabel: 'Backup restore complete',
+        parse: parseBackupInput,
+        apply: (currentData, parsed) => {
+            const restored = prepareRestoredBackupDataForSync(parsed, { previousData: currentData });
+            return { data: restored, result: restored };
+        },
+        countExtra: toBackupCountExtra,
+    },
+
+
+    'backup-merge': {
+        operation: 'mergeBackup',
+        source: 'backup-merge',
+        startLabel: 'Backup merge started',
+        completeLabel: 'Backup merge complete',
+        parse: parseBackupInput,
+        apply: (currentData, parsed) => {
+            const currentTasksById = new Map(currentData.tasks.map((item) => [item.id, item]));
+            const currentProjectsById = new Map(currentData.projects.map((item) => [item.id, item]));
+            const currentSectionsById = new Map(currentData.sections.map((item) => [item.id, item]));
+            const currentAreasById = new Map(currentData.areas.map((item) => [item.id, item]));
+            const currentPeopleById = new Map((currentData.people ?? []).map((item) => [item.id, item]));
+            const additiveBackup: AppData = {
+                ...parsed,
+                tasks: parsed.tasks
+                    .filter((item) => {
+                        const current = currentTasksById.get(item.id);
+                        return !item.deletedAt && !item.purgedAt && !current?.deletedAt && !current?.purgedAt;
+                    })
+                    .map((item) => ({
+                        ...item,
+                        attachments: filterAdditiveBackupAttachments(
+                            item.attachments,
+                            currentTasksById.get(item.id)?.attachments,
+                        ),
+                    })),
+                projects: parsed.projects
+                    .filter((item) => {
+                        const current = currentProjectsById.get(item.id);
+                        return !item.deletedAt && !item.purgedAt && !current?.deletedAt && !current?.purgedAt;
+                    })
+                    .map((item) => ({
+                        ...item,
+                        attachments: filterAdditiveBackupAttachments(
+                            item.attachments,
+                            currentProjectsById.get(item.id)?.attachments,
+                        ),
+                    })),
+                sections: parsed.sections.filter((item) => (
+                    !item.deletedAt && !currentSectionsById.get(item.id)?.deletedAt
+                )),
+                areas: parsed.areas.filter((item) => (
+                    !item.deletedAt && !currentAreasById.get(item.id)?.deletedAt
+                )),
+                people: parsed.people?.filter((item) => (
+                    !item.deletedAt && !currentPeopleById.get(item.id)?.deletedAt
+                )),
+            };
+            const merge = mergeAppDataWithStats(currentData, additiveBackup);
+            return { data: merge.data, result: merge };
+        },
+        countExtra: (result) => ({
+            ...toMergeCountExtra('tasks', result.stats.tasks),
+            ...toMergeCountExtra('projects', result.stats.projects),
+            ...toMergeCountExtra('sections', result.stats.sections),
+            ...toMergeCountExtra('areas', result.stats.areas),
+        }),
+    },
+    todoist: {
+        operation: 'importTodoist',
+        source: 'todoist',
+        startLabel: 'Todoist import started',
+        completeLabel: 'Todoist import complete',
+        parse: parseTodoistImportSource,
+        apply: (data, parsed) => {
+            const result = applyTodoistImport(data, parsed);
+            return { data: result.data, result };
+        },
+        countExtra: (result) => ({
+            tasks: String(result.importedTaskCount),
+            projects: String(result.importedProjectCount),
+            sections: String(result.importedSectionCount),
+            checklistItems: String(result.importedChecklistItemCount),
+        }),
+    },
+    ticktick: {
+        operation: 'importTickTick',
+        source: 'ticktick',
+        startLabel: 'TickTick import started',
+        completeLabel: 'TickTick import complete',
+        parse: parseTickTickImportSource,
+        apply: (data, parsed) => {
+            const result = applyTickTickImport(data, parsed);
+            return { data: result.data, result };
+        },
+        countExtra: (result) => ({
+            tasks: String(result.importedTaskCount),
+            projects: String(result.importedProjectCount),
+            areas: String(result.importedAreaCount),
+            checklistItems: String(result.importedChecklistItemCount),
+        }),
+    },
+    dgt: {
+        operation: 'importDgt',
+        source: 'dgt',
+        startLabel: 'DGT import started',
+        completeLabel: 'DGT import complete',
+        parse: parseDgtImportSource,
+        apply: (data, parsed) => {
+            const result = applyDgtImport(data, parsed);
+            return { data: result.data, result };
+        },
+        countExtra: (result) => ({
+            tasks: String(result.importedTaskCount),
+            projects: String(result.importedProjectCount),
+            areas: String(result.importedAreaCount),
+            checklistItems: String(result.importedChecklistItemCount),
+        }),
+    },
+    omnifocus: {
+        operation: 'importOmniFocus',
+        source: 'omnifocus',
+        startLabel: 'OmniFocus import started',
+        completeLabel: 'OmniFocus import complete',
+        parse: parseOmniFocusImportSource,
+        apply: (data, parsed) => {
+            const result = applyOmniFocusImport(data, parsed);
+            return { data: result.data, result };
+        },
+        countExtra: (result) => ({
+            areas: String(result.importedAreaCount),
+            checklistItems: String(result.importedChecklistItemCount),
+            tasks: String(result.importedTaskCount),
+            projects: String(result.importedProjectCount),
+            standaloneTasks: String(result.importedStandaloneTaskCount),
+        }),
+    },
+    'stride-csv': {
+        operation: 'importStrideCsv',
+        source: 'stride-csv',
+        startLabel: 'Stride CSV import started',
+        completeLabel: 'Stride CSV import complete',
+        parse: parseStrideCsvImportSource,
+        apply: (data, parsed) => {
+            const result = applyStrideCsvImport(data, parsed);
+            return { data: result.data, result };
+        },
+        countExtra: (result) => ({
+            tasks: String(result.importedTaskCount),
+            projects: String(result.importedProjectCount),
+            sections: String(result.importedSectionCount),
+            areas: String(result.importedAreaCount),
+            checklistItems: String(result.importedChecklistItemCount),
+            standaloneTasks: String(result.importedStandaloneTaskCount),
+        }),
+    },
+};
+
+export function parseImportSource<S extends ImportSourceId>(
+    source: S,
+    input: ImportDescriptorInput,
+): ImportSourceParseResultMap[S] {
+    const result = IMPORT_DESCRIPTORS[source].parse(input);
+    const structuredDiagnostics = (result as { diagnostics?: ImportDiagnostic[] }).diagnostics;
+    return {
+        ...result,
+        diagnostics: structuredDiagnostics ?? [
+            ...createImportDiagnostics(result.warnings, 'warning'),
+            ...createImportDiagnostics(result.errors, 'error'),
+        ],
+    } as ImportSourceParseResultMap[S];
+}
+
+
+export function applyImportSource<S extends ImportSourceId>(
+    source: S,
+    currentData: AppData,
+    parsed: ImportTypeMap[S]['parsed'],
+): DataTransferApplication<ImportTypeMap[S]['result']> {
+    const applied = IMPORT_DESCRIPTORS[source].apply(currentData, parsed);
+    if (source === 'backup') return applied;
+    const tasksBefore = new Map(currentData.tasks.map((row) => [row.id, row]));
+    const projectsBefore = new Map(currentData.projects.map((row) => [row.id, row]));
+    const taskPairs = [];
+    for (const task of applied.data.tasks) {
+        const before = tasksBefore.get(task.id);
+        if (task !== before) taskPairs.push({ before, after: task });
+    }
+    const projectPairs = [];
+    for (const project of applied.data.projects) {
+        const before = projectsBefore.get(project.id);
+        if (project !== before) projectPairs.push({ before, after: project });
+    }
+    const settings = retainTaxonomyEffects(applied.data.settings, taskPairs, projectPairs);
+    return settings === applied.data.settings ? applied : { ...applied, data: { ...applied.data, settings } };
+}
+
+
+export async function runImport<S extends ImportSourceId>(
+    source: S,
+    parsed: ImportTypeMap[S]['parsed'],
+    boundaries: DataTransferBoundaries,
+    log: ImportRunnerLog
+): Promise<{ result: ImportTypeMap[S]['result']; snapshotName: string | null }> {
+    const descriptor = IMPORT_DESCRIPTORS[source];
+    addBreadcrumb('transfer:restore');
+    void log.logInfo(descriptor.startLabel, {
+        scope: 'transfer',
+        extra: { operation: descriptor.operation, source: descriptor.source },
+    });
+    try {
+        const transaction = await runDataTransferTransaction({
+            ...boundaries,
+            operation: descriptor.operation,
+            apply: (currentData: AppData) => applyImportSource(source, currentData, parsed),
+        });
+        const result = transaction.result;
+        void log.logInfo(descriptor.completeLabel, {
+            scope: 'transfer',
+            extra: {
+                operation: descriptor.operation,
+                source: descriptor.source,
+                ...descriptor.countExtra(result),
+            },
+        });
+        return { snapshotName: transaction.snapshot, result };
+    } catch (error) {
+        void log.logError(error, { scope: 'transfer', extra: { operation: descriptor.operation } });
+        throw error;
+    }
+}

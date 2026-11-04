@@ -1,0 +1,376 @@
+import { addDays, addMonths, addWeeks, addYears, endOfDay, isAfter, isBefore, isEqual, parseISO, startOfDay } from 'date-fns';
+import { safeParseDate, safeParseDueDate } from './date';
+import { matchesHierarchicalToken, normalizePrefixedToken } from './hierarchy-utils';
+import { normalizeTaskStatus, TASK_STATUS_SET } from './task-status';
+import { taskMatchesPerson } from './people';
+import { SEARCH_RESULT_LIMIT, type SearchResults } from './storage';
+import type { Project, Task } from './types';
+
+export type SearchComparator = '<' | '<=' | '>' | '>=' | '=';
+
+export interface SearchTerm {
+    field: string | null;
+    comparator: SearchComparator | null;
+    value: string;
+    negated: boolean;
+}
+
+export interface SearchClause {
+    terms: SearchTerm[];
+}
+
+export interface SearchQuery {
+    clauses: SearchClause[];
+}
+
+const DATE_FIELDS = new Set(['due', 'start', 'review', 'created']);
+const ASSIGNEE_FIELDS = new Set(['assigned', 'assignee', 'assignedto']);
+const SHORTHAND_FIELDS: Record<string, 'context' | 'tag' | 'person'> = { '@': 'context', '#': 'tag', '%': 'person' };
+const LOCATION_FIELDS = new Set(['location', 'where']);
+
+function tokenize(query: string): string[] {
+    const tokens: string[] = [];
+    let token = '';
+    let quoted = false;
+    let escaped = false;
+    for (const character of query) {
+        if (escaped) {
+            token += character;
+            escaped = false;
+            continue;
+        }
+        if (quoted && character === '\\') {
+            token += character;
+            escaped = true;
+            continue;
+        }
+        if (character === '"') {
+            quoted = !quoted;
+            token += character;
+            continue;
+        }
+        if (/\s/.test(character) && !quoted) {
+            if (token) tokens.push(token);
+            token = '';
+            continue;
+        }
+        token += character;
+    }
+    if (token) tokens.push(token);
+    return tokens.map((value) => value.trim()).filter(Boolean);
+}
+
+function decodeSearchValue(value: string): string {
+    if (value.startsWith('"')) {
+        const quoted = value.endsWith('"') ? value.slice(1, -1) : value.slice(1);
+        let decoded = '';
+        for (let index = 0; index < quoted.length; index += 1) {
+            const character = quoted[index];
+            const next = quoted[index + 1];
+            if (character === '\\' && (next === '"' || next === '\\')) {
+                decoded += next;
+                index += 1;
+            } else {
+                decoded += character;
+            }
+        }
+        return decoded;
+    }
+    return value;
+}
+
+function parseComparator(value: string): { comparator: SearchComparator | null; rest: string } {
+    const match = value.match(/^(<=|>=|<|>|=)\s*(.+)$/);
+    if (!match) return { comparator: null, rest: value.trim() };
+    return { comparator: match[1] as SearchComparator, rest: match[2].trim() };
+}
+
+function parseRelativeDate(expr: string, now: Date): Date | null {
+    const raw = expr.trim().toLowerCase();
+    if (raw === 'today') return startOfDay(now);
+    if (raw === 'tomorrow') return startOfDay(addDays(now, 1));
+
+    const relMatch = raw.match(/^(\d+)\s*(d|day|days|w|week|weeks|m|month|months|y|year|years)$/);
+    if (relMatch) {
+        const amount = Number(relMatch[1]);
+        const unit = relMatch[2];
+        if (unit.startsWith('d')) return addDays(now, amount);
+        if (unit.startsWith('w')) return addWeeks(now, amount);
+        if (unit.startsWith('m')) return addMonths(now, amount);
+        if (unit.startsWith('y')) return addYears(now, amount);
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        const parsed = parseISO(raw);
+        return parsed.toString() !== 'Invalid Date' ? parsed : null;
+    }
+
+    return null;
+}
+
+function compareDates(date: Date, comparator: SearchComparator, target: Date): boolean {
+    switch (comparator) {
+        case '<':
+            return isBefore(date, target);
+        case '<=':
+            return isBefore(date, target) || isEqual(date, target);
+        case '>':
+            return isAfter(date, target);
+        case '>=':
+            return isAfter(date, target) || isEqual(date, target);
+        case '=':
+        default:
+            return isEqual(date, target);
+    }
+}
+
+export function parseSearchQuery(query: string): SearchQuery {
+    const tokens = tokenize(query);
+    const clauses: SearchClause[] = [];
+    let currentTerms: SearchTerm[] = [];
+
+    const pushClause = () => {
+        if (currentTerms.length > 0) {
+            clauses.push({ terms: currentTerms });
+            currentTerms = [];
+        }
+    };
+
+    for (const rawToken of tokens) {
+        const tokenUpper = rawToken.toUpperCase();
+        if (tokenUpper === 'OR' || rawToken === '|' || rawToken === '||') {
+            pushClause();
+            continue;
+        }
+
+        let negated = false;
+        let token = rawToken;
+        if (token.startsWith('-')) {
+            negated = true;
+            token = token.slice(1);
+        }
+
+        token = decodeSearchValue(token);
+        if (!token) continue;
+
+
+        const colonIndex = token.indexOf(':');
+        const shorthand = SHORTHAND_FIELDS[token[0]];
+        if (shorthand && token.length > 1 && (colonIndex < 0 || token[1] === '"')) {
+            const value = decodeSearchValue(token.slice(1));
+            currentTerms.push({
+                field: shorthand,
+                comparator: null,
+                value: shorthand === 'person' ? value : `${token[0]}${value}`,
+                negated,
+            });
+            continue;
+        }
+
+        if (colonIndex > 0) {
+            const field = token.slice(0, colonIndex).toLowerCase();
+            const valueRaw = token.slice(colonIndex + 1);
+            const { comparator, rest } = parseComparator(valueRaw);
+            currentTerms.push({
+                field,
+                comparator,
+                value: decodeSearchValue(rest),
+                negated,
+            });
+        } else {
+            currentTerms.push({
+                field: null,
+                comparator: null,
+                value: token,
+                negated,
+            });
+        }
+    }
+
+    pushClause();
+
+    return { clauses };
+}
+
+function matchesText(haystack: unknown, needle: string): boolean {
+
+
+    if (typeof haystack !== 'string' || !haystack) return false;
+    return haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+function matchesChecklist(checklist: Task['checklist'], needle: string): boolean {
+    return (checklist || []).some((item) => matchesText(item.title, needle));
+}
+
+function normalizeTag(value: string): string {
+    return normalizePrefixedToken(value, '#');
+}
+
+function normalizeContext(value: string): string {
+    return normalizePrefixedToken(value, '@');
+}
+
+function matchDateField(dateStr: string | undefined, comparator: SearchComparator | null, value: string, now: Date): boolean {
+    if (!dateStr) return false;
+    const date = safeParseDate(dateStr);
+    if (!date) return false;
+
+    const { comparator: cmp, rest } = parseComparator(value);
+    const effectiveComparator = comparator || cmp || '=';
+    const target = parseRelativeDate(rest, now);
+    if (!target) return false;
+
+    if (effectiveComparator === '=') {
+
+        const start = startOfDay(target);
+        const end = endOfDay(target);
+        return (isAfter(date, start) || isEqual(date, start)) && (isBefore(date, end) || isEqual(date, end));
+    }
+
+    return compareDates(date, effectiveComparator, target);
+}
+
+function matchDueDateField(dateStr: string | undefined, comparator: SearchComparator | null, value: string, now: Date): boolean {
+    if (!dateStr) return false;
+    const date = safeParseDueDate(dateStr);
+    if (!date) return false;
+
+    const { comparator: cmp, rest } = parseComparator(value);
+    const effectiveComparator = comparator || cmp || '=';
+    const target = parseRelativeDate(rest, now);
+    if (!target) return false;
+
+    if (effectiveComparator === '=') {
+        const start = startOfDay(target);
+        const end = endOfDay(target);
+        return (isAfter(date, start) || isEqual(date, start)) && (isBefore(date, end) || isEqual(date, end));
+    }
+
+    return compareDates(date, effectiveComparator, target);
+}
+
+export function matchesTask(term: SearchTerm, task: Task, projectById: Map<string, Project> | null, now: Date): boolean {
+    if (task.deletedAt || task.purgedAt) return false;
+
+    const field = term.field;
+    const value = term.value;
+
+    let result = false;
+
+    if (!field) {
+        result = matchesText(task.title, value)
+            || matchesText(task.description, value)
+            || matchesChecklist(task.checklist, value)
+            || matchesText(task.location, value)
+            || matchesText(task.assignedTo, value);
+    } else if (field === 'checklist') {
+        result = value.trim().length > 0 && matchesChecklist(task.checklist, value);
+    } else if (field === 'id') {
+        result = value.trim().length > 0 && matchesText(task.id, value);
+    } else if (field === 'status') {
+        const normalized = normalizeTaskStatus(value);
+        result = TASK_STATUS_SET.has(normalized) ? task.status === normalized : false;
+    } else if (field === 'context' || field === 'contexts') {
+        const ctx = normalizeContext(value);
+        result = (task.contexts || []).some((existing) => matchesHierarchicalToken(ctx, existing));
+    } else if (field === 'tag' || field === 'tags') {
+        const tag = normalizeTag(value);
+        result = (task.tags || []).some((existing) => matchesHierarchicalToken(tag, existing));
+    } else if (field === 'project') {
+        if (!task.projectId) result = false;
+        else {
+            const project = projectById?.get(task.projectId);
+            result = task.projectId === value || (project ? matchesText(project.title, value) : false);
+        }
+    } else if (ASSIGNEE_FIELDS.has(field)) {
+        result = value.trim().length > 0 && matchesText(task.assignedTo, value);
+    } else if (field === 'person') {
+        result = taskMatchesPerson(task, value);
+    } else if (LOCATION_FIELDS.has(field)) {
+        result = value.trim().length > 0 && matchesText(task.location, value);
+    } else if (DATE_FIELDS.has(field)) {
+        if (field === 'due') result = matchDueDateField(task.dueDate, term.comparator, value, now);
+        else if (field === 'start') result = matchDateField(task.startTime, term.comparator, value, now);
+        else if (field === 'review') result = matchDateField(task.reviewAt, term.comparator, value, now);
+        else if (field === 'created') result = matchDateField(task.createdAt, term.comparator, value, now);
+    } else {
+
+        result = matchesText(task.title, `${field}:${value}`)
+            || matchesText(task.description, `${field}:${value}`)
+            || matchesChecklist(task.checklist, `${field}:${value}`);
+    }
+
+    return term.negated ? !result : result;
+}
+
+export function matchesProject(term: SearchTerm, project: Project, now: Date): boolean {
+    if (project.deletedAt) return false;
+
+    const field = term.field;
+    const value = term.value;
+    if (field === 'person') return false;
+    let result = false;
+
+    if (!field) {
+        result = matchesText(project.title, value) || matchesText(project.supportNotes, value);
+    } else if (field === 'status') {
+        result = project.status === value;
+    } else if (field === 'review') {
+        result = matchDateField(project.reviewAt, term.comparator, value, now);
+    } else if (field === 'created') {
+        result = matchDateField(project.createdAt, term.comparator, value, now);
+    } else {
+        result = matchesText(project.title, `${field}:${value}`) || matchesText(project.supportNotes, `${field}:${value}`);
+    }
+
+    return term.negated ? !result : result;
+}
+
+export function filterTasksBySearch(tasks: Task[], projects: Project[], query: string, now: Date = new Date()): Task[] {
+    if (!query.trim()) {
+        return tasks.filter((task) => !task.deletedAt && !task.purgedAt);
+    }
+    const ast = parseSearchQuery(query);
+    if (ast.clauses.length === 0) {
+        return tasks.filter((task) => !task.deletedAt && !task.purgedAt);
+    }
+    const requiresProjectLookup = ast.clauses.some((clause) =>
+        clause.terms.some((term) => term.field === 'project')
+    );
+    const projectById = requiresProjectLookup
+        ? new Map(projects.map((project) => [project.id, project]))
+        : null;
+
+    return tasks.filter((task) => {
+        if (task.deletedAt || task.purgedAt) return false;
+        return ast.clauses.some((clause) => clause.terms.every((term) => matchesTask(term, task, projectById, now)));
+    });
+}
+
+export function filterProjectsBySearch(projects: Project[], query: string, now: Date = new Date()): Project[] {
+    if (!query.trim()) {
+        return projects.filter((project) => !project.deletedAt);
+    }
+    const ast = parseSearchQuery(query);
+    if (ast.clauses.length === 0) {
+        return projects.filter((project) => !project.deletedAt);
+    }
+
+    return projects.filter((project) => {
+        if (project.deletedAt) return false;
+        return ast.clauses.some((clause) => clause.terms.every((term) => matchesProject(term, project, now)));
+    });
+}
+
+export function searchAll(tasks: Task[], projects: Project[], query: string, now: Date = new Date()): SearchResults {
+    const matchedProjects = filterProjectsBySearch(projects, query, now);
+    const matchedTasks = filterTasksBySearch(tasks, projects, query, now);
+    const limited = matchedProjects.length > SEARCH_RESULT_LIMIT || matchedTasks.length > SEARCH_RESULT_LIMIT;
+    return {
+        tasks: matchedTasks.slice(0, SEARCH_RESULT_LIMIT),
+        projects: matchedProjects.slice(0, SEARCH_RESULT_LIMIT),
+        limited: limited || undefined,
+        limit: limited ? SEARCH_RESULT_LIMIT : undefined,
+    };
+}

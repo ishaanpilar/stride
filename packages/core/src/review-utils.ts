@@ -1,0 +1,837 @@
+import { addDays, format } from 'date-fns';
+
+import type { ReviewSnapshotItem } from './ai/types';
+import type { ExternalCalendarEvent } from './ics';
+import type { AppSettings, Area, Project, Section, Task, TaskSortBy } from './types';
+import { getWeekStartsOnIndex, hasTimeComponent, isDueForReview, safeParseDate, safeParseDueDate } from './date';
+import { timeEstimateToMinutes } from './calendar-scheduling';
+import {
+    isTaskVisibleInArea,
+    isTaskVisibleInInbox,
+    type AreaFilterSelection,
+    type AreaVisibilityContext,
+} from './area-filter';
+import { isTaskInActiveProject } from './project-utils';
+import { compareTasksByProjectOrder, getSequentialFirstTaskIds, getTaskSequencing, isSequentialChainStatus, isTaskSequenceBlocked, shouldShowTaskForStart, sortTasksBy } from './task-utils';
+import { isTaskActionable, isTaskCompleted } from './task-status';
+import { normalizeTimeSpentMinutes } from './time-spent';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const DEFAULT_REVIEW_ADVANCE_DAYS = 7;
+
+export type ReviewOverviewScope = 'due' | 'all';
+
+
+export function isTaskDueForReview(task: Pick<Task, 'status' | 'reviewAt' | 'deletedAt' | 'purgedAt'>, now: Date = new Date()): boolean {
+    return !task.deletedAt && !task.purgedAt && isTaskActionable(task) && isDueForReview(task.reviewAt, now);
+}
+
+export function getReviewOverviewTasks(tasks: readonly Task[], scope: ReviewOverviewScope, now: Date = new Date()): Task[] {
+    return tasks.filter((task) => scope === 'due' ? isTaskDueForReview(task, now) : !task.deletedAt && !task.purgedAt && isTaskActionable(task));
+}
+
+
+export function getAdvancedReviewDate(
+    reviewAt: string | undefined | null,
+    now: Date = new Date(),
+    days: number = DEFAULT_REVIEW_ADVANCE_DAYS,
+): string {
+    const target = addDays(now, days);
+    if (reviewAt && hasTimeComponent(reviewAt)) {
+        const parsed = safeParseDate(reviewAt);
+        if (parsed) {
+            const withTime = new Date(target);
+            withTime.setHours(parsed.getHours(), parsed.getMinutes(), 0, 0);
+            return format(withTime, "yyyy-MM-dd'T'HH:mm");
+        }
+    }
+    return format(target, 'yyyy-MM-dd');
+}
+
+function isFutureDate(value: string | undefined | null, now: Date): boolean {
+    if (!value) return false;
+    const date = safeParseDate(value);
+    return date ? date.getTime() > now.getTime() : false;
+}
+
+export type ReviewSchedulePartition<T> = {
+    due: T[];
+    scheduled: T[];
+    unscheduled: T[];
+};
+
+
+export function partitionByReviewDate<T extends { reviewAt?: string | null }>(
+    items: T[],
+    now: Date = new Date(),
+): ReviewSchedulePartition<T> {
+    const due: T[] = [];
+    const scheduled: T[] = [];
+    const unscheduled: T[] = [];
+    items.forEach((item) => {
+        if (isDueForReview(item.reviewAt, now)) {
+            due.push(item);
+        } else if (isFutureDate(item.reviewAt, now)) {
+            scheduled.push(item);
+        } else {
+            unscheduled.push(item);
+        }
+    });
+    return { due, scheduled, unscheduled };
+}
+
+export type WeeklyReviewSummary = {
+    inboxCount: number;
+    activeProjectCount: number;
+    projectsWithoutNextAction: number;
+    staleWaitingCount: number;
+};
+
+
+export type ProjectNextActionState = 'next' | 'waiting' | 'deferred' | 'none';
+
+export function getProjectNextActionState(
+    tasks: ReadonlyArray<Pick<Task, 'status' | 'startTime'>>,
+    now: Date = new Date(),
+): ProjectNextActionState {
+    if (tasks.some((task) => task.status === 'next' && !isFutureDate(task.startTime, now))) return 'next';
+    if (tasks.some((task) => task.status === 'waiting')) return 'waiting';
+    if (tasks.some((task) => task.status === 'next')) return 'deferred';
+    return 'none';
+}
+
+export type WeeklyReviewProjectEntry = {
+    project: Project;
+    tasks: Task[];
+    currentTasks: Task[];
+    laterTasks: Task[];
+    nextActionState: ProjectNextActionState;
+};
+
+
+function reviewSequence(tasks: readonly Task[], projects: readonly Project[], sections: readonly Section[]) {
+    const sequencing = getTaskSequencing(projects, sections);
+    const firstTaskIds = getSequentialFirstTaskIds(
+        tasks.filter((task) => !task.deletedAt && !task.purgedAt && isSequentialChainStatus(task.status)),
+        sequencing.sequentialProjectIds,
+        { ...sequencing, sections },
+    );
+    const blocked = (task: Task) => isTaskSequenceBlocked(task, sequencing, firstTaskIds);
+    const sectionById = new Map(sections.filter((section) => !section.deletedAt).map((section) => [section.id, section]));
+    const sectionRank = new Map([...sectionById.values()]
+        .sort((a, b) => (a.order - b.order) || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+        .map((section, index) => [section.id, index]));
+    const rank = (task: Task) => task.sectionId && sectionById.get(task.sectionId)?.projectId === task.projectId
+        ? sectionRank.get(task.sectionId) ?? Infinity : Infinity;
+    const partition = (items: Task[], keepDueCurrent: boolean, now: Date) => {
+        const currentTasks: Task[] = [];
+        const laterTasks: Task[] = [];
+        items.forEach((task) => {
+            (task.status === 'next' && blocked(task) && !(keepDueCurrent && isTaskDueForReview(task, now))
+                ? laterTasks : currentTasks).push(task);
+        });
+        laterTasks.sort((a, b) => rank(a) !== rank(b) ? rank(a) - rank(b) : compareTasksByProjectOrder(a, b));
+        return { currentTasks, laterTasks };
+    };
+    const headsByProject = new Map<string, Task[]>();
+    tasks.forEach((task) => {
+        if (!task.projectId || task.deletedAt || task.purgedAt || !isSequentialChainStatus(task.status) || blocked(task)) return;
+        const heads = headsByProject.get(task.projectId) ?? [];
+        heads.push(task);
+        headsByProject.set(task.projectId, heads);
+    });
+    return { blocked, partition, headsByProject };
+}
+
+export type WeeklyReviewLookBack = {
+    completedCount: number;
+    projectsMovedCount: number;
+    estimatedTaskCount: number;
+    estimatedMinutes: number;
+    trackedMinutes: number;
+};
+
+type WeeklyReviewDerivation = {
+    inbox: Task[];
+    projectEntries: WeeklyReviewProjectEntry[];
+    staleItems: ReviewSnapshotItem[];
+    summary: WeeklyReviewSummary;
+    lookBack: WeeklyReviewLookBack;
+};
+
+function deriveWeeklyReview(
+    tasks: Task[],
+    projects: Project[],
+    staleThresholdDays: number,
+    now: Date,
+    weekStart?: AppSettings['weekStart'],
+    sections: readonly Section[] = [],
+): WeeklyReviewDerivation {
+    const sequence = reviewSequence(tasks, projects, sections);
+    const projectMap = new Map(projects.map((project) => [project.id, project]));
+    const activeProjects = projects.filter((project) => project.status === 'active' && !project.deletedAt);
+    const projectTasksById = new Map(activeProjects.map((project) => [project.id, [] as Task[]]));
+    const inbox: Task[] = [];
+    const staleItems: ReviewSnapshotItem[] = [];
+    const lookBack: WeeklyReviewLookBack = {
+        completedCount: 0,
+        projectsMovedCount: 0,
+        estimatedTaskCount: 0,
+        estimatedMinutes: 0,
+        trackedMinutes: 0,
+    };
+    const movedProjectIds = new Set<string>();
+    const reviewWindowStart = getLocalReviewWindowStart(now, 'weekly', weekStart);
+    const reviewWindowEnd = now.getTime();
+
+    tasks.forEach((task) => {
+        const completedAt = isTaskCompleted(task) && !task.deletedAt
+            ? safeParseDate(task.completedAt)
+            : null;
+        if (
+            completedAt
+            && completedAt.getTime() >= reviewWindowStart
+            && completedAt.getTime() <= reviewWindowEnd
+        ) {
+            lookBack.completedCount += 1;
+            const completedProject = task.projectId ? projectMap.get(task.projectId) : undefined;
+            if (task.projectId && completedProject && !completedProject.deletedAt) {
+                movedProjectIds.add(task.projectId);
+            }
+            if (task.timeEstimate) {
+                lookBack.estimatedTaskCount += 1;
+                lookBack.estimatedMinutes += timeEstimateToMinutes(task.timeEstimate);
+                lookBack.trackedMinutes += normalizeTimeSpentMinutes(task.timeSpentMinutes) ?? 0;
+            }
+        }
+
+        const belongsToActiveProject = isTaskInActiveProject(task, projectMap);
+        if (!task.deletedAt && belongsToActiveProject && task.status === 'inbox') {
+            inbox.push(task);
+        }
+        if (
+            task.projectId
+            && !task.deletedAt
+            && isTaskActionable(task)
+        ) {
+            projectTasksById.get(task.projectId)?.push(task);
+        }
+        if (
+            task.deletedAt
+            || !belongsToActiveProject
+            || (task.status !== 'next' && task.status !== 'waiting')
+            || isFutureDate(task.reviewAt, now)
+            || (!isTaskDueForReview(task, now) && (isFutureDate(task.startTime, now)
+                || (task.status === 'next' && sequence.blocked(task))))
+        ) return;
+        const updated = new Date(task.updatedAt || task.createdAt);
+        if (Number.isNaN(updated.getTime())) return;
+        const daysStale = Math.ceil((now.getTime() - updated.getTime()) / DAY_MS);
+        if (daysStale <= staleThresholdDays) return;
+        staleItems.push({
+            id: task.id,
+            title: task.title,
+            daysStale,
+            status: task.status === 'waiting' ? 'waiting' : 'next',
+            startTime: task.startTime,
+            dueDate: task.dueDate,
+            reviewAt: task.reviewAt,
+        });
+    });
+
+    activeProjects.forEach((project) => {
+        if (isFutureDate(project.reviewAt, now)) return;
+        const updated = new Date(project.updatedAt || project.createdAt);
+        if (Number.isNaN(updated.getTime())) return;
+        const daysStale = Math.ceil((now.getTime() - updated.getTime()) / DAY_MS);
+        if (daysStale <= staleThresholdDays) return;
+        staleItems.push({
+            id: `project:${project.id}`,
+            title: project.title,
+            daysStale,
+            status: 'project',
+            dueDate: project.dueDate,
+            reviewAt: project.reviewAt,
+        });
+    });
+    staleItems.sort((left, right) => right.daysStale - left.daysStale);
+
+    const dueProjects = activeProjects.filter((project) => isDueForReview(project.reviewAt, now));
+    const futureProjects = activeProjects.filter((project) => !isDueForReview(project.reviewAt, now));
+    const projectEntries = [...dueProjects, ...futureProjects].map((project) => {
+        const projectTasks = projectTasksById.get(project.id) ?? [];
+        return {
+            project,
+            tasks: projectTasks,
+            ...sequence.partition(projectTasks, false, now),
+            nextActionState: getProjectNextActionState(projectTasks.filter((task) => !sequence.blocked(task)), now),
+        };
+    });
+    const summary: WeeklyReviewSummary = {
+        inboxCount: inbox.length,
+        activeProjectCount: projectEntries.length,
+
+
+        projectsWithoutNextAction: projectEntries.filter((entry) => entry.nextActionState === 'none').length,
+        staleWaitingCount: staleItems.filter((item) => item.status === 'waiting').length,
+    };
+    lookBack.projectsMovedCount = movedProjectIds.size;
+
+    return { inbox, projectEntries, staleItems, summary, lookBack };
+}
+
+
+export function getWeeklyReviewSummary(
+    tasks: Task[],
+    projects: Project[],
+    now: Date = new Date(),
+    sections: readonly Section[] = [],
+): WeeklyReviewSummary {
+    return deriveWeeklyReview(tasks, projects, 14, now, undefined, sections).summary;
+}
+
+export function getStaleItems(
+    tasks: Task[],
+    projects: Project[],
+    staleThresholdDays = 14,
+    now: Date = new Date(),
+    sections: readonly Section[] = [],
+): ReviewSnapshotItem[] {
+    return deriveWeeklyReview(tasks, projects, staleThresholdDays, now, undefined, sections).staleItems;
+}
+
+
+export type ReviewBucketOptions = {
+    now?: Date;
+    weekStart?: AppSettings['weekStart'];
+    showFutureStarts?: boolean;
+    sortBy?: TaskSortBy;
+    sections?: readonly Section[];
+
+
+    areaVisibility?: Pick<AreaVisibilityContext, 'areaById' | 'resolvedAreaFilter'>;
+};
+
+function isSameLocalDay(a: Date, b: Date): boolean {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+export type DailyReviewBuckets = {
+    inbox: Task[];
+    focused: Task[];
+    waiting: Task[];
+    dueToday: Task[];
+    overdue: Task[];
+    focusCandidates: Task[];
+};
+
+
+export function getDailyReviewBuckets(
+    tasks: Task[],
+    projects: Project[],
+    opts: ReviewBucketOptions = {},
+): DailyReviewBuckets {
+    const now = opts.now ?? new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const projectMap = new Map(projects.map((project) => [project.id, project]));
+    const visibility: AreaVisibilityContext = {
+        areaById: opts.areaVisibility?.areaById,
+        projectById: projectMap,
+
+        resolvedAreaFilter: opts.areaVisibility?.resolvedAreaFilter ?? { included: [], excluded: [] },
+    };
+
+    const activeTasks = tasks.filter((task) => (
+        (task.status === 'inbox'
+            ? isTaskVisibleInInbox(task, visibility)
+            : isTaskVisibleInArea(task, visibility))
+        && isTaskActionable(task)
+    ));
+
+    const sequencing = getTaskSequencing(projects, opts.sections);
+
+
+    const sequentialFirstTaskIds = getSequentialFirstTaskIds(
+        activeTasks.filter((task) => isSequentialChainStatus(task.status)),
+        sequencing.sequentialProjectIds,
+        { sectionScopedProjectIds: sequencing.sectionScopedProjectIds,
+            sequentialSectionKeys: sequencing.sequentialSectionKeys, sections: opts.sections },
+    );
+
+    const inbox = activeTasks.filter((task) => task.status === 'inbox');
+    const focused = activeTasks.filter((task) => task.isFocusedToday && shouldShowTaskForStart(task, opts));
+    const waiting = sortTasksBy(activeTasks.filter((task) => task.status === 'waiting'), opts.sortBy);
+
+    const dueToday = sortTasksBy(activeTasks.filter((task) => {
+        const due = safeParseDueDate(task.dueDate);
+        return due ? isSameLocalDay(due, now) : false;
+    }), opts.sortBy);
+
+    const overdue = sortTasksBy(activeTasks.filter((task) => {
+        const due = safeParseDueDate(task.dueDate);
+        return due ? due < startOfToday : false;
+    }), opts.sortBy);
+
+    const todayStr = now.toDateString();
+    const candidatesById = new Map<string, Task>();
+    const addCandidate = (task: Task) => {
+        if (!candidatesById.has(task.id)) candidatesById.set(task.id, task);
+    };
+    activeTasks.forEach((task) => {
+        if (task.isFocusedToday && shouldShowTaskForStart(task, opts)) addCandidate(task);
+        const due = safeParseDueDate(task.dueDate);
+        if (due && (due < now || due.toDateString() === todayStr)) {
+            addCandidate(task);
+            return;
+        }
+        if (task.status === 'next') {
+
+
+            if (!shouldShowTaskForStart(task, opts)) return;
+
+
+            if (isTaskSequenceBlocked(task, sequencing, sequentialFirstTaskIds)) return;
+            addCandidate(task);
+            return;
+        }
+        if ((task.status === 'waiting' || task.status === 'someday') && isDueForReview(task.reviewAt, now)) {
+            addCandidate(task);
+        }
+    });
+    const focusCandidates = sortTasksBy(Array.from(candidatesById.values()), opts.sortBy);
+
+    return { inbox, focused, waiting, dueToday, overdue, focusCandidates };
+}
+
+export type CalendarReviewEntry = {
+    task: Task;
+    date: Date;
+    kind: 'due' | 'start';
+};
+
+export type ContextReviewGroup = {
+    context: string;
+    tasks: Task[];
+};
+
+export type ExternalCalendarDaySummary = {
+    dayStart: Date;
+    events: ExternalCalendarEvent[];
+    totalCount: number;
+};
+
+export type WeeklyReviewBuckets = {
+    inbox: Task[];
+    waitingGroups: ReviewSchedulePartition<Task>;
+    somedayGroups: ReviewSchedulePartition<Task>;
+    projectEntries: WeeklyReviewProjectEntry[];
+    staleItems: ReviewSnapshotItem[];
+    summary: WeeklyReviewSummary;
+    lookBack: WeeklyReviewLookBack;
+    contextGroups: ContextReviewGroup[];
+    calendarItems: CalendarReviewEntry[];
+};
+
+
+export function getWeeklyReviewBuckets(
+    tasks: Task[],
+    projects: Project[],
+    opts: ReviewBucketOptions = {},
+): WeeklyReviewBuckets {
+    const now = opts.now ?? new Date();
+    const weekly = deriveWeeklyReview(tasks, projects, 14, now, opts.weekStart, opts.sections);
+    const projectMap = new Map(projects.map((project) => [project.id, project]));
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const upcomingEnd = new Date(startOfToday);
+    upcomingEnd.setDate(upcomingEnd.getDate() + 7);
+
+
+    const isReviewable = (task: Task) => (
+        !task.deletedAt
+        && isTaskActionable(task)
+        && isTaskInActiveProject(task, projectMap)
+    );
+
+    const inboxTasks = weekly.inbox;
+    const waitingTasks = tasks.filter((task) => task.status === 'waiting' && !task.deletedAt && isTaskInActiveProject(task, projectMap));
+    const somedayTasks = tasks.filter((task) => task.status === 'someday' && !task.deletedAt && isTaskInActiveProject(task, projectMap));
+    const waitingGroups = partitionByReviewDate(waitingTasks, now);
+    const somedayGroups = partitionByReviewDate(somedayTasks, now);
+
+    const contextGroupsByName = new Map<string, Task[]>();
+    tasks.forEach((task) => {
+        if (!isReviewable(task)) return;
+        (task.contexts ?? []).forEach((contextValue) => {
+            const normalized = contextValue.trim();
+            if (!normalized) return;
+            const existing = contextGroupsByName.get(normalized) ?? [];
+            existing.push(task);
+            contextGroupsByName.set(normalized, existing);
+        });
+    });
+    const contextGroups: ContextReviewGroup[] = Array.from(contextGroupsByName.entries())
+        .map(([context, contextTasks]) => ({
+            context,
+            tasks: contextTasks.slice().sort((a, b) => a.title.localeCompare(b.title)),
+        }))
+        .sort((a, b) => (b.tasks.length - a.tasks.length) || a.context.localeCompare(b.context));
+
+    const calendarEntries: CalendarReviewEntry[] = [];
+    tasks.forEach((task) => {
+        if (!isReviewable(task)) return;
+        const dueDate = safeParseDueDate(task.dueDate);
+        if (dueDate) calendarEntries.push({ task, date: dueDate, kind: 'due' });
+        const startTime = safeParseDate(task.startTime);
+        if (startTime) calendarEntries.push({ task, date: startTime, kind: 'start' });
+    });
+    const calendarItems = calendarEntries
+        .filter((entry) => entry.date >= startOfToday && entry.date < upcomingEnd)
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    return {
+        inbox: inboxTasks,
+        waitingGroups,
+        somedayGroups,
+        projectEntries: weekly.projectEntries,
+        staleItems: weekly.staleItems,
+        summary: weekly.summary,
+        lookBack: weekly.lookBack,
+        contextGroups,
+        calendarItems,
+    };
+}
+
+export type ReviewOverviewProjectGroup = {
+    project?: Project;
+    tasks: Task[];
+    currentTasks: Task[];
+    laterTasks: Task[];
+    nextActionState: ProjectNextActionState;
+};
+
+export type ReviewOverviewAreaGroup = {
+    areaId?: string;
+    projectGroups: ReviewOverviewProjectGroup[];
+    taskCount: number;
+    projectCount: number;
+    needsActionCount: number;
+};
+
+export type GetReviewOverviewGroupsParams = {
+    tasks: Task[];
+    sections?: readonly Section[];
+    projects: Project[];
+    orderedAreas: Area[];
+    areaFilter: AreaFilterSelection;
+    sortBy: TaskSortBy;
+    scope?: ReviewOverviewScope;
+    now?: Date;
+};
+
+
+export function getReviewOverviewGroups({
+    tasks,
+    projects,
+    orderedAreas,
+    areaFilter,
+    sortBy,
+    scope = 'all',
+    now = new Date(),
+    sections = [],
+}: GetReviewOverviewGroupsParams): ReviewOverviewAreaGroup[] {
+    const sequence = reviewSequence(tasks, projects, sections);
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    const areaById = new Map(orderedAreas.map((area) => [area.id, area]));
+    const areaOrderById = new Map(orderedAreas.map((area, index) => [area.id, index]));
+    const visibleTasks = sortTasksBy(
+        getReviewOverviewTasks(tasks, scope, now).filter((task) => (
+            (task.status === 'inbox'
+                ? isTaskVisibleInInbox(task, { projectById })
+                : isTaskVisibleInArea(task, {
+                    areaById,
+                    projectById,
+                    resolvedAreaFilter: areaFilter,
+                }))
+        )),
+        sortBy,
+    );
+    type MutableAreaGroup = {
+        areaId?: string;
+        firstSeen: number;
+        projectGroups: Map<string, ReviewOverviewProjectGroup>;
+        taskCount: number;
+    };
+    const areaGroups = new Map<string, MutableAreaGroup>();
+
+    visibleTasks.forEach((task) => {
+        const project = task.projectId ? projectById.get(task.projectId) : undefined;
+        const areaId = project?.areaId || task.areaId;
+        const areaKey = areaId ?? '';
+        const areaGroup = areaGroups.get(areaKey) ?? {
+            areaId,
+            firstSeen: areaGroups.size,
+            projectGroups: new Map<string, ReviewOverviewProjectGroup>(),
+            taskCount: 0,
+        };
+        const projectKey = project?.id ?? '';
+        const projectGroup = areaGroup.projectGroups.get(projectKey) ?? {
+            project,
+            tasks: [],
+            currentTasks: [],
+            laterTasks: [],
+            nextActionState: 'none' as ProjectNextActionState,
+        };
+        projectGroup.tasks.push(task);
+        areaGroup.projectGroups.set(projectKey, projectGroup);
+        areaGroup.taskCount += 1;
+        areaGroups.set(areaKey, areaGroup);
+    });
+
+    return Array.from(areaGroups.values())
+        .sort((left, right) => {
+            if (!left.areaId) return right.areaId ? -1 : left.firstSeen - right.firstSeen;
+            if (!right.areaId) return 1;
+            const leftOrder = areaOrderById.get(left.areaId) ?? Number.MAX_SAFE_INTEGER;
+            const rightOrder = areaOrderById.get(right.areaId) ?? Number.MAX_SAFE_INTEGER;
+            return (leftOrder - rightOrder) || (left.firstSeen - right.firstSeen);
+        })
+        .map((areaGroup) => {
+            const projectGroups = Array.from(areaGroup.projectGroups.values())
+                .sort((left, right) => {
+                    if (!left.project) return right.project ? 1 : 0;
+                    if (!right.project) return -1;
+                    return (left.project.order - right.project.order)
+                        || left.project.title.localeCompare(right.project.title);
+                });
+            projectGroups.forEach((group) => {
+                Object.assign(group, sequence.partition(group.tasks, scope === 'due', now));
+                group.nextActionState = getProjectNextActionState(group.project ? sequence.headsByProject.get(group.project.id) ?? [] : group.currentTasks, now);
+            });
+            const projectCount = projectGroups.filter((group) => Boolean(group.project)).length;
+            const needsActionCount = projectGroups.filter(
+                (group) => Boolean(group.project) && group.nextActionState === 'none',
+            ).length;
+            return {
+                areaId: areaGroup.areaId,
+                projectGroups,
+                taskCount: areaGroup.taskCount,
+                projectCount,
+                needsActionCount,
+            };
+        });
+}
+
+
+export function getExternalCalendarDaySummaries(
+    events: ExternalCalendarEvent[],
+    days: number = 7,
+    now: Date = new Date(),
+): ExternalCalendarDaySummary[] {
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const summaries: ExternalCalendarDaySummary[] = [];
+    for (let offset = 0; offset < days; offset += 1) {
+        const dayStart = new Date(startOfToday);
+        dayStart.setDate(dayStart.getDate() + offset);
+        const dayEvents = getExternalCalendarEventsForDay(events, dayStart);
+        if (dayEvents.length > 0) {
+            summaries.push({ dayStart, events: dayEvents, totalCount: dayEvents.length });
+        }
+    }
+    return summaries;
+}
+
+
+export function getExternalCalendarEventsForDay(
+    events: readonly ExternalCalendarEvent[],
+    date: Date,
+): ExternalCalendarEvent[] {
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    return events
+        .filter((event) => {
+            const start = safeParseDate(event.start);
+            const end = safeParseDate(event.end);
+            if (!start || !end) return false;
+            return start.getTime() < dayEnd.getTime() && end.getTime() > dayStart.getTime();
+        })
+        .sort((a, b) => {
+            const aStart = safeParseDate(a.start)?.getTime() ?? Number.POSITIVE_INFINITY;
+            const bStart = safeParseDate(b.start)?.getTime() ?? Number.POSITIVE_INFINITY;
+            return aStart - bStart;
+        });
+}
+
+export type ReviewStepId =
+    | 'today' | 'focus' | 'inbox' | 'waiting' | 'completed'
+    | 'stale' | 'calendar' | 'contexts' | 'projects' | 'someday';
+
+export type ReviewStepFlags = {
+    id: ReviewStepId;
+    hasWork: boolean;
+};
+
+export type ReviewStepSession<Step extends ReviewStepFlags> = {
+    activeSteps: Step[];
+    displayedStep: Step['id'];
+    currentStepIndex: number;
+    activeStepIndex: number;
+    progress: number;
+    nextStep: Step['id'] | null;
+    previousStep: Step['id'] | null;
+};
+
+export type StoredReviewStepSession<Step extends ReviewStepId = ReviewStepId> = {
+    step: Step;
+    startedAt: string;
+};
+
+export type ReviewSessionCadence = 'daily' | 'weekly';
+
+function getLocalReviewWindowStart(
+    date: Date,
+    cadence: ReviewSessionCadence,
+    weekStart?: string | null,
+): number {
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    if (cadence === 'weekly') {
+        const daysSinceWeekStart = (start.getDay() - getWeekStartsOnIndex(weekStart) + 7) % 7;
+        start.setDate(start.getDate() - daysSinceWeekStart);
+    }
+    return start.getTime();
+}
+
+
+export function parseStoredReviewStepSession<Step extends ReviewStepId>(
+    serialized: string | null | undefined,
+    validSteps: ReadonlySet<Step>,
+    options: {
+        cadence: ReviewSessionCadence;
+        now?: Date;
+        weekStart?: string | null;
+    },
+): StoredReviewStepSession<Step> | null {
+    if (!serialized) return null;
+    let value: unknown;
+    try {
+        value = JSON.parse(serialized);
+    } catch {
+        return null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.step !== 'string' || !validSteps.has(candidate.step as Step)) return null;
+    if (typeof candidate.startedAt !== 'string') return null;
+
+    const startedAt = new Date(candidate.startedAt);
+    const now = options.now ?? new Date();
+    if (!Number.isFinite(startedAt.getTime()) || startedAt.getTime() > now.getTime()) return null;
+    if (getLocalReviewWindowStart(startedAt, options.cadence, options.weekStart)
+        !== getLocalReviewWindowStart(now, options.cadence, options.weekStart)) {
+        return null;
+    }
+    return { step: candidate.step as Step, startedAt: candidate.startedAt };
+}
+
+
+export function resolveReviewStepSession<Step extends ReviewStepFlags>(
+    steps: readonly Step[],
+    requestedStep: Step['id'],
+): ReviewStepSession<Step> {
+    const activeSteps = steps.filter((step) => step.hasWork || step.id === 'completed');
+    const displayedStep = activeSteps.some((step) => step.id === requestedStep)
+        ? requestedStep
+        : activeSteps[0]?.id ?? requestedStep;
+    const currentStepIndex = Math.max(0, steps.findIndex((step) => step.id === displayedStep));
+    const activeStepIndex = activeSteps.findIndex((step) => step.id === displayedStep);
+
+    return {
+        activeSteps,
+        displayedStep,
+        currentStepIndex,
+        activeStepIndex,
+        progress: (currentStepIndex / Math.max(1, steps.length - 1)) * 100,
+        nextStep: activeStepIndex >= 0 && activeStepIndex < activeSteps.length - 1
+            ? activeSteps[activeStepIndex + 1].id
+            : null,
+        previousStep: activeStepIndex > 0 ? activeSteps[activeStepIndex - 1].id : null,
+    };
+}
+
+export type DailyReviewStepsOptions = {
+    kind: 'daily';
+    includeFocusStep?: boolean;
+    todayCalendarEventCount?: number;
+    tomorrowCalendarEventCount?: number;
+    externalCalendarHasError?: boolean;
+    externalCalendarLoading?: boolean;
+};
+
+export type WeeklyReviewStepsOptions = {
+    kind: 'weekly';
+    includeContextStep?: boolean;
+    externalCalendarDayCount?: number;
+    externalCalendarHasError?: boolean;
+    externalCalendarLoading?: boolean;
+};
+
+
+export function buildReviewSteps(
+    buckets: DailyReviewBuckets,
+    opts: DailyReviewStepsOptions,
+): ReviewStepFlags[];
+export function buildReviewSteps(
+    buckets: WeeklyReviewBuckets,
+    opts: WeeklyReviewStepsOptions,
+): ReviewStepFlags[];
+export function buildReviewSteps(
+    buckets: DailyReviewBuckets | WeeklyReviewBuckets,
+    opts: DailyReviewStepsOptions | WeeklyReviewStepsOptions,
+): ReviewStepFlags[] {
+    if (opts.kind === 'daily') {
+        const b = buckets as DailyReviewBuckets;
+        const todayHasWork = b.overdue.length > 0
+            || b.dueToday.length > 0
+            || (opts.todayCalendarEventCount ?? 0) > 0
+            || (opts.tomorrowCalendarEventCount ?? 0) > 0
+            || Boolean(opts.externalCalendarHasError)
+            || Boolean(opts.externalCalendarLoading);
+        const steps: ReviewStepFlags[] = [
+            { id: 'today', hasWork: todayHasWork },
+            { id: 'inbox', hasWork: b.inbox.length > 0 },
+
+
+            { id: 'waiting', hasWork: b.waiting.length > 0 },
+        ];
+        if (opts.includeFocusStep !== false) {
+            steps.push({ id: 'focus', hasWork: b.focusCandidates.length > 0 });
+        }
+        steps.push({ id: 'completed', hasWork: true });
+        return steps;
+    }
+
+    const b = buckets as WeeklyReviewBuckets;
+    const calendarHasWork = b.calendarItems.length > 0
+        || (opts.externalCalendarDayCount ?? 0) > 0
+        || Boolean(opts.externalCalendarHasError)
+        || Boolean(opts.externalCalendarLoading);
+
+    const waitingHasWork = b.waitingGroups.due.length + b.waitingGroups.unscheduled.length > 0;
+    const somedayHasWork = b.somedayGroups.due.length + b.somedayGroups.unscheduled.length > 0;
+    const steps: ReviewStepFlags[] = [
+        { id: 'inbox', hasWork: b.inbox.length > 0 },
+        { id: 'stale', hasWork: b.staleItems.length > 0 },
+        { id: 'calendar', hasWork: calendarHasWork },
+        { id: 'waiting', hasWork: waitingHasWork },
+    ];
+    if (opts.includeContextStep !== false) {
+        steps.push({ id: 'contexts', hasWork: b.contextGroups.length > 0 });
+    }
+    steps.push(
+        { id: 'projects', hasWork: b.projectEntries.length > 0 },
+        { id: 'someday', hasWork: somedayHasWork },
+        { id: 'completed', hasWork: true },
+    );
+    return steps;
+}

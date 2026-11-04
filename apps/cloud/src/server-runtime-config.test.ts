@@ -1,0 +1,167 @@
+import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { startCloudServer } from './server';
+import {
+    CLOUD_NUMERIC_ENVIRONMENT_KEYS,
+    resolveCloudRuntimeConfig,
+} from './server-runtime-config';
+
+describe('resolveCloudRuntimeConfig', () => {
+    const numericEnvironmentKeys = [
+        'PORT',
+        'STRIDE_CLOUD_RATE_WINDOW_MS',
+        'STRIDE_CLOUD_RATE_MAX',
+        'STRIDE_CLOUD_ATTACHMENT_RATE_MAX',
+        'STRIDE_CLOUD_MAX_BODY_BYTES',
+        'STRIDE_CLOUD_MAX_DATA_BODY_BYTES',
+        'STRIDE_CLOUD_MAX_ATTACHMENT_BYTES',
+        'STRIDE_CLOUD_ANY_TOKEN_MAX_NAMESPACES',
+        'STRIDE_CLOUD_RATE_CLEANUP_MS',
+        'STRIDE_CLOUD_REQUEST_TIMEOUT_MS',
+        'STRIDE_CLOUD_SLOW_REQUEST_MS',
+        'STRIDE_CLOUD_MAX_TASK_TITLE_LENGTH',
+        'STRIDE_CLOUD_MAX_TASK_QUICK_ADD_LENGTH',
+        'STRIDE_CLOUD_MAX_AREA_NAME_LENGTH',
+        'STRIDE_CLOUD_MAX_ITEMS_PER_COLLECTION',
+        'STRIDE_CLOUD_LIST_DEFAULT_LIMIT',
+        'STRIDE_CLOUD_LIST_MAX_LIMIT',
+        'STRIDE_CLOUD_RATE_MAX_KEYS',
+        'STRIDE_CLOUD_AUTH_FAILURE_RATE_MAX',
+    ] as const;
+
+    test('rejects every malformed numeric control with the exact environment variable name', () => {
+        for (const key of numericEnvironmentKeys) {
+            expect(() => resolveCloudRuntimeConfig({ [key]: 'not-a-number' })).toThrow(key);
+            expect(() => resolveCloudRuntimeConfig({ [key]: '' })).toThrow(key);
+            expect(() => resolveCloudRuntimeConfig({ [key]: '1.5' })).toThrow(key);
+        }
+    });
+
+    test('documents every numeric environment control in the deployable example', () => {
+        const example = readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
+        expect(CLOUD_NUMERIC_ENVIRONMENT_KEYS).toEqual(numericEnvironmentKeys);
+        for (const key of numericEnvironmentKeys) {
+            expect(example).toContain(`${key}=`);
+        }
+    });
+
+    test('passes the sync document limit through both compose files only when set', () => {
+        const composeFiles = ['compose.yaml', 'compose.https.yaml'].map((name) => (
+            decodeURIComponent(new URL(`../../../docker/${name}`, import.meta.url).pathname)
+        ));
+        for (const file of composeFiles) {
+
+            expect(readFileSync(file, 'utf8')).toMatch(/^ {6}- STRIDE_CLOUD_MAX_DATA_BODY_BYTES$/m);
+        }
+        if (spawnSync('docker', ['compose', 'version']).status !== 0) return;
+        const render = (file: string, value?: string): string | null => {
+            const env: Record<string, string | undefined> = {
+                ...process.env,
+                STRIDE_CLOUD_CORS_ORIGIN: 'https://example.test',
+                STRIDE_CLOUD_DOMAIN: 'example.test',
+                STRIDE_CLOUD_MAX_DATA_BODY_BYTES: value,
+            };
+            if (value === undefined) delete env.STRIDE_CLOUD_MAX_DATA_BODY_BYTES;
+            const result = spawnSync('docker', ['compose', '-f', file, 'config', '--format', 'json'], { env, encoding: 'utf8' });
+            expect(result.status).toBe(0);
+            const config = JSON.parse(result.stdout) as { services: Record<string, { environment: Record<string, string | null> }> };
+            return config.services['stride-cloud'].environment.STRIDE_CLOUD_MAX_DATA_BODY_BYTES;
+        };
+        for (const file of composeFiles) {
+            expect(render(file, '10000000')).toBe('10000000');
+
+            expect(render(file)).toBeNull();
+        }
+    }, 30_000);
+
+    test('keeps the deployed defaults and rate-dependent attachment default', () => {
+        expect(resolveCloudRuntimeConfig({})).toEqual({
+            port: 8787,
+            rateWindowMs: 60_000,
+            rateMax: 120,
+            attachmentRateMax: 120,
+            maxBodyBytes: 2_000_000,
+            maxDataBodyBytes: 50_000_000,
+            maxAttachmentBytes: 50_000_000,
+            anyTokenMaxNamespaces: 32,
+            rateCleanupMs: 60_000,
+            requestTimeoutMs: 30_000,
+            slowRequestMs: 1_000,
+            maxTaskTitleLength: 500,
+            maxTaskQuickAddLength: 2_000,
+            maxAreaNameLength: 200,
+            maxItemsPerCollection: 50_000,
+            listDefaultLimit: 200,
+            listMaxLimit: 1_000,
+            rateMaxKeys: 10_000,
+            authFailureRateMax: 30,
+        });
+        expect(resolveCloudRuntimeConfig({ STRIDE_CLOUD_RATE_MAX: '77' }).attachmentRateMax).toBe(77);
+    });
+
+    test('gives the sync document its own limit that never drops below a raised small limit', () => {
+        expect(resolveCloudRuntimeConfig({ STRIDE_CLOUD_MAX_BODY_BYTES: '3000000' }).maxDataBodyBytes).toBe(50_000_000);
+        expect(resolveCloudRuntimeConfig({ STRIDE_CLOUD_MAX_BODY_BYTES: '64000000' }).maxDataBodyBytes).toBe(64_000_000);
+        expect(resolveCloudRuntimeConfig({ STRIDE_CLOUD_MAX_BODY_BYTES: '64000000' }).maxBodyBytes).toBe(64_000_000);
+        expect(resolveCloudRuntimeConfig({
+            STRIDE_CLOUD_MAX_BODY_BYTES: '64000000',
+            STRIDE_CLOUD_MAX_DATA_BODY_BYTES: '10000000',
+        }).maxDataBodyBytes).toBe(10_000_000);
+        expect(resolveCloudRuntimeConfig({}, { maxBodyBytes: 70_000_000 }).maxDataBodyBytes).toBe(70_000_000);
+        expect(resolveCloudRuntimeConfig(
+            { STRIDE_CLOUD_MAX_DATA_BODY_BYTES: '10000000' },
+            { maxDataBodyBytes: 1_000 },
+        ).maxDataBodyBytes).toBe(1_000);
+        expect(() => resolveCloudRuntimeConfig({ STRIDE_CLOUD_MAX_DATA_BODY_BYTES: '0' }))
+            .toThrow('STRIDE_CLOUD_MAX_DATA_BODY_BYTES');
+    });
+
+    test('allows zero only for port, namespace capacity, and the slow-request log threshold', () => {
+        const resolved = resolveCloudRuntimeConfig({
+            PORT: '0',
+            STRIDE_CLOUD_ANY_TOKEN_MAX_NAMESPACES: '0',
+            STRIDE_CLOUD_SLOW_REQUEST_MS: '0',
+        });
+        expect(resolved.port).toBe(0);
+        expect(resolved.anyTokenMaxNamespaces).toBe(0);
+        expect(resolved.slowRequestMs).toBe(0);
+
+        expect(() => resolveCloudRuntimeConfig({ STRIDE_CLOUD_RATE_MAX: '0' }))
+            .toThrow('STRIDE_CLOUD_RATE_MAX');
+        expect(() => resolveCloudRuntimeConfig({ PORT: '65536' })).toThrow('PORT');
+    });
+
+    test('validates deployed values even when a programmatic override exists', () => {
+        expect(() => resolveCloudRuntimeConfig(
+            { STRIDE_CLOUD_RATE_MAX: 'broken' },
+            { rateMax: 10 },
+        )).toThrow('STRIDE_CLOUD_RATE_MAX');
+    });
+
+    test('rejects malformed configuration before creating the data directory', async () => {
+        const sandbox = mkdtempSync(join(tmpdir(), 'stride-cloud-invalid-config-'));
+        const dataDir = join(sandbox, 'must-not-exist');
+        const previousValue = process.env.STRIDE_CLOUD_REQUEST_TIMEOUT_MS;
+        process.env.STRIDE_CLOUD_REQUEST_TIMEOUT_MS = 'disabled';
+        try {
+            await expect(startCloudServer({
+                host: '127.0.0.1',
+                port: 0,
+                dataDir,
+                allowedAuthTokens: ['runtime-config-test-token-1234567890'],
+            })).rejects.toThrow('STRIDE_CLOUD_REQUEST_TIMEOUT_MS');
+            expect(existsSync(dataDir)).toBe(false);
+        } finally {
+            if (previousValue === undefined) {
+                delete process.env.STRIDE_CLOUD_REQUEST_TIMEOUT_MS;
+            } else {
+                process.env.STRIDE_CLOUD_REQUEST_TIMEOUT_MS = previousValue;
+            }
+            rmSync(sandbox, { recursive: true, force: true });
+        }
+    });
+});

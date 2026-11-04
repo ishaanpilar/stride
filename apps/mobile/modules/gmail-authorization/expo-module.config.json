@@ -1,0 +1,11 @@
+{
+  "platforms": ["android", "ios"],
+  "android": {
+    "modules": ["com.ishaanpilar.stride.gmailauthorization.StrideGmailAuthorizationModule"]
+  },
+  "ios": {
+    "podspecPath": "StrideGmailAuthorization.podspec",
+    "swiftModuleName": "StrideGmailAuthorization",
+    "modules": ["StrideGmailAuthorizationModule"]
+  }
+}

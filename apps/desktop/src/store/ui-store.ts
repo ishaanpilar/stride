@@ -1,0 +1,368 @@
+import { createWithEqualityFn } from 'zustand/traditional';
+import { DONE_TASK_LIST_SORT_OPTIONS, useTaskStore, type FilterCriteria, type TaskSortBy } from '@stride/core';
+import { DONE_AXES, FOCUS_AXES, REFERENCE_AXES, SOMEDAY_AXES, sanitizeAxis, type DoneGroupBy, type NextGroupBy, type ReferenceGroupBy, type SomedayGroupBy } from '../components/views/list/next-grouping';
+import { HIDDEN_SIDEBAR_VIEWS_STORAGE_KEY, sanitizeHiddenSidebarViews, type HideableSidebarViewId } from '../lib/sidebar-views';
+import { getWorkspaceCache } from '../lib/workspace-cache';
+
+type ToastPauseReason = 'pointer' | 'focus';
+
+type ToastTimer = {
+    timeoutId: number | null;
+    remainingMs: number;
+    startedAt: number;
+    pauseReasons: Set<ToastPauseReason>;
+};
+
+const toastTimers = new Map<string, ToastTimer>();
+
+const clearToastTimer = (id: string) => {
+    const timer = toastTimers.get(id);
+    if (timer?.timeoutId !== null && timer?.timeoutId !== undefined) {
+        window.clearTimeout(timer.timeoutId);
+    }
+    toastTimers.delete(id);
+};
+
+const scheduleToastTimer = (id: string, timer: ToastTimer, onElapsed: () => void) => {
+    timer.startedAt = Date.now();
+    timer.timeoutId = window.setTimeout(() => {
+        toastTimers.delete(id);
+        onElapsed();
+    }, timer.remainingMs);
+};
+
+
+type ListNextGroupBy = NextGroupBy;
+type ListReferenceGroupBy = ReferenceGroupBy;
+type ListDoneGroupBy = DoneGroupBy;
+type ListSomedayGroupBy = SomedayGroupBy;
+type ListOptions = {
+    showDetails: boolean;
+
+
+    focusGroupBy: ListNextGroupBy;
+    inboxGroupBy: ListNextGroupBy;
+    nextGroupBy: ListNextGroupBy;
+    waitingGroupBy: ListNextGroupBy;
+    somedayGroupBy: ListSomedayGroupBy;
+    referenceGroupBy: ListReferenceGroupBy;
+
+
+    doneGroupBy: ListDoneGroupBy;
+    doneSortBy?: TaskSortBy;
+
+
+    archivedGroupBy: ListDoneGroupBy;
+    archivedSortBy?: TaskSortBy;
+};
+
+export const LIST_OPTIONS_STORAGE_KEY = 'stride:list-options:v1';
+
+
+export type ProjectLayout = 'list' | 'columns';
+export const PROJECT_LAYOUTS_STORAGE_KEY = 'stride:project-layouts:v1';
+
+const DEFAULT_LIST_OPTIONS: ListOptions = {
+    showDetails: false,
+    focusGroupBy: 'none',
+    inboxGroupBy: 'none',
+    nextGroupBy: 'none',
+    waitingGroupBy: 'none',
+    somedayGroupBy: 'none',
+    referenceGroupBy: 'area',
+    doneGroupBy: 'none',
+    archivedGroupBy: 'none',
+};
+
+function getPersistentStorage(): Storage | null {
+    return getWorkspaceCache();
+}
+
+function readStoredListOptions(): ListOptions {
+    const storage = getPersistentStorage();
+    if (!storage) return DEFAULT_LIST_OPTIONS;
+    try {
+        const raw = storage.getItem(LIST_OPTIONS_STORAGE_KEY);
+        if (!raw) return DEFAULT_LIST_OPTIONS;
+        const parsed = JSON.parse(raw) as Partial<ListOptions> | null;
+        const doneSortBy = DONE_TASK_LIST_SORT_OPTIONS.includes(parsed?.doneSortBy as TaskSortBy)
+            ? parsed?.doneSortBy as TaskSortBy
+            : undefined;
+        const archivedSortBy = DONE_TASK_LIST_SORT_OPTIONS.includes(parsed?.archivedSortBy as TaskSortBy)
+            ? parsed?.archivedSortBy as TaskSortBy
+            : undefined;
+
+
+        const perViewAxis = (value: unknown) => sanitizeAxis(FOCUS_AXES, value ?? parsed?.nextGroupBy, DEFAULT_LIST_OPTIONS.nextGroupBy);
+        return {
+            showDetails: typeof parsed?.showDetails === 'boolean' ? parsed.showDetails : DEFAULT_LIST_OPTIONS.showDetails,
+            focusGroupBy: perViewAxis(parsed?.focusGroupBy),
+            inboxGroupBy: perViewAxis(parsed?.inboxGroupBy),
+            nextGroupBy: sanitizeAxis(FOCUS_AXES, parsed?.nextGroupBy, DEFAULT_LIST_OPTIONS.nextGroupBy),
+            waitingGroupBy: perViewAxis(parsed?.waitingGroupBy),
+            somedayGroupBy: sanitizeAxis(
+                SOMEDAY_AXES,
+                parsed?.somedayGroupBy ?? parsed?.nextGroupBy,
+                DEFAULT_LIST_OPTIONS.somedayGroupBy,
+            ),
+            referenceGroupBy: sanitizeAxis(REFERENCE_AXES, parsed?.referenceGroupBy, DEFAULT_LIST_OPTIONS.referenceGroupBy),
+            doneGroupBy: sanitizeAxis(DONE_AXES, parsed?.doneGroupBy, DEFAULT_LIST_OPTIONS.doneGroupBy),
+            ...(doneSortBy ? { doneSortBy } : {}),
+            archivedGroupBy: sanitizeAxis(DONE_AXES, parsed?.archivedGroupBy, DEFAULT_LIST_OPTIONS.archivedGroupBy),
+            ...(archivedSortBy ? { archivedSortBy } : {}),
+        };
+    } catch {
+        return DEFAULT_LIST_OPTIONS;
+    }
+}
+
+function saveStoredListOptions(options: ListOptions) {
+    const storage = getPersistentStorage();
+    if (!storage) return;
+    try {
+        storage.setItem(LIST_OPTIONS_STORAGE_KEY, JSON.stringify(options));
+    } catch {
+
+    }
+}
+
+function readStoredProjectLayouts(): Record<string, ProjectLayout> {
+    const storage = getPersistentStorage();
+    if (!storage) return {};
+    try {
+        const raw = storage.getItem(PROJECT_LAYOUTS_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+        if (!parsed || typeof parsed !== 'object') return {};
+        const layouts: Record<string, ProjectLayout> = {};
+        for (const [projectId, value] of Object.entries(parsed)) {
+            if (value === 'list' || value === 'columns') layouts[projectId] = value;
+        }
+        return layouts;
+    } catch {
+        return {};
+    }
+}
+
+
+function pruneProjectLayouts(layouts: Record<string, ProjectLayout>): Record<string, ProjectLayout> {
+    const allProjects = useTaskStore.getState()._allProjects;
+    if (allProjects.length === 0) return layouts;
+    const validIds = new Set(allProjects.map((project) => project.id));
+    const pruned: Record<string, ProjectLayout> = {};
+    for (const [projectId, layout] of Object.entries(layouts)) {
+        if (validIds.has(projectId)) pruned[projectId] = layout;
+    }
+    return pruned;
+}
+
+function readStoredHiddenSidebarViews(): HideableSidebarViewId[] {
+    const storage = getPersistentStorage();
+    if (!storage) return [];
+    try {
+        const raw = storage.getItem(HIDDEN_SIDEBAR_VIEWS_STORAGE_KEY);
+        if (!raw) return [];
+        return sanitizeHiddenSidebarViews(JSON.parse(raw));
+    } catch {
+        return [];
+    }
+}
+
+function saveStoredHiddenSidebarViews(views: HideableSidebarViewId[]) {
+    const storage = getPersistentStorage();
+    if (!storage) return;
+    try {
+        storage.setItem(HIDDEN_SIDEBAR_VIEWS_STORAGE_KEY, JSON.stringify(views));
+    } catch {
+
+    }
+}
+
+function saveStoredProjectLayouts(layouts: Record<string, ProjectLayout>) {
+    const storage = getPersistentStorage();
+    if (!storage) return;
+    try {
+        storage.setItem(PROJECT_LAYOUTS_STORAGE_KEY, JSON.stringify(layouts));
+    } catch {
+
+    }
+}
+
+interface UiState {
+    isFocusMode: boolean;
+    setFocusMode: (value: boolean) => void;
+    toggleFocusMode: () => void;
+    toasts: Array<{
+        id: string;
+        message: string;
+        tone: 'success' | 'error' | 'info';
+        action?: { label: string; onClick: () => void };
+    }>;
+    showToast: (
+        message: string,
+        tone?: 'success' | 'error' | 'info',
+        durationMs?: number,
+        action?: { label: string; onClick: () => void }
+    ) => void;
+    dismissToast: (id: string) => void;
+    pauseToast: (id: string, reason: ToastPauseReason) => void;
+    resumeToast: (id: string, reason: ToastPauseReason) => void;
+    listFilters: {
+        criteria: FilterCriteria;
+        open: boolean;
+    };
+    setListFilters: (partial: Partial<UiState['listFilters']>) => void;
+    resetListFilters: () => void;
+    listOptions: ListOptions;
+    setListOptions: (partial: Partial<UiState['listOptions']>) => void;
+    editingTaskId: string | null;
+    setEditingTaskId: (value: string | null) => void;
+    expandedTaskIds: Record<string, true>;
+    collapseAllTaskDetails: () => void;
+    setTaskExpanded: (taskId: string, expanded: boolean) => void;
+    toggleTaskExpanded: (taskId: string) => void;
+    boardFilters: {
+        criteria: FilterCriteria;
+    };
+    setBoardFilters: (partial: Partial<UiState['boardFilters']>) => void;
+    projectView: {
+        selectedProjectId: string | null;
+    };
+    setProjectView: (partial: Partial<UiState['projectView']>) => void;
+    projectLayouts: Record<string, ProjectLayout>;
+    setProjectLayout: (projectId: string, layout: ProjectLayout) => void;
+    hiddenSidebarViews: HideableSidebarViewId[];
+    setSidebarViewHidden: (viewId: HideableSidebarViewId, hidden: boolean) => void;
+}
+
+export const useUiStore = createWithEqualityFn<UiState>()((set) => ({
+    isFocusMode: false,
+    setFocusMode: (value) => set({ isFocusMode: value }),
+    toggleFocusMode: () => set((state) => ({ isFocusMode: !state.isFocusMode })),
+    toasts: [],
+    showToast: (message, tone = 'info', durationMs = 3000, action) => {
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        set((state) => ({ toasts: [...state.toasts, { id, message, tone, action }] }));
+        const timer: ToastTimer = {
+            timeoutId: null,
+            remainingMs: durationMs,
+            startedAt: Date.now(),
+            pauseReasons: new Set(),
+        };
+        toastTimers.set(id, timer);
+        scheduleToastTimer(id, timer, () => {
+            set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+        });
+    },
+    dismissToast: (id) => {
+        clearToastTimer(id);
+        set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+    },
+    pauseToast: (id, reason) => {
+        const timer = toastTimers.get(id);
+        if (!timer || timer.pauseReasons.has(reason)) return;
+        if (timer.pauseReasons.size === 0 && timer.timeoutId !== null) {
+            window.clearTimeout(timer.timeoutId);
+            timer.timeoutId = null;
+            timer.remainingMs = Math.max(0, timer.remainingMs - Math.max(0, Date.now() - timer.startedAt));
+        }
+        timer.pauseReasons.add(reason);
+    },
+    resumeToast: (id, reason) => {
+        const timer = toastTimers.get(id);
+        if (!timer || !timer.pauseReasons.delete(reason) || timer.pauseReasons.size > 0 || timer.timeoutId !== null) return;
+        scheduleToastTimer(id, timer, () => {
+            set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+        });
+    },
+    listFilters: {
+        criteria: {},
+        open: false,
+    },
+    setListFilters: (partial) =>
+        set((state) => ({ listFilters: { ...state.listFilters, ...partial } })),
+    resetListFilters: () =>
+        set((state) => ({
+            listFilters: {
+                ...state.listFilters,
+                criteria: {},
+            },
+        })),
+    listOptions: readStoredListOptions(),
+    setListOptions: (partial) =>
+        set((state) => {
+            const listOptions = { ...state.listOptions, ...partial };
+            saveStoredListOptions(listOptions);
+            return { listOptions };
+        }),
+    editingTaskId: null,
+    setEditingTaskId: (value) => set({ editingTaskId: value }),
+    expandedTaskIds: {},
+    collapseAllTaskDetails: () =>
+        set((state) => (Object.keys(state.expandedTaskIds).length === 0 ? state : { expandedTaskIds: {} })),
+    setTaskExpanded: (taskId, expanded) =>
+        set((state) => {
+            const currentExpanded = Boolean(state.expandedTaskIds[taskId]);
+            if (currentExpanded === expanded) return state;
+            if (expanded) {
+                return {
+                    expandedTaskIds: {
+                        ...state.expandedTaskIds,
+                        [taskId]: true,
+                    },
+                };
+            }
+            const nextExpanded = { ...state.expandedTaskIds };
+            delete nextExpanded[taskId];
+            return { expandedTaskIds: nextExpanded };
+        }),
+    toggleTaskExpanded: (taskId) =>
+        set((state) => {
+            const isExpanded = Boolean(state.expandedTaskIds[taskId]);
+            if (isExpanded) {
+                const nextExpanded = { ...state.expandedTaskIds };
+                delete nextExpanded[taskId];
+                return { expandedTaskIds: nextExpanded };
+            }
+            return {
+                expandedTaskIds: {
+                    ...state.expandedTaskIds,
+                    [taskId]: true,
+                },
+            };
+        }),
+    boardFilters: {
+        criteria: {},
+    },
+    setBoardFilters: (partial) =>
+        set((state) => ({ boardFilters: { ...state.boardFilters, ...partial } })),
+    projectView: {
+        selectedProjectId: null,
+    },
+    setProjectView: (partial) =>
+        set((state) => ({ projectView: { ...state.projectView, ...partial } })),
+    projectLayouts: readStoredProjectLayouts(),
+    setProjectLayout: (projectId, layout) =>
+        set((state) => {
+            const projectLayouts = pruneProjectLayouts({ ...state.projectLayouts, [projectId]: layout });
+            saveStoredProjectLayouts(projectLayouts);
+            return { projectLayouts };
+        }),
+    hiddenSidebarViews: readStoredHiddenSidebarViews(),
+    setSidebarViewHidden: (viewId, hidden) =>
+        set((state) => {
+            const next = state.hiddenSidebarViews.filter((id) => id !== viewId);
+            if (hidden) next.push(viewId);
+            saveStoredHiddenSidebarViews(next);
+            return { hiddenSidebarViews: next };
+        }),
+}));
+
+
+useUiStore.subscribe((state, previousState) => {
+    if (state.toasts === previousState.toasts) return;
+    const visibleToastIds = new Set(state.toasts.map((toast) => toast.id));
+    for (const id of toastTimers.keys()) {
+        if (!visibleToastIds.has(id)) clearToastTimer(id);
+    }
+});

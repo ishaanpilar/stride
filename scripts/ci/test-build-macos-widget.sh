@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+STUB_BIN="$TEST_DIR/bin"
+mkdir -p "$STUB_BIN"
+
+cat > "$STUB_BIN/xcrun" <<'STUB'
+#!/usr/bin/env bash
+printf 'xcrun %s\n' "$*" >> "$WIDGET_TEST_LOG"
+case "$*" in
+    '--sdk macosx --show-sdk-path') printf '/tmp/fake-macos-sdk\n' ;;
+    '--find swiftc') command -v swiftc ;;
+    '--find appintentsmetadataprocessor') command -v appintentsmetadataprocessor ;;
+    *) exit 1 ;;
+esac
+STUB
+
+cat > "$STUB_BIN/swiftc" <<'STUB'
+#!/usr/bin/env bash
+printf 'swiftc %s\n' "$*" >> "$WIDGET_TEST_LOG"
+output=""
+const_values=""
+emit_const_values=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) output="$2" ;;
+        -emit-const-values) emit_const_values=true ;;
+        -emit-const-values-path) const_values="$2" ;;
+    esac
+    shift
+done
+mkdir -p "$(dirname "$output")"
+: > "$output"
+if [ "$emit_const_values" = true ] && [ -n "$const_values" ]; then
+    mkdir -p "$(dirname "$const_values")"
+    printf '{"type":"AppIntent"}\n' > "$const_values"
+fi
+STUB
+
+cat > "$STUB_BIN/appintentsmetadataprocessor" <<'STUB'
+#!/usr/bin/env bash
+printf 'appintentsmetadataprocessor %s\n' "$*" >> "$WIDGET_TEST_LOG"
+output=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        output="$2"
+    fi
+    shift
+done
+mkdir -p "$output/Metadata.appintents"
+printf '{"actions":["StrideMacQuickCaptureIntent"]}\n' > "$output/Metadata.appintents/extract.actionsdata"
+STUB
+
+cat > "$STUB_BIN/xcodebuild" <<'STUB'
+#!/usr/bin/env bash
+printf 'Xcode 16.4\nBuild version 16F6\n'
+STUB
+
+cat > "$STUB_BIN/lipo" <<'STUB'
+#!/usr/bin/env bash
+printf 'lipo %s\n' "$*" >> "$WIDGET_TEST_LOG"
+output=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-output" ]; then
+        output="$2"
+        break
+    fi
+    shift
+done
+mkdir -p "$(dirname "$output")"
+: > "$output"
+STUB
+
+cat > "$STUB_BIN/nm" <<'STUB'
+#!/usr/bin/env bash
+printf 'nm %s\n' "$*" >> "$WIDGET_TEST_LOG"
+printf '                 U _NSExtensionMain\n'
+STUB
+
+cat > "$STUB_BIN/PlistBuddy" <<'STUB'
+#!/usr/bin/env bash
+printf 'PlistBuddy %s\n' "$*" >> "$WIDGET_TEST_LOG"
+case "$2" in
+    'Print :CFBundleShortVersionString') printf '1.2.5\n' ;;
+    'Print :CFBundleVersion') printf '125\n' ;;
+esac
+STUB
+
+
+cat > "$STUB_BIN/codesign" <<'STUB'
+#!/usr/bin/env bash
+printf 'codesign %s\n' "$*" >> "$WIDGET_TEST_LOG"
+target="${!#}"
+if [ "${1:-}" = "-d" ]; then
+    case "$target" in
+        *.appex) cat "$WIDGET_TEST_DIR/widget-entitlements.plist" ;;
+        *.app) cat "$WIDGET_TEST_DIR/host-entitlements.plist" ;;
+    esac
+    exit 0
+fi
+entitlements=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--entitlements" ]; then
+        entitlements="$2"
+        break
+    fi
+    shift
+done
+case "$target" in
+    *.appex)
+        cp "$entitlements" "$WIDGET_TEST_DIR/widget-entitlements.plist"
+        if [ -f "$target/Contents/embedded.provisionprofile" ]; then
+            : > "$WIDGET_TEST_DIR/profile-sealed"
+        fi
+        ;;
+    *.app) cp "$entitlements" "$WIDGET_TEST_DIR/host-entitlements.plist" ;;
+esac
+STUB
+
+cat > "$STUB_BIN/strings" <<'STUB'
+#!/usr/bin/env bash
+printf '%s.com.ishaanpilar.stride\n' "$WIDGET_TEST_TEAM"
+STUB
+
+chmod +x "$STUB_BIN"/*
+
+
+run_case() {
+    local rust_target="$1"
+    local case_name="$2"
+    local distribution="${3:-developer-id}"
+    local case_dir="$TEST_DIR/$case_name"
+    local app_path="$case_dir/Stride.app"
+    local log_path="$case_dir/commands.log"
+    local profile_path="$case_dir/widget.provisionprofile"
+    mkdir -p "$app_path/Contents/MacOS"
+    printf '<plist/>\n' > "$app_path/Contents/Info.plist"
+    printf 'binary fixture\n' > "$app_path/Contents/MacOS/stride"
+    printf 'provisioning profile fixture\n' > "$profile_path"
+    : > "$log_path"
+
+    (
+        cd "$ROOT_DIR"
+        PATH="$STUB_BIN:$PATH" \
+        PLIST_BUDDY="$STUB_BIN/PlistBuddy" \
+        WIDGET_TEST_DIR="$case_dir" \
+        WIDGET_TEST_LOG="$log_path" \
+        WIDGET_TEST_TEAM="TEAM123" \
+        STRIDE_WIDGET_DISTRIBUTION="$distribution" \
+        STRIDE_WIDGET_PROVISIONING_PROFILE="$profile_path" \
+        bash scripts/build-macos-widget.sh "$app_path" TEAM123 'Signing Fixture' "$rust_target"
+    )
+
+    local appex="$app_path/Contents/PlugIns/StrideWidgets.appex"
+    test -d "$appex"
+    test -f "$appex/Contents/MacOS/StrideWidgets"
+    test -s "$appex/Contents/Resources/Metadata.appintents/extract.actionsdata"
+    grep -q 'Set :CFBundleShortVersionString 1.2.5' "$log_path"
+    grep -q 'Set :CFBundleVersion 125' "$log_path"
+    grep -q 'Set :CFBundleIdentifier com.ishaanpilar.stride.StrideWidgets' "$log_path"
+    grep -qF '<key>CFBundleDisplayName</key>' "$appex/Contents/Info.plist"
+    grep -qF '<string>Stride Widgets</string>' "$appex/Contents/Info.plist"
+    grep -qF 'TEAM123.com.ishaanpilar.stride' "$appex/Contents/Info.plist"
+    ! grep -q '__STRIDE_MACOS_APP_GROUP__' "$appex/Contents/Info.plist"
+    grep -qF '<string>TEAM123.com.ishaanpilar.stride</string>' "$case_dir/widget-entitlements.plist"
+    grep -q 'com.apple.security.app-sandbox' "$case_dir/widget-entitlements.plist"
+    ! grep -q '__STRIDE_MACOS_' "$case_dir/widget-entitlements.plist"
+    grep -qF '<string>TEAM123.com.ishaanpilar.stride</string>' "$case_dir/host-entitlements.plist"
+    ! grep -q '__STRIDE_MACOS_' "$case_dir/host-entitlements.plist"
+    grep -q '^appintentsmetadataprocessor .*--module-name StrideWidgets ' "$log_path"
+    grep -q -- '--bundle-identifier com.ishaanpilar.stride.StrideWidgets' "$log_path"
+    grep -q -- '--compile-time-extraction' "$log_path"
+    grep -q -- '--swift-const-vals-list' "$log_path"
+
+    local appex_sign_line
+    local app_sign_line
+    appex_sign_line="$(grep -n '^codesign --force .*\.appex$' "$log_path" | head -n 1 | cut -d: -f1)"
+    app_sign_line="$(grep -n '^codesign --force .*\.app$' "$log_path" | head -n 1 | cut -d: -f1)"
+    test -n "$appex_sign_line" && test -n "$app_sign_line"
+    test "$appex_sign_line" -lt "$app_sign_line"
+    ! grep '^codesign --force .*\.app$' "$log_path" | grep -q -- '--deep'
+
+    case "$distribution" in
+        developer-id)
+
+
+            ! test -e "$appex/Contents/embedded.provisionprofile"
+            ! test -e "$case_dir/profile-sealed"
+            ! grep -q 'com.apple.security.app-sandbox' "$case_dir/host-entitlements.plist"
+            ! grep -q 'com.apple.application-identifier' "$case_dir/widget-entitlements.plist"
+            ;;
+        appstore)
+            cmp -s "$profile_path" "$appex/Contents/embedded.provisionprofile"
+            grep -qF '<string>TEAM123.com.ishaanpilar.stride.StrideWidgets</string>' "$case_dir/widget-entitlements.plist"
+            grep -q 'com.apple.developer.team-identifier' "$case_dir/widget-entitlements.plist"
+            grep -qF '<string>TEAM123</string>' "$case_dir/widget-entitlements.plist"
+
+            grep -q 'com.apple.security.app-sandbox' "$case_dir/host-entitlements.plist"
+            grep -q 'com.apple.security.files.user-selected.read-write' "$case_dir/host-entitlements.plist"
+
+            test -f "$case_dir/profile-sealed"
+            ;;
+    esac
+}
+
+expect_swift_targets() {
+    local log_path="$1"
+    shift
+    local count
+    count="$(grep -c '^swiftc ' "$log_path")"
+    test "$count" -eq "$#"
+    for arch in "$@"; do
+        grep -q -- "-target ${arch}-apple-macos14.0" "$log_path"
+    done
+    test "$(grep -c '^swiftc .* -Xlinker -e -Xlinker _NSExtensionMain ' "$log_path")" -eq "$#"
+    test "$(grep -c '^swiftc .* -whole-module-optimization .* -emit-const-values -emit-const-values-path ' "$log_path")" -eq "$#"
+    test "$(grep -c '^nm ' "$log_path")" -eq "$#"
+}
+
+run_case aarch64-apple-darwin arm64
+expect_swift_targets "$TEST_DIR/arm64/commands.log" arm64
+! grep -q '^lipo ' "$TEST_DIR/arm64/commands.log"
+
+run_case x86_64-apple-darwin x86_64
+expect_swift_targets "$TEST_DIR/x86_64/commands.log" x86_64
+! grep -q '^lipo ' "$TEST_DIR/x86_64/commands.log"
+
+run_case universal-apple-darwin universal
+expect_swift_targets "$TEST_DIR/universal/commands.log" arm64 x86_64
+grep -q '^lipo -create .*StrideWidgets-arm64 .*StrideWidgets-x86_64 -output .*/StrideWidgets$' "$TEST_DIR/universal/commands.log"
+
+run_case universal-apple-darwin appstore appstore
+expect_swift_targets "$TEST_DIR/appstore/commands.log" arm64 x86_64
+
+METADATA_ONLY_APP="$TEST_DIR/metadata-only/Stride.app"
+METADATA_ONLY_LOG="$TEST_DIR/metadata-only/commands.log"
+mkdir -p "$METADATA_ONLY_APP/Contents/MacOS"
+printf '<plist/>\n' > "$METADATA_ONLY_APP/Contents/Info.plist"
+: > "$METADATA_ONLY_LOG"
+(
+    cd "$ROOT_DIR"
+    PATH="$STUB_BIN:$PATH" \
+    PLIST_BUDDY="$STUB_BIN/PlistBuddy" \
+    WIDGET_TEST_DIR="$TEST_DIR/metadata-only" \
+    WIDGET_TEST_LOG="$METADATA_ONLY_LOG" \
+    WIDGET_TEST_TEAM="TEAM123" \
+    STRIDE_WIDGET_METADATA_ONLY=1 \
+    bash scripts/build-macos-widget.sh "$METADATA_ONLY_APP" TEAM123 '' x86_64-apple-darwin
+)
+grep -q '^appintentsmetadataprocessor ' "$METADATA_ONLY_LOG"
+! grep -q '^codesign ' "$METADATA_ONLY_LOG"
+! test -e "$METADATA_ONLY_APP/Contents/PlugIns"
+
+
+if (
+    cd "$ROOT_DIR"
+    mkdir -p "$TEST_DIR/noprofile/Stride.app/Contents/MacOS"
+    printf '<plist/>\n' > "$TEST_DIR/noprofile/Stride.app/Contents/Info.plist"
+    PATH="$STUB_BIN:$PATH" PLIST_BUDDY="$STUB_BIN/PlistBuddy" \
+    WIDGET_TEST_DIR="$TEST_DIR/noprofile" WIDGET_TEST_LOG="$TEST_DIR/noprofile/commands.log" WIDGET_TEST_TEAM="TEAM123" \
+    STRIDE_WIDGET_DISTRIBUTION=appstore \
+    bash scripts/build-macos-widget.sh "$TEST_DIR/noprofile/Stride.app" TEAM123 'Signing Fixture' universal-apple-darwin >/dev/null 2>&1
+); then
+    echo 'expected App Store mode without a provisioning profile to fail' >&2
+    exit 1
+fi
+
+echo 'macOS widget packaging dry run passed.'

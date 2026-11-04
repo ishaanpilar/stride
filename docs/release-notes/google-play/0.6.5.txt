@@ -1,0 +1,15 @@
+<en-US>
+- Add settings sync options for theme, language/date format, external calendar URLs, and AI settings (API keys never sync).
+- Fix notification scheduling and improve sync reliability.
+- Quick-add now supports Unicode context and tag names.
+</en-US>
+<zh-CN>
+- 新增设置同步选项：主题、语言/日期格式、外部日历 URL、AI 设置（API 密钥不会同步）。
+- 修复通知触发并提升同步稳定性。
+- 快速添加支持 Unicode 的上下文/标签名称。
+</zh-CN>
+<es-ES>
+- Añade opciones de sincronización de ajustes para tema, idioma/formato de fecha, URLs de calendarios externos y ajustes de IA (las claves API no se sincronizan).
+- Corrige la programación de notificaciones y mejora la estabilidad de sincronización.
+- Quick-add ahora admite nombres Unicode para contextos y etiquetas.
+</es-ES>

@@ -1,0 +1,8 @@
+{
+  "platforms": ["ios"],
+  "ios": {
+    "podspecPath": "ios/StrideIosWidget.podspec",
+    "swiftModuleName": "StrideIosWidget",
+    "modules": ["StrideIosWidgetModule"]
+  }
+}

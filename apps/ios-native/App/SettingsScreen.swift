@@ -1,0 +1,3808 @@
+import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
+import StrideNativeCore
+
+struct SettingsScreen: View {
+    @ObservedObject var model: CoreModel
+    let palette: AppPalette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @FocusState private var gtdTimeFocused: Bool
+    @FocusState private var pomodoroDurationFocused: String?
+    @FocusState private var renameFocused: Bool
+    @FocusState private var taxonomyNameFocused: Bool
+    @State private var taxonomyDeleteConfirmPresented = false
+    @State private var taxonomyDeleteConfirmAnswered = false
+    @FocusState private var areaNameFocused: Bool
+    private enum PersonEditorField: Hashable { case name, note, reference }
+    @FocusState private var personEditorFocused: PersonEditorField?
+    @State private var deleteConfirmPresented = false
+    @State private var deleteConfirmAnswered = false
+    @State private var personDeleteConfirmPresented = false
+    @State private var personDeleteConfirmAnswered = false
+    @State private var areaDeleteConfirmPresented = false
+    @State private var areaDeleteConfirmAnswered = false
+    @State private var syncReloadConfirmPresented = false
+    @State private var syncBackendPending: String?
+    private enum SyncField: Hashable { case url, username, password, token, encryption(String) }
+    @FocusState private var syncField: SyncField?
+    @State private var notificationPicker: String?
+    @State private var notificationDayDraft = 0
+    @State private var notificationDefaultDraft = "send"
+    @State private var notificationTimeDraft = Date()
+    @State private var calendarAreaPicker: Data?
+    @State private var calendarPushDeletePresented = false
+    private enum CalendarSubscriptionField: Hashable { case name, url }
+    @FocusState private var calendarSubscriptionField: CalendarSubscriptionField?
+
+
+    private var settingsBody: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    renameFocused = false
+                    if model.settingsRemindersPresented { model.closeAppleRemindersSettings() }
+                    else if model.settingsSyncPresented { syncField = nil; Task { await model.closeSyncSettings() } }
+                    else if model.settingsDataPresented { model.closeDiagnostics(owner: model.settingsDiagnosticsOwner) }
+                    else if model.settingsGtdPresented { Task { await model.closeGtdSettings(); gtdTimeFocused = false; pomodoroDurationFocused = nil } }
+                    else if model.settingsFeedbackPresented { model.closeFeedbackSettings() }
+                    else if model.settingsAboutPresented { model.closeAboutSettings() }
+                    else if model.settingsNotificationsPresented { model.closeNotificationSettings() }
+                    else if model.settingsAIPresented { model.retireAISettingsPage() }
+                    else if model.settingsCalendarPresented { calendarSubscriptionField = nil; model.closeCalendarSettings() }
+                    else if model.settingsGeneralPresented { model.closeGeneralSettings() }
+                    else if model.settingsManagePresented { model.closeManageSettings() }
+                    else if model.settingsAdvancedPresented { model.closeAdvancedSettings() }
+                    else { Task { await model.closeSettings() } }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.settingsSyncChecking || model.settingsSyncRestartRequired || (!model.settingsDataPresented && ((model.busy && !model.settingsAboutCanCancel && !model.settingsCalendarCanCancel && !model.settingsAICanCancel) || model.retryNeeded || model.somedaySectionRenamePending
+                          || model.somedaySectionRenameAwaitingRefresh
+                          || model.somedaySectionDeletePending || model.somedaySectionDeleteAwaitingRefresh
+                          || model.somedaySectionOrderActive || model.unassignedAreaColorActive
+                          || model.notificationSettingActive || (model.calendarSettingActive && !model.settingsCalendarCanCancel) || (model.settingsGtdPresented ? model.gtdWorkflowPending : model.generalPreferenceActive) || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive
+                          || model.settingsPersonCreatePresented || model.settingsPersonEditPresented)))
+                .accessibilityLabel(model.label("common.back"))
+                .accessibilityIdentifier(model.settingsRemindersPresented ? "apple-reminders-back" : model.settingsSyncPresented ? "sync-back" : model.settingsDataPresented ? "diagnostics-back" : model.settingsGtdPomodoroPresented ? "gtd-pomodoro-back" : model.settingsGtdArchivePresented ? "gtd-archive-back" : model.settingsGtdTaskEditorPresented ? "gtd-taskEditor-back" : model.settingsGtdCapturePresented ? "gtd-capture-back" : model.settingsGtdInboxPresented ? "gtd-inbox-back" : model.settingsGtdReviewPresented ? "gtd-review-back" : model.settingsGtdPresented ? "gtd-back" : model.settingsFeedbackPresented ? "feedback-back" : model.settingsAboutPresented ? "about-back" : model.settingsNotificationsPresented ? "notifications-back" : model.settingsAIPresented ? "ai-summary-back" : model.settingsCalendarPresented ? "calendar-settings-back" : model.settingsGeneralPresented ? "general-back" : model.settingsManagePresented ? "manage-back" : model.settingsAdvancedPresented ? "advanced-back" : "settings-back")
+                if model.settingsRemindersPresented {
+                    Text(model.label("settings.appleRemindersImport.appleReminders")).rnFont(20, .bold).foregroundStyle(palette.text)
+                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.isHeader).accessibilityIdentifier("apple-reminders-title")
+                } else if model.settingsSyncPresented {
+                    Text(model.settingsSync.text("title").isEmpty ? "Sync" : model.settingsSync.text("title"))
+                        .rnFont(20, .bold).foregroundStyle(palette.text)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                } else if model.settingsAboutPresented {
+                    Text(model.label(model.settingsFeedbackPresented ? "settings.feedback" : "settings.about")).rnFont(20, .bold).foregroundStyle(palette.text)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier(model.settingsFeedbackPresented ? "feedback-title" : "about-title")
+                } else if model.settingsNotificationsPresented {
+                    Text(model.notificationSettings.text("title").isEmpty ? model.label("settings.notifications") : model.notificationSettings.text("title"))
+                        .rnFont(20, .bold).foregroundStyle(palette.text)
+                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("notifications-title")
+                } else if model.settingsCalendarPresented {
+                    Text(model.calendarSettings.text("title").isEmpty ? model.label("settings.calendar") : model.calendarSettings.text("title"))
+                        .rnFont(20, .bold).foregroundStyle(palette.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("calendar-settings-title")
+                } else if model.settingsAIPresented {
+                    Text(model.label("settings.ai")).rnFont(20, .bold).foregroundStyle(palette.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("ai-summary-title")
+                } else if model.settingsAdvancedPresented {
+                    Text(model.settingsMenu.object("advanced").text("title").isEmpty ? model.label("settings.advanced") : model.settingsMenu.object("advanced").text("title"))
+                        .rnFont(20, .bold).foregroundStyle(palette.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("advanced-title")
+                } else {
+                Text(model.settingsDataPresented ? model.dataSettings.text("title") : model.settingsGtdPomodoroPresented ? model.gtdPomodoro.text("title") : model.settingsGtdArchivePresented ? (model.gtdArchive.text("title").isEmpty ? model.label("settings.autoArchive") : model.gtdArchive.text("title")) : model.settingsGtdTaskEditorPresented ? model.gtdTaskEditor.text("title") : model.settingsGtdCapturePresented ? (model.gtdCapture.text("title").isEmpty ? model.label("settings.captureSettings") : model.gtdCapture.text("title")) : model.settingsGtdInboxPresented ? (model.gtdInbox.text("title").isEmpty ? model.label("settings.inboxProcessing") : model.gtdInbox.text("title")) : model.settingsGtdReviewPresented ? (model.gtdReview.text("title").isEmpty ? model.label("settings.reviewSettings") : model.gtdReview.text("title")) : model.settingsGtdPresented ? (model.gtdWorkflow.text("title").isEmpty ? model.label("settings.gtd") : model.gtdWorkflow.text("title")) : model.settingsGeneralPresented ? (model.generalSettings.text("title").isEmpty ? model.label("settings.general") : model.generalSettings.text("title")) : model.settingsManagePresented ? model.manageSettings.text("title") : model.settingsMenu.text("title"))
+                    .rnFont(20, .bold).foregroundStyle(palette.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(palette.card)
+            if model.settingsRemindersPresented { appleRemindersContent }
+            else if model.settingsSyncPresented { syncContent }
+            else if model.settingsDataPresented {
+                DiagnosticsCard(model: model, palette: palette, owner: model.settingsDiagnosticsOwner)
+            }
+            else if model.settingsGtdPomodoroPresented { gtdPomodoroContent }
+            else if model.settingsGtdArchivePresented { gtdArchiveContent }
+            else if model.settingsGtdTaskEditorPresented { gtdTaskEditorContent }
+            else if model.settingsGtdCapturePresented { gtdCaptureContent }
+            else if model.settingsGtdInboxPresented { gtdInboxContent }
+            else if model.settingsGtdReviewPresented { gtdReviewContent }
+            else if model.settingsGtdPresented { gtdContent }
+            else if model.settingsAboutPresented { AboutSettingsCard(model: model, palette: palette) }
+            else if model.settingsNotificationsPresented { notificationsContent }
+            else if model.settingsAIPresented { aiSummaryContent }
+            else if model.settingsCalendarPresented { calendarSettingsContent }
+            else if model.settingsGeneralPresented { generalContent }
+            else if model.settingsManagePresented { manageContent }
+            else if model.settingsAdvancedPresented { advancedContent }
+            else { menuContent }
+        }
+        .background(palette.bg)
+    }
+
+    var body: some View {
+        settingsBody
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            model.retireAISettingsPage()
+        }
+        .alert(model.calendarPushDeleteConfirmation.text("title"), isPresented: $calendarPushDeletePresented) {
+            Button(model.calendarPushDeleteConfirmation.text("cancel"), role: .cancel) { model.cancelCalendarPushDelete() }
+                .accessibilityIdentifier("calendar-push-delete-cancel")
+            Button(model.calendarPushDeleteConfirmation.text("confirm"), role: .destructive) { model.confirmCalendarPushDelete() }
+                .disabled(!model.calendarPushDeleteCanConfirm).accessibilityIdentifier("calendar-push-delete-confirm")
+        } message: { Text(model.calendarPushDeleteConfirmation.text("message")) }
+        .onChange(of: model.settingsCalendarPresented) { presented in
+            if !presented { calendarPushDeletePresented = false; model.cancelCalendarPushDelete() }
+        }
+        .alert("Reload saved settings?", isPresented: $syncReloadConfirmPresented) {
+            Button("Continue", role: .destructive) {
+                syncField = nil
+                let option = syncBackendPending
+                syncBackendPending = nil
+                Task {
+                    if let option { await model.selectSettingsSyncBackend(option) }
+                    else { await model.reloadSyncSettings() }
+                }
+            }.accessibilityIdentifier("sync-reload-confirm")
+            Button(model.label("common.cancel"), role: .cancel) { syncBackendPending = nil }
+                .accessibilityIdentifier("sync-reload-cancel")
+        } message: { Text("Your typed Sync fields will be discarded.") }
+        .alert(model.somedaySectionDeleteOptions.object("text").text("title"),
+               isPresented: $deleteConfirmPresented) {
+            Button(model.somedaySectionDeleteOptions.object("text").text("cancelLabel"), role: .cancel) {
+                deleteConfirmAnswered = true
+                model.cancelSomedaySectionDelete()
+            }
+            .accessibilityIdentifier("manage-someday-delete-cancel")
+            Button(model.somedaySectionDeleteOptions.object("text").text("confirmLabel"), role: .destructive) {
+                deleteConfirmAnswered = true
+                Task { await model.confirmSomedaySectionDelete() }
+            }
+            .accessibilityIdentifier("manage-someday-delete-confirm")
+        } message: {
+            Text(model.somedaySectionDeleteOptions.object("text").text("message"))
+        }
+        .onChange(of: deleteConfirmPresented) { presented in
+            guard !presented else { return }
+
+
+            DispatchQueue.main.async {
+                if !deleteConfirmAnswered && !deleteConfirmPresented { model.cancelSomedaySectionDelete() }
+            }
+        }
+        .alert(model.settingsAreaDeleteOptions.object("text").text("title"),
+               isPresented: $areaDeleteConfirmPresented) {
+            Button(model.settingsAreaDeleteOptions.object("text").text("cancelLabel"), role: .cancel) {
+                areaDeleteConfirmAnswered = true
+                model.cancelSettingsAreaDelete()
+            }
+            .accessibilityIdentifier("manage-area-delete-cancel")
+            Button(model.settingsAreaDeleteOptions.object("text").text("confirmLabel"), role: .destructive) {
+                areaDeleteConfirmAnswered = true
+                Task { await model.confirmSettingsAreaDelete() }
+            }
+            .accessibilityIdentifier("manage-area-delete-confirm")
+        } message: {
+            Text(model.settingsAreaDeleteOptions.object("text").text("message"))
+        }
+        .onChange(of: areaDeleteConfirmPresented) { presented in
+            guard !presented else { return }
+            DispatchQueue.main.async {
+                if !areaDeleteConfirmAnswered && !areaDeleteConfirmPresented { model.cancelSettingsAreaDelete() }
+            }
+        }
+        .alert(model.settingsTaxonomyOptions.object("confirmation").text("title"),
+               isPresented: $taxonomyDeleteConfirmPresented) {
+            Button(model.settingsTaxonomyOptions.object("confirmation").text("cancelLabel"), role: .cancel) {
+                taxonomyDeleteConfirmAnswered = true
+                model.cancelSettingsTaxonomy()
+            }
+            .accessibilityIdentifier("manage-taxonomy-delete-cancel")
+            Button(model.settingsTaxonomyOptions.object("confirmation").text("confirmLabel"), role: .destructive) {
+                taxonomyDeleteConfirmAnswered = true
+                Task { await model.saveSettingsTaxonomy() }
+            }
+            .accessibilityIdentifier("manage-taxonomy-delete-confirm")
+        } message: {
+            Text(model.settingsTaxonomyOptions.object("confirmation").text("message"))
+        }
+        .onChange(of: taxonomyDeleteConfirmPresented) { presented in
+            guard !presented else { return }
+            DispatchQueue.main.async {
+                if !taxonomyDeleteConfirmAnswered && !taxonomyDeleteConfirmPresented { model.cancelSettingsTaxonomy() }
+            }
+        }
+        .alert(model.settingsPersonDeleteOptions.object("confirm").text("title"),
+               isPresented: $personDeleteConfirmPresented) {
+            Button(model.settingsPersonDeleteOptions.object("confirm").text("cancelLabel"), role: .cancel) {
+                personDeleteConfirmAnswered = true
+                model.cancelSettingsPersonDelete()
+            }
+            .accessibilityIdentifier("manage-person-delete-cancel")
+            Button(model.settingsPersonDeleteOptions.object("confirm").text("confirmLabel"), role: .destructive) {
+                personDeleteConfirmAnswered = true
+                Task { await model.confirmSettingsPersonDelete() }
+            }
+            .accessibilityIdentifier("manage-person-delete-confirm")
+        } message: {
+            Text(model.settingsPersonDeleteOptions.object("confirm").text("message"))
+        }
+        .onChange(of: personDeleteConfirmPresented) { presented in
+            guard !presented else { return }
+            DispatchQueue.main.async {
+                if !personDeleteConfirmAnswered && !personDeleteConfirmPresented { model.cancelSettingsPersonDelete() }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { !model.unassignedAreaColorOptions.isEmpty },
+            set: { if !$0 && !model.appLock.concealed { model.cancelUnassignedAreaColor() } }
+        )) { unassignedAreaColorSheet }
+        .sheet(isPresented: Binding(
+            get: { model.settingsAreaCreatePresented },
+            set: { if !$0 && !model.appLock.concealed { model.cancelSettingsAreaCreate() } }
+        )) { newAreaSheet }
+        .sheet(isPresented: Binding(
+            get: { model.settingsPersonCreatePresented },
+            set: { if !$0 && !model.appLock.concealed { model.cancelSettingsPersonCreate() } }
+        )) { personEditorSheet(editing: false) }
+        .sheet(isPresented: Binding(
+            get: { model.settingsPersonEditPresented },
+            set: { if !$0 && !model.appLock.concealed { model.cancelSettingsPersonEdit() } }
+        )) { personEditorSheet(editing: true) }
+        .sheet(isPresented: Binding(
+            get: { model.settingsTaxonomyPresented },
+            set: { if !$0 && !model.appLock.concealed { model.cancelSettingsTaxonomy() } }
+        )) { taxonomyEditorSheet }
+        .sheet(isPresented: Binding(
+            get: { model.settingsAreaEditActive },
+            set: { if !$0 && !model.appLock.concealed { model.cancelSettingsAreaEdit() } }
+        )) { areaEditSheet }
+        .sheet(isPresented: Binding(
+            get: { notificationPicker != nil && model.settingsNotificationsPresented && !model.appLock.concealed },
+            set: { if !$0 { notificationPicker = nil } }
+        )) { notificationPickerSheet }
+        .sheet(item: Binding(
+            get: {
+                guard model.settingsCalendarPresented, !model.appLock.concealed,
+                      model.calendarFileImporterPresented, let pickerID = model.calendarFileImporterID else { return nil }
+                return NativeDocumentPickerClaim(id: pickerID)
+            },
+            set: { (claim: NativeDocumentPickerClaim?) in
+                if claim == nil { model.setCalendarFileImporterPresented(false, pickerID: model.calendarFileImporterID) }
+            })) { claim in
+                NativeDocumentPicker(pickerID: claim.id, asCopy: true) { result, capturedID in
+                    Task { await model.completeCalendarFileImport(result, pickerID: capturedID) }
+                }
+                .id(claim.id)
+                .interactiveDismissDisabled()
+            }
+        .onChange(of: model.settingsNotificationsPresented) { presented in
+            if !presented { notificationPicker = nil }
+        }
+        .onChange(of: model.appLock.concealed) { concealed in
+            if concealed { notificationPicker = nil }
+        }
+        .sheet(isPresented: Binding(
+            get: { model.generalPreferencePicker != nil },
+            set: { if !$0 && !model.appLock.concealed { model.closeGeneralPreferencePicker() } }
+        )) { generalPreferenceSheet }
+        .sheet(isPresented: Binding(
+            get: { model.gtdCaptureAreaPicker },
+            set: { if !$0 && !model.appLock.concealed { model.closeGtdCaptureAreaPicker() } }
+        )) { gtdCaptureAreaSheet }
+        .sheet(isPresented: Binding(
+            get: { model.gtdTaskEditorFieldId != nil },
+            set: { if !$0 && !model.appLock.concealed { model.closeGtdTaskEditorField() } }
+        )) { gtdTaskEditorFieldSheet }
+        .accessibilityAction(.escape) {
+            if model.settingsRemindersPresented { model.closeAppleRemindersSettings() }
+            else if model.settingsSyncPresented { syncField = nil; Task { await model.closeSyncSettings() } }
+            else if model.settingsDataPresented { model.closeDiagnostics(owner: model.settingsDiagnosticsOwner) }
+            else if model.settingsGtdPresented { Task { await model.closeGtdSettings(); gtdTimeFocused = false; pomodoroDurationFocused = nil } }
+            else if model.settingsFeedbackPresented { model.closeFeedbackSettings() }
+            else if model.settingsAboutPresented { model.closeAboutSettings() }
+            else if model.settingsNotificationsPresented { model.closeNotificationSettings() }
+            else if model.settingsAIPresented {
+                if !model.retryNeeded && !model.appLock.concealed && (!model.busy || model.settingsAICanCancel) {
+                    model.retireAISettingsPage()
+                }
+            }
+            else if model.settingsCalendarPresented { calendarSubscriptionField = nil; model.closeCalendarSettings() }
+            else if model.settingsGeneralPresented { model.closeGeneralSettings() }
+            else if model.settingsManagePresented { model.closeManageSettings() }
+            else if model.settingsAdvancedPresented { model.closeAdvancedSettings() }
+            else { Task { await model.closeSettings() } }
+        }
+    }
+
+    private var syncContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if model.settingsSyncUnavailable {
+                    Text("Sync is unavailable in this rehearsal.").rnFont(15).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-unavailable")
+                } else {
+                    let backend = model.settingsSync.object("backend")
+                    if !backend.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(backend.text("title")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            ForEach(backend.objects("options").indices, id: \.self) { index in
+                                let option = backend.objects("options")[index]
+                                Button {
+                                    guard !option.flag("selected") else { return }
+                                    syncField = nil
+                                    if model.settingsSyncDraftDirty {
+                                        syncBackendPending = option.text("option")
+                                        syncReloadConfirmPresented = true
+                                    } else { Task { await model.selectSettingsSyncBackend(option.text("option")) } }
+                                } label: {
+                                    HStack {
+                                        Text(option.text("label")).rnFont(15, .semibold)
+                                        Spacer()
+                                        if option.flag("selected") { Image(systemName: "checkmark").accessibilityHidden(true) }
+                                    }.frame(minHeight: 44).contentShape(Rectangle())
+                                }.buttonStyle(.plain).foregroundStyle(palette.text)
+                                    .disabled(!model.settingsSyncCanEdit || model.settingsSyncChecking)
+                                    .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                                    .accessibilityIdentifier("sync-option-" + option.text("option"))
+                            }
+                            Text(backend.text("hint")).rnFont(13).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    let off = model.settingsSync.object("off")
+                    if !off.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(off.text("title")).rnFont(16, .semibold)
+                            Text(off.text("description")).rnFont(14).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    if ["webdav", "selfhosted"].contains(model.settingsSync.object("panel").text("kind")) { syncRemoteContent }
+                    if model.settingsSync.object("panel").text("kind") != "selfhosted",
+                       !model.settingsSync.object("encryption").isEmpty { syncEncryptionContent }
+                    Button { syncField = nil; Task { await model.openAppleRemindersSettings() } } label: {
+                        HStack {
+                            Text(model.label("settings.appleRemindersImport.appleReminders")).rnFont(16, .semibold)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(); Image(systemName: "chevron.right").accessibilityHidden(true)
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .disabled(!model.settingsSyncCanEdit || model.settingsSyncChecking || model.settingsSyncDraftDirty)
+                        .accessibilityIdentifier("sync-apple-reminders")
+                    if let failure = model.settingsSyncError {
+                        Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-error")
+                    }
+                    if let status = model.settingsSyncStatus, !status.isEmpty {
+                        Text(status).rnFont(14).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-status")
+                    }
+                    if model.settingsSyncNeedsReload {
+                        Text("Reload saved settings to review them before trying again.").rnFont(14)
+                            .foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button {
+                        syncField = nil
+                        if model.settingsSyncDraftDirty { syncBackendPending = nil; syncReloadConfirmPresented = true }
+                        else { Task { await model.reloadSyncSettings() } }
+                    } label: {
+                        Text("Reload settings").rnFont(15, .semibold)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.disabled(!model.settingsSyncCanClose)
+                        .accessibilityIdentifier("sync-reload")
+                    if model.busy || model.settingsSyncChecking {
+                        ProgressView().frame(maxWidth: .infinity).padding(8)
+                            .accessibilityIdentifier(model.settingsSyncEncryptionTypedHeld ? "sync-encryption-typed-held" : "sync-progress")
+                    }
+                }
+            }.padding(16).foregroundStyle(palette.text)
+        }.accessibilityIdentifier("sync-screen")
+    }
+
+    private var appleRemindersContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if !model.appleRemindersSettings.isEmpty {
+                    Button { model.chooseAppleRemindersList() } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(model.label("settings.appleRemindersImport.captureList")).rnFont(14, .semibold)
+                            Text(model.appleRemindersSettings.text("selectedListTitle").isEmpty
+                                ? model.label("settings.appleRemindersImport.chooseCaptureList") : model.appleRemindersSettings.text("selectedListTitle"))
+                                .rnFont(16).fixedSize(horizontal: false, vertical: true)
+                        }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!model.appleRemindersCanEdit).accessibilityIdentifier("apple-reminders-list")
+                    Toggle(isOn: Binding(get: { model.appleRemindersSettings.flag("autoImportOnOpen") },
+                        set: { model.saveAppleRemindersPreference(["type": "autoImportOnOpen", "value": $0]) })) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(model.label("settings.appleRemindersImport.autoImport")).rnFont(16, .semibold)
+                            Text(model.label("settings.appleRemindersImport.autoImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }.disabled(!model.appleRemindersCanEdit).accessibilityIdentifier("apple-reminders-auto")
+                    Toggle(isOn: Binding(get: { model.appleRemindersSettings.flag("deleteImportedReminders") },
+                        set: { model.saveAppleRemindersPreference(["type": "deleteImportedReminders", "value": $0]) })) {
+                        Text(model.label("settings.appleRemindersImport.deleteAfterImport")).rnFont(16, .semibold)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.disabled(!model.appleRemindersCanEdit)
+                        .accessibilityIdentifier("apple-reminders-delete")
+                    Text(model.label("settings.appleRemindersImport.deleteAfterImportDescription")).rnFont(13)
+                        .foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button { model.importAppleRemindersNow() } label: {
+                        Text(model.label("settings.appleRemindersImport.importIncomplete")).rnFont(16, .semibold)
+                            .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 44)
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(!model.appleRemindersCanEdit)
+                        .accessibilityIdentifier("apple-reminders-import")
+                    Text(model.label("settings.appleRemindersImport.importIncompleteDescription")).rnFont(13)
+                        .foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let status = model.appleRemindersStatus {
+                    Text(status).rnFont(14).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("apple-reminders-status")
+                }
+                if let failure = model.appleRemindersError {
+                    Text(failure).rnFont(14).foregroundStyle(palette.danger).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("apple-reminders-error")
+                }
+                if model.appleRemindersNeedsRetry || model.appleRemindersSettings.isEmpty {
+                    Button("Retry") { model.retryAppleReminders() }.buttonStyle(.bordered).frame(minHeight: 44)
+                        .disabled(model.busy).accessibilityIdentifier("apple-reminders-retry")
+                }
+                if model.busy { ProgressView().frame(maxWidth: .infinity).accessibilityIdentifier("apple-reminders-progress") }
+            }.padding(16).foregroundStyle(palette.text)
+        }.accessibilityIdentifier("apple-reminders-screen")
+        .sheet(isPresented: Binding(get: { !model.appleRemindersLists.isEmpty },
+            set: { if !$0 { model.closeAppleRemindersLists() } })) { appleRemindersListSheet }
+    }
+
+    private var appleRemindersListSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(model.appleRemindersLists.indices, id: \.self) { index in
+                        let list = model.appleRemindersLists[index]
+                        Button {
+                            model.saveAppleRemindersPreference(["type": "selectedList", "id": list.text("id"),
+                                "sourceId": list.text("sourceId"), "title": list.text("title")])
+                        } label: {
+                            HStack {
+                                Text(list.text("title")).rnFont(16).fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                if list.text("id") == model.appleRemindersSettings.text("selectedListId") {
+                                    Image(systemName: "checkmark").accessibilityHidden(true)
+                                }
+                            }.frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(!model.appleRemindersCanEdit)
+                            .accessibilityIdentifier("apple-reminders-list-" + String(index))
+                    }
+                    if model.appleRemindersNeedsRetry {
+                        if let failure = model.appleRemindersError { Text(failure).rnFont(14).foregroundStyle(palette.danger) }
+                        Button("Retry") { model.retryAppleReminders() }.disabled(model.busy)
+                            .accessibilityIdentifier("apple-reminders-picker-retry")
+                    }
+                }.padding(16)
+            }.background(palette.bg).foregroundStyle(palette.text)
+                .navigationTitle(model.label("settings.appleRemindersImport.chooseCaptureList"))
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button(model.label("common.cancel")) { model.closeAppleRemindersLists() }.disabled(model.busy || model.appleRemindersNeedsRetry)
+                        .accessibilityIdentifier("apple-reminders-picker-cancel")
+                } }
+        }.interactiveDismissDisabled(model.busy || model.appleRemindersNeedsRetry)
+    }
+
+    private var syncEncryptionContent: some View {
+        let card = model.settingsSync.object("encryption")
+        let rows = card.objects("rows")
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(card.text("title")).rnFont(17, .semibold).accessibilityAddTraits(.isHeader)
+            ForEach(rows.indices, id: \.self) { index in
+                syncEncryptionRow(rows[index], index: index)
+            }
+        }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private func syncEncryptionRow(_ row: CoreObject, index: Int) -> some View {
+        switch row.text("kind") {
+        case "text":
+            Text(row.text("text")).rnFont(row.text("tone") == "label" ? 15 : 14,
+                row.text("tone") == "label" ? .semibold : .regular)
+                .foregroundStyle(row.text("tone") == "danger" ? palette.danger
+                    : row.text("tone") == "label" ? palette.text : palette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("sync-encryption-" + row.text("tone") + "-" + String(index))
+        case "field":
+            VStack(alignment: .leading, spacing: 8) {
+                Text(row.text("label")).rnFont(14, .semibold)
+                SecureField(row.text("label"), text: Binding(get: { model.settingsSyncPassphrase(row.text("field")) },
+                    set: { model.setSettingsSyncPassphrase($0, field: row.text("field")) }))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                    .focused($syncField, equals: .encryption(row.text("field"))).submitLabel(.done).onSubmit { syncField = nil }
+                    .rnFont(16).padding(12).frame(minHeight: 44)
+                    .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                    .disabled(!model.settingsSyncCanEdit || model.settingsSyncChecking || model.settingsSyncDraftDirty)
+                    .accessibilityLabel(row.text("label")).accessibilityIdentifier("sync-encryption-" + row.text("field"))
+                if let tooLong = model.settingsSyncPassphraseTooLong(row.text("field")) {
+                    Text(tooLong).rnFont(14).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-encryption-too-long")
+                }
+            }
+        case "action":
+            let action = row.object("action")
+            Button { syncField = nil; Task { await model.performSettingsSyncEncryption(action) } } label: {
+                Text(row.text("label")).rnFont(15, .semibold)
+                    .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.bordered).tint(palette.tint)
+                .disabled(!model.settingsSyncEncryptionActionEnabled(action))
+                .accessibilityIdentifier("sync-encryption-" + model.settingsSyncEncryptionActionID(action))
+        default:
+            EmptyView()
+        }
+    }
+
+    private var syncRemoteContent: some View {
+        let panel = model.settingsSync.object("panel")
+        let webdav = panel.text("kind") == "webdav"
+        return VStack(alignment: .leading, spacing: 16) {
+            if webdav { Text(panel.text("title")).rnFont(17, .semibold).accessibilityAddTraits(.isHeader) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(panel.object("url").text("label")).rnFont(14, .semibold)
+                TextField(panel.object("url").text("placeholder"), text: Binding(
+                    get: { model.settingsSyncURL }, set: { model.setSettingsSyncURL($0) }))
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .focused($syncField, equals: .url).rnFont(16).padding(12).frame(minHeight: 44)
+                    .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel(panel.object("url").text("label")).accessibilityIdentifier("sync-url")
+                if webdav {
+                    Text(panel.object("url").text("hint")).rnFont(12).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(panel.object("url")["hints"] as? [String] ?? [], id: \.self) {
+                        Text($0).rnFont(12).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if let invalid = panel.object("url")["invalid"] as? String, !invalid.isEmpty {
+                    Text(invalid).rnFont(13).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-url-invalid")
+                }
+                Toggle(isOn: Binding(get: { model.settingsSyncAllowInsecure }, set: { model.setSettingsSyncAllowInsecure($0) })) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(panel.object("allowInsecureHttp").text("label")).rnFont(14)
+                        Text(panel.object("allowInsecureHttp").text("hint")).rnFont(12).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }.frame(minHeight: 44).accessibilityIdentifier("sync-allow-insecure")
+                if webdav {
+                    Text(panel.object("username").text("label")).rnFont(14, .semibold)
+                    TextField(panel.object("username").text("placeholder"), text: Binding(
+                        get: { model.settingsSyncUsername }, set: { model.setSettingsSyncUsername($0) }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.username)
+                        .focused($syncField, equals: .username).rnFont(16).padding(12).frame(minHeight: 44)
+                        .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel(panel.object("username").text("label")).accessibilityIdentifier("sync-username")
+                    Text(panel.object("password").text("label")).rnFont(14, .semibold)
+                    SecureField(panel.object("password").text("placeholder"), text: Binding(
+                        get: { model.settingsSyncPassword }, set: { model.setSettingsSyncPassword($0) }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.password)
+                        .focused($syncField, equals: .password).rnFont(16).padding(12).frame(minHeight: 44)
+                        .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel(panel.object("password").text("label")).accessibilityIdentifier("sync-password")
+                } else {
+                    let token = panel.object("token")
+                    Text(token.text("label")).rnFont(14, .semibold)
+                    SecureField(token.text("mask").isEmpty ? token.text("placeholder") : token.text("mask"), text: Binding(
+                        get: { model.settingsSyncToken }, set: { model.setSettingsSyncToken($0) }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($syncField, equals: .token).submitLabel(.done).onSubmit { syncField = nil }
+                        .rnFont(16).padding(12).frame(minHeight: 44)
+                        .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel(token.text("label")).accessibilityIdentifier("sync-token")
+                    Text(token.text("hint")).rnFont(12).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let invalid = token["invalid"] as? String, !invalid.isEmpty {
+                        Text(invalid).rnFont(13).foregroundStyle(palette.danger)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("sync-token-invalid")
+                    }
+                }
+            }.disabled(!model.settingsSyncCanEdit)
+            ForEach(["save", "syncNow", "test"], id: \.self) { action in
+                let state = panel.object(action)
+                Button { syncField = nil; Task { await model.performSettingsSync(action) } } label: {
+                    VStack(spacing: 4) {
+                        Text(state.text("label")).rnFont(15, .semibold)
+                        if let description = state["description"] as? String, !description.isEmpty {
+                            Text(description).rnFont(12).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }.frame(maxWidth: .infinity, minHeight: 44)
+                }.buttonStyle(.bordered).tint(palette.tint)
+                    .disabled(!model.settingsSyncActionEnabled(action))
+                    .accessibilityIdentifier(action == "syncNow" ? "sync-now" : "sync-" + action)
+            }
+            let lastSync = panel.object("lastSync")
+            VStack(alignment: .leading, spacing: 6) {
+                Text(lastSync.text("title")).rnFont(15, .semibold)
+                Text(lastSync.text("status")).rnFont(14).foregroundStyle(palette.secondary)
+                ForEach(lastSync["lines"] as? [String] ?? [], id: \.self) { Text($0).rnFont(13).foregroundStyle(palette.secondary) }
+                if let failure = lastSync["error"] as? String {
+                    Text(failure).rnFont(13).foregroundStyle(palette.danger).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var gtdContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(model.gtdWorkflow.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 12) {
+                    generalSettingLabel(model.gtdWorkflow.object("features"), description: "description")
+                    palette.border.frame(height: 0.5)
+                    gtdToggle(model.gtdWorkflow.object("pomodoro"))
+                    if model.gtdWorkflow["pomodoroSettings"] is CoreObject { gtdNavigationRow("pomodoroSettings") }
+                }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        generalSettingLabel(model.gtdWorkflow.object("defaultScheduleTime"), description: "description")
+                        TextField(model.gtdWorkflow.object("defaultScheduleTime").text("placeholder"), text: Binding(
+                            get: { model.gtdScheduleDraft }, set: { model.setGtdScheduleDraft($0) }))
+                            .rnFont(16).keyboardType(.numbersAndPunctuation).submitLabel(.done)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .focused($gtdTimeFocused).disabled(!model.gtdWorkflowEnabled)
+                            .padding(12).frame(minHeight: 44)
+                            .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border, lineWidth: 1))
+                            .accessibilityLabel(model.gtdWorkflow.object("defaultScheduleTime").text("label"))
+                            .accessibilityIdentifier("gtd-defaultScheduleTime")
+                            .onSubmit { gtdTimeFocused = false; Task { await model.commitGtdScheduleDraft() } }
+                    }.padding(14)
+                    ForEach(["focusTaskLimit", "defaultProjectFlowMode"], id: \.self) { field in
+                        palette.border.frame(height: 0.5)
+                        VStack(alignment: .leading, spacing: 12) {
+                            generalSettingLabel(model.gtdWorkflow.object(field), description: "description")
+                            let options = model.gtdWorkflow.object(field).objects("options")
+                            let columns = dynamicTypeSize.isAccessibilitySize
+                                ? (field == "defaultProjectFlowMode" ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 140), spacing: 4)])
+                                : Array(repeating: GridItem(.flexible(), spacing: 4), count: max(1, options.count))
+                            LazyVGrid(columns: columns, spacing: 4) {
+                                ForEach(options.indices, id: \.self) { index in
+                                    let option = options[index]
+                                    Button {
+                                        Task { await model.chooseGtdWorkflow(option.object("edit")); gtdTimeFocused = false }
+                                    } label: {
+                                        Text(option.text("label")).rnFont(14, .semibold)
+                                            .foregroundStyle(option.flag("selected") ? palette.tint : palette.secondary)
+                                            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                                            .frame(maxWidth: .infinity, minHeight: 44).padding(.horizontal, 6)
+                                            .background(option.flag("selected") ? palette.filter : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                    }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                                        .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                                        .accessibilityIdentifier("gtd-" + field + "-" + (field == "focusTaskLimit" ? String(option.number("value")) : option.text("value")))
+                                }
+                            }.padding(4).background(palette.bg, in: RoundedRectangle(cornerRadius: 10))
+                        }.padding(14)
+                        if field == "focusTaskLimit" {
+                            palette.border.frame(height: 0.5)
+                            gtdToggle(model.gtdWorkflow.object("focusIncludeStartDates")).padding(14)
+                        }
+                    }
+                    gtdNavigationRow("autoArchive")
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                gtdFeedback
+                ForEach([["taskEditor", "capture"], ["review", "inbox"]], id: \.self) { fields in
+                    VStack(spacing: 0) {
+                        ForEach(fields, id: \.self) { field in gtdNavigationRow(field, divider: field != fields.first) }
+                    }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }.padding(16).padding(.bottom, 24)
+        }
+        .accessibilityIdentifier("gtd-scroll")
+        .onChange(of: gtdTimeFocused) { focused in
+            if !focused && !model.appLock.concealed { Task { await model.commitGtdScheduleDraft() } }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button(model.label("common.done")) { gtdTimeFocused = false; Task { await model.commitGtdScheduleDraft() } }
+                    .accessibilityIdentifier("gtd-time-done")
+            }
+        }
+    }
+
+    private var gtdArchiveContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(model.gtdArchive.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 0) {
+                    let options = model.gtdArchive.objects("options")
+                    ForEach(options.indices, id: \.self) { index in
+                        let option = options[index]
+                        Button { Task { await model.chooseGtdWorkflow(option.object("edit")) } } label: {
+                            HStack {
+                                Text(option.text("label")).rnFont(16).fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                if option.flag("selected") { Image(systemName: "checkmark").accessibilityHidden(true) }
+                            }.foregroundStyle(option.flag("selected") ? palette.tint : palette.text)
+                                .padding(14).frame(maxWidth: .infinity, minHeight: 48)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                            .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                            .accessibilityIdentifier("gtd-autoArchiveDays-" + String(option.number("value")))
+                    }
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                gtdFeedback
+            }.padding(16).padding(.bottom, 24)
+        }.accessibilityIdentifier("gtd-archive-scroll")
+    }
+
+    private var gtdReviewContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(model.gtdReview.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(["daily", "weekly"], id: \.self) { group in
+                    let field = group == "daily" ? "dailyFocusStep" : "weeklyContextStep"
+                    let row = model.gtdReview.object(field)
+                    VStack(alignment: .leading, spacing: 12) {
+                        generalSettingLabel(model.gtdReview.object(group), description: "description")
+                        palette.border.frame(height: 0.5)
+                        gtdToggle(row)
+                    }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                gtdFeedback
+            }.padding(16).padding(.bottom, 24)
+        }.accessibilityIdentifier("gtd-review-scroll")
+    }
+
+    private var gtdPomodoroContent: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(model.gtdPomodoro.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    let controls = model.gtdPomodoro.object("controls")
+                    if controls.isEmpty {
+                        let enable = model.gtdPomodoro.object("enable")
+                        Button { Task { await model.chooseGtdWorkflow(enable.object("edit")) } } label: {
+                            Text(enable.text("label")).rnFont(16).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).padding(14)
+                        }.buttonStyle(.plain).foregroundStyle(palette.tint)
+                            .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                            .disabled(!model.gtdWorkflowEditEnabled(enable.object("edit")))
+                            .accessibilityIdentifier("gtd-pomodoro-enable")
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                let preset = controls.object("customPreset")
+                                generalSettingLabel(preset, description: "description")
+                                let durationLayout = dynamicTypeSize.isAccessibilitySize
+                                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                                    : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+                                durationLayout {
+                                    ForEach(["focus", "break"], id: \.self) { field in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(preset.text(field + "Label")).rnFont(13).foregroundStyle(palette.secondary)
+                                            TextField("", text: Binding(
+                                                get: { field == "focus" ? model.gtdPomodoroFocusDraft : model.gtdPomodoroBreakDraft },
+                                                set: { model.setGtdPomodoroDraft(field, $0) }))
+                                                .rnFont(16).keyboardType(.numberPad).focused($pomodoroDurationFocused, equals: field)
+                                                .padding(12).frame(minHeight: 44)
+                                                .background(palette.bg, in: RoundedRectangle(cornerRadius: 8))
+                                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border, lineWidth: 1))
+                                                .accessibilityLabel(preset.text(field + "Label"))
+                                                .accessibilityIdentifier("gtd-pomodoro-" + field + "-minutes")
+                                                .disabled(!model.gtdWorkflowEditEnabled(["type": "pomodoroDurations"]))
+                                        }
+                                    }
+                                }
+                            }.padding(14)
+                            ForEach(["linkTask", "autoStartBreaks", "autoStartFocus", "completionAlert"], id: \.self) { field in
+                                palette.border.frame(height: 0.5)
+                                gtdToggle(controls.object(field)).padding(14)
+                            }
+                        }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    gtdFeedback
+                }.padding(16).padding(.bottom, 24)
+            }.accessibilityIdentifier("gtd-pomodoro-scroll")
+            if let notice = model.gtdPomodoroNotice {
+                Text(notice).rnFont(13).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(14).background(palette.card)
+                    .accessibilityIdentifier("gtd-pomodoro-auto-start-notice")
+            }
+        }
+            .onChange(of: model.gtdPomodoroNotice) { notice in
+                if let notice { UIAccessibility.post(notification: .announcement, argument: notice) }
+            }
+            .onChange(of: pomodoroDurationFocused) { [old = pomodoroDurationFocused] _ in
+                if old != nil && !model.appLock.concealed { Task { await model.commitGtdSettingsDraft() } }
+            }
+            .toolbar {
+                if pomodoroDurationFocused != nil {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button(model.label("common.done")) {
+                            pomodoroDurationFocused = nil
+                            Task { await model.commitGtdSettingsDraft() }
+                        }.accessibilityIdentifier("gtd-pomodoro-keyboard-done")
+                    }
+                }
+            }
+    }
+
+    private var gtdInboxContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(model.gtdInbox.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 0) {
+                    ForEach(["twoMinute", "projectFirst", "contextStep", "schedule"], id: \.self) { field in
+                        if field != "twoMinute" { palette.border.frame(height: 0.5) }
+                        gtdToggle(model.gtdInbox.object(field)).padding(14)
+                    }
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                gtdFeedback
+            }.padding(16).padding(.bottom, 24)
+        }.accessibilityIdentifier("gtd-inbox-scroll")
+    }
+
+    private var gtdTaskEditorContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                let openMode = model.gtdTaskEditor.object("openMode")
+                if !openMode.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(openMode.text("label")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(openMode.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        let options = openMode.objects("options")
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: dynamicTypeSize.isAccessibilitySize ? 1 : 3), spacing: 4) {
+                            ForEach(options.indices, id: \.self) { index in
+                                let option = options[index]
+                                Button { Task { await model.chooseTaskOpenMode(option.object("edit")) } } label: {
+                                    Text(option.text("label")).rnFont(14, .semibold)
+                                        .foregroundStyle(option.flag("selected") ? palette.tint : palette.secondary)
+                                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, minHeight: 44).padding(.horizontal, 6)
+                                        .background(option.flag("selected") ? palette.filter : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                                    .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                                    .accessibilityIdentifier("gtd-taskOpenMode-" + option.text("value"))
+                            }
+                        }.padding(4).background(palette.bg, in: RoundedRectangle(cornerRadius: 10))
+                    }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                let presets = model.gtdTaskEditor.object("presets")
+                if !presets.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(presets.text("label")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            .accessibilityAddTraits(.isHeader)
+                        let options = presets.objects("options")
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: dynamicTypeSize.isAccessibilitySize ? 1 : 3), spacing: 4) {
+                            ForEach(options.indices, id: \.self) { index in
+                                let option = options[index]
+                                Button { Task { await model.chooseGtdWorkflow(option.object("edit")) } } label: {
+                                    Text(option.text("label")).rnFont(14, .semibold)
+                                        .foregroundStyle(option.flag("selected") ? palette.tint : palette.secondary)
+                                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, minHeight: 44).padding(.horizontal, 6)
+                                        .background(option.flag("selected") ? palette.filter : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                                    .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                                    .accessibilityIdentifier("gtd-taskEditorPreset-" + option.text("value"))
+                            }
+                        }.padding(4).background(palette.bg, in: RoundedRectangle(cornerRadius: 10))
+                        if !presets.text("custom").isEmpty {
+                            Text(presets.text("custom")).rnFont(13).foregroundStyle(palette.secondary)
+                                .accessibilityIdentifier("gtd-taskEditorPreset-custom")
+                        }
+                    }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if let message = model.gtdTaskEditorPresetError {
+                    Text(message).rnFont(13).foregroundStyle(palette.danger)
+                        .accessibilityIdentifier("gtd-taskEditorPreset-error")
+                    Button(model.label("common.retry")) { Task { await model.retryGtdWorkflow() } }
+                        .disabled(!model.gtdWorkflowEnabled).accessibilityIdentifier("gtd-taskEditorPreset-retry")
+                }
+                ForEach(model.gtdTaskEditor.objects("groups").indices, id: \.self) { index in
+                    let group = model.gtdTaskEditor.objects("groups")[index]
+                    VStack(alignment: .leading, spacing: 12) {
+                        let expanded = model.gtdTaskEditorExpanded[group.text("id")] ?? true
+                        Button { model.toggleGtdTaskEditorGroup(group.text("id")) } label: {
+                            let layout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                                : AnyLayout(HStackLayout(spacing: 8))
+                            layout {
+                                Text(group.text("title")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                HStack(spacing: 8) {
+                                    if group["count"] != nil {
+                                        Text(String(group.number("count"))).rnFont(13, .semibold).foregroundStyle(palette.tint)
+                                            .padding(.horizontal, 8).padding(.vertical, 4).background(palette.filter, in: Capsule())
+                                    }
+                                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                        .foregroundStyle(palette.secondary).accessibilityHidden(true)
+                                }
+                            }.frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                            .accessibilityLabel(group.text("title") + (group["count"] == nil ? "" : ", " + String(group.number("count"))))
+                            .accessibilityValue(model.label(expanded ? "markdown.collapse" : "markdown.expand"))
+                            .accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier("gtd-editor-group-" + group.text("id"))
+                        if expanded {
+                            if !group.object("defaultOpen").isEmpty { gtdToggle(group.object("defaultOpen")) }
+                            ForEach(group.objects("fields").indices, id: \.self) { fieldIndex in
+                                let field = group.objects("fields")[fieldIndex]
+                                let visibility = field.object("visibility")
+                                HStack(spacing: 12) {
+                                    Button { Task { await model.chooseGtdWorkflow(visibility.object("edit")) } } label: {
+                                        Image(systemName: field.flag("visible") ? "eye" : "eye.slash")
+                                            .foregroundStyle(palette.secondary).frame(minWidth: 44, minHeight: 44)
+                                            .contentShape(Rectangle())
+                                    }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                                        .accessibilityLabel(visibility.text("accessibilityLabel"))
+                                        .accessibilityValue(field.text("status"))
+                                        .accessibilityAddTraits(field.flag("visible") ? .isSelected : [])
+                                        .accessibilityIdentifier("gtd-taskEditorFieldVisible-" + field.text("id"))
+                                    Button { model.openGtdTaskEditorField(field.text("id")) } label: {
+                                        HStack(spacing: 8) {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(field.text("label")).rnFont(16).foregroundStyle(palette.text)
+                                                Text(field.text("status")).rnFont(13).foregroundStyle(palette.secondary)
+                                            }.fixedSize(horizontal: false, vertical: true)
+                                            Spacer(minLength: 4)
+                                            Image(systemName: "chevron.right").foregroundStyle(palette.secondary).accessibilityHidden(true)
+                                        }.frame(minHeight: 44).contentShape(Rectangle())
+                                    }.buttonStyle(.plain).disabled(!model.gtdWorkflowEnabled)
+                                        .accessibilityIdentifier("gtd-taskEditorField-" + field.text("id"))
+                                }
+                            }
+                        }
+                    }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                let reset = model.gtdTaskEditor.object("reset")
+                if !reset.isEmpty {
+                    Button { Task { await model.chooseGtdWorkflow(reset.object("edit")) } } label: {
+                        Text(reset.text("label")).rnFont(16, .semibold).foregroundStyle(palette.tint)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, minHeight: 48).padding(.horizontal, 12)
+                    }.buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .disabled(!model.gtdWorkflowEnabled).accessibilityIdentifier("gtd-taskEditorReset")
+                }
+                if model.gtdTaskEditorFieldId == nil { gtdFeedback }
+            }.padding(16).padding(.bottom, 24)
+        }.accessibilityIdentifier("gtd-taskEditor-scroll")
+    }
+
+    private var gtdTaskEditorFieldSheet: some View {
+        let field = model.gtdTaskEditorField
+        let sheet = field.object("sheet")
+        return VStack(spacing: 0) {
+            let headerLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 12))
+            headerLayout {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(sheet.text("title")).rnFont(20, .bold).foregroundStyle(palette.text)
+                        .accessibilityAddTraits(.isHeader)
+                    if !sheet.text("section").isEmpty {
+                        Text(sheet.text("section")).rnFont(13).foregroundStyle(palette.secondary)
+                            .accessibilityIdentifier("gtd-field-current-section")
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Button(sheet.text("doneLabel").isEmpty ? model.label("common.done") : sheet.text("doneLabel")) {
+                    model.closeGtdTaskEditorField()
+                }.rnFont(15).frame(minWidth: 48, minHeight: 48)
+                    .disabled(model.busy || model.retryNeeded || model.gtdWorkflowPending)
+                    .accessibilityIdentifier("gtd-field-done")
+            }.padding(.horizontal, 16).padding(.top, 20)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !sheet.object("visible").isEmpty { gtdToggle(sheet.object("visible")) }
+                    let sections = sheet.object("sections")
+                    if !sections.isEmpty {
+                        Text(sections.text("label")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            .accessibilityAddTraits(.isHeader)
+                        ForEach(sections.objects("options").indices, id: \.self) { index in
+                            let option = sections.objects("options")[index]
+                            Button { Task { await model.chooseGtdWorkflow(option.object("edit")) } } label: {
+                                HStack {
+                                    Text(option.text("label")).rnFont(16).foregroundStyle(palette.text)
+                                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                    if option.flag("selected") { Image(systemName: "checkmark").foregroundStyle(palette.tint) }
+                                }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+                            }.buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                                .disabled(!model.gtdWorkflowEnabled)
+                                .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                                .accessibilityIdentifier("gtd-field-section-" + option.text("value"))
+                        }
+                    }
+                    let order = sheet.object("order")
+                    if !order.isEmpty {
+                        Text(order.text("label")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            .accessibilityAddTraits(.isHeader)
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(spacing: 8))
+                            : AnyLayout(HStackLayout(spacing: 8))
+                        layout {
+                            ForEach(["moveUp", "moveDown"], id: \.self) { direction in
+                                let move = order.object(direction)
+                                Button {
+                                    var edit = move.object("edit")
+                                    edit["field"] = field.text("id")
+                                    Task { await model.chooseGtdWorkflow(edit) }
+                                } label: {
+                                    Label(move.text("label"), systemImage: direction == "moveUp" ? "arrow.up" : "arrow.down")
+                                        .rnFont(16).fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, minHeight: 48).padding(.horizontal, 12)
+                                }.buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                                    .disabled(!model.gtdWorkflowEnabled || move.flag("disabled") || move.object("edit").isEmpty)
+                                    .accessibilityIdentifier("gtd-field-" + direction)
+                            }
+                        }
+                    }
+                    gtdFeedback
+                }.padding(16)
+            }.accessibilityIdentifier("gtd-field-scroll")
+        }.background(palette.bg)
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
+            .interactiveDismissDisabled(model.busy || model.retryNeeded || model.gtdWorkflowPending)
+            .accessibilityAction(.escape) { model.closeGtdTaskEditorField() }
+    }
+
+    private var gtdCaptureContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                let row = model.gtdCapture.object("defaultArea")
+                VStack(alignment: .leading, spacing: 12) {
+                    generalSettingLabel(row, description: "description")
+                    Button { model.openGtdCaptureAreaPicker() } label: {
+                        HStack {
+                            Text(row.text("value")).rnFont(16).foregroundStyle(palette.text)
+                                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "chevron.right").foregroundStyle(palette.secondary).accessibilityHidden(true)
+                        }.padding(12).frame(minHeight: 48).contentShape(Rectangle())
+                    }.buttonStyle(.plain).background(palette.bg, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.gtdWorkflowEnabled)
+                        .accessibilityLabel(row.text("accessibilityLabel"))
+                        .accessibilityIdentifier("gtd-default-area")
+                }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                VStack(spacing: 0) {
+                    ForEach(["quickAddAutoClean", "naturalLanguageDates"], id: \.self) { field in
+                        if field != "quickAddAutoClean" { palette.border.frame(height: 0.5) }
+                        gtdToggle(model.gtdCapture.object(field)).padding(14)
+                    }
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                if !model.gtdCaptureAreaPicker { gtdFeedback }
+            }.padding(16).padding(.bottom, 24)
+        }.accessibilityIdentifier("gtd-capture-scroll")
+    }
+
+    private var gtdCaptureAreaSheet: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text(model.gtdCapture.object("defaultArea").text("pickerTitle")).rnFont(20, .bold).foregroundStyle(palette.text)
+                    .accessibilityAddTraits(.isHeader).frame(maxWidth: .infinity, alignment: .leading)
+                Button { model.closeGtdCaptureAreaPicker() } label: {
+                    Text(model.label("common.cancel")).rnFont(15).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(model.busy || model.retryNeeded || model.gtdWorkflowPending)
+                    .accessibilityIdentifier("gtd-area-cancel")
+            }.padding(.horizontal, 16).padding(.top, 20)
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(model.gtdCaptureAreaOptions.indices, id: \.self) { index in
+                        let option = model.gtdCaptureAreaOptions[index]
+                        Button { Task { await model.chooseGtdCaptureArea(option.object("edit")) } } label: {
+                            HStack {
+                                Text(option.text("label")).rnFont(16).foregroundStyle(palette.text)
+                                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                if option.flag("selected") { Image(systemName: "checkmark").foregroundStyle(palette.tint).accessibilityHidden(true) }
+                            }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+                        }.buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                            .disabled(!model.gtdWorkflowEnabled)
+                            .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                            .accessibilityIdentifier("gtd-area-option-" + option.text("value"))
+                    }
+                    if model.gtdCaptureAreaOptions.count < model.gtdCaptureAreaTotal {
+                        Button(model.label("common.more")) { Task { await model.loadMoreGtdCaptureAreas() } }
+                            .rnFont(16).frame(maxWidth: .infinity, minHeight: 48).disabled(!model.gtdWorkflowEnabled)
+                            .accessibilityIdentifier("gtd-area-more")
+                    }
+                    gtdFeedback
+                }.padding(.horizontal, 16).padding(.bottom, 24)
+            }.accessibilityIdentifier("gtd-area-scroll")
+        }.background(palette.bg)
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
+            .interactiveDismissDisabled(model.busy || model.retryNeeded || model.gtdWorkflowPending)
+    }
+
+    private func gtdToggle(_ row: CoreObject) -> some View {
+        Toggle(isOn: Binding(get: { row.flag("value") }, set: { _ in
+            Task { await model.chooseGtdWorkflow(row.object("edit")) }
+        })) { generalSettingLabel(row, description: "description") }
+            .disabled(!model.gtdWorkflowEditEnabled(row.object("edit"))).frame(minHeight: 44)
+            .tint(palette.tint)
+            .accessibilityIdentifier("gtd-" + row.object("edit").text("type")
+                + (row.object("edit").text("type") == "taskEditorSectionOpen" ? "-" + row.object("edit").text("section") : ""))
+    }
+
+    @ViewBuilder private var gtdFeedback: some View {
+        if let message = model.gtdWorkflowReadError ?? model.gtdWorkflowError {
+            Text(message).rnFont(13).foregroundStyle(palette.danger).accessibilityIdentifier("gtd-error")
+            if model.gtdWorkflowReadError != nil || model.retryNeeded || model.gtdWorkflowAwaitingRefresh {
+                Button(model.label("common.retry")) { Task { await model.retryGtdWorkflow() } }
+                    .disabled(model.busy).accessibilityIdentifier("gtd-retry")
+            }
+        }
+    }
+
+
+    private func gtdNavigationRow(_ field: String, divider: Bool = true) -> some View {
+        let row = model.gtdWorkflow.object(field)
+        return VStack(spacing: 0) {
+            if divider { palette.border.frame(height: 0.5) }
+            Button {
+                if ["review", "inbox", "capture", "taskEditor", "autoArchive", "pomodoroSettings"].contains(field) { Task { await model.openGtdSubpage(field); gtdTimeFocused = false } }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.text("title")).rnFont(15).foregroundStyle(palette.text)
+                        Text(row.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").foregroundStyle(palette.secondary).accessibilityHidden(true)
+                }.padding(14).frame(minHeight: 48)
+            }.buttonStyle(.plain).disabled(!["review", "inbox", "capture", "taskEditor", "autoArchive", "pomodoroSettings"].contains(field) || !model.gtdWorkflowEnabled)
+                .opacity(["review", "inbox", "capture", "taskEditor", "autoArchive", "pomodoroSettings"].contains(field) ? 1 : 0.55).accessibilityIdentifier("gtd-" + field)
+        }
+    }
+
+    private var generalContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                let appearance = model.generalSettings.object("appearance")
+                let privacy = model.generalSettings.object("privacy")
+                let regional = model.generalSettings.object("regional")
+                Text(appearance.text("title")).rnFont(13, .semibold).foregroundStyle(palette.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                VStack(spacing: 0) {
+                    generalSettingRow(appearance.object("theme"), type: "theme", enabled: true)
+                    palette.border.frame(height: 0.5)
+                    Toggle(isOn: Binding(
+                        get: { appearance.object("showTaskAge")["value"] as? Bool ?? false },
+                        set: { value in Task { await model.saveGeneralPreference(["type": "showTaskAge", "value": value]) } }
+                    )) {
+                        generalSettingLabel(appearance.object("showTaskAge"), description: "description")
+                    }
+                    .tint(palette.tint).padding(14).frame(minHeight: 48)
+                    .disabled(!model.generalPreferenceEnabled)
+                    .accessibilityIdentifier("general-show-task-age")
+                    palette.border.frame(height: 0.5)
+                    generalSettingRow(appearance.object("quickAccess"), type: "quickAccessView", enabled: true)
+                }
+                .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                Text(privacy.text("title")).rnFont(13, .semibold).foregroundStyle(palette.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle(isOn: Binding(get: { model.appLockRow.flag("value") },
+                                     set: { value in Task { await model.saveAppLock(value) } })) {
+                    generalSettingLabel(model.appLockRow.isEmpty ? privacy.object("appLock") : model.appLockRow, description: "description")
+                }
+                .tint(palette.tint).padding(14).disabled(!model.appLockCanChange)
+                .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityIdentifier("general-app-lock")
+                if let failure = model.appLockError {
+                    Text(failure).rnFont(13).foregroundStyle(palette.danger)
+                        .accessibilityIdentifier("general-app-lock-error")
+                    if model.retryNeeded || model.appLockAwaitingRefresh {
+                        Button(model.label("common.retry")) { Task { await model.retryAppLockRead() } }
+                            .disabled(model.busy).accessibilityIdentifier("general-app-lock-retry")
+                    }
+                }
+                if model.searchAvailable {
+                    Toggle(isOn: Binding(get: { model.searchConsentEnabled },
+                                         set: { enabled in Task { await model.saveSearchConsent(enabled) } })) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(model.label("settings.iosSearchLabel")).rnFont(15).foregroundStyle(palette.text)
+                            Text(model.label("settings.iosSearchDesc")).rnFont(12).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(palette.tint).padding(14).disabled(!model.searchConsentCanChange)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("general-ios-search")
+                    if model.appLock.enabled == true {
+                        Text(model.label("settings.iosSearchPaused")).rnFont(12).foregroundStyle(palette.secondary)
+                            .accessibilityIdentifier("general-ios-search-paused")
+                    }
+                    if let failure = model.searchConsentError {
+                        Text(failure).rnFont(13).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("general-ios-search-consent-error")
+                        Button(model.label("common.retry")) { Task { await model.retrySearchConsent() } }
+                            .disabled(model.searchConsentBusy || model.busy)
+                            .accessibilityIdentifier("general-ios-search-consent-retry")
+                    }
+                    if let failure = model.searchPublicationError {
+                        Text(failure).rnFont(13).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("general-ios-search-publication-error")
+                        Button(model.label("common.retry")) { model.retrySearchPublication() }
+                            .disabled(model.searchConsentBusy || model.busy)
+                            .accessibilityIdentifier("general-ios-search-publication-retry")
+                    }
+                    #if DEBUG && targetEnvironment(simulator)
+                    if !model.searchTestState.isEmpty {
+                        Text(model.searchTestState).rnFont(12)
+                            .accessibilityIdentifier("ios-search-test-state")
+                    }
+                    #endif
+                }
+                generalSettingRow(model.generalSettings.object("language"), type: "language", enabled: true)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                VStack(spacing: 0) {
+                    Button { model.toggleGeneralRegional() } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(regional.text("label")).rnFont(15).foregroundStyle(palette.text)
+                                Text(regional.text("summary")).rnFont(12).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: model.generalRegionalOpen ? "chevron.up" : "chevron.down")
+                                .foregroundStyle(palette.secondary).accessibilityHidden(true)
+                        }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!model.generalPreferenceEnabled)
+                    .accessibilityValue(model.generalRegionalOpen ? "expanded" : "collapsed")
+                    .accessibilityIdentifier("general-regional-toggle")
+                    if model.generalRegionalOpen {
+                        ForEach(["weekStart", "dateFormat", "calendarSystem", "timeFormat"], id: \.self) { type in
+                            if let row = regional[type] as? CoreObject {
+                                palette.border.frame(height: 0.5)
+                                generalSettingRow(row, type: type, enabled: true)
+                            }
+                        }
+                    }
+                }
+                .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                if model.generalPreferencePicker == nil { generalPreferenceFailure }
+            }
+            .padding(16)
+        }
+        .accessibilityIdentifier("general-scroll")
+    }
+
+    private func generalSettingLabel(_ row: CoreObject, description: String = "value") -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(row.text("label")).rnFont(15).foregroundStyle(palette.text)
+            if !row.text(description).isEmpty {
+                Text(row.text(description)).rnFont(12).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func generalSettingRow(_ row: CoreObject, type: String, enabled: Bool) -> some View {
+        Button { model.openGeneralPreferencePicker(type) } label: {
+            HStack(spacing: 12) {
+                generalSettingLabel(row)
+                Image(systemName: "chevron.down").foregroundStyle(palette.secondary).accessibilityHidden(true)
+            }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!enabled || !model.generalPreferenceEnabled)
+        .opacity(enabled ? 1 : 0.55)
+        .accessibilityIdentifier("general-" + type)
+    }
+
+    @ViewBuilder private var generalPreferenceFailure: some View {
+        if let failure = model.generalPreferenceReadError ?? model.generalPreferenceError {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("general-error")
+                if model.retryNeeded || model.generalPreferenceReadError != nil {
+                    Button { Task { await model.retryGeneralPreference() } } label: {
+                        Text(model.label("common.retry")).rnFont(15, .semibold)
+                            .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                    }
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .disabled(model.busy).accessibilityIdentifier("general-retry")
+                }
+            }
+        }
+    }
+
+    private var generalPreferenceSheet: some View {
+        let type = model.generalPreferencePicker ?? ""
+        let picker = ["quickAccessView", "theme"].contains(type)
+            ? model.generalSettings.object("appearance").object(type == "theme" ? "theme" : "quickAccess")
+            : type == "language" ? model.generalSettings.object("language") : model.generalSettings.object("regional").object(type)
+        let groups = picker["groups"] as? [[CoreObject]] ?? [picker["options"] as? [CoreObject] ?? []]
+        return VStack(spacing: 12) {
+            HStack {
+                Text(picker.text("pickerTitle")).rnFont(20, .bold).foregroundStyle(palette.text)
+                    .accessibilityAddTraits(.isHeader).frame(maxWidth: .infinity, alignment: .leading)
+                Button { model.closeGeneralPreferencePicker() } label: {
+                    Text(model.label("common.cancel")).rnFont(15)
+                        .frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                    .disabled(model.busy || model.retryNeeded || model.generalPreferenceActive)
+                    .accessibilityIdentifier("general-picker-cancel")
+            }.padding(.horizontal, 16).padding(.top, 20)
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(groups.indices, id: \.self) { group in
+                        if group > 0 { palette.border.frame(height: 1).padding(.vertical, 4).accessibilityHidden(true) }
+                        ForEach(groups[group].indices, id: \.self) { index in
+                            generalPreferenceOption(groups[group][index])
+                        }
+                    }
+                    generalPreferenceFailure
+                }.padding(.horizontal, 16).padding(.bottom, 24)
+            }
+        }
+        .background(palette.bg)
+        .presentationDetents(dynamicTypeSize.isAccessibilitySize || model.generalPreferenceActive ? [.large] : [.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(model.busy || model.retryNeeded || model.generalPreferenceActive)
+    }
+
+    private func generalPreferenceOption(_ option: CoreObject) -> some View {
+        Button { Task { await model.saveGeneralPreference(option.object("edit")) } } label: {
+            HStack {
+                if !option.text("icon").isEmpty {
+                    Image(systemName: settingsSymbol(option.text("icon")))
+                        .font(.system(size: 20)).foregroundStyle(palette.secondary).frame(width: 24).accessibilityHidden(true)
+                }
+                Text(option.text("label")).rnFont(16).foregroundStyle(palette.text)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                if option["selected"] as? Bool == true {
+                    Image(systemName: "checkmark").foregroundStyle(palette.tint).accessibilityHidden(true)
+                }
+            }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+        .disabled(!model.generalPreferenceEnabled)
+        .accessibilityAddTraits(option["selected"] as? Bool == true ? .isSelected : [])
+        .accessibilityIdentifier("general-option-" + option.text("value"))
+    }
+
+    private var calendarSettingsContent: some View {
+        let device = model.calendarSettings.object("device")
+        let calendars = device.objects("calendars")
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if !model.calendarSettings.object("push").isEmpty { calendarPushContent }
+                if !device.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Toggle(isOn: Binding(get: { device.flag("enabled") }, set: { _ in
+                            model.saveDeviceCalendarSetting(device.object("toggle"))
+                        })) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(device.text("title")).rnFont(15).foregroundStyle(palette.text)
+                                Text(device.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .tint(palette.tint).padding(14).frame(minHeight: 48)
+                        .disabled(!model.calendarSettingEnabled)
+                        .accessibilityIdentifier("calendar-device-enabled")
+                        if !device.object("access").isEmpty {
+                            let access = device.object("access")
+                            palette.border.frame(height: 0.5)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(access.text("text")).rnFont(13).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("calendar-device-access")
+                                Button { model.grantDeviceCalendarAccess() } label: {
+                                    Text(access.text("grantLabel")).rnFont(15, .semibold)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                                .disabled(!model.calendarSettingEnabled).accessibilityIdentifier("calendar-device-grant")
+                            }.padding(14)
+                        }
+                        if device.flag("loading") { ProgressView().frame(maxWidth: .infinity).padding(14) }
+                        if !device.text("empty").isEmpty {
+                            Text(device.text("empty")).rnFont(13).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true).padding(14)
+                                .accessibilityIdentifier("calendar-device-empty")
+                        }
+
+                        ForEach(calendars.indices, id: \.self) { index in
+                            let calendar = calendars[index]
+                            palette.border.frame(height: 0.5)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Toggle(isOn: Binding(get: { calendar.flag("selected") }, set: { _ in
+                                    model.saveDeviceCalendarSetting(calendar.object("edit"))
+                                })) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(calendar.text("name")).rnFont(15).foregroundStyle(palette.text)
+                                        Text(calendar.text("subtitle")).rnFont(12).foregroundStyle(palette.secondary)
+                                    }.fixedSize(horizontal: false, vertical: true)
+                                }
+                                .tint(palette.tint).frame(minHeight: 48)
+                                .disabled(calendar.object("edit").isEmpty || !model.calendarSettingEnabled)
+                                .opacity(calendar.object("edit").isEmpty ? 0.55 : 1)
+                                .accessibilityIdentifier("calendar-device-selection-" + String(index))
+                                if !calendar.object("areas").isEmpty {
+                                    calendarAreaChoices(calendar.object("areas"), row: index, subscription: false)
+                                }
+                            }.padding(14)
+                        }
+                    }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                } else if model.busy { ProgressView().frame(maxWidth: .infinity).padding(14) }
+                if !model.calendarSubscriptions.isEmpty { calendarSubscriptionContent }
+                if let failure = model.calendarSettingError ?? model.calendarSubscriptionReadError ?? model.calendarSettingReadError {
+                    Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("calendar-settings-error")
+                    if model.retryNeeded || model.calendarPushSettingCanRetry || model.calendarSettingReadError != nil || model.calendarSubscriptionReadError != nil || model.calendarSettingAwaitingRefresh {
+                        Button { model.retryCalendarSettings() } label: {
+                            Text(model.label("common.retry")).rnFont(15, .semibold)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .disabled(model.busy).accessibilityIdentifier("calendar-settings-retry")
+                    }
+                }
+                #if DEBUG && targetEnvironment(simulator)
+                if model.calendarPushFixtureEnabled {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("App orchestration fixture; no EventKit proof.").rnFont(12)
+                        Text(model.calendarPushFixtureState).rnFont(12).accessibilityIdentifier("calendar-push-fixture-state")
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 80))]) {
+                            ForEach(["hold", "release", "fail", "stop", "activate", "busy", "idle", "save", "due", "newer", "full", "oversize", "bytes", "claim", "host", "stale"], id: \.self) { command in
+                                Button(command) { model.calendarPushFixtureCommand(command) }
+                                    .frame(minHeight: 44).accessibilityIdentifier("calendar-push-fixture-" + command)
+                            }
+                        }
+                    }
+                }
+                #endif
+            }.padding(16)
+        }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("calendar-settings-scroll")
+    }
+
+    private var calendarPushContent: some View {
+        let push = model.calendarSettings.object("push")
+        let target = push.object("target")
+        return VStack(alignment: .leading, spacing: 0) {
+            Toggle(isOn: Binding(get: { push.flag("enabled") }, set: { _ in model.saveCalendarPushSetting(push.object("toggle")) })) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(push.text("title")).rnFont(15).foregroundStyle(palette.text)
+                    Text(push.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(palette.tint).padding(14).frame(minHeight: 48)
+            .disabled(!model.calendarPushSettingEnabled).accessibilityIdentifier("calendar-push-enabled")
+            if push.flag("enabled"), target.isEmpty {
+                palette.border.frame(height: 0.5)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(push.text("denied").isEmpty ? model.label("settings.calendarAccessRequired") : push.text("denied"))
+                        .rnFont(13).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("calendar-push-access")
+                    Button { model.grantCalendarPushAccess() } label: {
+                        Text(model.label("settings.grantCalendarAccess")).rnFont(15, .semibold)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.disabled(!model.calendarPushSettingEnabled).accessibilityIdentifier("calendar-push-grant")
+                }.padding(14)
+            }
+            if !target.isEmpty {
+                palette.border.frame(height: 0.5)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(target.text("title")).rnFont(15, .semibold).accessibilityAddTraits(.isHeader)
+                    Text(target.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(["localHint", "sharedAccountHint"], id: \.self) { field in
+                        if !target.text(field).isEmpty {
+                            Text(target.text(field)).rnFont(13).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if target.flag("loading") { ProgressView().frame(maxWidth: .infinity).padding(8) }
+                    let options = target.objects("options")
+                    ForEach(options.indices, id: \.self) { index in
+                        let option = options[index]
+                        Button { model.saveCalendarPushSetting(option.object("edit")) } label: {
+                            HStack(spacing: 10) {
+                                if !option.text("color").isEmpty {
+                                    Circle().fill(Color(hex: option.text("color"))).frame(width: 16, height: 16).accessibilityHidden(true)
+                                }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(option.text("name")).rnFont(15).foregroundStyle(palette.text)
+                                    Text(option.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                                }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                if option.flag("selected") { Image(systemName: "checkmark").foregroundStyle(palette.tint).accessibilityHidden(true) }
+                            }.frame(minHeight: 48).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).disabled(!model.calendarPushSettingEnabled || option.object("edit").isEmpty)
+                        .accessibilityLabel(option.text("accessibilityLabel"))
+                        .accessibilityAddTraits(option.flag("selected") ? .isSelected : [])
+                        .accessibilityIdentifier("calendar-push-target-" + String(index))
+                    }
+                    if !target.object("colors").isEmpty { calendarPushColors(target.object("colors")) }
+                    Button { Task { await model.refreshCalendarPushTargets() } } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(target.object("refresh").text("label")).rnFont(15)
+                            Text(target.object("refresh").text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                        }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(Rectangle())
+                    }.disabled(!model.calendarPushSettingEnabled).accessibilityIdentifier("calendar-push-refresh")
+                    Button(role: .destructive) { calendarPushDeletePresented = model.prepareCalendarPushDelete() } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(target.object("delete").text("label")).rnFont(15)
+                            Text(target.object("delete").text("description")).rnFont(12)
+                        }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(Rectangle())
+                    }.disabled(!model.calendarPushSettingEnabled).accessibilityIdentifier("calendar-push-delete")
+                }.padding(14)
+            }
+            if model.calendarPushSettingWorking {
+                HStack(spacing: 10) { ProgressView(); Text(model.label("common.loading")).rnFont(14) }.padding(14)
+                Button(model.label("common.cancel")) { model.cancelCalendarPushSetting() }
+                    .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle()).accessibilityIdentifier("calendar-push-operation-cancel")
+            }
+            ForEach(model.calendarPushSettingToasts.indices, id: \.self) { index in
+                let toast = model.calendarPushSettingToasts[index]
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(toast.text("title")).rnFont(15, .semibold)
+                    Text(toast.text("message")).rnFont(13)
+                }.fixedSize(horizontal: false, vertical: true).padding(14)
+                    .foregroundStyle(toast.text("tone") == "warning" ? palette.danger : palette.text)
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("calendar-push-toast-" + String(index))
+            }
+            if let failure = model.calendarPushLifecycleError {
+                Text(failure).rnFont(13).foregroundStyle(palette.danger).fixedSize(horizontal: false, vertical: true).padding(14)
+                    .accessibilityIdentifier("calendar-push-lifecycle-error")
+            }
+        }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func calendarPushColors(_ colors: CoreObject) -> some View {
+        let options = colors.objects("options")
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(colors.text("title")).rnFont(15, .semibold)
+            Text(colors.text("description")).rnFont(13).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 8)], spacing: 8) {
+                ForEach(options.indices, id: \.self) { index in
+                    let color = options[index]
+                    Button { model.saveCalendarPushSetting(color.object("edit")) } label: {
+                        RoundedRectangle(cornerRadius: 8).fill(Color(hex: color.text("color"))).frame(minHeight: 48)
+                            .overlay {
+                                if color.flag("selected") { Image(systemName: "checkmark.circle.fill").foregroundStyle(palette.text, palette.card).accessibilityHidden(true) }
+                            }
+                    }.buttonStyle(.plain).disabled(!model.calendarPushSettingEnabled || color.object("edit").isEmpty)
+                        .accessibilityLabel(color.text("accessibilityLabel"))
+                        .accessibilityAddTraits(color.flag("selected") ? .isSelected : [])
+                        .accessibilityIdentifier("calendar-push-color-" + String(index))
+                }
+            }
+        }
+    }
+
+    private var calendarSubscriptionContent: some View {
+        let feeds = model.calendarSubscriptions
+        let items = feeds.objects("items")
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(feeds.text("title")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                Text(feeds.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !model.calendarSettings.object("feeds").object("add").text("label").isEmpty {
+                let fields = model.calendarSettings.object("feeds")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(fields.object("name").text("label")).rnFont(14).foregroundStyle(palette.text)
+                    TextField(fields.object("name").text("placeholder"), text: $model.calendarSubscriptionName)
+                        .focused($calendarSubscriptionField, equals: .name).submitLabel(.next)
+                        .onSubmit { calendarSubscriptionField = .url }
+                        .rnFont(15).textFieldStyle(.roundedBorder).frame(minHeight: 44)
+                        .accessibilityLabel(fields.object("name").text("label"))
+                        .accessibilityIdentifier("calendar-subscription-name")
+                        .disabled(!model.calendarSubscriptionEnabled)
+                    Text(fields.object("url").text("label")).rnFont(14).foregroundStyle(palette.text)
+                    TextField(fields.object("url").text("placeholder"), text: $model.calendarSubscriptionURL)
+                        .focused($calendarSubscriptionField, equals: .url).submitLabel(.done)
+                        .onSubmit { calendarSubscriptionField = nil }
+                        .rnFont(15).textFieldStyle(.roundedBorder).frame(minHeight: 44)
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityLabel(fields.object("url").text("label"))
+                        .accessibilityIdentifier("calendar-subscription-url")
+                        .disabled(!model.calendarSubscriptionEnabled)
+                    Button { calendarSubscriptionField = nil; model.addCalendarSubscription() } label: {
+                        Text(fields.object("add").text("label")).rnFont(15, .semibold)
+                            .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                    }
+                    .disabled(!model.calendarSubscriptionAddEnabled)
+                    .accessibilityIdentifier("calendar-subscription-add")
+                }
+            }
+            if !model.calendarSettings.object("feeds").object("chooseFile").text("label").isEmpty {
+                Button { calendarSubscriptionField = nil; model.prepareCalendarFileImport() } label: {
+                    Text(model.calendarSettings.object("feeds").object("chooseFile").text("label")).rnFont(15, .semibold)
+                        .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                }
+                .disabled(!model.calendarSubscriptionChooseFileEnabled)
+                .accessibilityIdentifier("calendar-subscription-choose-file")
+            }
+            if !model.calendarSettings.object("feeds").object("test").text("label").isEmpty {
+                Button { Task { await model.testCalendarSettings() } } label: {
+                    HStack(spacing: 8) {
+                        Text(model.calendarSettings.object("feeds").object("test").text("label")).rnFont(15, .semibold)
+                        if model.calendarSettingsTesting { ProgressView().accessibilityHidden(true) }
+                    }.frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                }
+                .disabled(!model.calendarSettingsTestEnabled)
+                .accessibilityValue(model.calendarSettingsTesting ? model.label("common.loading") : "")
+                .accessibilityIdentifier("calendar-settings-test")
+                if !model.calendarSettingsTestResult.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.calendarSettingsTestResult.text("title")).rnFont(15, .semibold)
+                        Text(model.calendarSettingsTestResult.text("message")).rnFont(14)
+                    }
+                    .foregroundStyle(model.calendarSettingsTestResult.text("tone") == "warning" ? palette.danger : palette.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("calendar-settings-test-result")
+                }
+            }
+            ForEach(items.indices, id: \.self) { index in
+                let feed = items[index]
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(isOn: Binding(get: { feed.flag("enabled") }, set: { _ in
+                        model.saveCalendarSubscriptionSetting(feed.object("toggle"))
+                    })) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(feed.text("name")).rnFont(15).foregroundStyle(palette.text)
+                            Text(feed.text("url")).rnFont(12).foregroundStyle(palette.secondary)
+                        }.fixedSize(horizontal: false, vertical: true)
+                            .frame(minHeight: 48, alignment: .leading)
+                    }
+                    .tint(palette.tint).frame(minHeight: 48).contentShape(Rectangle()).disabled(!model.calendarSubscriptionEnabled)
+                    .accessibilityIdentifier("calendar-feed-enabled-" + String(index))
+                    calendarSubscriptionColors(feed.objects("colors"), row: index)
+                    if !feed.object("areas").isEmpty {
+                        calendarAreaChoices(feed.object("areas"), row: index, subscription: true)
+                    }
+                    Button(role: .destructive) {
+                        model.saveCalendarSubscriptionSetting(feed.object("remove").object("edit"))
+                    } label: {
+                        Text(feed.object("remove").text("label")).rnFont(14)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .disabled(!model.calendarSubscriptionEnabled)
+                    .accessibilityIdentifier("calendar-feed-remove-" + String(index))
+                }.padding(14).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private func calendarSubscriptionColors(_ colors: [CoreObject], row: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let automatic = colors.first, automatic["color"] is NSNull {
+                Button { model.saveCalendarSubscriptionSetting(automatic.object("edit")) } label: {
+                    HStack(spacing: 8) {
+                        Text(model.label("taskEdit.textDirection.auto")).rnFont(14)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if automatic.flag("selected") { Image(systemName: "checkmark").accessibilityHidden(true) }
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .disabled(!model.calendarSubscriptionEnabled || automatic.object("edit").isEmpty)
+                .accessibilityLabel(automatic.text("accessibilityLabel"))
+                .accessibilityAddTraits(automatic.flag("selected") ? .isSelected : [])
+                .accessibilityIdentifier("calendar-feed-color-" + String(row) + "-0")
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 8)], spacing: 8) {
+                ForEach(colors.indices.filter { !(colors[$0]["color"] is NSNull) }, id: \.self) { index in
+                    let color = colors[index]
+                    Button { model.saveCalendarSubscriptionSetting(color.object("edit")) } label: {
+                        RoundedRectangle(cornerRadius: 8).fill(Color(hex: color.text("fill")))
+                            .frame(minHeight: 48)
+                            .overlay {
+                                if color.flag("selected") {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(palette.text, palette.card).accessibilityHidden(true)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain).disabled(!model.calendarSubscriptionEnabled || color.object("edit").isEmpty)
+                    .accessibilityLabel(color.text("accessibilityLabel"))
+                    .accessibilityAddTraits(color.flag("selected") ? .isSelected : [])
+                    .accessibilityIdentifier("calendar-feed-color-" + String(row) + "-" + String(index))
+                }
+            }
+        }
+    }
+
+    private func calendarAreaChoices(_ choice: CoreObject, row: Int, subscription: Bool) -> some View {
+        let prefix = subscription ? "calendar-feed" : "calendar-device"
+        let enabled = subscription ? model.calendarSubscriptionEnabled : model.calendarSettingEnabled
+        let identity = Data((prefix + ":" + choice.text("key")).utf8)
+        let options = choice.objects("options")
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { calendarAreaPicker = calendarAreaPicker == identity ? nil : identity } label: {
+                HStack(spacing: 8) {
+                    Text(choice.text("label")).rnFont(13).foregroundStyle(palette.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Image(systemName: calendarAreaPicker == identity ? "chevron.up" : "chevron.down")
+                        .foregroundStyle(palette.secondary).accessibilityHidden(true)
+                }.frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(!enabled)
+            .accessibilityIdentifier(prefix + "-areas-" + String(row))
+            if calendarAreaPicker == identity {
+                ForEach(options.indices, id: \.self) { index in
+                    let option = options[index]
+                    Toggle(isOn: Binding(get: { option.flag("checked") }, set: { _ in
+                        if subscription { model.saveCalendarSubscriptionSetting(option.object("edit")) }
+                        else { model.saveDeviceCalendarSetting(option.object("edit")) }
+                    })) {
+                        Text(option.text("label")).rnFont(13).foregroundStyle(palette.text)
+                            .fixedSize(horizontal: false, vertical: true).frame(minHeight: 44, alignment: .leading)
+                    }
+                    .tint(palette.tint).frame(minHeight: 44).contentShape(Rectangle()).disabled(!enabled)
+                    .accessibilityIdentifier(prefix + "-area-" + String(row) + "-" + String(index))
+                }
+            }
+        }
+    }
+
+    private var notificationsContent: some View {
+        let task = model.notificationSettings.object("task")
+        let weekly = model.notificationSettings.object("weekly")
+        let digest = model.notificationSettings.object("digest")
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if !model.notificationSettings.isEmpty {
+                    VStack(spacing: 0) {
+                        notificationToggle(task.object("master"))
+                        palette.border.frame(height: 0.5)
+                        notificationPickerRow(task.object("default"), type: "taskReminderDefault",
+                            summary: task.object("default").text("valueLabel") + " · " + task.object("default").text("description"))
+                        palette.border.frame(height: 0.5)
+                        notificationToggle(task.object("start"))
+                        palette.border.frame(height: 0.5)
+                        notificationToggle(task.object("due"))
+                    }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    VStack(spacing: 0) {
+                        notificationToggle(weekly.object("enabled"))
+                        palette.border.frame(height: 0.5)
+                        notificationPickerRow(weekly.object("day"), type: "weeklyReviewDay", summary: weekly.object("day").text("valueLabel"))
+                        palette.border.frame(height: 0.5)
+                        notificationPickerRow(weekly.object("time"), type: "weeklyReviewTime")
+                    }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    VStack(spacing: 0) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(digest.text("title")).rnFont(15).foregroundStyle(palette.text)
+                            Text(digest.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        ForEach(["morning", "evening"], id: \.self) { slot in
+                            let row = digest.object(slot)
+                            palette.border.frame(height: 0.5)
+                            notificationToggle(row.object("enabled"))
+                            palette.border.frame(height: 0.5)
+                            notificationPickerRow(row.object("time"), type: slot == "morning" ? "dailyDigestMorningTime" : "dailyDigestEveningTime")
+                        }
+                    }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if let failure = model.notificationSettingReadError ?? model.notificationSettingError {
+                    Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("notifications-error")
+                    if model.retryNeeded || model.notificationSettingReadError != nil {
+                        Button { model.retryNotificationSettings() } label: {
+                            Text(model.label("common.retry")).rnFont(15, .semibold)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .disabled(model.busy).accessibilityIdentifier("notifications-retry")
+                    }
+                }
+            }.padding(16)
+        }.accessibilityIdentifier("notifications-scroll")
+    }
+
+    private func notificationToggle(_ row: CoreObject) -> some View {
+        Toggle(isOn: Binding(get: { row.flag("value") }, set: { value in
+            var edit = row.object("edit")
+            edit["value"] = value
+            model.saveNotificationSetting(edit)
+        })) { generalSettingLabel(row, description: "description") }
+        .tint(palette.tint).padding(14).frame(minHeight: 48)
+        .disabled(row.flag("disabled") || !model.notificationSettingEnabled)
+        .opacity(row.flag("disabled") ? 0.55 : 1)
+        .accessibilityIdentifier("notifications-" + row.object("edit").text("type"))
+    }
+
+    private func notificationPickerRow(_ row: CoreObject, type: String, summary: String? = nil) -> some View {
+        Button { openNotificationPicker(type, row: row) } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.text("label")).rnFont(15).foregroundStyle(palette.text)
+                    Text(summary ?? row.text("value")).rnFont(12).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.down").foregroundStyle(palette.secondary).accessibilityHidden(true)
+            }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(row.flag("disabled") || !model.notificationSettingEnabled)
+        .opacity(row.flag("disabled") ? 0.55 : 1)
+        .accessibilityIdentifier("notifications-" + type)
+    }
+
+    private func openNotificationPicker(_ type: String, row: CoreObject) {
+        guard model.notificationSettingEnabled, !row.flag("disabled") else { return }
+        if type == "taskReminderDefault" { notificationDefaultDraft = row.text("value") }
+        else if type == "weeklyReviewDay" { notificationDayDraft = row.number("value") }
+        else {
+            let time = row.text("value").split(separator: ":").compactMap { Int($0) }
+            guard time.count == 2, let date = Calendar.current.date(bySettingHour: time[0], minute: time[1], second: 0, of: Date()) else { return }
+            notificationTimeDraft = date
+        }
+        notificationPicker = type
+    }
+
+    private var notificationPickerSheet: some View {
+        let type = notificationPicker ?? ""
+        let weekly = model.notificationSettings.object("weekly")
+        let row = type == "taskReminderDefault" ? model.notificationSettings.object("task").object("default")
+            : type == "weeklyReviewDay" ? weekly.object("day") : type == "weeklyReviewTime" ? weekly.object("time")
+            : model.notificationSettings.object("digest").object(type == "dailyDigestMorningTime" ? "morning" : "evening").object("time")
+        return VStack(spacing: 12) {
+            Text(row.text("label")).rnFont(20, .bold).foregroundStyle(palette.text)
+                .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 20)
+            ScrollView {
+                if type == "weeklyReviewDay" || type == "taskReminderDefault" {
+                    VStack(spacing: 8) {
+                        ForEach(Array((row["options"] as? [CoreObject] ?? []).enumerated()), id: \.offset) { _, option in
+                            let selected = type == "taskReminderDefault" ? notificationDefaultDraft == option.text("value") : notificationDayDraft == option.number("value")
+                            Button {
+                                if type == "taskReminderDefault" { notificationDefaultDraft = option.text("value") }
+                                else { notificationDayDraft = option.number("value") }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text(option.text("label")).rnFont(16).foregroundStyle(palette.text)
+                                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                    if selected {
+                                        Image(systemName: "checkmark").foregroundStyle(palette.tint).accessibilityHidden(true)
+                                    }
+                                }.padding(14).frame(minHeight: 48).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .accessibilityIdentifier(type == "taskReminderDefault" ? "notifications-default-" + option.text("value") : "notifications-day-" + String(option.number("value")))
+                        }
+                    }.padding(.horizontal, 16)
+                } else {
+                    DatePicker(row.text("label"), selection: $notificationTimeDraft, displayedComponents: .hourAndMinute)
+                        .datePickerStyle(.wheel).labelsHidden().padding(.horizontal, 16)
+                        .accessibilityLabel(row.text("label")).accessibilityIdentifier("notifications-time-wheel")
+                }
+            }.accessibilityIdentifier("notifications-picker-scroll")
+            HStack(spacing: 12) {
+                Button { notificationPicker = nil } label: {
+                    Text(model.notificationSettings.object("text").text("cancel")).rnFont(15)
+                        .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                }.accessibilityIdentifier("notifications-picker-cancel")
+                Button { finishNotificationPicker() } label: {
+                    Text(model.notificationSettings.object("text").text("done")).rnFont(15, .semibold)
+                        .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                }.disabled(!model.notificationSettingEnabled).accessibilityIdentifier("notifications-picker-done")
+            }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 16)
+        }
+        .background(palette.bg).presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func finishNotificationPicker() {
+        guard model.notificationSettingEnabled, let type = notificationPicker else { return }
+        let edit: CoreObject
+        if type == "taskReminderDefault" { edit = ["type": type, "value": notificationDefaultDraft] }
+        else if type == "weeklyReviewDay" { edit = ["type": type, "value": notificationDayDraft] }
+        else {
+            let time = Calendar.current.dateComponents([.hour, .minute], from: notificationTimeDraft)
+            guard let hour = time.hour, let minute = time.minute else { return }
+            edit = ["type": type, "value": String(format: "%02d:%02d", hour, minute)]
+        }
+        notificationPicker = nil
+        model.saveNotificationSetting(edit)
+    }
+
+    private var menuContent: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                TextField(model.settingsMenu.text("searchPlaceholder"), text: Binding(
+                    get: { model.settingsSearch }, set: { model.setSettingsSearch($0) }))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .rnFont(15).padding(.horizontal, 12).frame(minHeight: 44)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.border, lineWidth: 1))
+                    .accessibilityLabel(model.settingsMenu.text("searchPlaceholder"))
+                    .accessibilityIdentifier("settings-search")
+                if let groups = model.settingsMenu["groups"] as? [[CoreObject]] {
+                    ForEach(groups.indices, id: \.self) { groupIndex in
+                        VStack(spacing: 0) {
+                            ForEach(groups[groupIndex].indices, id: \.self) { rowIndex in
+                                let row = groups[groupIndex][rowIndex]
+                                settingsMenuRow(row)
+                                if rowIndex < groups[groupIndex].count - 1 { palette.border.frame(height: 0.5) }
+                            }
+                        }
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                if !model.settingsMenu.text("noMatches").isEmpty {
+                    Text(model.settingsMenu.text("noMatches")).rnFont(14).foregroundStyle(palette.secondary)
+                        .frame(maxWidth: .infinity).padding(20).accessibilityIdentifier("settings-no-matches")
+                }
+                if let failure = model.settingsReadError ?? (!model.settingsManagePresented ? model.manageReadError : nil) {
+                    errorBlock(failure, id: "settings-read-error") { Task { await model.retryManageSettingsRead() } }
+                }
+                if model.busy { ProgressView().padding(12) }
+            }
+            .padding(16)
+        }
+        .accessibilityIdentifier("settings-scroll")
+    }
+
+    private var advancedContent: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                #if DEBUG && (targetEnvironment(simulator) || NATIVE_DEVICE_TEST)
+                if model.settingsAIProofEnabled {
+                    Text(model.settingsAIProofState).accessibilityIdentifier("ai-summary-proof-state")
+                    Button("Capture baseline") { model.captureAISettingsSummaryFixture(.baseline) }
+                        .frame(minHeight: 44).accessibilityIdentifier("ai-summary-proof-baseline")
+                    Button("Capture final") { model.captureAISettingsSummaryFixture(.final) }
+                        .frame(minHeight: 44).accessibilityIdentifier("ai-summary-proof-final")
+                }
+                #endif
+                let rows = model.settingsMenu.object("advanced").objects("rows")
+                VStack(spacing: 0) {
+                    ForEach(rows.indices, id: \.self) { index in
+                        settingsMenuRow(rows[index])
+                        if index < rows.count - 1 { palette.border.frame(height: 0.5) }
+                    }
+                }
+                .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                if let failure = model.settingsReadError {
+                    errorBlock(failure, id: "settings-read-error") { Task { await model.retryManageSettingsRead() } }
+                }
+                if model.busy { ProgressView().padding(12) }
+            }
+            .padding(16)
+        }
+        .accessibilityIdentifier("advanced-scroll")
+    }
+
+    private var aiSummaryContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(model.label("settings.aiSummaryReadOnly")).rnFont(14).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ai-summary-note")
+                if let projection = model.settingsAIProjection {
+                    aiSummaryRow("settings.aiEnable", value: model.label(projection.aiEnabled ? "settings.on" : "settings.off"), id: "enabled")
+                    aiSummaryRow("settings.aiProvider", value: model.label(projection.aiProvider == .openai ? "settings.aiProviderOpenAI"
+                        : projection.aiProvider == .gemini ? "settings.aiProviderGemini" : "settings.aiProviderAnthropic"), id: "provider")
+                    if projection.aiProvider == .gemini {
+                        aiSummaryRow("settings.aiThinkingBudget", value: model.aiGeminiThinkingBudgetLabel(projection.aiThinkingBudgetSavedValue), id: "gemini-budget")
+                    }
+                    aiSummaryRow("settings.aiReasoning", value: model.aiReasoningEffortLabel(projection.aiReasoningEffortSavedValue), id: "effort")
+                    aiSummaryRow("settings.aiRequestTimeout", value: model.label("settings.aiRequestTimeoutSeconds")
+                        .replacingOccurrences(of: "{{seconds}}", with: String(projection.aiRequestTimeoutSeconds)), id: "timeout")
+                } else if model.settingsAILoading {
+                    ProgressView(model.label("common.loading")).accessibilityIdentifier("ai-summary-loading")
+                } else if model.settingsAIReadFailed {
+                    Text(model.label("settings.feedback.actionFailed")).rnFont(14).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ai-summary-error")
+                    Button(model.label("common.retry")) { model.retryAISettingsSummary() }
+                        .buttonStyle(.plain).rnFont(15, .semibold).foregroundStyle(palette.tint)
+                        .frame(minHeight: 44).disabled(model.busy || model.retryNeeded)
+                        .accessibilityIdentifier("ai-summary-retry")
+                }
+                if model.settingsAIProjection?.aiProvider == .openai {
+                    Text(model.label("settings.aiReasoningHint")).rnFont(14).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let options = model.settingsAIEffortOptions {
+                        ForEach([NativeAIReasoningEffortValue.low, .medium, .high], id: \.rawValue) { value in
+                            Button { model.saveAIReasoningEffort(value) } label: {
+                                HStack {
+                                    Text(model.label(value == .low ? "settings.aiEffortLow"
+                                        : value == .medium ? "settings.aiEffortMedium" : "settings.aiEffortHigh")).rnFont(15)
+                                    Spacer()
+                                    if options.value.rawValue == value.rawValue { Image(systemName: "checkmark") }
+                                }.frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain).foregroundStyle(palette.text)
+                                .disabled(!model.settingsAIReasoningCanChoose)
+                                .accessibilityAddTraits(options.value.rawValue == value.rawValue ? .isSelected : [])
+                                .accessibilityIdentifier("ai-effort-choice-" + value.rawValue)
+                        }
+                    } else if model.settingsAIEffortOptionsFailed {
+                        Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("ai-effort-options-error")
+                        Button(model.label("common.retry")) { model.retryAIReasoningEffortOptions() }
+                            .frame(minHeight: 44).disabled(model.busy || model.retryNeeded || !model.settingsAICanOpen)
+                            .accessibilityIdentifier("ai-effort-options-retry")
+                    } else if !model.retryNeeded {
+                        ProgressView(model.label("common.loading")).accessibilityIdentifier("ai-effort-loading")
+                    }
+                }
+                if model.settingsAIProjection?.aiProvider == .gemini {
+                    Text(model.label("settings.aiThinkingHint")).rnFont(14).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let options = model.settingsAIGeminiOptions {
+                        ForEach([NativeAIGeminiThinkingBudgetValue.off, .low, .medium, .high], id: \.rawValue) { value in
+                            Button { model.saveAIGeminiThinkingBudget(value) } label: {
+                                HStack {
+                                    Text(model.aiGeminiThinkingBudgetLabel(value.rawValue)).rnFont(15)
+                                    Spacer()
+                                    if options.value == value.rawValue { Image(systemName: "checkmark") }
+                                }.frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain).foregroundStyle(palette.text)
+                                .disabled(!model.settingsAIGeminiCanChoose)
+                                .accessibilityAddTraits(options.value == value.rawValue ? .isSelected : [])
+                                .accessibilityIdentifier("ai-gemini-choice-" + String(value.rawValue))
+                        }
+                    } else if model.settingsAIGeminiOptionsFailed {
+                        Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("ai-gemini-options-error")
+                        Button(model.label("common.retry")) { model.retryAIGeminiThinkingBudgetOptions() }
+                            .frame(minHeight: 44).disabled(model.busy || model.retryNeeded || !model.settingsAICanOpen)
+                            .accessibilityIdentifier("ai-gemini-options-retry")
+                    } else if !model.retryNeeded {
+                        ProgressView(model.label("common.loading")).accessibilityIdentifier("ai-gemini-loading")
+                    }
+                }
+                Button { model.toggleAIAdvanced() } label: {
+                    HStack {
+                        Text(model.label("settings.aiAdvanced")).rnFont(15, .semibold)
+                        Spacer()
+                        Image(systemName: model.settingsAIAdvanced ? "chevron.up" : "chevron.down")
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(palette.text)
+                    .disabled(model.busy || model.retryNeeded || !model.settingsAICanOpen || model.settingsAILoading || model.settingsAIReadFailed)
+                    .accessibilityValue(model.settingsAIAdvanced ? model.label("settings.on") : model.label("settings.off"))
+                    .accessibilityIdentifier("ai-timeout-advanced")
+                if model.settingsAIAdvanced {
+                    Text(model.label("settings.aiRequestTimeoutDesc")).rnFont(14).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let options = model.settingsAIOptions {
+                        ForEach([30, 60, 120, 300], id: \.self) { seconds in
+                            Button { model.saveAIRequestTimeout(seconds) } label: {
+                                HStack {
+                                    Text(model.label("settings.aiRequestTimeoutSeconds")
+                                        .replacingOccurrences(of: "{{seconds}}", with: String(seconds))).rnFont(15)
+                                    Spacer()
+                                    if options.value == seconds { Image(systemName: "checkmark") }
+                                }.frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain).foregroundStyle(palette.text)
+                                .disabled(!model.settingsAITimeoutCanChoose)
+                                .accessibilityAddTraits(options.value == seconds ? .isSelected : [])
+                                .accessibilityIdentifier("ai-timeout-choice-" + String(seconds))
+                        }
+                    } else if model.settingsAIOptionsFailed {
+                        Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("ai-timeout-options-error")
+                        Button(model.label("common.retry")) { model.retryAIRequestTimeoutOptions() }
+                            .frame(minHeight: 44).disabled(model.busy || model.retryNeeded)
+                            .accessibilityIdentifier("ai-timeout-options-retry")
+                    } else if !model.retryNeeded {
+                        ProgressView(model.label("common.loading")).accessibilityIdentifier("ai-timeout-loading")
+                    }
+                }
+                if model.settingsAISaveFailed {
+                    Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ai-timeout-save-error")
+                }
+                if model.settingsAIEffortSaveFailed {
+                    Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ai-effort-save-error")
+                }
+                if model.settingsAIGeminiSaveFailed {
+                    Text(model.label("settings.feedback.actionFailed")).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ai-gemini-save-error")
+                }
+                #if DEBUG && (targetEnvironment(simulator) || NATIVE_DEVICE_TEST)
+                if !model.settingsAIGeminiFixtureState.isEmpty {
+                    Text(model.settingsAIGeminiFixtureState).accessibilityIdentifier("ai-gemini-fixture-state")
+                }
+                if !model.settingsAIEffortFixtureState.isEmpty {
+                    Text(model.settingsAIEffortFixtureState).accessibilityIdentifier("ai-effort-fixture-state")
+                }
+                if !model.settingsAITimeoutFixtureState.isEmpty {
+                    Text(model.settingsAITimeoutFixtureState).accessibilityIdentifier("ai-timeout-fixture-state")
+                }
+                if model.settingsAITestHeld || model.settingsAITimeoutTestHeld || model.settingsAISaveFailed
+                    || model.settingsAIEffortTestHeld || model.settingsAIEffortSaveFailed
+                    || model.settingsAIGeminiTestHeld || model.settingsAIGeminiSaveFailed {
+                    if model.settingsAITimeoutTestHeld { Text("held").accessibilityIdentifier("ai-timeout-test-held") }
+                    if model.settingsAIEffortTestHeld { Text("held").accessibilityIdentifier("ai-effort-test-held") }
+                    if model.settingsAIGeminiTestHeld { Text("held").accessibilityIdentifier("ai-gemini-test-held") }
+                    Text("held").accessibilityIdentifier("ai-summary-test-held")
+                    Button("Lock fixture") { model.retireAISettingsSummaryFixture("lock") }
+                        .frame(minHeight: 44).accessibilityIdentifier("ai-summary-test-lock")
+                    Button("Replace fixture host") { model.retireAISettingsSummaryFixture("host") }
+                        .frame(minHeight: 44).accessibilityIdentifier("ai-summary-test-host")
+                }
+                #endif
+            }
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityIdentifier("ai-summary-scroll")
+    }
+
+    private func aiSummaryRow(_ label: String, value: String, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(model.label(label)).rnFont(15, .semibold).foregroundStyle(palette.text)
+            Text(value).rnFont(15).foregroundStyle(palette.secondary)
+                .accessibilityIdentifier("ai-summary-" + id)
+        }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsMenuRow(_ row: CoreObject) -> some View {
+        let available = model.settingsAdvancedPresented
+            ? ["calendar", "ai"].contains(row.text("id")) && (row.text("id") != "ai" || model.settingsAICanOpen)
+            : ["manage", "general", "notifications", "advanced", "gtd", "data", "sync", "about"].contains(row.text("id"))
+        return Button {
+            if row.text("id") == "manage" { Task { await model.openManageSettings() } }
+            else if row.text("id") == "general" { Task { await model.openGeneralSettings() } }
+            else if row.text("id") == "notifications" { Task { await model.openNotificationSettings() } }
+            else if row.text("id") == "ai" { model.openAISettingsSummary() }
+            else if row.text("id") == "calendar" { Task { await model.openCalendarSettings() } }
+            else if row.text("id") == "advanced" { model.openAdvancedSettings() }
+            else if row.text("id") == "data" { Task { await model.openDataSettings() } }
+            else if row.text("id") == "gtd" { Task { await model.openGtdSettings() } }
+            else if row.text("id") == "sync" { Task { await model.openSyncSettings() } }
+            else if row.text("id") == "about" { model.openAboutSettings() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: settingsSymbol(row.text("icon")))
+                    .font(.system(size: 20)).foregroundStyle(palette.tint)
+                    .frame(width: 32).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.text("title")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                    if !row.text("description").isEmpty {
+                        Text(row.text("description")).rnFont(12)
+                            .foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if row.flag("showIndicator") {
+                    Circle().fill(row.text("indicatorColor").isEmpty ? palette.danger : Color(hex: row.text("indicatorColor")))
+                        .frame(width: 8, height: 8).accessibilityHidden(true)
+                        .accessibilityIdentifier("settings-indicator-" + row.text("id"))
+                }
+                Image(systemName: "chevron.right").font(.system(size: 12))
+                    .foregroundStyle(palette.secondary).accessibilityHidden(true)
+            }
+            .padding(.horizontal, 14).frame(minHeight: 60).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!available || model.busy || model.retryNeeded || model.calendarSettingActive)
+        .opacity(available ? 1 : 0.55)
+        .accessibilityLabel(row.text("accessibilityLabel").isEmpty ? row.text("title") : row.text("accessibilityLabel"))
+        .accessibilityIdentifier("settings-" + row.text("id"))
+    }
+
+    private var manageContent: some View {
+        ScrollViewReader { scroll in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    if let failure = model.managePersonReferenceError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(failure).rnFont(13).foregroundStyle(palette.danger)
+                                .accessibilityIdentifier("manage-person-reference-error")
+                            Button { model.dismissManagedPersonReferenceError() } label: {
+                                Text(model.label("common.close")).rnFont(14, .semibold)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).disabled(model.busy || model.retryNeeded)
+                            .accessibilityIdentifier("manage-person-reference-error-close")
+                        }
+                    }
+                    if let failure = model.unassignedAreaColorError, model.unassignedAreaColorOptions.isEmpty {
+                        errorBlock(failure, id: "manage-unassigned-color-error",
+                                   retryID: "manage-unassigned-color-retry") {
+                            Task { await model.retryUnassignedAreaColor() }
+                        }
+                    } else if model.settingsTaxonomyActive && model.settingsTaxonomyAction == "delete",
+                              let failure = model.settingsTaxonomyError ?? model.settingsTaxonomyReadError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            errorBlock(failure, id: "manage-taxonomy-delete-error", retryID: "manage-taxonomy-delete-retry") {
+                                Task {
+                                    await model.retrySettingsTaxonomy()
+                                    presentTaxonomyDeleteConfirmationIfReady()
+                                }
+                            }
+                            if model.settingsTaxonomyCanCancel {
+                                Button(model.label("common.cancel")) { model.cancelSettingsTaxonomy() }
+                                    .frame(minHeight: 44).accessibilityIdentifier("manage-taxonomy-delete-cancel")
+                            }
+                        }
+                    } else if let failure = model.settingsPersonDeleteError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            errorBlock(failure, id: "manage-person-delete-error", retryID: "manage-person-delete-retry") {
+                                Task {
+                                    await model.retrySettingsPersonDelete()
+                                    presentPersonDeleteConfirmationIfReady()
+                                }
+                            }
+                            if model.settingsPersonDeleteCanCancel {
+                                Button(model.label("common.cancel")) { model.cancelSettingsPersonDelete() }
+                                    .frame(minHeight: 44).accessibilityIdentifier("manage-person-delete-cancel")
+                            }
+                        }
+                    } else if let failure = model.settingsAreaDeleteError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            errorBlock(failure, id: "manage-area-delete-error", retryID: "manage-area-delete-retry") {
+                                Task {
+                                    await model.retrySettingsAreaDelete()
+                                    presentAreaDeleteConfirmationIfReady()
+                                }
+                            }
+                            if model.settingsAreaDeleteCanCancel {
+                                Button(model.label("common.cancel")) { model.cancelSettingsAreaDelete() }
+                                    .frame(minHeight: 44).accessibilityIdentifier("manage-area-delete-error-cancel")
+                            }
+                        }
+                    } else if let failure = model.somedaySectionOrderError {
+                        errorBlock(failure, id: "manage-someday-order-error",
+                                   retryID: "manage-someday-order-retry") {
+                            Task { await model.retrySomedaySectionOrder() }
+                        }
+                    } else if let failure = model.somedaySectionDeleteError {
+                        errorBlock(failure, id: "manage-someday-delete-error",
+                                   retryID: "manage-someday-delete-retry") {
+                            Task {
+                                await model.retrySomedaySectionDelete()
+                                presentSomedayDeleteConfirmationIfReady()
+                            }
+                        }
+                    } else if let failure = model.somedaySectionRenameError ?? model.manageReadError {
+                        errorBlock(failure, id: "manage-someday-error") {
+                            Task {
+                                if model.somedaySectionRenameIndex != nil || model.somedaySectionRenameReadPending {
+                                    await model.retrySomedaySectionRename()
+                                }
+                                else { await model.retryManageSettingsRead() }
+                            }
+                        }
+                    }
+                    ForEach(model.manageSettings.objects("sections").indices, id: \.self) { index in
+                        let section = model.manageSettings.objects("sections")[index]
+                        let someday = section.text("key") == "somedaySections"
+                        let areas = section.text("key") == "areas"
+                        let inventory = ["people", "contexts", "tags"].contains(section.text("key"))
+                        VStack(spacing: 1) {
+                            Button { Task { await model.toggleManageSection(section.text("key")) } } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: section.flag("open") ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 14)).foregroundStyle(palette.secondary).accessibilityHidden(true)
+                                    Text(section.text("title")).rnFont(15, .semibold)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(String(section.number("count"))).rnFont(13).foregroundStyle(palette.secondary)
+                                }
+                                .foregroundStyle(palette.text).padding(.horizontal, 16)
+                                .frame(minHeight: 52).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).disabled(!(someday || areas || inventory)
+                                                          || (inventory && !model.manageInventoryActionsEnabled)
+                                                          || model.busy || model.retryNeeded || model.manageReadError != nil
+                                                          || model.somedaySectionRenameIndex != nil
+                                                          || model.somedaySectionRenameReadPending
+                                                          || model.somedaySectionDeleteActive
+                                                          || model.somedaySectionOrderActive
+                                                          || model.unassignedAreaColorActive
+                                                          || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive)
+                            .opacity((someday || areas || inventory) ? 1 : 0.55)
+                            .accessibilityValue(section.flag("open") ? "expanded" : "collapsed")
+                            .accessibilityIdentifier("manage-section-toggle-" + (someday ? "someday-sections" : section.text("key")))
+                            if inventory && section.flag("open") {
+                                inventoryContent(section.text("key"))
+                            }
+                            if areas && section.flag("open") {
+                                unassignedAreaRow
+                                if model.managedAreasTotal == 0,
+                                   let empty = model.manageSettings.object("areas")["empty"] as? String {
+                                    Text(empty).rnFont(14).foregroundStyle(palette.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                                }
+                                ForEach(model.managedAreas.indices, id: \.self) { rowIndex in
+                                    areaRow(model.managedAreas[rowIndex], index: rowIndex)
+                                }
+                                if model.managedAreas.count < model.managedAreasTotal {
+                                    Button(model.label("common.more")) {
+                                        Task { await model.loadMoreManagedAreas() }
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                                              || model.unassignedAreaColorActive
+                                              || model.somedaySectionRenameIndex != nil
+                                              || model.somedaySectionDeleteActive || model.somedaySectionOrderActive
+                                              || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive)
+                                    .accessibilityIdentifier("manage-areas-more")
+                                }
+                                newAreaRow
+                            }
+                            if someday && section.flag("open") {
+                                if model.managedSomedayTotal == 0 {
+                                    Text(model.manageSettings.object("somedaySections").text("emptyHint"))
+                                        .rnFont(14).foregroundStyle(palette.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                                } else {
+                                    ForEach(model.managedSomedaySections.indices, id: \.self) { rowIndex in
+                                        somedayRow(index: rowIndex)
+                                    }
+                                    if model.managedSomedaySections.count < model.managedSomedayTotal {
+                                        Button(model.label("common.more")) {
+                                            Task { await model.loadMoreManagedSomedaySections() }
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                                                  || model.somedaySectionRenameIndex != nil
+                                                  || model.somedaySectionDeleteActive
+                                                  || model.somedaySectionOrderActive
+                                                  || model.unassignedAreaColorActive
+                                                  || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive)
+                                        .accessibilityIdentifier("manage-someday-more")
+                                    }
+                                }
+                            }
+                        }
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .id(section.text("key"))
+                        .onChange(of: section.flag("open")) { open in
+
+                            if !open { scroll.scrollTo(section.text("key"), anchor: .top) }
+                        }
+                    }
+                    if model.busy { ProgressView().padding(12) }
+                }
+                .padding(16)
+            }
+            .accessibilityIdentifier("manage-someday-scroll")
+        }
+        .disabled(model.settingsTaxonomyActive || model.settingsPersonCreatePresented || model.settingsPersonEditPresented)
+    }
+
+    private func inventoryContent(_ key: String) -> some View {
+        let rows = model.managedInventoryRows[key] ?? []
+        return Group {
+            if model.managedInventoryTotal(key) == 0,
+               let empty = model.manageSettings.object(key)["empty"] as? String {
+                Text(empty).rnFont(14).foregroundStyle(palette.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                    .accessibilityIdentifier("manage-\(key)-empty")
+            }
+            ForEach(rows.indices, id: \.self) { index in
+                if key == "people" { personRow(rows[index], index: index) }
+                else { inventoryValueRow(rows[index], key: key, index: index) }
+            }
+            if rows.count < model.managedInventoryTotal(key) {
+                Button { Task { await model.loadMoreManagedInventory(key) } } label: {
+                    Text(model.label("common.more")).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                }
+                .disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityIdentifier("manage-\(key)-more")
+            }
+            if key == "people" {
+                let newPerson = model.manageSettings.object("people").object("newPerson")
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(newPerson.text("label")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                        Text(newPerson.text("hint")).rnFont(12).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { Task { await model.openSettingsPersonCreate() } } label: {
+                        Image(systemName: "plus").font(.system(size: 18))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                    .accessibilityLabel(newPerson.text("addLabel"))
+                    .accessibilityIdentifier("manage-person-create-open")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8).frame(minHeight: 56)
+            } else {
+                let create = model.manageSettings.object(key).object("create")
+                HStack(spacing: 12) {
+                    Text(create.text("label")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { Task { await model.openSettingsTaxonomy(kind: key == "contexts" ? "context" : "tag", creating: true) } } label: {
+                        Image(systemName: "plus").font(.system(size: 18))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                    .accessibilityLabel(create.text("label"))
+                    .accessibilityIdentifier("manage-\(key == "contexts" ? "context" : "tag")-create-open")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8).frame(minHeight: 56)
+            }
+        }
+    }
+
+    private func personRow(_ row: CoreObject, index: Int) -> some View {
+        let copy = model.manageSettings.object("people").object("text")
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
+            HStack(spacing: 12) {
+                Text(row.text("initial")).rnFont(14, .bold).foregroundStyle(palette.text)
+                    .frame(width: 34, height: 34)
+                    .background(palette.bg, in: Circle())
+                    .overlay(Circle().stroke(palette.border, lineWidth: 1)).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.text("name")).rnFont(15).foregroundStyle(palette.text)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                        .accessibilityIdentifier("manage-person-name-\(index)")
+                    if let detail = row["detail"] as? String, !detail.isEmpty {
+                        Text(detail).rnFont(12).foregroundStyle(palette.secondary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 4) {
+                Button { Task { await model.openManagedPersonSearch(index: index) } } label: {
+                    Text(row.text("countLabel")).rnFont(13).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityLabel(row.text("countAccessibilityLabel"))
+                .accessibilityHint(copy.text("countHint"))
+                .accessibilityIdentifier("manage-person-review-\(index)")
+                if let reference = row["referenceLink"] as? String, !reference.isEmpty {
+                    Button { Task { await model.openManagedPersonReference(index: index) } } label: {
+                        Image(systemName: "arrow.up.right.square").font(.system(size: 18))
+                            .foregroundStyle(palette.secondary).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                    .accessibilityLabel(copy.text("openReference"))
+                    .accessibilityIdentifier("manage-person-reference-\(index)")
+                }
+                Button { Task { await model.openSettingsPersonEdit(index: index) } } label: {
+                    Image(systemName: "pencil").font(.system(size: 18))
+                        .foregroundStyle(palette.secondary).frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityLabel(copy.text("editLabel"))
+                .accessibilityIdentifier("manage-person-edit-\(index)")
+                Button {
+                    Task {
+                        await model.openSettingsPersonDelete(index: index)
+                        presentPersonDeleteConfirmationIfReady()
+                    }
+                } label: {
+                    Image(systemName: "trash").font(.system(size: 18))
+                        .foregroundStyle(palette.danger).frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityLabel(copy.text("deleteLabel"))
+                .accessibilityIdentifier("manage-person-delete-\(index)")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8).frame(minHeight: 56)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.text("name"))
+        .accessibilityIdentifier("manage-person-row-\(index)")
+    }
+
+    private func inventoryValueRow(_ row: CoreObject, key: String, index: Int) -> some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
+            Text(row.text("value")).rnFont(15).foregroundStyle(palette.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            HStack(spacing: 4) {
+                Button {
+                    Task { await model.openSettingsTaxonomy(kind: key == "contexts" ? "context" : "tag", index: index, deleting: false) }
+                } label: {
+                    Image(systemName: "pencil").font(.system(size: 18)).foregroundStyle(palette.secondary)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityLabel("\(model.label("common.edit")): \(row.text("value"))")
+                .accessibilityIdentifier("manage-\(key == "contexts" ? "context" : "tag")-edit-\(index)")
+                Button {
+                    Task {
+                        await model.openSettingsTaxonomy(kind: key == "contexts" ? "context" : "tag", index: index, deleting: true)
+                        presentTaxonomyDeleteConfirmationIfReady()
+                    }
+                } label: {
+                    Image(systemName: "trash").font(.system(size: 18)).foregroundStyle(palette.danger)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!model.manageInventoryActionsEnabled)
+                .accessibilityLabel("\(model.label("common.delete")): \(row.text("value"))")
+                .accessibilityIdentifier("manage-\(key == "contexts" ? "context" : "tag")-delete-\(index)")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8).frame(minHeight: 52)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.text("value"))
+        .accessibilityIdentifier("manage-\(key == "contexts" ? "context" : "tag")-row-\(index)")
+    }
+
+
+    private var unassignedAreaRow: some View {
+        let row = model.manageSettings.object("areas").object("unassigned")
+        return HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 6).fill(Color(hex: row.text("color")))
+                .frame(width: 24, height: 24).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.text("label")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                Text(row.text("description")).rnFont(12).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button { Task { await model.openUnassignedAreaColor() } } label: {
+                Image(systemName: "pencil").font(.system(size: 18))
+                    .foregroundStyle(palette.secondary).frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                      || model.unassignedAreaColorActive || model.somedaySectionRenameIndex != nil
+                      || model.somedaySectionDeleteActive || model.somedaySectionOrderActive
+                      || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive)
+            .accessibilityLabel(model.label("common.edit") + ": " + row.text("label"))
+            .accessibilityIdentifier("manage-unassigned-color")
+        }
+        .padding(.horizontal, 12).frame(minHeight: 56)
+    }
+
+    private func areaRow(_ row: CoreObject, index: Int) -> some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 6).fill(Color(hex: row.text("color")))
+                .frame(width: 24, height: 24).accessibilityHidden(true)
+            Text(row.text("name")).rnFont(15).foregroundStyle(palette.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .accessibilityIdentifier("manage-area-name-\(index)")
+            Button { Task { await model.openSettingsAreaEdit(index: index) } } label: {
+                Image(systemName: "pencil").font(.system(size: 18)).foregroundStyle(palette.secondary)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                      || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaCreatePresented
+                      || model.settingsAreaEditActive || model.unassignedAreaColorActive
+                      || model.somedaySectionDeleteActive || model.somedaySectionOrderActive
+                      || model.somedaySectionRenameIndex != nil)
+            .accessibilityLabel(model.label("common.edit") + ": " + row.text("name"))
+            .accessibilityIdentifier("manage-area-edit-\(index)")
+            Button {
+                Task {
+                    await model.openSettingsAreaDelete(index: index)
+                    presentAreaDeleteConfirmationIfReady()
+                }
+            } label: {
+                Image(systemName: "trash").font(.system(size: 18)).foregroundStyle(palette.danger)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                      || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive || model.settingsAreaCreatePresented
+                      || model.unassignedAreaColorActive || model.somedaySectionDeleteActive
+                      || model.somedaySectionOrderActive || model.somedaySectionRenameIndex != nil)
+            .accessibilityLabel(model.label("common.delete") + ": " + row.text("name"))
+            .accessibilityIdentifier("manage-area-delete-\(index)")
+        }
+        .padding(.horizontal, 12).frame(minHeight: 52)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("manage-area-row-\(index)")
+    }
+
+    private var newAreaRow: some View {
+        let row = model.manageSettings.object("areas").object("newArea")
+        return HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 6).fill(Color(hex: row.text("color")))
+                .frame(width: 24, height: 24).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.text("label")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                Text(row.text("hint")).rnFont(12).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(row.text("addLabel")) { Task { await model.openSettingsAreaCreate() } }
+                .disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                          || model.settingsAreaCreatePresented || model.unassignedAreaColorActive
+                          || model.somedaySectionRenameIndex != nil || model.somedaySectionDeleteActive
+                          || model.somedaySectionOrderActive || model.generalPreferenceActive || model.settingsTaxonomyActive || model.settingsPersonDeleteActive || model.settingsAreaDeleteActive || model.settingsAreaEditActive)
+                .frame(minWidth: 86, minHeight: 44)
+                .accessibilityLabel(row.text("label"))
+                .accessibilityIdentifier("manage-area-add")
+        }
+        .padding(.horizontal, 12).frame(minHeight: 56)
+    }
+
+    private func endPersonEditing() {
+        personEditorFocused = nil
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private var taxonomyEditorSheet: some View {
+        let type = model.settingsTaxonomyAction == "create"
+            ? (model.settingsTaxonomyKind == "tag" ? "newTag" : "newContext") : (model.settingsTaxonomyKind ?? "context")
+        let copy = model.settingsTaxonomyOptions.object("text").isEmpty
+            ? model.manageSettings.object("editor").object("text").object(type)
+            : model.settingsTaxonomyOptions.object("text")
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TextField(copy.text("namePlaceholder"), text: Binding(
+                        get: { model.settingsTaxonomyName }, set: { model.setSettingsTaxonomyName($0) }))
+                        .focused($taxonomyNameFocused).submitLabel(.done)
+                        .onSubmit { taxonomyNameFocused = false }
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .rnFont(16).padding(.horizontal, 12).frame(minHeight: 48)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.settingsTaxonomyInputEnabled)
+                        .accessibilityLabel(copy.text("namePlaceholder"))
+                        .accessibilityIdentifier("manage-taxonomy-name")
+                    if let failure = model.settingsTaxonomyError ?? model.settingsTaxonomyReadError {
+                        errorBlock(failure, id: "manage-taxonomy-error", retryID: "manage-taxonomy-retry") {
+                            taxonomyNameFocused = false
+                            Task { await model.retrySettingsTaxonomy() }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button {
+                            taxonomyNameFocused = false
+                            model.cancelSettingsTaxonomy()
+                        } label: {
+                            Text(copy.text("cancelLabel")).frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .disabled(!model.settingsTaxonomyCanCancel)
+                        .accessibilityIdentifier("manage-taxonomy-cancel")
+                        Button {
+                            taxonomyNameFocused = false
+                            Task { await model.saveSettingsTaxonomy() }
+                        } label: {
+                            Text(copy.text("saveLabel")).foregroundStyle(palette.onTint)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderedProminent).tint(palette.tint)
+                        .disabled(!model.settingsTaxonomyCanSave)
+                        .accessibilityIdentifier("manage-taxonomy-save")
+                    }
+                }.padding(20)
+            }
+            .accessibilityIdentifier("manage-taxonomy-scroll")
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(copy.text("title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(model.label("common.done")) { taxonomyNameFocused = false }
+                        .frame(minHeight: 44).accessibilityIdentifier("manage-taxonomy-keyboard-done")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(!model.settingsTaxonomyCanCancel)
+    }
+
+    private func presentTaxonomyDeleteConfirmationIfReady() {
+        guard model.settingsTaxonomyCanConfirm else { return }
+        taxonomyDeleteConfirmAnswered = false
+        taxonomyDeleteConfirmPresented = true
+    }
+
+    private func personEditorSheet(editing: Bool) -> some View {
+        let prefix = editing ? "manage-person-edit-" : "manage-person-create-"
+        let inputEnabled = editing ? model.settingsPersonEditInputEnabled : model.settingsPersonCreateInputEnabled
+        let canCancel = editing ? model.settingsPersonEditCanCancel : model.settingsPersonCreateCanCancel
+        let canSave = editing ? model.settingsPersonEditCanSave : model.settingsPersonCreateCanSave
+        let failure = editing ? (model.settingsPersonEditError ?? model.settingsPersonEditReadError)
+            : (model.settingsPersonCreateError ?? model.settingsPersonCreateReadError)
+        let copy = model.manageSettings.object("editor").object("text").object(editing ? "person" : "newPerson")
+        let fields = copy.object("personFields")
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TextField(copy.text("namePlaceholder"), text: Binding(
+                        get: { editing ? model.settingsPersonEditName : model.settingsPersonCreateName },
+                        set: { if editing { model.setSettingsPersonEditName($0) } else { model.setSettingsPersonCreateName($0) } }))
+                        .focused($personEditorFocused, equals: .name).submitLabel(.done)
+                        .onSubmit { endPersonEditing() }
+                        .rnFont(16).padding(.horizontal, 12).frame(minHeight: 48)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!inputEnabled)
+                        .accessibilityLabel(copy.text("namePlaceholder"))
+                        .accessibilityIdentifier(prefix + "name")
+                    ZStack(alignment: .topLeading) {
+                        if (editing ? model.settingsPersonEditNote : model.settingsPersonCreateNote).isEmpty {
+                            Text(fields.text("notePlaceholder")).rnFont(16).foregroundStyle(palette.secondary)
+                                .padding(.top, 8).padding(.leading, 5).accessibilityHidden(true)
+                        }
+                        TextEditor(text: Binding(
+                            get: { editing ? model.settingsPersonEditNote : model.settingsPersonCreateNote },
+                        set: { if editing { model.setSettingsPersonEditNote($0) } else { model.setSettingsPersonCreateNote($0) } }))
+                            .focused($personEditorFocused, equals: .note)
+                            .rnFont(16).scrollContentBackground(.hidden).frame(minHeight: 140)
+                            .disabled(!inputEnabled)
+                            .accessibilityLabel(fields.text("notePlaceholder"))
+                            .accessibilityIdentifier(prefix + "note")
+                    }
+                    .padding(8).background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                    TextField(fields.text("referencePlaceholder"), text: Binding(
+                        get: { editing ? model.settingsPersonEditReference : model.settingsPersonCreateReference },
+                        set: { if editing { model.setSettingsPersonEditReference($0) } else { model.setSettingsPersonCreateReference($0) } }))
+                        .focused($personEditorFocused, equals: .reference).submitLabel(.done)
+                        .onSubmit { endPersonEditing() }
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .rnFont(16).padding(.horizontal, 12).frame(minHeight: 48)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!inputEnabled)
+                        .accessibilityLabel(fields.text("referencePlaceholder"))
+                        .accessibilityIdentifier(prefix + "reference")
+                    if let failure {
+                        errorBlock(failure, id: prefix + "error", retryID: prefix + "retry") {
+                            endPersonEditing()
+                            Task {
+                                if model.retryNeeded { await model.retry() }
+                                else if editing { await model.retrySettingsPersonEditRead() }
+                                else { await model.retrySettingsPersonCreateRead() }
+                            }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button {
+                            endPersonEditing()
+                            if editing { model.cancelSettingsPersonEdit() } else { model.cancelSettingsPersonCreate() }
+                        } label: {
+                            Text(copy.text("cancelLabel"))
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .disabled(!canCancel)
+                        .accessibilityIdentifier(prefix + "cancel")
+                        Button {
+                            endPersonEditing()
+                            Task {
+                                if editing { await model.saveSettingsPersonEdit() }
+                                else { await model.saveSettingsPersonCreate() }
+                            }
+                        } label: {
+                            Text(copy.text("saveLabel")).foregroundStyle(palette.onTint)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderedProminent).tint(palette.tint)
+                        .disabled(!canSave)
+                        .accessibilityIdentifier(prefix + "save")
+                    }
+                }
+                .padding(20)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(copy.text("title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(model.label("common.done")) { endPersonEditing() }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier(prefix + "keyboard-done")
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(!canCancel)
+    }
+
+    private var newAreaSheet: some View {
+        let copy = model.manageSettings.object("editor").object("text").object("newArea")
+        let colors = model.manageSettings.object("editor").objects("colors")
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TextField(copy.text("namePlaceholder"), text: Binding(
+                        get: { model.areaCreateName }, set: { model.setAreaCreateName($0) }))
+                        .focused($areaNameFocused).submitLabel(.done)
+                        .onSubmit { areaNameFocused = false }
+                        .rnFont(16).padding(.horizontal, 12).frame(minHeight: 48)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.settingsAreaCreateInputEnabled)
+                        .accessibilityLabel(copy.text("namePlaceholder"))
+                        .accessibilityIdentifier("manage-area-create-name")
+                    if model.areaCreateNameTaken {
+                        Text(copy.text("nameTaken")).rnFont(13).foregroundStyle(palette.danger)
+                            .accessibilityIdentifier("manage-area-create-name-taken")
+                    }
+                    Text(copy.text("changeColor")).rnFont(14, .semibold)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52), spacing: 12)], spacing: 12) {
+                        ForEach(colors.indices, id: \.self) { index in
+                            let choice = colors[index]
+                            let selected = model.areaCreateColor == choice.text("color")
+                            Button { model.selectAreaCreateColor(choice.text("color")) } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(hex: choice.text("color")))
+                                    .frame(minWidth: 48, minHeight: 48)
+                                    .overlay {
+                                        if selected {
+                                            Image(systemName: "checkmark").font(.system(size: 17, weight: .bold))
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain).disabled(!model.settingsAreaCreateInputEnabled)
+                            .accessibilityLabel(copy.text("changeColor") + ": " + choice.text("color"))
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .accessibilityIdentifier("manage-area-create-color-\(index)")
+                        }
+                    }
+                    if let failure = model.areaCreateError ?? model.areaCreateReadError {
+                        errorBlock(failure, id: "manage-area-create-error", retryID: "manage-area-create-retry") {
+                            Task {
+                                if model.retryNeeded { await model.retry() }
+                                else { await model.retrySettingsAreaCreateRead() }
+                            }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button { areaNameFocused = false; model.cancelSettingsAreaCreate() } label: {
+                            Text(copy.text("cancelLabel"))
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .disabled(!model.settingsAreaCreateCanCancel)
+                        .accessibilityIdentifier("manage-area-create-cancel")
+                        Button { areaNameFocused = false; Task { await model.addArea() } } label: {
+                            Text(copy.text("saveLabel"))
+                                .foregroundStyle(palette.onTint)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderedProminent).tint(palette.tint)
+                        .disabled(!model.settingsAreaCreateCanSave)
+                        .accessibilityIdentifier("manage-area-create-save")
+                    }
+                }
+                .padding(20)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(copy.text("title"))
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(!model.settingsAreaCreateCanCancel)
+    }
+
+    private var areaEditSheet: some View {
+        let copy = model.manageSettings.object("editor").object("text").object("area")
+        let colors = model.manageSettings.object("editor").objects("colors")
+        let custom = model.settingsAreaEditColor
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TextField(copy.text("namePlaceholder"), text: Binding(
+                        get: { model.areaRenameDraft }, set: { model.setAreaRenameDraft($0) }))
+                        .focused($areaNameFocused).submitLabel(.done)
+                        .onSubmit { areaNameFocused = false }
+                        .rnFont(16).padding(.horizontal, 12).frame(minHeight: 48)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.settingsAreaEditInputEnabled)
+                        .accessibilityLabel(copy.text("namePlaceholder"))
+                        .accessibilityIdentifier("manage-area-edit-name")
+                    Text(copy.text("changeColor")).rnFont(14, .semibold)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52), spacing: 12)], spacing: 12) {
+                        ForEach(colors.indices, id: \.self) { index in
+                            let choice = colors[index]
+                            let selected = model.settingsAreaEditColor == choice.text("color")
+                            Button { model.setSettingsAreaEditColor(choice.text("color")) } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(hex: choice.text("color")))
+                                    .frame(minWidth: 48, minHeight: 48)
+                                    .overlay {
+                                        if selected {
+                                            Image(systemName: "checkmark").font(.system(size: 17, weight: .bold))
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain).disabled(!model.settingsAreaEditInputEnabled)
+                            .accessibilityLabel(copy.text("changeColor") + ": " + choice.text("color"))
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .accessibilityIdentifier("manage-area-edit-color-option-\(index)")
+                        }
+                        if !custom.isEmpty && !colors.contains(where: { $0.text("color") == custom }) {
+                            RoundedRectangle(cornerRadius: 8).fill(Color(hex: custom))
+                                .frame(minWidth: 48, minHeight: 48)
+                                .overlay {
+                                    Image(systemName: "checkmark").font(.system(size: 17, weight: .bold))
+                                        .foregroundStyle(.white)
+                                }
+                                .accessibilityLabel(copy.text("changeColor") + ": " + custom)
+                                .accessibilityAddTraits(.isSelected)
+                        }
+                    }
+                    if let failure = model.areaRenameError ?? model.areaRenameReadError {
+                        errorBlock(failure, id: "manage-area-edit-error", retryID: "manage-area-edit-retry") {
+                            Task { await model.retrySettingsAreaEdit() }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button { areaNameFocused = false; model.cancelSettingsAreaEdit() } label: {
+                            Text(copy.text("cancelLabel"))
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .disabled(!model.settingsAreaEditCanCancel)
+                        .accessibilityIdentifier("manage-area-edit-cancel")
+                        Button { areaNameFocused = false; Task { await model.saveSettingsAreaEdit() } } label: {
+                            Text(copy.text("saveLabel"))
+                                .foregroundStyle(palette.onTint)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderedProminent).tint(palette.tint)
+                        .disabled(!model.settingsAreaEditCanSave)
+                        .accessibilityIdentifier("manage-area-edit-save")
+                    }
+                }
+                .padding(20)
+            }
+            .accessibilityIdentifier("manage-area-edit-scroll")
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(copy.text("title"))
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(!model.settingsAreaEditCanCancel)
+    }
+
+    private var unassignedAreaColorSheet: some View {
+        let editor = model.manageSettings.object("editor")
+        let copy = editor.object("text").object("unassignedArea")
+        let colors = editor.objects("colors")
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52), spacing: 12)], spacing: 12) {
+                        ForEach(colors.indices, id: \.self) { index in
+                            let choice = colors[index]
+                            let selected = model.unassignedAreaColorDraft == choice.text("color")
+                            Button { model.selectUnassignedAreaColor(choice.text("color")) } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(hex: choice.text("color")))
+                                    .frame(minWidth: 48, minHeight: 48)
+                                    .overlay {
+                                        if selected {
+                                            Image(systemName: "checkmark").font(.system(size: 17, weight: .bold))
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain).disabled(!model.unassignedAreaColorCanSave)
+                            .accessibilityLabel(choice.text("label"))
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .accessibilityIdentifier("manage-unassigned-color-option-\(index)")
+                        }
+                    }
+                    if let failure = model.unassignedAreaColorError {
+                        errorBlock(failure, id: "manage-unassigned-color-error",
+                                   retryID: "manage-unassigned-color-retry") {
+                            Task { await model.retryUnassignedAreaColor() }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button { model.cancelUnassignedAreaColor() } label: {
+                            Text(copy.text("cancelLabel"))
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                            .disabled(model.busy || model.retryNeeded || model.unassignedAreaColorAwaitingRefresh)
+                            .accessibilityIdentifier("manage-unassigned-color-cancel")
+                        Button { Task { await model.saveUnassignedAreaColor() } } label: {
+                            Text(copy.text("saveLabel"))
+                                .foregroundStyle(palette.onTint)
+                                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        }
+                            .buttonStyle(.borderedProminent)
+                            .tint(palette.tint)
+                            .disabled(!model.unassignedAreaColorCanSave)
+                            .accessibilityIdentifier("manage-unassigned-color-save")
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle(copy.text("title"))
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(model.busy || model.retryNeeded || model.unassignedAreaColorAwaitingRefresh)
+    }
+
+    private func somedayRow(index: Int) -> some View {
+        let row = model.managedSomedaySections[index]
+        let editing = model.somedaySectionRenameIndex == index
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return Group {
+            if editing {
+                HStack(spacing: 8) {
+                    TextField(model.somedaySectionRenameOptions.object("text").text("nameLabel"), text: Binding(
+                        get: { model.somedaySectionRenameTitle }, set: { model.setSomedaySectionRenameTitle($0) }))
+                        .focused($renameFocused).submitLabel(.done)
+                        .onSubmit { Task { await model.saveSomedaySectionRename() } }
+                        .rnFont(15).padding(.horizontal, 10).frame(minHeight: 44)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                        .onTapGesture { renameFocused = true }
+                        .disabled(!model.somedaySectionRenameInputEnabled)
+                        .accessibilityLabel(model.somedaySectionRenameOptions.object("text").text("nameLabel"))
+                        .accessibilityIdentifier("manage-someday-name")
+                    Button { renameFocused = false; model.cancelSomedaySectionRename() } label: {
+                        Text(model.label("common.cancel")).rnFont(13).frame(minHeight: 44)
+                            .padding(.horizontal, 4).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(model.busy || model.retryNeeded
+                                                  || model.somedaySectionRenamePending || model.somedaySectionRenameAwaitingRefresh)
+                    .accessibilityIdentifier("manage-someday-cancel")
+                    Button { renameFocused = false; Task { await model.saveSomedaySectionRename() } } label: {
+                        Image(systemName: "checkmark").font(.system(size: 18, weight: .semibold))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!model.somedaySectionRenameCanSave)
+                    .opacity(model.somedaySectionRenameCanSave ? 1 : 0.45)
+                    .accessibilityLabel(model.somedaySectionRenameOptions.object("text").text("saveLabel"))
+                    .accessibilityIdentifier("manage-someday-save")
+                }
+            } else {
+                layout {
+                    Text(row.text("title")).rnFont(15).foregroundStyle(palette.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                        .accessibilityIdentifier("manage-someday-title-\(index)")
+                    HStack(spacing: 8) {
+                        orderButton(row: row, index: index, offset: -1)
+                        orderButton(row: row, index: index, offset: 1)
+                        Button { Task { await model.openSomedaySectionRename(index: index); renameFocused = true } } label: {
+                            Image(systemName: "pencil").font(.system(size: 18))
+                                .foregroundStyle(palette.secondary).frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                                                      || model.somedaySectionRenameReadPending || model.somedaySectionRenameIndex != nil
+                                                      || model.somedaySectionDeleteActive || model.somedaySectionOrderActive)
+                        .accessibilityLabel(row.text("renameLabel"))
+                        .accessibilityIdentifier("manage-someday-rename-\(index)")
+                        Button {
+                            Task {
+                                await model.openSomedaySectionDelete(index: index)
+                                presentSomedayDeleteConfirmationIfReady()
+                            }
+                        } label: {
+                            Image(systemName: "trash").font(.system(size: 18))
+                                .foregroundStyle(palette.danger).frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).disabled(model.busy || model.retryNeeded || model.manageReadError != nil
+                                                      || model.somedaySectionRenameReadPending || model.somedaySectionRenameIndex != nil
+                                                      || model.somedaySectionDeleteActive || model.somedaySectionOrderActive)
+                        .accessibilityLabel(row.text("deleteLabel"))
+                        .accessibilityIdentifier("manage-someday-delete-\(index)")
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12).frame(minHeight: 52)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.text("title"))
+        .accessibilityIdentifier("manage-someday-row-\(index)")
+    }
+
+    private func orderButton(row: CoreObject, index: Int, offset: Int) -> some View {
+        let up = offset == -1
+        let control = row.object(up ? "moveUp" : "moveDown")
+        let disabled = control.flag("disabled") || model.busy || model.retryNeeded
+            || model.manageReadError != nil || model.somedaySectionRenameReadPending
+            || model.somedaySectionRenameIndex != nil || model.somedaySectionDeleteActive
+            || model.somedaySectionOrderActive
+        return Button { Task { await model.moveManagedSomedaySection(index: index, offset: offset) } } label: {
+            Image(systemName: up ? "chevron.up" : "chevron.down")
+                .font(.system(size: 18)).foregroundStyle(palette.secondary)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.45 : 1)
+        .accessibilityLabel(control.text("label"))
+        .accessibilityIdentifier("manage-someday-\(up ? "up" : "down")-\(index)")
+    }
+
+    private func presentSomedayDeleteConfirmationIfReady() {
+        guard model.somedaySectionDeleteCanConfirm else { return }
+        deleteConfirmAnswered = false
+        deleteConfirmPresented = true
+    }
+
+    private func presentPersonDeleteConfirmationIfReady() {
+        guard model.settingsPersonDeleteCanConfirm else { return }
+        personDeleteConfirmAnswered = false
+        personDeleteConfirmPresented = true
+    }
+
+    private func presentAreaDeleteConfirmationIfReady() {
+        guard model.settingsAreaDeleteCanConfirm else { return }
+        areaDeleteConfirmAnswered = false
+        areaDeleteConfirmPresented = true
+    }
+
+    private func errorBlock(_ failure: String, id: String,
+                            retryID: String = "manage-someday-retry", retry: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(failure).rnFont(13).foregroundStyle(palette.danger).textSelection(.enabled)
+                .accessibilityIdentifier(id)
+            Button(action: retry) {
+                Text(model.label("common.retry")).rnFont(14, .semibold)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(model.busy)
+            .accessibilityIdentifier(retryID)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsSymbol(_ name: String) -> String {
+        switch name {
+        case "Monitor": return "display"
+        case "ListChecks": return "checklist"
+        case "Layers": return "square.3.layers.3d"
+        case "Bell": return "bell"
+        case "RefreshCw": return "arrow.clockwise"
+        case "Database": return "externaldrive"
+        case "Settings2": return "slider.horizontal.3"
+        case "Info": return "info.circle"
+        case "Sparkles": return "sparkles"
+        case "CalendarDays": return "calendar"
+        case "phone-portrait-outline": return "iphone"
+        case "contrast-outline": return "circle.lefthalf.filled"
+        case "sunny-outline": return "sun.max"
+        case "moon-outline": return "moon"
+        case "color-palette-outline": return "paintpalette"
+        case "document-text-outline": return "doc.text"
+        case "snow-outline": return "snowflake"
+        case "cafe-outline": return "cup.and.saucer"
+        case "wine-outline": return "wineglass"
+        case "book-outline": return "book"
+        default: return "gearshape"
+        }
+    }
+}
+
+
+struct DiagnosticsCard: View {
+    @ObservedObject var model: CoreModel
+    let palette: AppPalette
+    let owner: UUID
+    @State private var backupOpen = false
+    @State private var backupPreviewPresented = false
+    @State private var backupPreviewAnswered = false
+    @State private var backupRestorePresented = false
+    @State private var backupRestoreAnswered = false
+
+    var body: some View {
+        let pickerID = model.backupImportPickerID
+        let pickerAction = model.backupImportPickerAction
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if owner == model.settingsDiagnosticsOwner {
+                    let backup = model.dataSettings.object("backup")
+                    Button { backupOpen.toggle() } label: {
+                        HStack {
+                            Text(backup.text("title")).rnFont(18, .bold)
+                            Spacer()
+                            Image(systemName: backupOpen ? "chevron.down" : "chevron.forward")
+                                .foregroundStyle(palette.secondary).accessibilityHidden(true)
+                        }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("backup-disclosure")
+                    if backupOpen {
+                        Button { Task { await model.exportDataBackup() } } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(backup.text("exportLabel")).rnFont(15, .semibold)
+                                Text(backup.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }.multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .disabled(!model.backupExportEnabled)
+                        .accessibilityIdentifier("data-transfer-export")
+                        Button { Task { await model.exportDataBackup(format: .csv) } } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(backup.text("csvLabel")).rnFont(15, .semibold)
+                                Text(backup.text("csvDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }.multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .disabled(!model.backupExportEnabled)
+                        .accessibilityIdentifier("data-transfer-export-csv")
+                        Button { Task { await model.exportDataBackup(format: .tasknotes) } } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(backup.text("tasknotesLabel")).rnFont(15, .semibold)
+                                Text(backup.text("tasknotesDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }.multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .disabled(!model.backupExportEnabled)
+                        .accessibilityIdentifier("data-transfer-export-tasknotes")
+                        if model.backupExportBusy { ProgressView().accessibilityIdentifier("backup-export-progress") }
+                        if let failure = model.backupExportError {
+                            Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                                .accessibilityIdentifier("backup-export-error")
+                        }
+                        backupTransferContent(backup)
+                    }
+                }
+                Text(model.diagnosticsLabels.text("title")).rnFont(18, .bold)
+                    .accessibilityAddTraits(.isHeader).accessibilityIdentifier("diagnostics-title")
+                let logging = model.diagnosticsLabels.object("debugLogging")
+                Toggle(isOn: Binding(get: { logging.flag("value") }, set: { value in
+                    Task { await model.setDiagnosticsDebugLogging(value) }
+                })) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(logging.text("label")).rnFont(15, .semibold)
+                        Text(logging.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(!model.diagnosticsToggleEnabled || owner != model.settingsDiagnosticsOwner)
+                .accessibilityIdentifier("diagnostics-debug-logging")
+                if let share = model.diagnosticsLabels["shareLog"] as? CoreObject {
+                    Button { Task { await model.shareDiagnostics(owner: owner) } } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(share.text("label")).rnFont(15, .semibold)
+                            Text(share.text("description")).rnFont(13).foregroundStyle(palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .disabled(!model.diagnosticsFileActionsEnabled(owner: owner))
+                    .accessibilityIdentifier("diagnostics-share")
+                }
+                if let clear = model.diagnosticsLabels["clearLog"] as? CoreObject {
+                    Button { Task { await model.clearDiagnostics(owner: owner) } } label: {
+                        Text(clear.text("label")).rnFont(15, .semibold)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .disabled(!model.diagnosticsFileActionsEnabled(owner: owner))
+                    .accessibilityIdentifier("diagnostics-clear")
+                }
+                if let message = model.diagnosticsMessage {
+                    Text(message).rnFont(14).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("diagnostics-message").accessibilityAddTraits(.updatesFrequently)
+                }
+                if let failure = model.diagnosticsReadError {
+                    Text(failure).rnFont(13).foregroundStyle(palette.danger)
+                        .accessibilityIdentifier("diagnostics-read-error")
+                    if owner == model.settingsDiagnosticsOwner {
+                        Button(model.label("common.retry")) { Task { await model.retryDataSettingsRead() } }
+                            .disabled(model.busy).frame(minHeight: 44).accessibilityIdentifier("diagnostics-retry")
+                    }
+                }
+                #if DEBUG && targetEnvironment(simulator)
+                if !model.backupExportTestState.isEmpty {
+                    Text(model.backupExportTestState).font(.caption)
+                        .accessibilityIdentifier("backup-export-test-state")
+                }
+                if !model.diagnosticsShareTestState.isEmpty {
+                    Text(model.diagnosticsShareTestState).font(.caption)
+                        .accessibilityIdentifier("diagnostics-test-share-state")
+                }
+                #endif
+                if model.diagnosticsFileBusy { ProgressView().accessibilityIdentifier("diagnostics-file-progress") }
+            }
+            .foregroundStyle(palette.text).padding(16)
+        }
+        .background(palette.bg).accessibilityIdentifier("diagnostics-scroll")
+        .sheet(item: Binding(get: {
+            guard let payload = model.diagnosticsShare, payload.owner == owner,
+                  model.diagnosticsCurrent(owner: owner, session: payload.id) else { return nil }
+            return payload
+        }, set: { (_: DiagnosticsSharePayload?) in model.dismissDiagnosticsShare(owner: owner) })) { payload in
+            DiagnosticsActivitySheet(url: payload.url)
+        }
+        .sheet(item: Binding(get: { owner == model.settingsDiagnosticsOwner ? model.backupShare : nil },
+                             set: { (_: NativeBackupExport?) in model.dismissBackupShare() })) { payload in
+            DiagnosticsActivitySheet(url: payload.url)
+        }
+        .fileImporter(isPresented: Binding(
+            get: { owner == model.settingsDiagnosticsOwner && model.backupImportPickerPresented },
+            set: { if owner == model.settingsDiagnosticsOwner { model.setBackupImportPickerPresented($0) } }
+        ), allowedContentTypes: pickerAction == .dgt ? [.json, .zip, .data]
+            : pickerAction == .omnifocus ? [.commaSeparatedText, .json, .zip, .data]
+            : pickerAction.usesBinarySource ? [.commaSeparatedText, .zip, .data] : [.json],
+           allowsMultipleSelection: false) { result in
+            Task { await model.receiveBackupImportSelection(result, pickerID: pickerID, action: pickerAction) }
+        }
+        .alert(model.backupImportPreview.text(model.backupImportPreview.flag("valid") ? "title" : "errorTitle"),
+               isPresented: $backupPreviewPresented) {
+            Button(model.backupImportPreview.text("cancelLabel"), role: .cancel) {
+                backupPreviewAnswered = true
+                model.cancelBackupImportPreview()
+            }.accessibilityIdentifier("backup-import-cancel")
+            if model.backupImportPreview.flag("valid") {
+                Button(model.backupImportPreview.text("confirmLabel"), role: model.backupImportIsReplacement ? .destructive : nil) {
+                    backupPreviewAnswered = true
+                    Task { await model.confirmBackupImport() }
+                }.accessibilityIdentifier("backup-import-confirm")
+            }
+        } message: {
+            Text(model.backupImportPreview.text(model.backupImportPreview.flag("valid") ? "summary" : "errorMessage"))
+        }
+        .alert(model.backupRestoreConfirmation.text("title"), isPresented: $backupRestorePresented) {
+            Button(model.backupRestoreConfirmation.text("cancelLabel"), role: .cancel) {
+                backupRestoreAnswered = true
+                model.cancelBackupRestore()
+            }.accessibilityIdentifier("backup-restore-cancel")
+            Button(model.backupRestoreConfirmation.text("confirmLabel"), role: .destructive) {
+                backupRestoreAnswered = true
+                Task { await model.confirmBackupRestore() }
+            }.accessibilityIdentifier("backup-restore-confirm")
+        } message: {
+            Text(model.backupRestoreConfirmation.text("message"))
+        }
+        .onChange(of: model.backupImportPreview.isEmpty) { empty in
+            guard owner == model.settingsDiagnosticsOwner else { return }
+            backupPreviewAnswered = false
+            backupPreviewPresented = !empty
+        }
+        .onChange(of: backupPreviewPresented) { presented in
+            guard !presented, owner == model.settingsDiagnosticsOwner else { return }
+            DispatchQueue.main.async {
+                if !backupPreviewAnswered && !backupPreviewPresented { model.cancelBackupImportPreview() }
+            }
+        }
+        .onChange(of: model.backupRestoreConfirmation.isEmpty) { empty in
+            guard owner == model.settingsDiagnosticsOwner else { return }
+            backupRestoreAnswered = false
+            backupRestorePresented = !empty
+        }
+        .onChange(of: backupRestorePresented) { presented in
+            guard !presented, owner == model.settingsDiagnosticsOwner else { return }
+            DispatchQueue.main.async {
+                if !backupRestoreAnswered && !backupRestorePresented { model.cancelBackupRestore() }
+            }
+        }
+        .onChange(of: model.backupDocumentResult.isEmpty) { empty in
+            if owner == model.settingsDiagnosticsOwner && !empty { backupOpen = true }
+        }
+        .onChange(of: model.backupDocumentPending) { pending in
+            if owner == model.settingsDiagnosticsOwner && pending { backupOpen = true }
+        }
+        .onAppear {
+            guard owner == model.settingsDiagnosticsOwner else { return }
+            backupOpen = !model.backupDocumentResult.isEmpty || model.backupDocumentPending || model.backupResultReadRetryNeeded
+            backupPreviewPresented = !model.backupImportPreview.isEmpty
+            backupRestorePresented = !model.backupRestoreConfirmation.isEmpty
+        }
+    }
+
+    @ViewBuilder
+    private func backupTransferContent(_ backup: CoreObject) -> some View {
+        Button { model.openBackupImportPicker(action: .replace) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("restoreFileLabel")).rnFont(15, .semibold)
+                Text(backup.text("restoreFileDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-restore")
+        Button { model.openBackupImportPicker() } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("mergeLabel")).rnFont(15, .semibold)
+                Text(backup.text("mergeDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-merge")
+        Button { model.openBackupImportPicker(action: .csv) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("csvImportLabel")).rnFont(15, .semibold)
+                Text(backup.text("csvImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-import-csv")
+        Button { model.openBackupImportPicker(action: .todoist) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("todoistImportLabel")).rnFont(15, .semibold)
+                Text(backup.text("todoistImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-import-todoist")
+        Button { model.openBackupImportPicker(action: .ticktick) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("ticktickImportLabel")).rnFont(15, .semibold)
+                Text(backup.text("ticktickImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-import-ticktick")
+        Button { model.openBackupImportPicker(action: .dgt) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("dgtImportLabel")).rnFont(15, .semibold)
+                Text(backup.text("dgtImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-import-dgt")
+        Button { model.openBackupImportPicker(action: .omnifocus) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.text("omnifocusImportLabel")).rnFont(15, .semibold)
+                Text(backup.text("omnifocusImportDescription")).rnFont(13).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .disabled(!model.backupImportEnabled)
+        .accessibilityIdentifier("data-transfer-import-omnifocus")
+        if model.backupImportBusy {
+            ProgressView().accessibilityIdentifier("backup-import-progress")
+        }
+        if let failure = model.backupImportError {
+            Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("backup-import-error")
+        }
+        if model.backupDocumentPending || model.backupResultReadRetryNeeded {
+            Button(model.label("common.retry")) { Task { await model.retryBackupTransferRead() } }
+                .disabled(model.busy).frame(minHeight: 44).accessibilityIdentifier("backup-document-retry")
+        }
+        if !model.backupDocumentResult.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(model.backupDocumentResult.text("title")).rnFont(16, .semibold)
+                    .accessibilityAddTraits(.isHeader).accessibilityIdentifier("backup-document-result")
+                Text(model.backupDocumentResult.text("message")).rnFont(14)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("backup-document-message")
+                if !model.backupDocumentResult.text("undoLabel").isEmpty {
+                    Button(model.backupDocumentResult.text("undoLabel")) { Task { await model.requestBackupUndo() } }
+                        .disabled(!model.backupUndoEnabled).frame(minHeight: 44)
+                        .accessibilityIdentifier("backup-result-undo")
+                }
+                Button(model.backupDocumentResult.text("doneLabel")) { model.dismissBackupDocumentResult() }
+                    .disabled(model.busy || model.backupDocumentPending).frame(minHeight: 44)
+                    .accessibilityIdentifier("backup-result-done")
+            }
+        }
+        Text(backup.text("snapshotsLabel")).rnFont(16, .semibold)
+            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("backup-snapshots-title")
+        if let failure = model.backupSnapshotReadError {
+            Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("backup-snapshots-error")
+            Button(model.label("common.retry")) { Task { await model.retryBackupTransferRead() } }
+                .disabled(model.busy || model.retryNeeded).frame(minHeight: 44)
+                .accessibilityIdentifier("backup-snapshots-retry")
+        } else if model.backupSnapshots.isEmpty {
+            Text(model.label("settings.recoverySnapshotsEmpty")).rnFont(14).foregroundStyle(palette.secondary)
+                .accessibilityIdentifier("backup-snapshots-empty")
+        } else {
+            ForEach(model.backupSnapshots) { snapshot in
+                Button { Task { await model.requestBackupRestore(snapshot) } } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(snapshot.name).rnFont(14).fixedSize(horizontal: false, vertical: true)
+                        Text(backup.text("restoreLabel")).rnFont(14, .semibold)
+                    }.multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+                .disabled(!model.backupImportEnabled)
+                .accessibilityIdentifier("backup-snapshot-restore-\(snapshot.id)")
+            }
+        }
+    }
+}
+
+private struct DiagnosticsActivitySheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+
+private struct AboutSettingsCard: View {
+    @ObservedObject var model: CoreModel
+    let palette: AppPalette
+
+    private var appName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Stride"
+    }
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+    private var appIcon: UIImage? {
+        let icons = Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any]
+        let primary = icons?["CFBundlePrimaryIcon"] as? [String: Any]
+        guard let name = (primary?["CFBundleIconFiles"] as? [String])?.last else { return nil }
+        return UIImage(named: name)
+    }
+
+    var body: some View {
+        ScrollView {
+            if model.settingsFeedbackPresented {
+                FeedbackSettingsForm(model: model, palette: palette)
+            } else {
+            VStack(spacing: 20) {
+                VStack(spacing: 10) {
+                    if let appIcon {
+                        Image(uiImage: appIcon).resizable().scaledToFit().frame(width: 80, height: 80)
+                            .clipShape(RoundedRectangle(cornerRadius: 18)).accessibilityHidden(true)
+                    }
+                    Text(appName).rnFont(24, .bold).foregroundStyle(palette.text)
+                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader).accessibilityIdentifier("about-app-name")
+                    Text("v" + version).rnFont(15).foregroundStyle(palette.secondary)
+                        .accessibilityIdentifier("about-version")
+                }.frame(maxWidth: .infinity).padding(.vertical, 12)
+                VStack(spacing: 0) {
+                    action("check-updates", label: "settings.checkForUpdates", value: model.label(model.settingsAboutChecking
+                        ? "settings.checking" : "settings.aboutMobile.tapToCheck")) { model.checkAboutUpdates() }
+                    divider
+                    action("rate", label: "settings.aboutMobile.rateOurApp", value: "App Store") { model.rateAboutApp() }
+                    divider
+                    action("feedback", label: "settings.feedback", value: model.label("settings.feedbackDesc")) { model.openFeedbackSettings() }
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                if model.settingsAboutChecking || model.settingsAboutOpening {
+                    ProgressView().accessibilityLabel(model.label(model.settingsAboutChecking ? "settings.checking" : "common.loading"))
+                        .accessibilityIdentifier("about-progress")
+                }
+                if let failure = model.settingsAboutError {
+                    Text(failure).rnFont(14).foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("about-open-error")
+                }
+                if model.settingsAboutUpdate != nil {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(model.settingsAboutUpdateTitle).rnFont(16, .semibold).foregroundStyle(palette.text)
+                            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("about-update-title")
+                        Text(model.settingsAboutUpdateMessage).rnFont(14).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("about-update-message")
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 12) { updateChoices }
+                            VStack(alignment: .leading, spacing: 8) { updateChoices }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier("about-update-notice")
+                }
+                VStack(spacing: 0) {
+                    link("website", label: "settings.officialWebsite", value: "Stride")
+                    divider
+                    link("tutorials", label: "settings.videoTutorials", value: "YouTube")
+                    divider
+                    link("privacy", label: "settings.privacy", value: model.label("settings.privacy"))
+                    divider
+                    link("terms", label: "settings.terms", value: model.label("settings.terms"))
+                    divider
+                    link("donate", label: "settings.sponsorProject", value: model.label("settings.donateLinkValue"))
+                    divider
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(model.label("settings.license")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                        Text("AGPL-3.0").rnFont(14).foregroundStyle(palette.secondary)
+                            .accessibilityIdentifier("about-license-value")
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+            }.padding(16).padding(.bottom, 24)
+            }
+        }.accessibilityIdentifier(model.settingsFeedbackPresented ? "feedback-scroll" : "about-scroll")
+            .scrollDismissesKeyboard(.interactively)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                model.invalidateAboutLinkOpening()
+            }
+            .onDisappear { model.invalidateAboutLinkOpening() }
+    }
+
+    @ViewBuilder private var updateChoices: some View {
+        Button(model.label(model.settingsAboutUpdate?.updateAvailable == true ? "settings.later" : "common.ok")) {
+            model.dismissAboutUpdate()
+        }.buttonStyle(.plain).rnFont(15, .semibold).foregroundStyle(palette.tint)
+            .frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("about-update-later")
+        if model.settingsAboutUpdate?.updateAvailable == true, model.settingsAboutUpdate?.listing != nil {
+            Button(model.label("attachments.open")) { model.openAboutUpdate() }
+                .buttonStyle(.plain).rnFont(15, .semibold).foregroundStyle(palette.tint)
+                .frame(minWidth: 44, minHeight: 44).disabled(!model.settingsAboutUpdateCanOpen)
+                .accessibilityIdentifier("about-update-open")
+        }
+    }
+
+    private var divider: some View { palette.border.frame(height: 0.5).padding(.horizontal, 14) }
+
+    private func action(_ id: String, label: String, value: String, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.label(label)).rnFont(15, .semibold).foregroundStyle(palette.text)
+                    Text(value).rnFont(14).foregroundStyle(palette.secondary)
+                }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right").foregroundStyle(palette.secondary).accessibilityHidden(true)
+            }.padding(14).frame(minHeight: 52).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(!model.settingsAboutLinksEnabled)
+            .accessibilityIdentifier("about-" + id)
+    }
+
+    private func link(_ id: String, label: String, value: String) -> some View {
+        Button { model.openAboutLink(id) } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.label(label)).rnFont(15, .semibold).foregroundStyle(palette.text)
+                    Text(value).rnFont(14).foregroundStyle(palette.tint)
+                }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.up.right").foregroundStyle(palette.secondary).accessibilityHidden(true)
+            }.padding(14).frame(minHeight: 52).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(!model.settingsAboutLinksEnabled)
+            .accessibilityIdentifier("about-" + id)
+    }
+}
+
+private struct FeedbackSettingsForm: View {
+    @State private var confirmNoEmail = false
+    @ObservedObject var model: CoreModel
+    let palette: AppPalette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @FocusState private var field: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if model.settingsFeedbackSent {
+                Text(model.label("settings.feedbackSent")).rnFont(16, .semibold).foregroundStyle(palette.text)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("feedback-sent")
+                Button(model.label("common.close")) { model.closeFeedbackSettings() }
+                    .buttonStyle(.plain).rnFont(16, .semibold).foregroundStyle(palette.tint)
+                    .frame(minHeight: 44).accessibilityIdentifier("feedback-close")
+            } else {
+                Text(model.label("settings.feedbackGitHubDesc").replacingOccurrences(of: "{channel}", with:
+                    model.label(model.settingsFeedbackCategory == "other" ? "settings.feedbackOpenGitHubDiscussion" : "settings.feedbackOpenGitHubIssue")))
+                    .rnFont(14).foregroundStyle(palette.secondary).fixedSize(horizontal: false, vertical: true)
+                Button { field = nil; model.openFeedbackGitHub() } label: {
+                    Label(model.label(model.settingsFeedbackCategory == "other" ? "settings.feedbackOpenGitHubDiscussion" : "settings.feedbackOpenGitHubIssue"), systemImage: "arrow.up.right")
+                        .rnFont(15, .semibold).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }.buttonStyle(.plain).foregroundStyle(palette.tint).disabled(!model.settingsFeedbackEditable)
+                    .accessibilityIdentifier("feedback-github")
+                heading("settings.feedbackCategory")
+                VStack(spacing: 0) {
+                    ForEach(CoreModel.feedbackCategories, id: \.self) { category in
+                        choice(model.feedbackCategoryLabel(category), selected: model.settingsFeedbackCategory == category,
+                               id: "feedback-category-" + category) { field = nil; model.setFeedbackCategory(category) }
+                    }
+                }.background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                if model.settingsFeedbackCategory == "bug" {
+                    heading("settings.feedbackWhere")
+                    Text(model.label("settings.feedbackWherePlaceholder")).rnFont(14).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    LazyVGrid(columns: [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: 140), alignment: .leading)], alignment: .leading, spacing: 8) {
+                        ForEach(CoreModel.feedbackLocations, id: \.self) { location in
+                            choice(model.feedbackLocationLabel(location), selected: model.settingsFeedbackLocation == location,
+                                   id: "feedback-location-" + location) { field = nil; model.setFeedbackLocation(location) }
+                        }
+                    }
+                }
+                heading("settings.feedbackMessage")
+                Text(model.settingsFeedbackPlaceholder).rnFont(14).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextEditor(text: Binding(get: { model.settingsFeedbackMessage }, set: { model.setFeedbackMessage($0) }))
+                    .rnFont(16).foregroundStyle(palette.text).scrollContentBackground(.hidden)
+                    .frame(minHeight: 160, maxHeight: 220).padding(8)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border, lineWidth: 1))
+                    .focused($field, equals: "message").disabled(!model.settingsFeedbackEditable)
+                    .accessibilityLabel(model.label("settings.feedbackMessage")).accessibilityIdentifier("feedback-message")
+                Text("\(model.settingsFeedbackMessageCount)/4000").rnFont(13)
+                    .foregroundStyle(model.settingsFeedbackMessageCount > 4_000 ? palette.danger : palette.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityLabel(model.label("settings.feedbackMessage") + ": \(model.settingsFeedbackMessageCount)/4000")
+                    .accessibilityIdentifier("feedback-message-count")
+                heading("settings.feedbackEmail")
+                TextField(model.label("settings.feedbackEmailPlaceholder"), text: Binding(get: { model.settingsFeedbackEmail }, set: { model.setFeedbackEmail($0) }))
+                    .rnFont(16).foregroundStyle(palette.text).keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.emailAddress)
+                    .padding(12).frame(minHeight: 44).background(palette.card, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border, lineWidth: 1))
+                    .focused($field, equals: "email").disabled(!model.settingsFeedbackEditable)
+                    .accessibilityLabel(model.label("settings.feedbackEmail")).accessibilityIdentifier("feedback-email")
+                if model.settingsFeedbackCategory == "bug" {
+                    Toggle(isOn: Binding(get: { model.settingsFeedbackIncludeDiagnostics }, set: { model.setFeedbackIncludeDiagnostics($0) })) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(model.label("settings.feedbackIncludeDiagnostics")).rnFont(15, .semibold).foregroundStyle(palette.text)
+                            Text(model.label("settings.feedbackIncludeDiagnosticsDesc")).rnFont(14).foregroundStyle(palette.secondary)
+                        }.fixedSize(horizontal: false, vertical: true)
+                    }.tint(palette.tint).padding(12).frame(minHeight: 44)
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.settingsFeedbackEditable).accessibilityIdentifier("feedback-diagnostics")
+                }
+                Text(model.label("settings.feedbackPrivacy")).rnFont(14).foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("feedback-privacy")
+                if model.settingsFeedbackLoading || model.settingsFeedbackSending || model.settingsAboutOpening {
+                    ProgressView(model.label(model.settingsFeedbackSending ? "settings.feedbackSending" : "common.loading"))
+                        .accessibilityIdentifier("feedback-progress")
+                }
+                if model.settingsFeedbackConfigured == false {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(model.label("settings.feedbackUnavailable")).rnFont(15, .semibold)
+                            .accessibilityIdentifier("feedback-unavailable")
+                        Text(model.label("settings.feedbackUnavailableDesc")).rnFont(14)
+                    }.foregroundStyle(palette.danger).fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = model.settingsFeedbackVisibleError {
+                    Text(error).rnFont(14).foregroundStyle(palette.danger).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("feedback-error")
+                }
+                if model.settingsFeedbackConfigured == nil && !model.settingsFeedbackLoading {
+                    Button(model.label("common.retry")) { model.loadFeedbackConfiguration() }
+                        .buttonStyle(.plain).rnFont(15, .semibold).foregroundStyle(palette.tint)
+                        .frame(minHeight: 44).disabled(!model.settingsFeedbackEditable).accessibilityIdentifier("feedback-retry")
+                }
+                VStack(spacing: 8) {
+                    Button {
+                        field = nil
+                        if !model.settingsFeedbackHasReplyEmail {
+                            confirmNoEmail = true
+                        } else { model.submitFeedbackSettings() }
+                    } label: {
+                        Text(model.label(model.settingsFeedbackSending ? "settings.feedbackSending" : "settings.feedbackSubmit"))
+                            .rnFont(16, .semibold).frame(maxWidth: .infinity, minHeight: 44)
+                    }.buttonStyle(.plain).foregroundStyle(palette.tint)
+                        .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
+                        .disabled(!model.settingsFeedbackCanSubmit).accessibilityIdentifier("feedback-submit")
+                    Button(model.label("common.cancel")) { field = nil; model.closeFeedbackSettings() }
+                        .buttonStyle(.plain).rnFont(15).foregroundStyle(palette.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 44).accessibilityIdentifier("feedback-cancel")
+                }
+            }
+        }.padding(16).padding(.bottom, 24)
+            .alert(model.label("settings.feedbackNoEmailTitle"), isPresented: $confirmNoEmail) {
+                Button(model.label("settings.feedbackAddEmail"), role: .cancel) { field = "email" }
+                Button(model.label("settings.feedbackSendWithoutEmail")) { model.submitFeedbackSettings() }
+            } message: { Text(model.label("settings.feedbackNoEmailDesc")) }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(model.label("common.done")) { field = nil }.accessibilityIdentifier("feedback-keyboard-done")
+                }
+            }
+    }
+
+    private func heading(_ key: String) -> some View {
+        Text(model.label(key)).rnFont(15, .semibold).foregroundStyle(palette.text).accessibilityAddTraits(.isHeader)
+    }
+    private func choice(_ text: String, selected: Bool, id: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(text).rnFont(15).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                if selected { Image(systemName: "checkmark").accessibilityHidden(true) }
+            }.foregroundStyle(selected ? palette.tint : palette.text).padding(12).frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(!model.settingsFeedbackEditable)
+            .accessibilityAddTraits(selected ? .isSelected : []).accessibilityIdentifier(id)
+    }
+}

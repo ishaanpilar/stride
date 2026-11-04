@@ -1,0 +1,15 @@
+<en-US>
+- Theme now stays in sync with your settings across devices.
+- Improved sync/storage error handling for more reliable backups.
+- General stability and performance improvements.
+</en-US>
+<zh-CN>
+- 主题设置现在会在设备间保持同步。
+- 同步/存储错误处理改进，备份更可靠。
+- 稳定性和性能改进。
+</zh-CN>
+<es-ES>
+- El tema ahora se mantiene sincronizado con tus ajustes entre dispositivos.
+- Mejor manejo de errores de sincronización/almacenamiento para copias más fiables.
+- Mejoras generales de estabilidad y rendimiento.
+</es-ES>

@@ -1,0 +1,134 @@
+[
+  {
+    "name": "JS default hides archived but keeps done (core matcher / sqlite-adapter / mobile default)",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "done-1", "title": "Done task", "status": "done", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "archived-1", "title": "Archived task", "status": "archived", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "deleted-1", "title": "Deleted task", "status": "next", "deletedAt": "2026-01-02T00:00:00.000Z", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": {},
+    "expectedIds": ["next-1", "done-1"],
+    "rustQuery": null
+  },
+  {
+    "name": "includeArchived true opts out of default hiding entirely (mcp list_tasks contract)",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "done-1", "title": "Done task", "status": "done", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "archived-1", "title": "Archived task", "status": "archived", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "deleted-1", "title": "Deleted task", "status": "next", "deletedAt": "2026-01-02T00:00:00.000Z", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "includeArchived": true },
+    "expectedIds": ["next-1", "done-1", "archived-1"],
+    "rustQuery": { "all": "1" }
+  },
+  {
+    "name": "includeArchived false plus excludeStatuses done hides both (cloud REST API / desktop local API default)",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "done-1", "title": "Done task", "status": "done", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "archived-1", "title": "Archived task", "status": "archived", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "deleted-1", "title": "Deleted task", "status": "next", "deletedAt": "2026-01-02T00:00:00.000Z", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "reference-1", "title": "Reference task", "status": "reference", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "includeArchived": false, "excludeStatuses": ["done"] },
+    "expectedIds": ["next-1", "reference-1"],
+    "rustQuery": {}
+  },
+  {
+    "name": "includeDeleted true surfaces soft-deleted tasks alongside includeArchived true",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "done-1", "title": "Done task", "status": "done", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "archived-1", "title": "Archived task", "status": "archived", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "deleted-1", "title": "Deleted task", "status": "next", "deletedAt": "2026-01-02T00:00:00.000Z", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "includeDeleted": true, "includeArchived": true },
+    "expectedIds": ["next-1", "done-1", "archived-1", "deleted-1"],
+    "rustQuery": { "all": "1", "deleted": "1" }
+  },
+  {
+    "name": "explicit single status filter",
+    "tasks": [
+      { "id": "next-1", "title": "Next one", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "next-2", "title": "Next two", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "waiting-1", "title": "Waiting one", "status": "waiting", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "status": "next" },
+    "expectedIds": ["next-1", "next-2"],
+    "rustQuery": { "status": "next" }
+  },
+  {
+    "name": "status all sentinel disables status filtering",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "waiting-1", "title": "Waiting task", "status": "waiting", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "archived-1", "title": "Archived task", "status": "archived", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "status": "all" },
+    "expectedIds": ["next-1", "waiting-1"],
+    "rustQuery": null
+  },
+  {
+    "name": "excludeStatuses filters an arbitrary status list",
+    "tasks": [
+      { "id": "next-1", "title": "Next task", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "waiting-1", "title": "Waiting task", "status": "waiting", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "someday-1", "title": "Someday task", "status": "someday", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "excludeStatuses": ["waiting", "someday"] },
+    "expectedIds": ["next-1"],
+    "rustQuery": null
+  },
+  {
+    "name": "projectId filters to one project",
+    "tasks": [
+      { "id": "proj-a-1", "title": "In project A", "status": "next", "projectId": "proj-a", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "proj-b-1", "title": "In project B", "status": "next", "projectId": "proj-b", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "no-project-1", "title": "Unfiled", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "containers": {
+      "projects": [
+        { "id": "proj-a", "title": "Project A", "status": "active", "color": "#123456", "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+        { "id": "proj-b", "title": "Project B", "status": "active", "color": "#654321", "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+      ]
+    },
+    "query": { "projectId": "proj-a" },
+    "expectedIds": ["proj-a-1"],
+    "rustQuery": null
+  },
+  {
+    "name": "isFocusedToday true matches only starred tasks",
+    "tasks": [
+      { "id": "focused-1", "title": "Starred", "status": "next", "isFocusedToday": true, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "not-focused-1", "title": "Not starred", "status": "next", "isFocusedToday": false, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "missing-focus-1", "title": "Field never set", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "isFocusedToday": true },
+    "expectedIds": ["focused-1"],
+    "rustQuery": { "isFocusedToday": "true" }
+  },
+  {
+    "name": "isFocusedToday false matches unstarred and never-set tasks (NULL-safe)",
+    "tasks": [
+      { "id": "focused-1", "title": "Starred", "status": "next", "isFocusedToday": true, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "not-focused-1", "title": "Not starred", "status": "next", "isFocusedToday": false, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "missing-focus-1", "title": "Field never set", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": { "isFocusedToday": false },
+    "expectedIds": ["not-focused-1", "missing-focus-1"],
+    "rustQuery": { "isFocusedToday": "false" }
+  },
+  {
+    "name": "isFocusedToday omitted applies no focus filter",
+    "tasks": [
+      { "id": "focused-1", "title": "Starred", "status": "next", "isFocusedToday": true, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "not-focused-1", "title": "Not starred", "status": "next", "isFocusedToday": false, "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" },
+      { "id": "missing-focus-1", "title": "Field never set", "status": "next", "tags": [], "contexts": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    ],
+    "query": {},
+    "expectedIds": ["focused-1", "not-focused-1", "missing-focus-1"],
+    "rustQuery": {}
+  }
+]

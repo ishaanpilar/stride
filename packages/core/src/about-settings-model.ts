@@ -1,0 +1,577 @@
+
+
+
+import {
+    compareAppVersions as compareVersions,
+    fetchAppStoreInfo,
+    shouldCheckForAppUpdate,
+    UPDATE_BADGE_AVAILABLE_KEY,
+    UPDATE_BADGE_LAST_CHECK_KEY,
+    UPDATE_BADGE_LATEST_KEY,
+} from './app-store-update';
+import { isValidFeedbackEmail, type FeedbackCategory, type FeedbackSubmissionInput } from './feedback';
+
+
+export type AboutTranslate = (key: string, values?: Record<string, string>) => string;
+
+export const ABOUT_GITHUB_ISSUES_URL = 'https://github.com/ishaanpilar/stride/issues/new/choose';
+export const ABOUT_GITHUB_DISCUSSIONS_URL = 'https://github.com/ishaanpilar/stride/discussions/new';
+export const ABOUT_GITHUB_RELEASES_API = 'https://api.github.com/repos/ishaanpilar/stride/releases/latest';
+export const ABOUT_GITHUB_RELEASES_URL = 'https://github.com/ishaanpilar/stride/releases/latest';
+export const ABOUT_LINKS = {
+    website: 'https://github.com/ishaanpilar/stride',
+    tutorials: 'https://youtube.com/playlist?list=PLLwV6zeTfB_k',
+    privacy: 'https://github.com/ishaanpilar/stride',
+    terms: 'https://github.com/ishaanpilar/stride',
+    sponsor: 'https://github.com/ishaanpilar/stride',
+} as const;
+export const ABOUT_LICENSE = 'AGPL-3.0';
+
+
+export type AndroidInstallerSource = 'play-store' | 'sideload' | 'unknown';
+
+
+export const ANDROID_PLAY_INSTALLER_PACKAGE = 'com.android.vending';
+
+
+export const resolveAndroidInstallerSource = (referrer: string | null | undefined, installerPackageName?: string | null): AndroidInstallerSource => {
+    if ((installerPackageName ?? '').trim() === ANDROID_PLAY_INSTALLER_PACKAGE) return 'play-store';
+    const normalized = (referrer || '').trim().toLowerCase();
+    return normalized ? 'play-store' : 'sideload';
+};
+
+
+export const getAboutInstallChannel = (input: { isFossBuild: boolean; platform: string; androidInstallerSource: AndroidInstallerSource }): string => {
+    if (input.isFossBuild) return 'fdroid';
+    if (input.platform === 'ios') return 'app-store';
+    if (input.platform === 'android') return input.androidInstallerSource;
+    return input.platform || 'mobile';
+};
+
+export type AboutRowId = 'checkForUpdates' | 'rate' | 'feedback' | 'website' | 'tutorials' | 'privacy' | 'terms' | 'sponsor' | 'license';
+
+
+export type AboutRow = { id: AboutRowId; label: string; value: string; tone: 'link' | 'value'; url: string | null };
+
+export type AboutSettingsModel = {
+    title: string;
+    appName: string;
+
+    versionText: string;
+    rows: AboutRow[];
+};
+
+
+export function buildAboutSettingsModel(input: {
+    t: (key: string) => string;
+    tr: AboutTranslate;
+    appName: string;
+    displayVersion: string;
+    isFossBuild: boolean;
+    platform: string;
+}): AboutSettingsModel {
+    const { t, tr } = input;
+    const canRateInStore = !input.isFossBuild && (input.platform === 'android' || input.platform === 'ios');
+    const link = (id: AboutRowId, label: string, value: string, url: string | null): AboutRow => ({ id, label, value, tone: 'link', url });
+    return {
+        title: t('settings.about'),
+        appName: input.appName,
+        versionText: `v${input.displayVersion}`,
+        rows: [
+            ...(!input.isFossBuild ? [link('checkForUpdates', t('settings.checkForUpdates'), tr('settings.aboutMobile.tapToCheck'), null)] : []),
+            ...(canRateInStore ? [link('rate', tr('settings.aboutMobile.rateOurApp'), input.platform === 'ios' ? 'App Store' : 'Google Play', null)] : []),
+            link('feedback', tr('settings.feedback'), tr('settings.feedbackSubmit'), null),
+            link('website', t('settings.officialWebsite'), 'Stride', ABOUT_LINKS.website),
+            link('tutorials', t('settings.videoTutorials'), 'YouTube', ABOUT_LINKS.tutorials),
+            link('privacy', t('settings.privacy'), t('settings.privacy'), ABOUT_LINKS.privacy),
+            link('terms', t('settings.terms'), t('settings.terms'), ABOUT_LINKS.terms),
+            link('sponsor', t('settings.sponsorProject'), tr('settings.donateLinkValue'), ABOUT_LINKS.sponsor),
+            { id: 'license', label: t('settings.license'), value: ABOUT_LICENSE, tone: 'value', url: null },
+        ],
+    };
+}
+
+
+export type PlayStoreUpdateAnswer = { updateAvailable: boolean; availableVersionCode: number | null };
+
+type AboutResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
+
+export type AboutToast = { title: string; message: string; tone: 'info' | 'success' | 'warning'; durationMs?: number };
+
+export type AboutAlertButton = { text: string; style?: 'cancel'; url?: string };
+
+
+export type AboutUpdateDevice = {
+    platform: string;
+    isFossBuild: boolean;
+    isExpoGo: boolean;
+
+    currentVersion: string;
+    displayVersion: string;
+    androidInstallerSource: AndroidInstallerSource;
+    androidPackageName: string;
+    iosBundleId: string;
+    storage: {
+        getItem: (key: string) => Promise<string | null>;
+        setItem: (key: string, value: string) => Promise<void>;
+        removeItem: (key: string) => Promise<void>;
+    };
+    fetcher: (url: string, init: { headers: Record<string, string>; cache?: 'no-store' }) => Promise<AboutResponse>;
+    getPlayStoreUpdateInfo: () => Promise<PlayStoreUpdateAnswer>;
+    canOpenURL: (url: string) => Promise<boolean>;
+    openURL: (url: string) => Promise<unknown>;
+    onUpdateBadgeChange: (next: boolean) => void;
+    showToast: (toast: AboutToast) => void;
+    showAlert: (title: string, message: string, buttons: AboutAlertButton[]) => void;
+    tr: AboutTranslate;
+    logWarn: (message: string, error: unknown) => void;
+    logError: (message: string, error: unknown) => void;
+    now?: () => number;
+
+    githubReleasesApi?: string;
+};
+
+type AndroidComparableVersionResult =
+    | { source: 'play-store'; updateAvailable: boolean; availableVersionCode: number | null }
+    | { source: 'github-release'; version: string };
+
+type GithubRelease = { tag_name?: string; html_url?: string; body?: string };
+
+
+export function createAboutUpdateChecks(device: AboutUpdateDevice) {
+    const { tr, storage } = device;
+    const now = device.now ?? Date.now;
+    const currentVersion = device.currentVersion;
+    const displayVersion = device.displayVersion;
+    const githubReleasesApi = device.githubReleasesApi ?? ABOUT_GITHUB_RELEASES_API;
+    const PLAY_STORE_URL = `https://play.google.com/store/apps/details?id=${device.androidPackageName}`;
+    const PLAY_STORE_MARKET_URL = `market://details?id=${device.androidPackageName}`;
+
+    const persistUpdateBadge = async (next: boolean, latestVersion?: string) => {
+        device.onUpdateBadgeChange(next);
+        try {
+            await storage.setItem(UPDATE_BADGE_AVAILABLE_KEY, next ? 'true' : 'false');
+            if (next && latestVersion) {
+                await storage.setItem(UPDATE_BADGE_LATEST_KEY, latestVersion);
+            } else {
+                await storage.removeItem(UPDATE_BADGE_LATEST_KEY);
+            }
+        } catch (error) {
+            device.logWarn('Failed to persist update badge state', error);
+        }
+    };
+
+    const fetchLatestRelease = async (): Promise<GithubRelease> => {
+        const response = await device.fetcher(githubReleasesApi, {
+            headers: {
+                Accept: 'application/vnd.github.v3+json',
+                'User-Agent': 'Stride-App',
+            },
+        });
+        if (!response.ok) {
+            throw new Error(`GitHub API error: ${response.status}`);
+        }
+        return response.json() as Promise<GithubRelease>;
+    };
+
+
+    const fetchLatestAppStoreInfo = () => fetchAppStoreInfo(device.iosBundleId, device.fetcher as unknown as typeof globalThis.fetch);
+
+    const fetchAndroidComparableVersion = async (): Promise<AndroidComparableVersionResult> => {
+        if (device.androidInstallerSource === 'sideload') {
+            const release = await fetchLatestRelease();
+            return { version: release.tag_name?.replace(/^v/, '') || '0.0.0', source: 'github-release' };
+        }
+        try {
+            const info = await device.getPlayStoreUpdateInfo();
+            return {
+                source: 'play-store',
+                updateAvailable: info.updateAvailable,
+                availableVersionCode: info.availableVersionCode,
+            };
+        } catch (error) {
+            device.logWarn('Play Store update API failed; falling back to GitHub release', error);
+            const release = await fetchLatestRelease();
+            return { version: release.tag_name?.replace(/^v/, '') || '0.0.0', source: 'github-release' };
+        }
+    };
+
+    const fetchLatestComparableVersion = async (): Promise<{ version: string; source: 'app-store' | 'github-release' }> => {
+        if (device.platform === 'ios') {
+            const { version } = await fetchLatestAppStoreInfo();
+            return { version, source: 'app-store' };
+        }
+        const release = await fetchLatestRelease();
+        return { version: release.tag_name?.replace(/^v/, '') || '0.0.0', source: 'github-release' };
+    };
+
+    return {
+
+
+        async runSilentCheck(cancelled: () => boolean = () => false): Promise<void> {
+            if (device.isExpoGo || device.isFossBuild) return;
+            try {
+                const lastCheckedRaw = await storage.getItem(UPDATE_BADGE_LAST_CHECK_KEY);
+                if (!shouldCheckForAppUpdate(lastCheckedRaw, now())) {
+                    const storedBadge = await storage.getItem(UPDATE_BADGE_AVAILABLE_KEY);
+                    if (!cancelled()) device.onUpdateBadgeChange(storedBadge === 'true');
+                    return;
+                }
+                const comparable = device.platform === 'android'
+                    ? await fetchAndroidComparableVersion()
+                    : await fetchLatestComparableVersion();
+                if (cancelled()) return;
+                const hasUpdate = comparable.source === 'play-store'
+                    ? comparable.updateAvailable
+                    : compareVersions(comparable.version, currentVersion) > 0;
+                await storage.setItem(UPDATE_BADGE_LAST_CHECK_KEY, String(now()));
+                await persistUpdateBadge(
+                    hasUpdate,
+                    hasUpdate && comparable.source !== 'play-store' ? comparable.version : undefined
+                );
+            } catch (error) {
+                device.logWarn('Silent update check failed', error);
+            }
+        },
+
+
+        async runManualCheck(): Promise<void> {
+            if (device.isFossBuild) {
+                device.showToast({
+                    title: tr('settings.aboutMobile.updatesAreManagedByYourDistributionSource'),
+                    message: tr('settings.aboutMobile.inAppUpdateChecksAreDisabledInThisFossBuild'),
+                    tone: 'info',
+                    durationMs: 4800,
+                });
+                return;
+            }
+
+            try {
+                await storage.setItem(UPDATE_BADGE_LAST_CHECK_KEY, String(now()));
+
+                if (device.platform === 'android' && device.androidInstallerSource !== 'sideload') {
+                    const canOpenMarket = await device.canOpenURL(PLAY_STORE_MARKET_URL);
+                    const targetUrl = canOpenMarket ? PLAY_STORE_MARKET_URL : PLAY_STORE_URL;
+                    const result = await fetchAndroidComparableVersion();
+                    const hasUpdate = result.source === 'play-store'
+                        ? result.updateAvailable
+                        : compareVersions(result.version, currentVersion) > 0;
+                    if (hasUpdate) {
+                        const updateMessage = result.source === 'play-store'
+                            ? tr('settings.aboutMobile.updateIsAvailableOnGooglePlayOpenAppListingNow')
+                            : tr('settings.aboutMobile.googlePlayUpdateAvailableWithVersions', { currentVersion: displayVersion, latestVersion: result.version });
+                        device.showAlert(tr('settings.updateAvailable'), updateMessage, [
+                            { text: tr('settings.later'), style: 'cancel' },
+                            { text: tr('attachments.open'), url: targetUrl },
+                        ]);
+                        await persistUpdateBadge(true, result.source === 'github-release' ? result.version : undefined);
+                    } else {
+                        const upToDateMessage = result.source === 'play-store'
+                            ? tr('settings.aboutMobile.youAreUsingTheLatestGooglePlayVersion')
+                            : tr('settings.aboutMobile.googlePlayCheckWasUnavailableButYourVersionMatchesThe');
+                        device.showToast({
+                            title: tr('settings.aboutMobile.upToDate'),
+                            message: upToDateMessage,
+                            tone: 'success',
+                        });
+                        await persistUpdateBadge(false);
+                    }
+                    return;
+                }
+
+                if (device.platform === 'ios') {
+                    const { version: latestVersion, trackViewUrl } = await fetchLatestAppStoreInfo();
+                    const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
+                    const trackIdMatch = trackViewUrl?.match(/\/id(\d+)/i);
+                    const appStoreDeepLink = trackIdMatch?.[1] ? `itms-apps://apps.apple.com/app/id${trackIdMatch[1]}` : null;
+                    const canOpenDeepLink = appStoreDeepLink ? await device.canOpenURL(appStoreDeepLink) : false;
+                    const targetUrl = canOpenDeepLink ? appStoreDeepLink : trackViewUrl;
+
+                    if (hasUpdate) {
+                        device.showAlert(
+                            tr('settings.updateAvailable'),
+                            tr('settings.aboutMobile.appStoreUpdateAvailableWithVersions', { currentVersion: displayVersion, latestVersion }),
+                            [
+                                { text: tr('settings.later'), style: 'cancel' },
+                                ...(targetUrl ? [{ text: tr('attachments.open'), url: targetUrl }] : []),
+                            ]
+                        );
+                        await persistUpdateBadge(true, latestVersion);
+                    } else {
+                        device.showToast({
+                            title: tr('settings.aboutMobile.upToDate'),
+                            message: tr('settings.aboutMobile.youAreUsingTheLatestAppStoreVersion'),
+                            tone: 'success',
+                        });
+                        await persistUpdateBadge(false);
+                    }
+                    return;
+                }
+
+                const release = await fetchLatestRelease();
+                const latestVersion = release.tag_name?.replace(/^v/, '') || '0.0.0';
+                const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
+
+                if (hasUpdate) {
+                    const downloadUrl = release.html_url || ABOUT_GITHUB_RELEASES_URL;
+                    const changelog = release.body || tr('settings.noChangelog');
+                    device.showAlert(
+                        tr('settings.updateAvailable'),
+                        `v${displayVersion} → v${latestVersion}\n\n${tr('settings.changelog')}:\n${changelog.substring(0, 500)}${changelog.length > 500 ? '...' : ''}`,
+                        [
+                            { text: tr('settings.later'), style: 'cancel' },
+                            { text: tr('attachments.download'), url: downloadUrl },
+                        ]
+                    );
+                    await persistUpdateBadge(true, latestVersion);
+                } else {
+                    device.showToast({
+                        title: tr('settings.aboutMobile.upToDate'),
+                        message: tr('settings.upToDate'),
+                        tone: 'success',
+                    });
+                    await persistUpdateBadge(false);
+                }
+            } catch (error) {
+                device.logError('Update check failed:', error);
+                device.showToast({
+                    title: tr('settings.syncMobile.error'),
+                    message: tr('settings.checkFailed'),
+                    tone: 'warning',
+                });
+            }
+        },
+
+
+        async rateApp(): Promise<void> {
+            try {
+                if (device.platform === 'android') {
+                    try {
+                        await device.openURL(PLAY_STORE_MARKET_URL);
+                    } catch {
+                        await device.openURL(PLAY_STORE_URL);
+                    }
+                    return;
+                }
+
+                if (device.platform === 'ios') {
+                    const { trackViewUrl } = await fetchLatestAppStoreInfo();
+                    const trackIdMatch = trackViewUrl?.match(/\/id(\d+)/i);
+                    const reviewDeepLink = trackIdMatch?.[1]
+                        ? `itms-apps://itunes.apple.com/app/id${trackIdMatch[1]}?action=write-review`
+                        : null;
+                    const canOpenReview = reviewDeepLink ? await device.canOpenURL(reviewDeepLink) : false;
+                    const targetUrl = canOpenReview ? reviewDeepLink : trackViewUrl;
+                    if (!targetUrl) throw new Error('App Store listing unavailable');
+                    await device.openURL(targetUrl);
+                }
+            } catch (error) {
+                device.logWarn('Failed to open app store rating page', error);
+                device.showToast({
+                    title: tr('settings.aboutMobile.storeUnavailable'),
+                    message: tr('settings.aboutMobile.couldNotOpenTheAppStoreRatingPagePleaseTry'),
+                    tone: 'warning',
+                });
+            }
+        },
+    };
+}
+
+
+export const FEEDBACK_LOCATIONS = [
+    'inbox',
+    'focus',
+    'projects',
+    'review',
+    'settings',
+    'sync',
+    'importExport',
+    'notifications',
+    'other',
+] as const;
+
+export type FeedbackLocation = typeof FEEDBACK_LOCATIONS[number];
+
+export const FEEDBACK_MESSAGE_MAX_LENGTH = 4000;
+
+export type FeedbackModalText = {
+    title: string;
+
+    gitHub: Record<FeedbackCategory, { before: string; link: string; after: string; url: string }>;
+    close: string;
+    category: string;
+    categories: Record<FeedbackCategory, string>;
+    where: string;
+    locations: Record<FeedbackLocation, string>;
+    message: string;
+    messagePlaceholders: Record<FeedbackCategory, string>;
+    email: string;
+    emailPlaceholder: string;
+    noEmailTitle: string;
+    noEmailDescription: string;
+    addEmail: string;
+    sendWithoutEmail: string;
+    includeDiagnostics: string;
+    includeDiagnosticsDescription: string;
+    unavailable: string;
+    unavailableDescription: string;
+    sent: string;
+    cancel: string;
+    submit: string;
+    sending: string;
+};
+
+
+export function buildFeedbackModalText(tr: (key: string) => string): FeedbackModalText {
+    const [before, after] = tr('settings.feedbackGitHubDesc').split('{channel}');
+    const gitHubLine = (category: FeedbackCategory) => ({
+        before,
+        link: tr(category === 'other' ? 'settings.feedbackOpenGitHubDiscussion' : 'settings.feedbackOpenGitHubIssue'),
+        after,
+        url: getFeedbackGitHubUrl(category),
+    });
+    return {
+        title: tr('settings.feedback'),
+        gitHub: { bug: gitHubLine('bug'), feature: gitHubLine('feature'), other: gitHubLine('other') },
+        close: tr('common.close'),
+        category: tr('settings.feedbackCategory'),
+        categories: {
+            bug: tr('settings.feedbackCategoryBug'),
+            feature: tr('settings.feedbackCategoryFeature'),
+            other: tr('settings.feedbackCategoryOther'),
+        },
+        where: tr('settings.feedbackWhere'),
+        locations: {
+            inbox: tr('settings.feedbackWhereInbox'),
+            focus: tr('settings.feedbackWhereFocus'),
+            projects: tr('settings.feedbackWhereProjects'),
+            review: tr('settings.feedbackWhereReview'),
+            settings: tr('settings.feedbackWhereSettings'),
+            sync: tr('settings.feedbackWhereSync'),
+            importExport: tr('settings.feedbackWhereImportExport'),
+            notifications: tr('settings.feedbackWhereNotifications'),
+            other: tr('settings.feedbackWhereOther'),
+        },
+        message: tr('settings.feedbackMessage'),
+        messagePlaceholders: {
+            bug: tr('settings.feedbackMessagePlaceholderBug'),
+            feature: tr('settings.feedbackMessagePlaceholderFeature'),
+            other: tr('settings.feedbackMessagePlaceholderOther'),
+        },
+        email: tr('settings.feedbackEmail'),
+        emailPlaceholder: tr('settings.feedbackEmailPlaceholder'),
+        noEmailTitle: tr('settings.feedbackNoEmailTitle'),
+        noEmailDescription: tr('settings.feedbackNoEmailDesc'),
+        addEmail: tr('settings.feedbackAddEmail'),
+        sendWithoutEmail: tr('settings.feedbackSendWithoutEmail'),
+        includeDiagnostics: tr('settings.feedbackIncludeDiagnostics'),
+        includeDiagnosticsDescription: tr('settings.feedbackIncludeDiagnosticsDesc'),
+        unavailable: tr('settings.feedbackUnavailable'),
+        unavailableDescription: tr('settings.feedbackUnavailableDesc'),
+        sent: tr('settings.feedbackSent'),
+        cancel: tr('common.cancel'),
+        submit: tr('settings.feedbackSubmit'),
+        sending: tr('settings.feedbackSending'),
+    };
+}
+
+
+export const getFeedbackGitHubUrl = (category: FeedbackCategory): string => (
+    category === 'other' ? ABOUT_GITHUB_DISCUSSIONS_URL : ABOUT_GITHUB_ISSUES_URL
+);
+
+export type FeedbackDraft = {
+    category: FeedbackCategory;
+    message: string;
+    email: string;
+    location: FeedbackLocation | '';
+    includeDiagnostics: boolean;
+};
+
+export type FeedbackStatus = 'idle' | 'sending' | 'sent' | 'error';
+
+
+const isFeedbackEmailShapeValid = (trimmedEmail: string) => isValidFeedbackEmail(trimmedEmail);
+
+
+export function getFeedbackDraftState(input: {
+    tr: (key: string) => string;
+    isConfigured: boolean;
+    message: string;
+    email: string;
+    status: FeedbackStatus;
+    error: string | null;
+}): { canSubmit: boolean; emailValid: boolean; visibleError: string | null } {
+    const trimmedMessage = input.message.trim();
+    const trimmedEmail = input.email.trim();
+    const emailValid = isFeedbackEmailShapeValid(trimmedEmail);
+    const canSubmit = input.isConfigured && trimmedMessage.length > 0 && emailValid && input.status !== 'sending';
+    const visibleError = input.error
+        ?? (trimmedEmail && !emailValid ? input.tr('settings.feedbackInvalidEmail') : null);
+    return { canSubmit, emailValid, visibleError };
+}
+
+
+const feedbackPlacePrefix = (draft: Pick<FeedbackDraft, 'category' | 'location'>, tr: (key: string) => string): string => (
+    draft.category === 'bug' && draft.location
+        ? `${tr('settings.feedbackWhereMessagePrefix')}: ${buildFeedbackModalText(tr).locations[draft.location]}\n\n`
+        : ''
+);
+
+
+export const getFeedbackMessageMaxLength = (draft: Pick<FeedbackDraft, 'category' | 'location'>, tr: (key: string) => string): number => (
+    FEEDBACK_MESSAGE_MAX_LENGTH - feedbackPlacePrefix(draft, tr).length
+);
+
+
+export function planFeedbackSubmit(draft: FeedbackDraft, tr: (key: string) => string):
+    | { error: string }
+    | { input: { category: FeedbackCategory; email?: string; includeDiagnostics: boolean; message: string } } {
+    const trimmedMessage = draft.message.trim();
+    const trimmedEmail = draft.email.trim();
+    if (!trimmedMessage) return { error: tr('settings.feedbackRequired') };
+    if (!isFeedbackEmailShapeValid(trimmedEmail)) return { error: tr('settings.feedbackInvalidEmail') };
+    const prefix = feedbackPlacePrefix(draft, tr);
+    const submittedMessage = prefix
+        ? `${prefix}${trimmedMessage.slice(0, getFeedbackMessageMaxLength(draft, tr))}`
+        : trimmedMessage;
+    return {
+        input: {
+            category: draft.category,
+            email: trimmedEmail || undefined,
+            includeDiagnostics: draft.category === 'bug' && draft.includeDiagnostics,
+            message: submittedMessage,
+        },
+    };
+}
+
+
+export function buildAboutFeedbackSubmission(input: {
+    category: FeedbackCategory;
+    email?: string;
+    message: string;
+    displayVersion: string;
+    build?: string;
+    installChannel: string;
+    locale: string;
+    platform: string;
+    platformVersion: string;
+    diagnosticsLogs: string | null;
+}): FeedbackSubmissionInput {
+    return {
+        category: input.category,
+        email: input.email,
+        message: input.message,
+        metadata: {
+            appVersion: input.displayVersion,
+            build: input.build,
+            installChannel: input.installChannel,
+            locale: input.locale,
+            os: `${input.platform} ${input.platformVersion}`.trim(),
+            platform: input.platform,
+        },
+        diagnostics: input.diagnosticsLogs ? { logs: input.diagnosticsLogs } : undefined,
+    };
+}
+
+export const isFeedbackLocation = (value: unknown): value is FeedbackLocation => FEEDBACK_LOCATIONS.includes(value as FeedbackLocation);

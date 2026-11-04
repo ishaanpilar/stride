@@ -1,0 +1,55 @@
+{
+  "name": "stride-mcp",
+  "description": "MCP server for Stride SQLite, desktop Local API, and self-hosted Cloud task access.",
+  "version": "1.1.13",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "mcpName": "io.github.ishaanpilar/stride",
+  "main": "dist/index.js",
+  "bin": {
+    "stride-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/cli.js",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ishaanpilar/stride.git",
+    "directory": "apps/mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/ishaanpilar/stride/issues"
+  },
+  "homepage": "https://github.com/ishaanpilar/stride/tree/main/docs",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "stride",
+    "gtd",
+    "tasks"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "bun src/cli.ts",
+    "build": "bun build src/index.ts --target node --format esm --outfile dist/index.js --define process.env.NODE_ENV='\"production\"' --external=better-sqlite3 --external=bun:sqlite && cp src/cli.ts dist/cli.js && chmod +x dist/cli.js",
+    "lint": "eslint -c eslint.config.mjs . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/cli.js",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage --coverage-reporter=lcov"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.0.0"
+  }
+}

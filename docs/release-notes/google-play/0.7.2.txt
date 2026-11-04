@@ -1,0 +1,18 @@
+<en-US>
+- Improved Android attachment sync for `content://` files from providers like Downloads.
+- Hardened Android local reminders and duplicate-alarm recovery.
+- Added confirmation before swipe-to-trash deletes a task.
+- Improved pickers with better accessibility and area-aware project filtering.
+</en-US>
+<zh-CN>
+- 改进 Android 对 Downloads 等提供方 `content://` 文件的附件同步稳定性。
+- 强化 Android 本地提醒与重复闹钟恢复逻辑。
+- 侧滑删除任务前新增确认步骤，减少误删。
+- 改进选择器的无障碍体验，并让项目选择更好地遵循区域筛选。
+</zh-CN>
+<es-ES>
+- Mejoramos el sync de adjuntos Android para archivos `content://` de proveedores como Downloads.
+- Reforzamos los recordatorios locales Android y la recuperacion ante alarmas duplicadas.
+- Anadimos confirmacion antes de enviar una tarea a la papelera al deslizar para borrar.
+- Mejoramos la accesibilidad de los selectores y el filtrado de proyectos por area.
+</es-ES>

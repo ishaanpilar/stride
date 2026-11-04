@@ -1,0 +1,18 @@
+Stride est un organiseur personnel doté d'IA. Notez vos tâches et idées dès qu'elles surgissent, commencez la journée avec un briefing matinal par IA et demandez à l'assistant intégré de vous aider à planifier.
+
+CE QUE VOUS OBTENEZ
+
+- Saisie : ajoutez tâches et notes en quelques secondes via l'ajout rapide, les widgets, le partage depuis d'autres apps ou la voix.
+- Briefing matinal IA : un court résumé de l'essentiel du jour, construit à partir de vos propres tâches.
+- Chat avec l'assistant : posez des questions sur vos tâches, projets et agenda, ou demandez de l'aide pour planifier votre journée. Utilise votre propre compte de fournisseur d'IA.
+- Panneau dans la barre des menus : sur Mac, consultez et ajoutez des tâches depuis la barre des menus sans ouvrir l'app complète.
+- Listes GTD : Inbox, Next, En attente, Un jour/Peut-être, Projets, Domaines et Contextes, avec une revue hebdomadaire guidée.
+- Pomodoro : un minuteur de concentration intégré pour avancer sur vos prochaines actions.
+- Rappels, tâches répétées, listes de contrôle, notes Markdown et pièces jointes.
+- Vues liste, calendrier et kanban.
+
+VOS DONNÉES, VOTRE CHOIX
+
+Fonctionne hors ligne, sans compte. Vos tâches restent sur votre appareil. La synchronisation est optionnelle : Dropbox, un dossier à vous, WebDAV, votre propre serveur ou iCloud sur les appareils Apple. Les fonctions IA sont optionnelles et ne s'activent que si vous configurez un fournisseur.
+
+Gratuit et open source sous licence AGPL-3.0.

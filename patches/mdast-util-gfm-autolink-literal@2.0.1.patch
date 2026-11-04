@@ -1,0 +1,20 @@
+diff --git a/lib/index.js b/lib/index.js
+index c5ca771c24dd914e342f791716a822431ee32b3a..c0e366fa9133dc18de0ddda6841cc9dc171aa5ec 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -132,7 +132,14 @@ function transformGfmAutolinkLiterals(tree) {
+     tree,
+     [
+       [/(https?:\/\/|www(?=\.))([-.\w]+)([^ \t\r\n]*)/gi, findUrl],
+-      [/(?<=^|\s|\p{P}|\p{S})([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
++      // Lookbehind-free variant: upstream anchors this with a lookbehind for
++      // start/whitespace/punctuation/symbol, but old WebKit (Safari < 16.4,
++      // incl. WKWebView on older macOS) throws `Invalid regular expression:
++      // invalid group specifier name` on any lookbehind. `findEmail` ->
++      // `previous(match, true)` re-applies the exact same boundary check, and
++      // the greedy leading class means a match can never start right after a
++      // `[-.\w+]` character, so dropping the lookbehind changes nothing.
++      [/([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
+     ],
+     {ignore: ['link', 'linkReference']}
+   )

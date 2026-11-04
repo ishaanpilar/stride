@@ -1,0 +1,18 @@
+<en-US>
+- Added date and time format overrides in Settings.
+- Improved mobile sync reliability with clearer activity feedback and stronger WebDAV cooldown handling.
+- Improved task editing and inbox processing flows, including safer close confirmation and better tab-state recovery.
+- Hardened Android local reminders and duplicate-alarm recovery.
+</en-US>
+<zh-CN>
+- 设置中新增日期与时间格式覆盖选项。
+- 改进移动端同步可靠性，加入更清晰的同步状态反馈，并强化 WebDAV 限流冷却处理。
+- 优化任务编辑与收件箱处理流程，包含更安全的关闭确认与更稳定的标签页状态恢复。
+- 强化 Android 本地提醒与重复闹钟恢复逻辑。
+</zh-CN>
+<es-ES>
+- Anadimos opciones de formato de fecha y hora en Configuracion.
+- Mejoramos la fiabilidad del sync movil con una senal de actividad mas clara y un manejo mas solido del enfriamiento de WebDAV.
+- Mejoramos la edicion de tareas y el flujo de bandeja de entrada, con una confirmacion de cierre mas segura y mejor recuperacion del estado de pestanas.
+- Reforzamos los recordatorios locales Android y la recuperacion ante alarmas duplicadas.
+</es-ES>

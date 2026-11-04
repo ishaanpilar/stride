@@ -1,0 +1,4 @@
+- SQLite natif garde les grandes bibliothèques réactives et accélère l'enregistrement et la synchronisation.
+- Les projets mémorisent le tri; Focus, filtres et groupes par date de fin progressent.
+- Les rappels répétés restent à l'heure, avec de meilleurs widgets, grandes polices et claviers.
+- Sauvegardes, restauration, identifiants sécurisés et récurrences sont plus fiables.

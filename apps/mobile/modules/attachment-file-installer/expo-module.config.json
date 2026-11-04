@@ -1,0 +1,11 @@
+{
+  "platforms": ["android", "ios"],
+  "android": {
+    "modules": ["com.ishaanpilar.stride.attachmentfileinstaller.AttachmentFileInstallerModule"]
+  },
+  "ios": {
+    "podspecPath": "ios/AttachmentFileInstaller.podspec",
+    "swiftModuleName": "AttachmentFileInstaller",
+    "modules": ["AttachmentFileInstallerModule"]
+  }
+}

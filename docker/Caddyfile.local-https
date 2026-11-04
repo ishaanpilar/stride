@@ -1,0 +1,6 @@
+# LAN-only HTTPS setup. Devices must trust Caddy's local root CA before
+# Stride clients will accept this certificate.
+{$STRIDE_CLOUD_DOMAIN} {
+	tls internal
+	reverse_proxy stride-cloud:8787
+}

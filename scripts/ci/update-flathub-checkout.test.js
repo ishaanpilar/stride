@@ -1,0 +1,136 @@
+import { afterEach, expect, test } from "bun:test";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import process from "node:process";
+
+const tempRoots = [];
+const script = resolve("scripts/ci/update-flathub-checkout.sh");
+const fixtures = resolve("scripts/ci/fixtures/flathub");
+const commit = "fedcba9876543210fedcba9876543210fedcba98";
+
+test("desktop declares XML parsing as an isolated-install dependency", () => {
+  const packageJson = JSON.parse(
+    readFileSync("apps/desktop/package.json", "utf8"),
+  );
+  const packageLock = JSON.parse(
+    readFileSync("apps/desktop/package-lock.json", "utf8"),
+  );
+
+  expect(packageJson.dependencies["@xmldom/xmldom"]).toBe("0.8.15");
+  expect(packageLock.packages["node_modules/@xmldom/xmldom"].version).toBe(
+    "0.8.15",
+  );
+});
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+const runFixture = (fixtureName) => {
+  const root = mkdtempSync(join(tmpdir(), "stride-flathub-manifest-"));
+  tempRoots.push(root);
+  const manifest = join(root, "com.ishaanpilar.stride.yml");
+  cpSync(join(fixtures, fixtureName), manifest);
+  const result = spawnSync("bash", [script, commit, root, root], {
+    cwd: resolve("."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      STRIDE_FLATHUB_MANIFEST_ONLY: "1",
+      ANALYTICS_HEARTBEAT_URL: "https://analytics.fixture/",
+      VITE_ANALYTICS_RELEASE_VERSION: "1.2.5",
+      VITE_DROPBOX_APP_KEY: "fixture-key",
+      VITE_FEEDBACK_ENDPOINT_URL: "https://feedback.fixture/",
+    },
+  });
+  return { manifest, result };
+};
+
+test("updates an unpatched Flathub manifest fixture", () => {
+  const { manifest, result } = runFixture("unpatched.yml");
+  expect(result.status, result.stderr).toBe(0);
+
+  const updated = readFileSync(manifest, "utf8");
+  expect(updated).toContain(`commit: ${commit}`);
+  expect(updated).toContain('if requested_spec.startswith("workspace:")');
+  expect(updated).toContain('local_spec = f"file:{locked_resolved}"');
+  expect(updated).toContain("- shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json");
+  expect(updated).not.toContain("appstream-homepage.patch");
+  expect(updated).not.toContain("patches/stride-hotfix.patch");
+  expect(updated).not.toContain("org.com_ishaanpilar_stride.SingleInstance");
+  expect(updated).toContain("- --socket=pulseaudio");
+  expect(updated).toContain("- --talk-name=org.freedesktop.Notifications");
+  expect(updated).not.toContain("- --talk-name=org.freedesktop.secrets");
+  expect(updated).toContain("- VITE_ANALYTICS_HEARTBEAT_URL=https://analytics.fixture/");
+  expect(updated).toContain("- VITE_ANALYTICS_RELEASE_VERSION=1.2.5");
+  expect(updated).toContain("- VITE_DROPBOX_APP_KEY=fixture-key");
+  expect(updated).toContain("- VITE_FEEDBACK_ENDPOINT_URL=https://feedback.fixture/");
+  expect(updated).not.toContain('stride-mcp');
+  expect(updated).not.toContain('.flatpak-bun');
+});
+
+test("is idempotent after the workspace repair block has been patched", () => {
+  const { manifest, result } = runFixture("unpatched.yml");
+  expect(result.status, result.stderr).toBe(0);
+  const once = readFileSync(manifest, "utf8");
+
+  const second = spawnSync("bash", [script, commit, manifest.replace(/\/[^/]+$/, ""), "."], {
+    cwd: resolve("."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      STRIDE_FLATHUB_MANIFEST_ONLY: "1",
+      ANALYTICS_HEARTBEAT_URL: "https://analytics.fixture/",
+      VITE_ANALYTICS_RELEASE_VERSION: "1.2.5",
+      VITE_DROPBOX_APP_KEY: "fixture-key",
+      VITE_FEEDBACK_ENDPOINT_URL: "https://feedback.fixture/",
+    },
+  });
+
+  expect(second.status, second.stderr).toBe(0);
+  expect(readFileSync(manifest, "utf8")).toBe(once);
+});
+
+test("removes the rejected host keyring permission from an existing manifest", () => {
+  const { manifest, result } = runFixture("unpatched.yml");
+  expect(result.status, result.stderr).toBe(0);
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("finish-args:", "finish-args:\n  - --talk-name=org.freedesktop.secrets"));
+  const updated = spawnSync("bash", [script, commit, manifest.replace(/\/[^/]+$/, ""), "."], {
+    cwd: resolve("."), encoding: "utf8",
+    env: { ...process.env, STRIDE_FLATHUB_MANIFEST_ONLY: "1" },
+  });
+  expect(updated.status, updated.stderr).toBe(0);
+  expect(readFileSync(manifest, "utf8")).not.toContain("org.freedesktop.secrets");
+});
+
+test("removes old MCP build, install, and archive blocks", () => {
+  const { manifest, result } = runFixture("unpatched.yml");
+  expect(result.status, result.stderr).toBe(0);
+  const clean = readFileSync(manifest, "utf8");
+  const blocks = ["BUILD", "INSTALL", "BUN SOURCES"].map((name) =>
+    `      # BEGIN STRIDE MCP ${name}\n      - stale-mcp-content\n      # END STRIDE MCP ${name}\n`,
+  ).join("");
+  writeFileSync(manifest, clean + blocks);
+  const updated = spawnSync("bash", [script, commit, manifest.replace(/\/[^/]+$/, ""), "."], {
+    cwd: resolve("."), encoding: "utf8",
+    env: { ...process.env, STRIDE_FLATHUB_MANIFEST_ONLY: "1",
+      ANALYTICS_HEARTBEAT_URL: "https://analytics.fixture/", VITE_ANALYTICS_RELEASE_VERSION: "1.2.5",
+      VITE_DROPBOX_APP_KEY: "fixture-key", VITE_FEEDBACK_ENDPOINT_URL: "https://feedback.fixture/" },
+  });
+  expect(updated.status, updated.stderr).toBe(0);
+  expect(readFileSync(manifest, "utf8")).toBe(clean);
+});
+
+test("fails closed when the generator repair block drifts", () => {
+  const { result } = runFixture("drifted.yml");
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("Could not find the desktop workspace dependency repair block");
+});
+
+test("fails closed when a generated workspace repair block is only partially intact", () => {
+  const { result } = runFixture("partially-drifted.yml");
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("Could not find the desktop workspace dependency repair block");
+});

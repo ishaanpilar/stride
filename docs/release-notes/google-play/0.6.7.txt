@@ -1,0 +1,15 @@
+<en-US>
+- Android widget tap opens Focus view (quick capture button unchanged).
+- WebDAV attachment sync is more reliable across devices.
+- UI polish and stability improvements.
+</en-US>
+<zh-CN>
+- Android 小部件点击打开聚焦视图（快速记录按钮不变）。
+- WebDAV 附件同步在多设备间更可靠。
+- 界面与稳定性优化。
+</zh-CN>
+<es-ES>
+- Al tocar el widget de Android se abre la vista Focus (el botón de captura rápida no cambia).
+- La sincronización de adjuntos por WebDAV es más fiable entre dispositivos.
+- Mejoras de interfaz y estabilidad.
+</es-ES>

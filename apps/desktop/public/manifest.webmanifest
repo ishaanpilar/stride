@@ -1,0 +1,17 @@
+{
+  "name": "Stride",
+  "short_name": "Stride",
+  "description": "A complete Getting Things Done (GTD) productivity system.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

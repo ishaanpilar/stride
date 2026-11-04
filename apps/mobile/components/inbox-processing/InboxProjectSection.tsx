@@ -1,0 +1,374 @@
+import { getProjectAccentColor, groupProjectsForPicker, tFallback, useTaskStore, type Project as CoreProject } from '@stride/core';
+import React from 'react';
+import { Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Folder, X } from 'lucide-react-native';
+import { getProcessInboxConversionRows, replaceProcessInboxExtraAction } from '@stride/core';
+
+import { styles } from '../inbox-processing-modal.styles';
+import type { ThemeColors } from '@/hooks/use-theme-colors';
+import { useFilledButtonColors } from '@/hooks/use-filled-button-colors';
+
+type Area = { id: string; name: string; color?: string };
+type Project = { id: string; title: string; status?: CoreProject['status']; areaId?: string; color?: string; colorOverride?: string | null };
+type Section = { id: string; title: string };
+
+type Props = {
+  t: (key: string) => string;
+  tc: ThemeColors;
+  show: boolean;
+  showProjectField: boolean;
+  showAreaField: boolean;
+  currentProject?: Project | null;
+  currentArea?: Area | null;
+  selectedProjectId?: string | null;
+  selectedAreaId?: string | null;
+  setSelectedAreaId: (v: string | null) => void;
+  projectSearch: string;
+  setProjectSearch: (v: string) => void;
+  convertToProject: boolean;
+  nextActionDraft: string;
+  setNextActionDraft: (v: string) => void;
+  extraActionDrafts: string[];
+  setExtraActionDrafts: (v: string[]) => void;
+  filteredProjects: Project[];
+  areaById: Map<string, Area>;
+  hasExactProjectMatch: boolean;
+  handleCreateProjectEarly: () => void;
+  handleConvertToProject: () => void;
+  selectProjectEarly: (id: string | null) => void;
+
+  projectSections?: Section[];
+  selectedSectionId?: string | null;
+  selectSection?: (id: string | null) => void;
+};
+
+export function InboxProjectSection({
+  t,
+  tc,
+  show,
+  showProjectField,
+  showAreaField,
+  currentProject,
+  currentArea,
+  selectedProjectId,
+  selectedAreaId,
+  setSelectedAreaId,
+  projectSearch,
+  setProjectSearch,
+  convertToProject,
+  nextActionDraft,
+  setNextActionDraft,
+  extraActionDrafts,
+  setExtraActionDrafts,
+  filteredProjects,
+  areaById,
+  hasExactProjectMatch,
+  handleCreateProjectEarly,
+  handleConvertToProject,
+  selectProjectEarly,
+  projectSections = [],
+  selectedSectionId = null,
+  selectSection,
+}: Props) {
+  const filledButton = useFilledButtonColors();
+  const areas = useTaskStore((state) => state.areas);
+  if (!show) return null;
+
+  const areaOptions = Array.from(areaById.values());
+  const areaLabel = t('taskEdit.areaLabel');
+  const projectLabel = t('taskEdit.projectLabel');
+  const optionLabel = (field: string, value: string) => `${field}: ${value}`;
+
+  const renderAreaPicker = () => {
+    if (!showAreaField || selectedProjectId) return null;
+    const noAreaSelected = !selectedAreaId;
+
+    return (
+      <View style={styles.projectFieldGroup}>
+        <Text style={[styles.projectFieldLabel, { color: tc.secondaryText }]}>
+          {t('taskEdit.areaLabel')}
+        </Text>
+        {currentArea && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={optionLabel(areaLabel, currentArea.name)}
+            style={[
+              styles.projectChip,
+              { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint },
+            ]}
+            onPress={() => setSelectedAreaId(currentArea.id)}
+            accessibilityState={{ selected: selectedAreaId === currentArea.id }}
+          >
+            <View style={[styles.projectDot, { backgroundColor: currentArea.color || tc.secondaryText }]} />
+            <Text style={[styles.projectChipText, { color: tc.text }]}>✓ {currentArea.name}</Text>
+          </TouchableOpacity>
+        )}
+        <View style={styles.projectListContainer}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={optionLabel(areaLabel, t('projects.noArea'))}
+            style={[
+              styles.projectChip,
+              noAreaSelected
+                ? { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint }
+                : { backgroundColor: tc.cardBg, borderWidth: 1, borderColor: tc.border },
+            ]}
+            onPress={() => setSelectedAreaId(null)}
+            accessibilityState={{ selected: noAreaSelected }}
+          >
+            <Text style={[styles.projectChipText, { color: tc.text }]}>
+              {noAreaSelected ? '✓ ' : ''}{t('projects.noArea')}
+            </Text>
+          </TouchableOpacity>
+          {areaOptions.map((area) => {
+            const isSelected = selectedAreaId === area.id;
+            return (
+              <TouchableOpacity
+                key={area.id}
+                accessibilityRole="button"
+                accessibilityLabel={optionLabel(areaLabel, area.name)}
+                style={[
+                  styles.projectChip,
+                  isSelected
+                    ? { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint }
+                    : { backgroundColor: tc.cardBg, borderWidth: 1, borderColor: tc.border },
+                ]}
+                onPress={() => setSelectedAreaId(area.id)}
+                accessibilityState={{ selected: isSelected }}
+              >
+                <View style={[styles.projectDot, { backgroundColor: area.color || tc.secondaryText }]} />
+                <Text style={[styles.projectChipText, { color: tc.text }]}>{area.name}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
+
+  const renderSectionPicker = () => {
+    if (!showProjectField || !selectedProjectId || projectSections.length === 0 || !selectSection) return null;
+    const sectionLabel = t('taskEdit.sectionLabel');
+    const options = [{ id: null, title: t('taskEdit.noSectionOption') }, ...projectSections];
+    return (
+      <View style={styles.projectFieldGroup}>
+        <Text style={[styles.projectFieldLabel, { color: tc.secondaryText }]}>{sectionLabel}</Text>
+        <View style={styles.projectListContainer}>
+          {options.map((section) => {
+            const isSelected = (selectedSectionId ?? null) === section.id;
+            return (
+              <TouchableOpacity
+                key={section.id ?? 'none'}
+                accessibilityRole="button"
+                accessibilityLabel={optionLabel(sectionLabel, section.title)}
+                style={[
+                  styles.projectChip,
+                  isSelected
+                    ? { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint }
+                    : { backgroundColor: tc.cardBg, borderWidth: 1, borderColor: tc.border },
+                ]}
+                onPress={() => selectSection(section.id)}
+                accessibilityState={{ selected: isSelected }}
+              >
+                <Text style={[styles.projectChipText, { color: tc.text }]}>
+                  {isSelected && section.id === null ? '✓ ' : ''}{section.title}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
+
+
+  const projectGroups = groupProjectsForPicker(filteredProjects, areas);
+  const renderProjectChip = (project: Project) => {
+    const projectColor = getProjectAccentColor(project, areaById);
+    const isSelected = selectedProjectId === project.id;
+    return (
+      <TouchableOpacity
+        key={project.id}
+        accessibilityRole="button"
+        accessibilityLabel={optionLabel(projectLabel, project.title)}
+        style={[
+          styles.projectChip,
+          isSelected
+            ? { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint }
+            : { backgroundColor: tc.cardBg, borderWidth: 1, borderColor: tc.border },
+        ]}
+        onPress={() => selectProjectEarly(project.id)}
+        accessibilityState={{ selected: isSelected }}
+      >
+        <View style={[styles.projectDot, { backgroundColor: projectColor || tc.secondaryText }]} />
+        <Text style={[styles.projectChipText, { color: tc.text }]}>{project.title}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderProjectPicker = () => {
+    const noProjectSelected = !selectedProjectId;
+    return (
+      <>
+      {showProjectField && currentProject && (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={optionLabel(projectLabel, currentProject.title)}
+          style={[
+            styles.projectChip,
+            { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint },
+          ]}
+          onPress={() => selectProjectEarly(currentProject.id)}
+          accessibilityState={{ selected: selectedProjectId === currentProject.id }}
+        >
+          <Text style={[styles.projectChipText, { color: tc.text }]}>✓ {currentProject.title}</Text>
+        </TouchableOpacity>
+      )}
+      {renderSectionPicker()}
+      {renderAreaPicker()}
+      {showProjectField && (
+        <>
+          <View style={styles.projectSearchRow}>
+            <TextInput
+              value={projectSearch}
+              onChangeText={setProjectSearch}
+              accessibilityLabel={t('projects.search')}
+              placeholder={t('projects.addPlaceholder')}
+              placeholderTextColor={tc.secondaryText}
+              style={[styles.projectSearchInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
+              onSubmitEditing={handleCreateProjectEarly}
+              returnKeyType="done"
+            />
+            {!hasExactProjectMatch && projectSearch.trim() && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={optionLabel(t('projects.create'), projectSearch.trim())}
+                style={[styles.createProjectButton, { backgroundColor: filledButton.backgroundColor }]}
+                onPress={handleCreateProjectEarly}
+              >
+                <Text style={[styles.createProjectButtonText, { color: filledButton.textColor ?? tc.onTint }]}>{t('projects.create')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <View style={styles.projectListContainer}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={optionLabel(projectLabel, t('inbox.noProject'))}
+              style={[
+                styles.projectChip,
+                noProjectSelected
+                  ? { backgroundColor: tc.filterBg, borderWidth: 1, borderColor: tc.tint }
+                  : { backgroundColor: tc.cardBg, borderWidth: 1, borderColor: tc.border },
+              ]}
+              onPress={() => selectProjectEarly(null)}
+              accessibilityState={{ selected: noProjectSelected }}
+            >
+              <Text style={[styles.projectChipText, { color: tc.text }]}>
+                {noProjectSelected ? '✓ ' : ''}{t('inbox.noProject')}
+              </Text>
+            </TouchableOpacity>
+            {[projectGroups.active, projectGroups.deferred].map((group, groupIndex) => (
+              <React.Fragment key={groupIndex === 0 ? 'active' : 'deferred'}>
+                {groupIndex === 1 && group.length > 0 ? (
+                  <Text style={[styles.projectFieldLabel, { color: tc.secondaryText, marginBottom: 8 }]} accessibilityRole="header">
+                    {tFallback(t, 'projects.deferredSection', 'Someday / Waiting')}
+                  </Text>
+                ) : null}
+                {group.map(renderProjectChip)}
+              </React.Fragment>
+            ))}
+          </View>
+        </>
+      )}
+      </>
+    );
+  };
+
+  const renderProjectConversion = () => {
+    const actionRows = getProcessInboxConversionRows(nextActionDraft, extraActionDrafts);
+    return (
+      <>
+        {renderAreaPicker()}
+        <View style={styles.projectConversionCard}>
+          <View style={styles.projectFieldGroup}>
+            <Text style={[styles.projectFieldLabel, { color: tc.secondaryText }]}>
+              {t('process.nextAction')}
+            </Text>
+            {
+
+
+                                                                                }
+            <TextInput
+              value={nextActionDraft}
+              onChangeText={setNextActionDraft}
+              placeholder={t('taskEdit.titleLabel')}
+              placeholderTextColor={tc.secondaryText}
+              accessibilityLabel={t('process.nextAction')}
+              style={[styles.projectSearchInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
+              onSubmitEditing={() => {
+                if (actionRows.submitNextAction) setExtraActionDrafts(actionRows.submitNextAction);
+              }}
+              blurOnSubmit={false}
+              returnKeyType="next"
+            />
+            {actionRows.rows.map((row, index) => (
+              <View key={index} style={styles.extraActionRow}>
+                <TextInput
+                  autoFocus
+                  value={row.value}
+                  onChangeText={(value) => setExtraActionDrafts(replaceProcessInboxExtraAction(extraActionDrafts, index, value))}
+                  placeholder={t('taskEdit.titleLabel')}
+                  placeholderTextColor={tc.secondaryText}
+                  accessibilityLabel={t('process.nextAction')}
+                  style={[styles.projectSearchInput, styles.extraActionInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
+                  onSubmitEditing={() => {
+                    if (row.submit) setExtraActionDrafts(row.submit);
+                  }}
+                  blurOnSubmit={false}
+                  returnKeyType="next"
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={t('process.removeAction')}
+                  onPress={() => setExtraActionDrafts(row.remove)}
+                  style={styles.extraActionRemove}
+                >
+                  <X size={16} color={tc.secondaryText} />
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={() => setExtraActionDrafts(actionRows.add)}
+              style={styles.addActionButton}
+            >
+              <Text style={[styles.addActionText, { color: tc.tint }]}>+ {t('process.addAnotherAction')}</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('process.createProject')}
+            style={[styles.createProjectButton, styles.projectConversionSubmit, { backgroundColor: filledButton.backgroundColor }]}
+            onPress={handleConvertToProject}
+          >
+            <Text style={[styles.createProjectButtonText, { color: filledButton.textColor ?? tc.onTint }]}>{t('process.createProject')}</Text>
+          </TouchableOpacity>
+        </View>
+      </>
+    );
+  };
+
+  return (
+    <View style={[styles.singleSection, { borderBottomColor: tc.border }]}>
+      <View style={styles.stepQuestionRow}>
+        <Folder size={20} color={tc.text} accessible={false} />
+        <Text style={[styles.stepQuestion, styles.stepQuestionInline, { color: tc.text }]}>
+          {
+                                                                      }
+          {showProjectField && convertToProject ? t('projects.title') : t('inbox.assignProjectQuestion')}
+        </Text>
+      </View>
+      {showProjectField && convertToProject ? renderProjectConversion() : renderProjectPicker()}
+    </View>
+  );
+}

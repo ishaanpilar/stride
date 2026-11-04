@@ -1,0 +1,1640 @@
+
+
+
+import { Task, TaskStatus, TaskSortBy, TaskPriority, Project, ProjectFlowMode, Section, AppData, AppSettings, SortField, Area } from './types';
+import { resolveFeatureFlags } from './resolve-feature-flags';
+import { differenceInCalendarDays, startOfDay } from 'date-fns';
+import { hasTimeComponent, isDueForReview, safeParseDate, safeParseDueDate } from './date';
+import { hasRecurrenceRule } from './recurrence';
+import { timeEstimateToMinutes } from './calendar-scheduling';
+import { isTaskActionable, isTaskFinished, TASK_STATUS_ORDER } from './task-status';
+import { isTaskInActiveProject } from './project-utils';
+import type { Language } from './i18n/i18n-types';
+
+
+const textCollator = new Intl.Collator();
+
+
+export const baseTextCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
+export const numericTextCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+export function buildTasksByProjectId(tasks: readonly Task[]): Map<string, Task[]> {
+    const tasksByProjectId = new Map<string, Task[]>();
+
+    tasks.forEach((task) => {
+        if (!task.projectId || task.deletedAt) return;
+
+        const projectTasks = tasksByProjectId.get(task.projectId);
+        if (projectTasks) {
+            projectTasks.push(task);
+        } else {
+            tasksByProjectId.set(task.projectId, [task]);
+        }
+    });
+
+    return tasksByProjectId;
+}
+
+
+export { STATUS_COLORS, getStatusColor } from './theme-scheme';
+
+const TASK_PRIORITY_SORT_RANK: Record<TaskPriority, number> = {
+    low: 1,
+    medium: 2,
+    high: 3,
+    urgent: 4,
+};
+
+
+export const PRIORITY_RANK: Record<TaskPriority, number> = TASK_PRIORITY_SORT_RANK;
+
+const TASK_ENERGY_SORT_RANK: Record<NonNullable<Task['energyLevel']>, number> = {
+    low: 1,
+    medium: 2,
+    high: 3,
+};
+
+const timeEstimateSortRank = (estimate: Task['timeEstimate']): number => {
+    if (!estimate) return Number.POSITIVE_INFINITY;
+    if (estimate === '4hr+') return 241;
+    return timeEstimateToMinutes(estimate);
+};
+
+export const FOCUS_NEXT_DUE_SOON_WINDOW_DAYS = 30;
+
+type TaskStartVisibilityOptions = {
+    now?: Date;
+
+    endOfTodayIso?: string;
+    showFutureStarts?: boolean;
+
+
+    granularity?: 'day' | 'time';
+};
+
+type FocusSequentialOptions = {
+    now?: Date;
+    sectionScopedProjectIds?: ReadonlySet<string>;
+    sequentialSectionKeys?: ReadonlySet<string>;
+    sections?: readonly SequentialSection[];
+    frozenLocalDay?: { endOfTodayIso: string; dates: FocusDateLookup };
+};
+
+
+export type FocusDateProjection = { value: string; parsedAt: number | null; parsedOffsetMinutes: number | null;
+    sourceOffsetMinutes: number | null;
+    dueAt: number | null; dueOffsetMinutes: number | null };
+export type FocusDateLookup = ReadonlyMap<string, FocusDateProjection>;
+
+export const projectFocusDateValues = (values: readonly string[]): FocusDateProjection[] => {
+    return [...new Set(values)].sort().map((value) => {
+        const parsed = safeParseDate(value);
+        const due = safeParseDueDate(value);
+        const parts = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2})?/.exec(value);
+
+
+        const midnight = parts ? new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) - 1, 23, 59) : null;
+        return { value, parsedAt: parsed?.getTime() ?? null,
+            parsedOffsetMinutes: parsed?.getTimezoneOffset() ?? null,
+            sourceOffsetMinutes: parsed && midnight && Number.isFinite(midnight.getTime())
+                ? midnight.getTimezoneOffset() : null,
+            dueAt: due?.getTime() ?? null, dueOffsetMinutes: due?.getTimezoneOffset() ?? null };
+    });
+};
+
+export type TaskFocusEligibilityReason = 'eligible' | 'deferred' | 'sequential' | 'clarify';
+
+export type TaskFocusEligibilityResult = {
+    eligible: boolean;
+    reason: TaskFocusEligibilityReason;
+};
+
+export type TaskFocusEligibilityOptions = {
+    tasks: readonly Task[];
+    projects: readonly Project[] | Map<string, Project>;
+    now?: Date;
+    endOfTodayIso?: string;
+
+    frozenDates?: FocusDateLookup;
+    sequentialProjectIds?: ReadonlySet<string>;
+    sectionScopedProjectIds?: ReadonlySet<string>;
+
+    sequentialSectionKeys?: ReadonlySet<string>;
+    sections?: readonly SequentialSection[];
+
+    sequentialFirstTaskIds?: ReadonlySet<string>;
+
+    allowFutureStart?: boolean;
+};
+
+type SequentialTaskOrderFields = Pick<Task, 'createdAt' | 'order' | 'orderNum'>;
+type SequentialGroupingFields = Pick<Task, 'projectId'> & Partial<Pick<Task, 'sectionId'>>;
+type SequentialSection = Pick<Section, 'id' | 'projectId' | 'order' | 'title'> & Partial<Pick<Section, 'deletedAt' | 'isSequential'>>;
+
+type SequentialFirstTaskOptions = {
+    sectionScopedProjectIds?: ReadonlySet<string>;
+    sequentialSectionKeys?: ReadonlySet<string>;
+    sections?: readonly SequentialSection[];
+};
+
+
+export const getProjectFlowMode = (project: Pick<Project, 'isSequential' | 'perSectionFlow'>): ProjectFlowMode => (
+    project.isSequential ? 'sequential' : project.perSectionFlow === true ? 'perSection' : 'parallel'
+);
+
+
+export type TaskSequencing = {
+
+    sequentialProjectIds: ReadonlySet<string>;
+
+    sectionScopedProjectIds: ReadonlySet<string>;
+
+    sequentialSectionKeys: ReadonlySet<string>;
+};
+
+export function getTaskSequencing(
+    projects: Iterable<Pick<Project, 'id' | 'isSequential' | 'perSectionFlow' | 'sequentialScope'> & Partial<Pick<Project, 'deletedAt'>>>,
+    sections?: Iterable<Pick<Section, 'id' | 'projectId'> & Partial<Pick<Section, 'deletedAt' | 'isSequential'>>>,
+): TaskSequencing {
+    const sequentialProjectIds = new Set<string>();
+    const sectionScopedProjectIds = new Set<string>();
+    const perSectionProjectIds = new Set<string>();
+    for (const project of projects) {
+        if (project.deletedAt) continue;
+        const mode = getProjectFlowMode(project);
+        if (mode === 'sequential') {
+            sequentialProjectIds.add(project.id);
+            if (project.sequentialScope === 'section') sectionScopedProjectIds.add(project.id);
+        } else if (mode === 'perSection') {
+            perSectionProjectIds.add(project.id);
+        }
+    }
+    const sequentialSectionKeys = new Set<string>();
+    if (perSectionProjectIds.size > 0 && sections) {
+        for (const section of sections) {
+            if (section.deletedAt || section.isSequential !== true || !perSectionProjectIds.has(section.projectId)) continue;
+            sequentialSectionKeys.add(`${section.projectId}:${section.id}`);
+        }
+    }
+    return { sequentialProjectIds, sectionScopedProjectIds, sequentialSectionKeys };
+}
+
+
+export const hasTaskSequences = (sequencing: Partial<TaskSequencing>): boolean => (
+    (sequencing.sequentialProjectIds?.size ?? 0) > 0 || (sequencing.sequentialSectionKeys?.size ?? 0) > 0
+);
+
+
+export function getTaskSequenceKey<T extends SequentialGroupingFields>(
+    task: T,
+    sequencing: Partial<TaskSequencing>,
+    sectionOrder?: SequentialSectionOrder,
+): string | null {
+    if (!task.projectId) return null;
+    if (sequencing.sequentialProjectIds?.has(task.projectId)) {
+        if (!sequencing.sectionScopedProjectIds?.has(task.projectId)) return task.projectId;
+        const sectionId = getSequentialTaskSectionId(task, sectionOrder);
+        return `${task.projectId}:${sectionId || NO_SECTION_GROUP}`;
+    }
+    if (!task.sectionId || !sequencing.sequentialSectionKeys?.size) return null;
+    const sectionKey = `${task.projectId}:${task.sectionId}`;
+    return sequencing.sequentialSectionKeys.has(sectionKey) ? sectionKey : null;
+}
+
+
+export const isTaskSequenceBlocked = (
+    task: SequentialGroupingFields & Pick<Task, 'id'>,
+    sequencing: Partial<TaskSequencing>,
+    firstTaskIds: ReadonlySet<string>,
+): boolean => getTaskSequenceKey(task, sequencing) !== null && !firstTaskIds.has(task.id);
+
+const NO_SECTION_GROUP = '__no_section__';
+export const FOCUS_ELIGIBILITY_ACTIVE_STATUSES: readonly TaskStatus[] = ['inbox', 'next', 'waiting', 'someday'];
+const FOCUS_ELIGIBILITY_ACTIVE_STATUS_SET = new Set<TaskStatus>(FOCUS_ELIGIBILITY_ACTIVE_STATUSES);
+
+const safeTime = (value: string | undefined, fallback: number): number => {
+    if (!value) return fallback;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const safeDueTime = (value: string | undefined, fallback: number): number => {
+    if (!value) return fallback;
+    const parsed = safeParseDueDate(value);
+    return parsed ? parsed.getTime() : fallback;
+};
+
+const shouldIncrementPushCount = (oldDueDate?: string, newDueDate?: string): boolean => {
+    if (!oldDueDate || !newDueDate) return false;
+    const oldTime = Date.parse(oldDueDate);
+    const newTime = Date.parse(newDueDate);
+    if (!Number.isFinite(oldTime) || !Number.isFinite(newTime)) return false;
+    return newTime > oldTime;
+};
+
+const WAITING_FOR_LINE_REGEX = /^\s*waiting\s+for\s*[:：]\s*(.+?)\s*$/i;
+
+type SortFocusNextActionsOptions = {
+    now?: Date;
+    dueSoonWindowDays?: number;
+    prioritizeByPriority?: boolean;
+    projectDeadlineBoosts?: ReadonlyMap<string, ProjectDeadlineBoost>;
+    projects?: readonly Project[];
+};
+
+type SortTasksBySavedPreferenceOptions = {
+    projects?: readonly Project[];
+    prioritizeByPriority?: boolean;
+    sortOrder?: 'asc' | 'desc';
+};
+
+function getFocusNextActionBucket(
+    dueMs: number,
+    nowMs: number,
+    dueSoonWindowMs: number,
+): number {
+    if (!Number.isFinite(dueMs)) return 1;
+    if (dueMs <= nowMs + dueSoonWindowMs) return 0;
+    return 2;
+}
+
+export type ProjectDeadlineBoost = {
+    projectDueDate: string;
+    projectDueTime: number;
+    projectId: string;
+    projectOrder: number;
+    projectTitle: string;
+    isOverdue: boolean;
+};
+
+type ProjectDeadlineBoostProjectInfo = ProjectDeadlineBoost;
+
+const getProjectOrder = (project: Pick<Project, 'order'>): number => (
+    Number.isFinite(project.order) ? project.order : Number.POSITIVE_INFINITY
+);
+
+const getTaskOrder = (task: Pick<Task, 'order' | 'orderNum'>): number => (
+    Number.isFinite(task.order)
+        ? task.order as number
+        : Number.isFinite(task.orderNum)
+            ? task.orderNum as number
+            : Number.POSITIVE_INFINITY
+);
+
+const compareProjectDeadlineBoostTasks = (
+    a: Pick<Task, 'createdAt' | 'id' | 'order' | 'orderNum' | 'title'>,
+    b: Pick<Task, 'createdAt' | 'id' | 'order' | 'orderNum' | 'title'>,
+): number => {
+    const orderA = getTaskOrder(a);
+    const orderB = getTaskOrder(b);
+    if (orderA !== orderB) return orderA - orderB;
+
+    const createdDiff = safeTime(a.createdAt, Number.POSITIVE_INFINITY) - safeTime(b.createdAt, Number.POSITIVE_INFINITY);
+    if (createdDiff !== 0) return createdDiff;
+
+    const titleDiff = textCollator.compare(a.title, b.title);
+    if (titleDiff !== 0) return titleDiff;
+
+    return textCollator.compare(a.id, b.id);
+};
+
+const compareProjectDeadlineBoosts = (
+    boostA: ProjectDeadlineBoost | undefined,
+    boostB: ProjectDeadlineBoost | undefined,
+    taskA: Pick<Task, 'createdAt' | 'id' | 'order' | 'orderNum' | 'title'>,
+    taskB: Pick<Task, 'createdAt' | 'id' | 'order' | 'orderNum' | 'title'>,
+): number => {
+    if (boostA && !boostB) return -1;
+    if (!boostA && boostB) return 1;
+    if (!boostA || !boostB) return 0;
+
+    if (boostA.projectDueTime !== boostB.projectDueTime) {
+        return boostA.projectDueTime - boostB.projectDueTime;
+    }
+    if (boostA.projectOrder !== boostB.projectOrder) {
+        return boostA.projectOrder - boostB.projectOrder;
+    }
+
+    const projectTitleDiff = textCollator.compare(boostA.projectTitle, boostB.projectTitle);
+    if (projectTitleDiff !== 0) return projectTitleDiff;
+
+    return compareProjectDeadlineBoostTasks(taskA, taskB);
+};
+
+
+export function getProjectDeadlineBoosts(
+    tasks: readonly Task[],
+    projects: readonly Project[],
+    options: { now?: Date } = {},
+): Map<string, ProjectDeadlineBoost> {
+    const now = options.now ?? new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const projectInfoById = new Map<string, ProjectDeadlineBoostProjectInfo>();
+
+    projects.forEach((project) => {
+        if (project.deletedAt) return;
+        if (project.status !== 'active' && project.isFocused !== true) return;
+        const projectDue = safeParseDueDate(project.dueDate);
+        if (!projectDue) return;
+        const projectDueTime = projectDue.getTime();
+        if (projectDueTime > endOfToday.getTime()) return;
+        projectInfoById.set(project.id, {
+            projectDueDate: project.dueDate as string,
+            projectDueTime,
+            projectId: project.id,
+            projectOrder: getProjectOrder(project),
+            projectTitle: project.title,
+            isOverdue: projectDueTime < startOfToday.getTime(),
+        });
+    });
+
+    if (projectInfoById.size === 0) return new Map();
+
+    const selectedTaskByProjectId = new Map<string, Task>();
+    tasks.forEach((task) => {
+        if (task.status !== 'next') return;
+        if (task.deletedAt) return;
+        if (!task.projectId) return;
+        if (task.dueDate || task.startTime) return;
+        if (!projectInfoById.has(task.projectId)) return;
+
+        const selectedTask = selectedTaskByProjectId.get(task.projectId);
+        if (!selectedTask || compareProjectDeadlineBoostTasks(task, selectedTask) < 0) {
+            selectedTaskByProjectId.set(task.projectId, task);
+        }
+    });
+
+    const boosts = new Map<string, ProjectDeadlineBoost>();
+    selectedTaskByProjectId.forEach((task, projectId) => {
+        const info = projectInfoById.get(projectId);
+        if (!info) return;
+        boosts.set(task.id, info);
+    });
+    return boosts;
+}
+
+
+export function compareTasksByProjectOrder<T extends SequentialTaskOrderFields & Pick<Task, 'id'>>(a: T, b: T): number {
+    const aOrder = Number.isFinite(a.order) ? (a.order as number) : Number.isFinite(a.orderNum) ? (a.orderNum as number) : Number.POSITIVE_INFINITY;
+    const bOrder = Number.isFinite(b.order) ? (b.order as number) : Number.isFinite(b.orderNum) ? (b.orderNum as number) : Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    const aCreated = safeParseDate(a.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bCreated = safeParseDate(b.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+    if (aCreated !== bCreated) return aCreated - bCreated;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+
+export function compareProjectsByOrder(
+    a: Pick<Project, 'title'> & Partial<Pick<Project, 'order'>>,
+    b: Pick<Project, 'title'> & Partial<Pick<Project, 'order'>>,
+): number {
+    const aOrder = Number.isFinite(a.order) ? (a.order as number) : Number.POSITIVE_INFINITY;
+    const bOrder = Number.isFinite(b.order) ? (b.order as number) : Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return textCollator.compare(a.title, b.title);
+}
+
+
+export function compareAreasByOrder(
+    a: Pick<Area, 'order' | 'name'>,
+    b: Pick<Area, 'order' | 'name'>,
+): number {
+    const aOrder = Number.isFinite(a.order) ? (a.order as number) : Number.POSITIVE_INFINITY;
+    const bOrder = Number.isFinite(b.order) ? (b.order as number) : Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return numericTextCollator.compare(a.name, b.name);
+}
+
+
+export function buildProjectOrderMap(
+    projects: readonly (Pick<Project, 'id' | 'order' | 'title'> & Partial<Pick<Project, 'deletedAt'>>)[],
+): Map<string, number> {
+    const map = new Map<string, number>();
+    [...projects]
+        .filter((project) => !project.deletedAt)
+        .sort(compareProjectsByOrder)
+        .forEach((project, index) => map.set(project.id, index));
+    return map;
+}
+
+
+export function compareTasksByProjectThenOrder(
+    orderMap: ReadonlyMap<string, number>,
+): <T extends SequentialTaskOrderFields & Pick<Task, 'id' | 'projectId'>>(a: T, b: T) => number {
+    return (a, b) => {
+        const aProjectOrder = a.projectId ? (orderMap.get(a.projectId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        const bProjectOrder = b.projectId ? (orderMap.get(b.projectId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (aProjectOrder !== bProjectOrder) return aProjectOrder - bProjectOrder;
+        return compareTasksByProjectOrder(a, b);
+    };
+}
+
+function getSequentialTaskOrderKey<T extends SequentialTaskOrderFields>(task: T, hasOrder: boolean): number {
+    const taskOrder = Number.isFinite(task.order)
+        ? (task.order as number)
+        : Number.isFinite(task.orderNum)
+            ? (task.orderNum as number)
+            : Number.POSITIVE_INFINITY;
+    return hasOrder
+        ? taskOrder
+        : (safeParseDate(task.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY);
+}
+
+type SequentialSectionOrder = {
+    sectionById: ReadonlyMap<string, SequentialSection>;
+    rankById: ReadonlyMap<string, number>;
+};
+
+function buildSequentialSectionOrder(sections?: readonly SequentialSection[]): SequentialSectionOrder | undefined {
+    if (!sections) return undefined;
+    const sectionById = new Map<string, SequentialSection>();
+    const rankById = new Map<string, number>();
+    const sectionsByProject = new Map<string, SequentialSection[]>();
+
+    sections.forEach((section) => {
+        if (section.deletedAt) return;
+        sectionById.set(section.id, section);
+        const projectSections = sectionsByProject.get(section.projectId) ?? [];
+        projectSections.push(section);
+        sectionsByProject.set(section.projectId, projectSections);
+    });
+    sectionsByProject.forEach((projectSections) => {
+        projectSections
+            .sort((a, b) => {
+                const orderDiff = (Number.isFinite(a.order) ? a.order : 0) - (Number.isFinite(b.order) ? b.order : 0);
+                if (orderDiff !== 0) return orderDiff;
+                const titleDiff = textCollator.compare(a.title, b.title);
+                return titleDiff !== 0 ? titleDiff : textCollator.compare(a.id, b.id);
+            })
+            .forEach((section, index) => rankById.set(section.id, index));
+    });
+    return { sectionById, rankById };
+}
+
+function getSequentialTaskSectionId<T extends SequentialGroupingFields>(
+    task: T,
+    sectionOrder?: SequentialSectionOrder,
+): string | null {
+    if (!task.sectionId) return null;
+    if (!sectionOrder) return task.sectionId;
+    const section = sectionOrder.sectionById.get(task.sectionId);
+    return section && section.projectId === task.projectId ? section.id : null;
+}
+
+function compareSequentialManualHierarchy<
+    T extends SequentialTaskOrderFields & SequentialGroupingFields & Pick<Task, 'id'>
+>(
+    a: T,
+    b: T,
+    hasOrder: boolean,
+    sectionOrder?: SequentialSectionOrder,
+): number {
+    if (sectionOrder && a.projectId === b.projectId) {
+        const aSectionId = getSequentialTaskSectionId(a, sectionOrder);
+        const bSectionId = getSequentialTaskSectionId(b, sectionOrder);
+        const aSectionRank = aSectionId ? (sectionOrder.rankById.get(aSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        const bSectionRank = bSectionId ? (sectionOrder.rankById.get(bSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+        if (aSectionRank !== bSectionRank) return aSectionRank - bSectionRank;
+        if (aSectionId !== bSectionId) {
+            return textCollator.compare(aSectionId ?? NO_SECTION_GROUP, bSectionId ?? NO_SECTION_GROUP);
+        }
+    }
+
+    const aOrderKey = getSequentialTaskOrderKey(a, hasOrder);
+    const bOrderKey = getSequentialTaskOrderKey(b, hasOrder);
+    if (aOrderKey !== bOrderKey) return aOrderKey - bOrderKey;
+    const aCreated = safeTime(a.createdAt, Number.POSITIVE_INFINITY);
+    const bCreated = safeTime(b.createdAt, Number.POSITIVE_INFINITY);
+    if (aCreated !== bCreated) return aCreated - bCreated;
+    return textCollator.compare(a.id, b.id);
+}
+
+export function rescheduleTask(task: Task, newDueDate?: string): Task {
+    const next: Task = { ...task, dueDate: newDueDate };
+    if (shouldIncrementPushCount(task.dueDate, newDueDate)) {
+        next.pushCount = (task.pushCount ?? 0) + 1;
+    } else if (typeof task.pushCount === 'number') {
+        next.pushCount = task.pushCount;
+    }
+    return next;
+}
+
+export function extractWaitingPerson(description?: string): string | null {
+    if (!description) return null;
+    const lines = description.split(/\r?\n/);
+    for (const line of lines) {
+        const match = line.match(WAITING_FOR_LINE_REGEX);
+        if (!match) continue;
+        const person = match[1]?.trim();
+        if (person) return person;
+    }
+    return null;
+}
+
+export function getWaitingPerson(task: Pick<Task, 'assignedTo' | 'description'>): string | null {
+    const assignedTo = task.assignedTo?.trim();
+    if (assignedTo) return assignedTo;
+    return extractWaitingPerson(task.description);
+}
+
+function earliestDate(a: Date | null, b: Date | null): Date | null {
+    if (!a) return b;
+    if (!b) return a;
+    return a <= b ? a : b;
+}
+
+const parseFrozenFocusDate = (value: string | undefined, dates: FocusDateLookup, endOfDay = false): Date | null => {
+    const epoch = value ? (endOfDay ? dates.get(value)?.dueAt : dates.get(value)?.parsedAt) : null;
+    return epoch === null || epoch === undefined ? null : new Date(epoch);
+};
+
+const isReviewDueFrozen = (reviewAt: string | undefined, now: Date, dates: FocusDateLookup): boolean => {
+    const date = parseFrozenFocusDate(reviewAt, dates);
+    return Boolean(date && date <= now);
+};
+
+export function getTaskDeferUntil(
+    task: Pick<Task, 'startTime'> & Partial<Pick<Task, 'dueDate' | 'recurrence' | 'reviewAt'>>,
+    frozenDates?: FocusDateLookup,
+): Date | null {
+    const parse = (value?: string) => frozenDates === undefined
+        ? safeParseDate(value) : parseFrozenFocusDate(value, frozenDates);
+    const start = parse(task.startTime);
+
+
+    return start ?? (hasRecurrenceRule(task.recurrence)
+        ? earliestDate(parse(task.dueDate), parse(task.reviewAt))
+        : null);
+}
+
+
+export function getTaskDeferUntilSource(
+    task: Pick<Task, 'startTime'> & Partial<Pick<Task, 'dueDate' | 'recurrence' | 'reviewAt'>>,
+): string | null {
+    const date = getTaskDeferUntil(task);
+    if (!date) return null;
+    return [task.startTime, task.dueDate, task.reviewAt]
+        .find((value) => safeParseDate(value)?.getTime() === date.getTime()) ?? null;
+}
+
+
+export function isTaskFutureStart(
+    task: Pick<Task, 'startTime'> & Partial<Pick<Task, 'dueDate' | 'recurrence' | 'reviewAt'>>,
+    now: Date = new Date(),
+): boolean {
+    const deferUntil = getTaskDeferUntil(task);
+    if (!deferUntil) return false;
+
+    const endOfToday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        23,
+        59,
+        59,
+        999,
+    );
+    return deferUntil > endOfToday;
+}
+
+
+export function isTaskFutureStartBeforeBoundary(
+    task: Pick<Task, 'startTime'> & Partial<Pick<Task, 'dueDate' | 'recurrence' | 'reviewAt'>>,
+    endOfTodayIso: string,
+    frozenDates?: FocusDateLookup,
+): boolean {
+    const deferUntil = getTaskDeferUntil(task, frozenDates);
+    const boundary = safeParseDate(endOfTodayIso);
+    return Boolean(deferUntil && boundary && deferUntil > boundary);
+}
+
+export function isTaskFutureFocusCandidateBeforeBoundary(task: Task, endOfTodayIso: string, frozenDates?: FocusDateLookup): boolean {
+    return task.status === 'next' && Boolean(task.startTime) && isTaskFutureStartBeforeBoundary(task, endOfTodayIso, frozenDates);
+}
+
+
+export function countFocusedTasksBeforeBoundary(tasks: readonly Task[], endOfTodayIso: string, frozenDates?: FocusDateLookup): number {
+    let count = 0;
+    for (const task of tasks) {
+        if (!task.deletedAt && task.isFocusedToday === true
+            && task.status !== 'done' && task.status !== 'reference' && task.status !== 'archived'
+            && !isTaskFutureStartBeforeBoundary(task, endOfTodayIso, frozenDates)) count += 1;
+    }
+    return count;
+}
+
+export function isTaskFutureFocusCandidate(task: Task, now: Date = new Date()): boolean {
+    return task.status === 'next' && Boolean(task.startTime) && isTaskFutureStart(task, now);
+}
+
+
+export function isTaskFocusedNow(task: Task, now: Date = new Date()): boolean {
+    return task.isFocusedToday === true && !isTaskFutureStart(task, now);
+}
+
+export type UpcomingDeferredTask = {
+    task: Task;
+
+    appearsAt: Date;
+};
+
+export const UPCOMING_DEFERRED_WINDOW_DAYS = 7;
+
+
+export function getUpcomingDeferredTasks(
+    tasks: readonly Task[],
+    options: { now?: Date; windowDays?: number } = {},
+): UpcomingDeferredTask[] {
+    const now = options.now ?? new Date();
+    const windowDays = options.windowDays ?? UPCOMING_DEFERRED_WINDOW_DAYS;
+    const windowEnd = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + windowDays,
+        23,
+        59,
+        59,
+        999,
+    );
+    const upcoming: UpcomingDeferredTask[] = [];
+    for (const task of tasks) {
+        if (task.status !== 'next') continue;
+        const deferUntil = getTaskDeferUntil(task);
+        if (!deferUntil || deferUntil > windowEnd) continue;
+
+
+        if (!isTaskFutureStart(task, now)) continue;
+        upcoming.push({ task, appearsAt: deferUntil });
+    }
+    return upcoming.sort((a, b) => (
+        (a.appearsAt.getTime() - b.appearsAt.getTime())
+        || a.task.title.localeCompare(b.task.title)
+    ));
+}
+
+
+export function shouldShowTaskForStart(
+    task: Pick<Task, 'startTime'> & Partial<Pick<Task, 'dueDate' | 'recurrence' | 'reviewAt'>>,
+    options: TaskStartVisibilityOptions = {},
+): boolean {
+    if (options.showFutureStarts === true) return true;
+    const now = options.now ?? new Date();
+    if (options.endOfTodayIso ? isTaskFutureStartBeforeBoundary(task, options.endOfTodayIso) : isTaskFutureStart(task, now)) return false;
+    if (options.granularity !== 'time') return true;
+
+
+    const start = safeParseDate(task.startTime);
+    return !(start && start > now && hasTimeComponent(task.startTime));
+}
+
+
+export function splitTodayTasksByStartTime<T extends Pick<Task, 'startTime'>>(
+    tasks: readonly T[],
+    now: Date = new Date(),
+): { ready: T[]; laterToday: T[] } {
+
+
+    const ready: T[] = [];
+    const laterToday: T[] = [];
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    for (const task of tasks) {
+        const start = hasTimeComponent(task.startTime) ? safeParseDate(task.startTime) : null;
+        if (start && start > now && start <= endOfToday) laterToday.push(task);
+        else ready.push(task);
+    }
+    return { ready, laterToday };
+}
+
+
+export function getNextFutureStartRevealAt(
+    tasks: ReadonlyArray<Pick<Task, 'startTime'>>,
+    now: Date = new Date(),
+): number | null {
+    const nowMs = now.getTime();
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+    let next: number | null = null;
+    for (const task of tasks) {
+        if (!hasTimeComponent(task.startTime)) continue;
+        const start = safeParseDate(task.startTime)?.getTime();
+        if (start === undefined || start <= nowMs || start > endOfToday) continue;
+        if (next === null || start < next) next = start;
+    }
+    return next;
+}
+
+
+export function isSequentialChainStatus(status: TaskStatus | undefined): boolean {
+    return status === 'next' || status === 'waiting';
+}
+
+export function getSequentialFirstTaskIds<T extends Pick<Task, 'createdAt' | 'id' | 'order' | 'orderNum' | 'projectId'> & Partial<Pick<Task, 'sectionId'>>>(
+    tasks: T[],
+    sequentialProjectIds: ReadonlySet<string>,
+    options: SequentialFirstTaskOptions = {},
+): Set<string> {
+    const sectionOrder = buildSequentialSectionOrder(options.sections);
+    const sequencing = { sequentialProjectIds, sectionScopedProjectIds: options.sectionScopedProjectIds,
+        sequentialSectionKeys: options.sequentialSectionKeys };
+    const tasksByGroup = new Map<string, T[]>();
+    for (const task of tasks) {
+        const groupKey = getTaskSequenceKey(task, sequencing, sectionOrder);
+        if (!groupKey) continue;
+        const list = tasksByGroup.get(groupKey) ?? [];
+        list.push(task);
+        tasksByGroup.set(groupKey, list);
+    }
+
+    const firstTaskIds = new Set<string>();
+    tasksByGroup.forEach((tasksForProject) => {
+        const hasOrder = tasksForProject.some((task) => Number.isFinite(task.order) || Number.isFinite(task.orderNum));
+        const firstTask = tasksForProject.reduce<T | null>((best, task) => (
+            !best || compareSequentialManualHierarchy(task, best, hasOrder, sectionOrder) < 0 ? task : best
+        ), null);
+
+        if (firstTask) firstTaskIds.add(firstTask.id);
+    });
+
+    return firstTaskIds;
+}
+
+export function isFocusSequentialCandidate(
+    task: Pick<Task, 'isFocusedToday' | 'reviewAt' | 'status'>,
+    options: FocusSequentialOptions = {},
+): boolean {
+    if (task.isFocusedToday === true) return true;
+    if (isSequentialChainStatus(task.status)) return true;
+    return options.frozenLocalDay
+        ? isReviewDueFrozen(task.reviewAt, options.now ?? new Date(), options.frozenLocalDay.dates)
+        : isDueForReview(task.reviewAt, options.now);
+}
+
+
+function getFocusSequentialScheduleKey(
+    task: Pick<Task, 'dueDate' | 'isFocusedToday' | 'reviewAt' | 'status'>,
+    now: Date,
+    frozenLocalDay?: FocusSequentialOptions['frozenLocalDay'],
+): { rank: number; time: number } {
+    if (task.isFocusedToday === true) {
+        return { rank: 0, time: 0 };
+    }
+
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const endOfTodayMs = frozenLocalDay ? Date.parse(frozenLocalDay.endOfTodayIso) : endOfToday.getTime();
+    const dueMs = frozenLocalDay
+        ? parseFrozenFocusDate(task.dueDate, frozenLocalDay.dates, true)?.getTime() ?? Number.NaN
+        : safeDueTime(task.dueDate, Number.NaN);
+    const reviewMs = frozenLocalDay
+        ? parseFrozenFocusDate(task.reviewAt, frozenLocalDay.dates)?.getTime() ?? Number.NaN
+        : safeParseDate(task.reviewAt)?.getTime() ?? Number.NaN;
+    let scheduledTime = Number.POSITIVE_INFINITY;
+
+
+    if (Number.isFinite(dueMs) && dueMs <= endOfTodayMs && task.status !== 'waiting') {
+        scheduledTime = Math.min(scheduledTime, dueMs);
+    }
+    if ((frozenLocalDay ? isReviewDueFrozen(task.reviewAt, now, frozenLocalDay.dates)
+        : isDueForReview(task.reviewAt, now)) && Number.isFinite(reviewMs)) {
+        scheduledTime = Math.min(scheduledTime, reviewMs);
+    }
+
+    return Number.isFinite(scheduledTime)
+        ? { rank: 1, time: scheduledTime }
+        : { rank: 2, time: Number.POSITIVE_INFINITY };
+}
+
+export function getFocusSequentialFirstTaskIds<
+    T extends Pick<Task, 'createdAt' | 'dueDate' | 'id' | 'isFocusedToday' | 'order' | 'orderNum' | 'projectId' | 'reviewAt' | 'status'> & Partial<Pick<Task, 'sectionId'>>
+>(
+    tasks: T[],
+    sequentialProjectIds: ReadonlySet<string>,
+    options: FocusSequentialOptions = {},
+): Set<string> {
+    const now = options.now ?? new Date();
+    const sectionOrder = buildSequentialSectionOrder(options.sections);
+    const sequencing = { sequentialProjectIds, sectionScopedProjectIds: options.sectionScopedProjectIds,
+        sequentialSectionKeys: options.sequentialSectionKeys };
+    const tasksByGroup = new Map<string, T[]>();
+    for (const task of tasks) {
+        const groupKey = getTaskSequenceKey(task, sequencing, sectionOrder);
+        if (!groupKey) continue;
+        if (!isFocusSequentialCandidate(task, { now, frozenLocalDay: options.frozenLocalDay })) continue;
+        const list = tasksByGroup.get(groupKey) ?? [];
+        list.push(task);
+        tasksByGroup.set(groupKey, list);
+    }
+
+    const firstTaskIds = new Set<string>();
+    tasksByGroup.forEach((tasksForProject) => {
+        const hasOrder = tasksForProject.some((task) => Number.isFinite(task.order) || Number.isFinite(task.orderNum));
+        let firstTaskId: string | null = null;
+        let firstTask: T | null = null;
+        let bestScheduleRank = Number.POSITIVE_INFINITY;
+        let bestScheduleTime = Number.POSITIVE_INFINITY;
+
+        tasksForProject.forEach((task) => {
+            const scheduleKey = getFocusSequentialScheduleKey(task, now, options.frozenLocalDay);
+            const isBetter = !firstTaskId
+                || scheduleKey.rank < bestScheduleRank
+                || (
+                    scheduleKey.rank === bestScheduleRank
+                    && (
+                        scheduleKey.time < bestScheduleTime
+                        || (
+                            scheduleKey.time === bestScheduleTime
+                            && firstTask !== null
+                            && compareSequentialManualHierarchy(task, firstTask, hasOrder, sectionOrder) < 0
+                        )
+                    )
+                );
+
+            if (isBetter) {
+                firstTaskId = task.id;
+                firstTask = task;
+                bestScheduleRank = scheduleKey.rank;
+                bestScheduleTime = scheduleKey.time;
+            }
+        });
+
+        if (firstTaskId) firstTaskIds.add(firstTaskId);
+    });
+
+    return firstTaskIds;
+}
+
+const getFocusEligibilityProjectMap = (
+    projects: readonly Project[] | Map<string, Project>,
+): Map<string, Project> => {
+    if (Array.isArray(projects)) {
+        return new Map(projects.map((project) => [project.id, project]));
+    }
+    return projects as Map<string, Project>;
+};
+
+
+export const getFocusEligibilitySequentialProjectIds = (
+    projectMap: ReadonlyMap<string, Project>,
+    sections?: readonly SequentialSection[],
+): TaskSequencing => getTaskSequencing(
+    Array.from(projectMap.values(), (project) => (project.deletedAt ? { ...project, deletedAt: undefined } : project)),
+    sections,
+);
+
+
+export function buildTaskFocusEligibilityContext(options: {
+    tasks: readonly Task[];
+    projects: readonly Project[] | Map<string, Project>;
+    sections?: readonly SequentialSection[];
+    now?: Date;
+}): Required<Pick<TaskFocusEligibilityOptions,
+    'projects' | 'sequentialProjectIds' | 'sectionScopedProjectIds' | 'sequentialSectionKeys' | 'sequentialFirstTaskIds'>> {
+    const now = options.now ?? new Date();
+    const projectMap = getFocusEligibilityProjectMap(options.projects);
+    const { sequentialProjectIds, sectionScopedProjectIds, sequentialSectionKeys } = getFocusEligibilitySequentialProjectIds(
+        projectMap,
+        options.sections,
+    );
+    return {
+        projects: projectMap,
+        sequentialProjectIds,
+        sectionScopedProjectIds,
+        sequentialSectionKeys,
+        sequentialFirstTaskIds: getFocusSequentialFirstTaskIds(
+            options.tasks.filter((candidate) => (
+                !candidate.deletedAt
+                && FOCUS_ELIGIBILITY_ACTIVE_STATUS_SET.has(candidate.status)
+                && isTaskInActiveProject(candidate, projectMap)
+            )),
+            sequentialProjectIds,
+            { now, sectionScopedProjectIds, sequentialSectionKeys, sections: options.sections },
+        ),
+    };
+}
+
+export function getTaskFocusEligibility(
+    task: Task,
+    options: TaskFocusEligibilityOptions,
+): TaskFocusEligibilityResult {
+    const now = options.now ?? new Date();
+    const projectMap = getFocusEligibilityProjectMap(options.projects);
+    const derivedSequential = options.sequentialProjectIds && options.sectionScopedProjectIds && options.sequentialSectionKeys
+        ? null
+        : getFocusEligibilitySequentialProjectIds(projectMap, options.sections);
+    const sequentialProjectIds = options.sequentialProjectIds ?? derivedSequential?.sequentialProjectIds ?? new Set<string>();
+    const sectionScopedProjectIds = options.sectionScopedProjectIds
+        ?? derivedSequential?.sectionScopedProjectIds
+        ?? new Set<string>();
+    const sequentialSectionKeys = options.sequentialSectionKeys
+        ?? derivedSequential?.sequentialSectionKeys
+        ?? new Set<string>();
+    const sequencing = { sequentialProjectIds, sectionScopedProjectIds, sequentialSectionKeys };
+
+
+    const sequentialFirstTaskIds = options.sequentialFirstTaskIds
+        ?? getFocusSequentialFirstTaskIds(
+            options.tasks.filter((candidate) => (
+                !candidate.deletedAt
+                && FOCUS_ELIGIBILITY_ACTIVE_STATUS_SET.has(candidate.status)
+                && isTaskInActiveProject(candidate, projectMap)
+            )),
+            sequentialProjectIds,
+            { now, sectionScopedProjectIds, sequentialSectionKeys, sections: options.sections,
+                ...(options.endOfTodayIso !== undefined && options.frozenDates !== undefined
+                    ? { frozenLocalDay: { endOfTodayIso: options.endOfTodayIso,
+                        dates: options.frozenDates } } : {}) },
+        );
+    const isSequentialBlocked = isTaskSequenceBlocked(task, sequencing, sequentialFirstTaskIds);
+    const isVisibleForStart = options.allowFutureStart === true
+        || (options.endOfTodayIso && options.frozenDates !== undefined
+            ? !isTaskFutureStartBeforeBoundary(task, options.endOfTodayIso, options.frozenDates)
+            : shouldShowTaskForStart(task, { now, endOfTodayIso: options.endOfTodayIso }));
+    const isVisibleActiveTask = isTaskInActiveProject(task, projectMap) && isVisibleForStart;
+    const isReviewDueEligible = task.status !== 'inbox' && (options.frozenDates !== undefined
+        ? isReviewDueFrozen(task.reviewAt, now, options.frozenDates)
+        : isDueForReview(task.reviewAt, now));
+    const eligible = isVisibleActiveTask
+        && !isSequentialBlocked
+        && (task.status === 'next' || isReviewDueEligible);
+
+    if (eligible) {
+        return { eligible: true, reason: 'eligible' };
+    }
+    if (!isVisibleForStart) {
+        return { eligible: false, reason: 'deferred' };
+    }
+    if (isSequentialBlocked) {
+        return { eligible: false, reason: 'sequential' };
+    }
+    return { eligible: false, reason: 'clarify' };
+}
+
+
+export function sortByPrecomputedKey<T, K>(
+    tasks: readonly T[],
+    toKey: (task: T) => K,
+    compare: (a: K, b: K) => number
+): T[] {
+    const decorated = tasks.map((task) => ({ task, key: toKey(task) }));
+    decorated.sort((a, b) => compare(a.key, b.key));
+    return decorated.map((entry) => entry.task);
+}
+
+
+export function sortTasks(tasks: Task[]): Task[] {
+    return sortByPrecomputedKey(
+        tasks,
+        (task) => ({
+            status: TASK_STATUS_ORDER[task.status] ?? 99,
+            due: safeDueTime(task.dueDate, Number.NaN),
+            created: safeTime(task.createdAt, 0),
+        }),
+        (a, b) => {
+
+            if (a.status !== b.status) {
+                return a.status - b.status;
+            }
+
+
+            const hasDueA = Number.isFinite(a.due);
+            const hasDueB = Number.isFinite(b.due);
+            if (hasDueA && !hasDueB) return -1;
+            if (!hasDueA && hasDueB) return 1;
+            if (hasDueA && hasDueB && a.due !== b.due) return a.due - b.due;
+
+
+            return a.created - b.created;
+        }
+    );
+}
+
+function compareDeletedAtDesc(
+    left: { id: string; deletedAt?: string },
+    right: { id: string; deletedAt?: string }
+): number {
+    const leftDeletedAt = safeTime(left.deletedAt, Number.NEGATIVE_INFINITY);
+    const rightDeletedAt = safeTime(right.deletedAt, Number.NEGATIVE_INFINITY);
+    if (leftDeletedAt !== rightDeletedAt) {
+        return rightDeletedAt > leftDeletedAt ? 1 : -1;
+    }
+    return textCollator.compare(left.id, right.id);
+}
+
+export type TrashTimelineItem =
+    | { type: 'project'; project: Project }
+    | { type: 'task'; task: Task };
+
+const getTrashTimelineEntity = (item: TrashTimelineItem): Project | Task => (
+    item.type === 'project' ? item.project : item.task
+);
+
+export function buildTrashTimeline(
+    tasks: readonly Task[],
+    projects: readonly Project[]
+): TrashTimelineItem[] {
+    const items: TrashTimelineItem[] = [
+        ...projects
+            .filter((project) => project.deletedAt && !project.purgedAt)
+            .map((project) => ({ type: 'project' as const, project })),
+        ...tasks
+            .filter((task) => task.deletedAt && !task.purgedAt)
+            .map((task) => ({ type: 'task' as const, task })),
+    ];
+    return items.sort((left, right) => compareDeletedAtDesc(
+        getTrashTimelineEntity(left),
+        getTrashTimelineEntity(right)
+    ));
+}
+
+
+export function resolveTrashClearScope(
+    shownTasks: readonly Task[],
+    shownProjects: readonly Project[],
+    allTasks: readonly Task[],
+    allProjects: readonly Project[],
+): { narrowed: boolean; taskIds: string[]; projectIds: string[] } {
+    const inTrash = (item: { deletedAt?: string; purgedAt?: string }) => Boolean(item.deletedAt && !item.purgedAt);
+    return {
+        narrowed: shownTasks.length < allTasks.filter(inTrash).length
+            || shownProjects.length < allProjects.filter(inTrash).length,
+        taskIds: shownTasks.map((task) => task.id),
+        projectIds: shownProjects.map((project) => project.id),
+    };
+}
+
+
+export function resolveTaskSortByForFeatures<Sort extends SortField>(
+    sortBy: Sort,
+    settings: { features?: AppSettings['features'] } | null | undefined,
+): Sort | 'default' {
+    const flags = resolveFeatureFlags(settings);
+    if (sortBy === 'timeEstimate' && !flags.timeEstimates) return 'default';
+    if (sortBy === 'priority' && !flags.priorities) return 'default';
+    return sortBy;
+}
+
+
+export function resolveTaskGroupByForFeatures<Axis extends string>(
+    groupBy: Axis,
+    settings: { features?: AppSettings['features'] } | null | undefined,
+): Axis | 'none' {
+    if (groupBy === 'priority' && !resolveFeatureFlags(settings).priorities) return 'none';
+    return groupBy;
+}
+
+export type TaskPerspectiveFeatureState<Sort extends SortField, Group extends string> = {
+    effectiveSortBy: Sort | 'default';
+    effectiveGroupBy: Group | 'none';
+    isDefaultPerspective: boolean;
+    canSavePerspective: boolean;
+};
+
+
+export function resolveTaskPerspectiveForFeatures<Sort extends SortField, Group extends string>({
+    sortBy,
+    groupBy,
+    settings,
+    hasActiveFilters,
+    hasCurrentCriteria,
+    activeSavedFilterId,
+}: {
+    sortBy: Sort;
+    groupBy: Group;
+    settings: { features?: AppSettings['features'] } | null | undefined;
+    hasActiveFilters: boolean;
+    hasCurrentCriteria: boolean;
+    activeSavedFilterId: string | null;
+}): TaskPerspectiveFeatureState<Sort, Group> {
+    const effectiveSortBy = resolveTaskSortByForFeatures(sortBy, settings);
+    const effectiveGroupBy = resolveTaskGroupByForFeatures(groupBy, settings);
+    return {
+        effectiveSortBy,
+        effectiveGroupBy,
+        isDefaultPerspective: !hasActiveFilters
+            && activeSavedFilterId === null
+            && effectiveSortBy === 'default',
+        canSavePerspective: activeSavedFilterId === null
+            && (
+                hasCurrentCriteria
+                || effectiveSortBy !== 'default'
+                || effectiveGroupBy !== 'none'
+            ),
+    };
+}
+
+export function sortTasksBy(tasks: Task[], sortBy: TaskSortBy = 'default'): Task[] {
+    if (!sortBy || sortBy === 'default') {
+        return sortTasks(tasks);
+    }
+
+    const timeOrInfinity = (value?: string) => safeTime(value, Infinity);
+    const dueOrInfinity = (value?: string) => safeDueTime(value, Infinity);
+    const timeOrZero = (value?: string) => safeTime(value, 0);
+    const byDateThenCreated = (read: (task: Task) => number) => sortByPrecomputedKey(
+        tasks,
+        (task) => ({ date: read(task), created: timeOrZero(task.createdAt) }),
+        (a, b) => (a.date !== b.date ? a.date - b.date : a.created - b.created)
+    );
+
+    switch (sortBy) {
+        case 'title':
+            return sortByPrecomputedKey(
+                tasks,
+                (task) => ({ title: task.title, created: safeTime(task.createdAt, 0) }),
+                (a, b) => {
+                    const cmp = textCollator.compare(a.title, b.title);
+                    if (cmp !== 0) return cmp;
+                    return a.created - b.created;
+                }
+            );
+        case 'due':
+            return byDateThenCreated((task) => dueOrInfinity(task.dueDate));
+        case 'start':
+            return byDateThenCreated((task) => timeOrInfinity(task.startTime));
+        case 'review':
+            return byDateThenCreated((task) => timeOrInfinity(task.reviewAt));
+        case 'timeEstimate':
+
+
+            return byDateThenCreated((task) => timeEstimateSortRank(task.timeEstimate));
+        case 'priority':
+
+
+            return sortByPrecomputedKey(
+                tasks,
+                (task) => ({
+                    rank: TASK_PRIORITY_SORT_RANK[task.priority as TaskPriority] || 0,
+                    due: dueOrInfinity(task.dueDate),
+                    start: timeOrInfinity(task.startTime),
+                    created: timeOrZero(task.createdAt),
+                }),
+                (a, b) => {
+                    if (a.rank !== b.rank) return b.rank - a.rank;
+                    if (a.due !== b.due) return a.due - b.due;
+                    if (a.start !== b.start) return a.start - b.start;
+                    return a.created - b.created;
+                }
+            );
+        case 'created':
+            return sortByPrecomputedKey(tasks, (task) => timeOrZero(task.createdAt), (a, b) => a - b);
+        case 'created-desc':
+            return sortByPrecomputedKey(tasks, (task) => timeOrZero(task.createdAt), (a, b) => b - a);
+        case 'completed':
+
+
+            return sortByPrecomputedKey(
+                tasks,
+                (task) => ({ completed: safeTime(task.completedAt, -Infinity), title: task.title }),
+                (a, b) => {
+                    if (a.completed !== b.completed) return b.completed - a.completed;
+                    return textCollator.compare(a.title, b.title);
+                }
+            );
+        default:
+            return sortTasks(tasks);
+    }
+}
+
+
+export function sortTasksByBoardOrder<T extends Pick<Task, 'boardOrder'>>(tasks: T[]): T[] {
+    return [...tasks].sort((a, b) => {
+        const aOrder = Number.isFinite(a.boardOrder) ? (a.boardOrder as number) : Number.POSITIVE_INFINITY;
+        const bOrder = Number.isFinite(b.boardOrder) ? (b.boardOrder as number) : Number.POSITIVE_INFINITY;
+        if (aOrder === bOrder) return 0;
+        return aOrder - bOrder;
+    });
+}
+
+
+export function boardOrderForDuplicate(sourceOrder: number | undefined, column: readonly Pick<Task, 'boardOrder'>[]): number | undefined {
+    if (!Number.isSafeInteger(sourceOrder)) return undefined;
+    const current = sourceOrder as number;
+    let next = Number.POSITIVE_INFINITY;
+    for (const task of column) {
+        const order = task.boardOrder;
+        if (Number.isFinite(order) && (order as number) > current && (order as number) < next) next = order as number;
+    }
+    const candidate = next === Number.POSITIVE_INFINITY ? current + 1024 : Math.floor((current + next) / 2);
+    return Number.isSafeInteger(candidate) && candidate > current && candidate < next ? candidate : undefined;
+}
+
+
+export function sortTasksByFocusOrder<T extends Pick<Task, 'focusOrder'>>(tasks: T[]): T[] {
+    return [...tasks].sort((a, b) => {
+        const aOrder = Number.isFinite(a.focusOrder) ? (a.focusOrder as number) : Number.POSITIVE_INFINITY;
+        const bOrder = Number.isFinite(b.focusOrder) ? (b.focusOrder as number) : Number.POSITIVE_INFINITY;
+        if (aOrder === bOrder) return 0;
+        return aOrder - bOrder;
+    });
+}
+
+export function splitCompletedTasks<T extends Pick<Task, 'status'>>(tasks: T[]): {
+    activeTasks: T[];
+    completedTasks: T[];
+} {
+    const activeTasks: T[] = [];
+    const completedTasks: T[] = [];
+
+    tasks.forEach((task) => {
+        if (isTaskFinished(task)) {
+            completedTasks.push(task);
+        } else {
+            activeTasks.push(task);
+        }
+    });
+
+    return { activeTasks, completedTasks };
+}
+
+function getCompletionListTime(task: Pick<Task, 'completedAt' | 'updatedAt' | 'createdAt'>): number {
+    const completedAt = safeParseDate(task.completedAt)?.getTime();
+    if (Number.isFinite(completedAt)) return completedAt as number;
+    const updatedAt = safeParseDate(task.updatedAt)?.getTime();
+    if (Number.isFinite(updatedAt)) return updatedAt as number;
+    return safeParseDate(task.createdAt)?.getTime() ?? 0;
+}
+
+export function sortDoneTasksForListView<T extends Pick<Task, 'completedAt' | 'updatedAt' | 'createdAt' | 'title'>>(tasks: T[]): T[] {
+    return sortByPrecomputedKey(
+        tasks,
+        (task) => ({ completion: getCompletionListTime(task), title: task.title }),
+        (a, b) => {
+            const completionDiff = b.completion - a.completion;
+            if (completionDiff !== 0) return completionDiff;
+            return textCollator.compare(a.title, b.title);
+        }
+    );
+}
+
+export function groupCompletedTasksLast<T extends Pick<Task, 'status'>>(tasks: T[]): T[] {
+    const { activeTasks, completedTasks } = splitCompletedTasks(tasks);
+    return [...activeTasks, ...completedTasks];
+}
+
+export function sortTasksBySavedPreference<T extends Task>(
+    tasks: T[],
+    sortBy: SortField | undefined,
+    options: SortTasksBySavedPreferenceOptions = {},
+): T[] {
+    if (!sortBy || sortBy === 'default') {
+        return [...tasks];
+    }
+
+    const projectOrder = new Map<string, number>();
+    const projectTitle = new Map<string, string>();
+    [...(options.projects ?? [])]
+        .filter((project) => !project.deletedAt)
+        .sort((a, b) => {
+            const aOrder = Number.isFinite(a.order) ? (a.order as number) : Number.POSITIVE_INFINITY;
+            const bOrder = Number.isFinite(b.order) ? (b.order as number) : Number.POSITIVE_INFINITY;
+            if (aOrder !== bOrder) return aOrder - bOrder;
+            return textCollator.compare(a.title, b.title);
+        })
+        .forEach((project, index) => {
+            projectOrder.set(project.id, index);
+            projectTitle.set(project.id, project.title);
+        });
+
+    const direction = options.sortOrder === 'desc' ? -1 : 1;
+    const compare = (a: T, b: T): number => {
+        const byCreatedAsc = () => safeTime(a.createdAt, 0) - safeTime(b.createdAt, 0);
+        const byCreatedDesc = () => safeTime(b.createdAt, 0) - safeTime(a.createdAt, 0);
+        const byTitle = () => textCollator.compare(a.title, b.title);
+        const byId = () => textCollator.compare(a.id, b.id);
+
+
+        const byNumber = (x: number, y: number) => (x === y ? 0 : x - y);
+        const byDue = () => byNumber(safeDueTime(a.dueDate, Number.POSITIVE_INFINITY), safeDueTime(b.dueDate, Number.POSITIVE_INFINITY));
+        const byStart = () => byNumber(safeTime(a.startTime, Number.POSITIVE_INFINITY), safeTime(b.startTime, Number.POSITIVE_INFINITY));
+        const byReview = () => byNumber(safeTime(a.reviewAt, Number.POSITIVE_INFINITY), safeTime(b.reviewAt, Number.POSITIVE_INFINITY));
+        const byUpdated = () => safeTime(b.updatedAt, 0) - safeTime(a.updatedAt, 0);
+        const byPriority = () => (TASK_PRIORITY_SORT_RANK[b.priority as TaskPriority] || 0)
+            - (TASK_PRIORITY_SORT_RANK[a.priority as TaskPriority] || 0);
+        const byEnergy = () => (TASK_ENERGY_SORT_RANK[b.energyLevel as NonNullable<Task['energyLevel']>] || 0)
+            - (TASK_ENERGY_SORT_RANK[a.energyLevel as NonNullable<Task['energyLevel']>] || 0);
+        const byTimeEstimate = () => byNumber(timeEstimateSortRank(a.timeEstimate), timeEstimateSortRank(b.timeEstimate));
+        const byProject = () => {
+            const orderA = a.projectId ? (projectOrder.get(a.projectId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+            const orderB = b.projectId ? (projectOrder.get(b.projectId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+            if (orderA !== orderB) return orderA - orderB;
+            const titleA = a.projectId ? (projectTitle.get(a.projectId) ?? '') : '';
+            const titleB = b.projectId ? (projectTitle.get(b.projectId) ?? '') : '';
+            return textCollator.compare(titleA, titleB);
+        };
+        const withFallbacks = (...comparers: Array<() => number>) => {
+            for (const comparer of comparers) {
+                const result = comparer();
+                if (result !== 0) return result;
+            }
+            return byId();
+        };
+
+        switch (sortBy) {
+            case 'due':
+                return withFallbacks(byDue, byCreatedAsc);
+            case 'start':
+                return options.prioritizeByPriority
+                    ? withFallbacks(byStart, byPriority, byCreatedAsc)
+                    : withFallbacks(byStart, byCreatedAsc);
+            case 'review':
+                return withFallbacks(byReview, byCreatedAsc);
+            case 'title':
+                return withFallbacks(byTitle, byCreatedAsc);
+            case 'created':
+                return withFallbacks(byCreatedAsc);
+            case 'created-desc':
+                return withFallbacks(byCreatedDesc);
+            case 'priority':
+
+
+                return options.prioritizeByPriority
+                    ? withFallbacks(byPriority, byDue, byStart, byCreatedAsc)
+                    : withFallbacks(byDue, byStart, byCreatedAsc);
+            case 'energy':
+                return withFallbacks(byEnergy, byDue, byStart, byCreatedAsc);
+            case 'timeEstimate':
+                return withFallbacks(byTimeEstimate, byDue, byStart, byCreatedAsc);
+            case 'project':
+                return withFallbacks(byProject, byCreatedAsc);
+            case 'updated':
+                return withFallbacks(byUpdated, byCreatedAsc);
+            default:
+                return withFallbacks(byCreatedAsc);
+        }
+    };
+
+    return [...tasks].sort((a, b) => direction * compare(a, b));
+}
+
+
+export function sortFocusNextActions(tasks: Task[], options: SortFocusNextActionsOptions = {}): Task[] {
+    const nowMs = (options.now ?? new Date()).getTime();
+    const dueSoonWindowDays = Number.isFinite(options.dueSoonWindowDays)
+        ? Math.max(0, Math.floor(options.dueSoonWindowDays as number))
+        : FOCUS_NEXT_DUE_SOON_WINDOW_DAYS;
+    const dueSoonWindowMs = dueSoonWindowDays * 24 * 60 * 60 * 1000;
+    const prioritizeByPriority = options.prioritizeByPriority === true;
+    const projectDeadlineBoosts = options.projectDeadlineBoosts
+        ?? (options.projects ? getProjectDeadlineBoosts(tasks, options.projects, { now: options.now }) : new Map());
+
+
+    return sortByPrecomputedKey(tasks, (task) => {
+        const due = safeDueTime(task.dueDate, Number.POSITIVE_INFINITY);
+        return {
+            task,
+            due,
+            bucket: getFocusNextActionBucket(due, nowMs, dueSoonWindowMs),
+            start: safeTime(task.startTime, Number.POSITIVE_INFINITY),
+            created: safeTime(task.createdAt, 0),
+            boost: projectDeadlineBoosts.get(task.id),
+            priority: TASK_PRIORITY_SORT_RANK[task.priority as TaskPriority] || 0,
+        };
+    }, (keyA, keyB) => {
+        const { task: a, bucket: bucketA } = keyA;
+        const { task: b, bucket: bucketB } = keyB;
+        if (bucketA !== bucketB) return bucketA - bucketB;
+
+        if (bucketA !== 1) {
+            if (keyA.due !== keyB.due) return keyA.due - keyB.due;
+        }
+
+        if (bucketA === 1) {
+            const projectBoostDiff = compareProjectDeadlineBoosts(keyA.boost, keyB.boost, a, b);
+            if (projectBoostDiff !== 0) return projectBoostDiff;
+        }
+
+        if (prioritizeByPriority) {
+            const priorityDiff = keyB.priority - keyA.priority;
+            if (priorityDiff !== 0) return priorityDiff;
+        }
+
+        if (keyA.start !== keyB.start) return keyA.start - keyB.start;
+
+        const createdDiff = keyA.created - keyB.created;
+        if (createdDiff !== 0) return createdDiff;
+
+        const titleDiff = textCollator.compare(a.title, b.title);
+        if (titleDiff !== 0) return titleDiff;
+
+        return textCollator.compare(a.id, b.id);
+    });
+}
+
+export type CalendarPlanningCandidateOptions = {
+    limit?: number;
+    now?: Date;
+    prioritizeByPriority?: boolean;
+    projects?: readonly Project[] | Map<string, Project>;
+    sections?: readonly SequentialSection[];
+    sectionScopedProjectIds?: ReadonlySet<string>;
+    sequentialProjectIds?: ReadonlySet<string>;
+    sequentialSectionKeys?: ReadonlySet<string>;
+};
+
+export function getCalendarPlanningCandidates<T extends Task>(
+    tasks: readonly T[],
+    options: CalendarPlanningCandidateOptions = {},
+): T[] {
+    const now = options.now ?? new Date();
+    const projectMap = options.projects ? getFocusEligibilityProjectMap(options.projects) : null;
+    const derivedSequential = projectMap
+        && (!options.sequentialProjectIds || !options.sectionScopedProjectIds || !options.sequentialSectionKeys)
+        ? getFocusEligibilitySequentialProjectIds(projectMap, options.sections)
+        : null;
+    const sequentialProjectIds = options.sequentialProjectIds
+        ?? derivedSequential?.sequentialProjectIds
+        ?? new Set<string>();
+    const sectionScopedProjectIds = options.sectionScopedProjectIds
+        ?? derivedSequential?.sectionScopedProjectIds
+        ?? new Set<string>();
+    const sequentialSectionKeys = options.sequentialSectionKeys
+        ?? derivedSequential?.sequentialSectionKeys
+        ?? new Set<string>();
+    const sequencing = { sequentialProjectIds, sectionScopedProjectIds, sequentialSectionKeys };
+
+    const activeFocusTasks = tasks.filter((task) => (
+        !task.deletedAt
+        && FOCUS_ELIGIBILITY_ACTIVE_STATUS_SET.has(task.status)
+        && (!projectMap || isTaskInActiveProject(task, projectMap))
+    ));
+    const sequentialFirstTaskIds = getFocusSequentialFirstTaskIds(
+        activeFocusTasks,
+        sequentialProjectIds,
+        { now, sectionScopedProjectIds, sequentialSectionKeys, sections: options.sections },
+    );
+
+    const candidates = tasks.filter((task) => {
+        if (task.deletedAt) return false;
+        if (task.status !== 'next') return false;
+        if (task.isFocusedToday) return false;
+        if (task.startTime) return false;
+        if (projectMap && !isTaskInActiveProject(task, projectMap)) return false;
+        if (isTaskSequenceBlocked(task, sequencing, sequentialFirstTaskIds)) return false;
+        return true;
+    });
+
+    const sortProjects = Array.isArray(options.projects) ? options.projects : undefined;
+    const sorted = sortFocusNextActions(candidates as Task[], {
+        now,
+        prioritizeByPriority: options.prioritizeByPriority,
+        projects: sortProjects,
+    }) as T[];
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit as number)) : sorted.length;
+    return sorted.slice(0, limit);
+}
+
+
+export function getTaskAgeDays(createdAt: string, now: Date = new Date()): number {
+    const created = new Date(createdAt);
+    const diffMs = now.getTime() - created.getTime();
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+}
+
+
+export function getTaskAgeLabel(createdAt: string, lang: Language = 'en', now: Date = new Date()): string | null {
+    const days = getTaskAgeDays(createdAt, now);
+    const isChinese = lang === 'zh' || lang === 'zh-Hant';
+
+    if (days < 1) return null;
+    if (isChinese) {
+        if (days === 1) return '1天前';
+        if (days < 7) return `${days}天前`;
+        if (days < 14) return '1周前';
+        if (days < 30) return `${Math.floor(days / 7)}周前`;
+        if (days < 60) return '1个月前';
+        return `${Math.floor(days / 30)}个月前`;
+    }
+
+    if (days === 1) return '1 day old';
+    if (days < 7) return `${days} days old`;
+    if (days < 14) return '1 week old';
+    if (days < 30) return `${Math.floor(days / 7)} weeks old`;
+    if (days < 60) return '1 month old';
+    return `${Math.floor(days / 30)} months old`;
+}
+
+
+export function getTaskStaleness(createdAt: string): 'fresh' | 'aging' | 'stale' | 'very-stale' {
+    const days = getTaskAgeDays(createdAt);
+
+    if (days < 7) return 'fresh';
+    if (days < 14) return 'aging';
+    if (days < 30) return 'stale';
+    return 'very-stale';
+}
+
+
+export function getTaskUrgency(task: Partial<Task>, now: Date = new Date()): 'overdue' | 'urgent' | 'upcoming' | 'normal' | 'done' {
+    if (!isTaskActionable(task)) return 'done';
+    if (!task.dueDate) return 'normal';
+
+    const due = safeParseDueDate(task.dueDate);
+    if (!due) return 'normal';
+    const diffHours = (due.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (diffHours < 0) return 'overdue';
+    if (diffHours < 24) return 'urgent';
+    if (diffHours < 72) return 'upcoming';
+    return 'normal';
+}
+
+export function getTaskAreaId(
+    task: Pick<Task, 'areaId' | 'projectId'>,
+    projectMap?: Map<string, Project> | Record<string, Project>,
+): string | undefined {
+    if (task.projectId && projectMap) {
+        const project = projectMap instanceof Map ? projectMap.get(task.projectId) : projectMap[task.projectId];
+        if (project?.areaId) return project.areaId;
+    }
+    return task.areaId;
+}
+
+
+export function getChecklistProgress(task: Pick<Task, 'checklist'>): { completed: number; total: number; percent: number } | null {
+    const list = task.checklist || [];
+    if (list.length === 0) return null;
+    const completed = list.filter((i) => i.isCompleted).length;
+    const total = list.length;
+    const percent = total === 0 ? 0 : completed / total;
+    return { completed, total, percent };
+}
+
+export interface TaskLifecycleCounts {
+    total: number;
+    live: number;
+    trashed: number;
+    tombstones: number;
+    createdLast7d: number;
+}
+
+
+export function summarizeTaskLifecycleCounts(
+    tasks: readonly Pick<Task, 'deletedAt' | 'purgedAt' | 'createdAt'>[],
+    nowMs: number = Date.now(),
+): TaskLifecycleCounts {
+    const weekAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+    let live = 0;
+    let trashed = 0;
+    let tombstones = 0;
+    let createdLast7d = 0;
+    for (const task of tasks) {
+        if (task.purgedAt) {
+            tombstones += 1;
+        } else if (task.deletedAt) {
+            trashed += 1;
+        } else {
+            live += 1;
+        }
+        const createdAtMs = task.createdAt ? Date.parse(task.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAtMs) && createdAtMs >= weekAgoMs && createdAtMs <= nowMs) {
+            createdLast7d += 1;
+        }
+    }
+    return { total: tasks.length, live, trashed, tombstones, createdLast7d };
+}
+
+export const DEFAULT_AUTO_ARCHIVE_DAYS = 7;
+
+export const getAutoArchiveDays = (settings: AppData['settings']): number => {
+    const configured = settings.gtd?.autoArchiveDays;
+    return Number.isFinite(configured)
+        ? Math.max(0, Math.floor(configured as number))
+        : DEFAULT_AUTO_ARCHIVE_DAYS;
+};
+
+
+export function shouldAutoArchiveCompletedTask(
+    task: Pick<Task, 'status' | 'completedAt' | 'updatedAt' | 'deletedAt'>,
+    settings: AppData['settings'],
+    nowMs: number,
+): boolean {
+    if (task.deletedAt) return false;
+    if (task.status !== 'done') return false;
+    const archiveDays = getAutoArchiveDays(settings);
+    if (archiveDays <= 0) return false;
+    const completedAtMs = safeParseDate(task.completedAt)?.getTime() ?? Number.NaN;
+    const updatedAtMs = safeParseDate(task.updatedAt)?.getTime() ?? Number.NaN;
+    const resolvedMs = Number.isFinite(completedAtMs) ? completedAtMs : updatedAtMs;
+    if (!Number.isFinite(resolvedMs) || resolvedMs <= 0) return false;
+    return resolvedMs < nowMs - archiveDays * 24 * 60 * 60 * 1000;
+}
+
+
+export const COMPLETION_DATE_GROUPS = ['today', 'yesterday', 'previous7Days', 'earlier', 'notCompleted'] as const;
+export type CompletionDateGroup = typeof COMPLETION_DATE_GROUPS[number];
+
+
+export function getCompletionDateGroup(
+    task: Pick<Task, 'completedAt'>,
+    now: Date = new Date(),
+): CompletionDateGroup {
+    const completedAt = safeParseDate(task.completedAt);
+    if (!completedAt) return 'notCompleted';
+    const daysAgo = differenceInCalendarDays(startOfDay(now), startOfDay(completedAt));
+
+
+    if (daysAgo <= 0) return 'today';
+    if (daysAgo === 1) return 'yesterday';
+    if (daysAgo <= 7) return 'previous7Days';
+    return 'earlier';
+}

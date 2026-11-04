@@ -1,0 +1,18 @@
+
+pkgname=stride-bin
+pkgver=0.3.4
+pkgrel=1
+pkgdesc="AI-powered personal organiser: capture, morning briefing, assistant chat and GTD lists"
+arch=('x86_64')
+url="https://github.com/ishaanpilar/stride"
+license=('AGPL3')
+depends=('webkit2gtk-4.1' 'gtk3' 'libappindicator-gtk3')
+optdepends=('evolution-data-server: GNOME system calendar integration')
+provides=('stride')
+conflicts=('stride')
+source_x86_64=("${url}/releases/download/v${pkgver}/stride_${pkgver}_amd64.deb")
+sha256sums_x86_64=('__SHA256__')
+
+package() {
+    tar -xf data.tar.zst -C "${pkgdir}" || tar -xf data.tar.gz -C "${pkgdir}"
+}

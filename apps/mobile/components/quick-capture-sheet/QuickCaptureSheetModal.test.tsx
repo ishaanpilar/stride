@@ -1,0 +1,1422 @@
+import React from 'react';
+import { FlatList, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { describe, expect, it, vi } from 'vitest';
+
+import { ToastViewport } from '@/contexts/toast-context';
+import { QuickCaptureSheetBody } from './QuickCaptureSheetBody';
+import { QuickCaptureSheetPickers } from './QuickCaptureSheetPickers';
+
+vi.mock('@react-native-community/datetimepicker', () => ({
+  default: (props: Record<string, unknown>) => React.createElement('DateTimePicker', props),
+}));
+
+
+vi.mock('@/contexts/toast-context', () => ({
+  ToastViewport: () => null,
+  useToast: () => ({ showToast: () => {}, dismissToast: () => {} }),
+}));
+
+const tc: any = {
+  cardBg: '#111827',
+  border: '#334155',
+  danger: '#ef4444',
+  filterBg: '#1f2937',
+  inputBg: '#0f172a',
+  onTint: '#ffffff',
+  secondaryText: '#94a3b8',
+  text: '#f8fafc',
+  tint: '#3b82f6',
+};
+
+const flattenStyle = (style: unknown): Record<string, any> => {
+  if (Array.isArray(style)) {
+    return style.reduce<Record<string, any>>((acc, item) => Object.assign(acc, flattenStyle(item)), {});
+  }
+  return style && typeof style === 'object' ? (style as Record<string, any>) : {};
+};
+
+describe('Quick capture modal composition', () => {
+  it('announces saving and disables save and dismissal controls while a submission is active', () => {
+    const handleClose = vi.fn();
+    const onModalShow = vi.fn();
+    const onInputFocus = vi.fn();
+    const onInputBlur = vi.fn();
+    let tree!: ReturnType<typeof create>;
+    const t = (key: string) => ({
+      'common.close': 'Close',
+      'common.loading': 'Loading...',
+      'common.more': 'More',
+      'common.save': 'Save',
+      'nav.addTask': 'Add Task',
+      'quickAdd.addAnother': 'Add another',
+      'quickAdd.audioProcessing': 'Processing audio capture...',
+      'quickAdd.audioRecord': 'Record',
+      'quickAdd.inputHint': 'Capture task title',
+      'quickAdd.inputLabel': 'Task title',
+      'taskEdit.contextsLabel': 'Contexts',
+      'taskEdit.projectLabel': 'Project',
+    }[key] ?? key);
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="No Area"
+          contextLabel="Contexts"
+          dueDate={null}
+          dueLabel="Due Date"
+          dueTimeLabel="Change time"
+          handleClose={handleClose}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          onModalShow={onModalShow}
+          onInputFocus={onInputFocus}
+          onInputBlur={onInputBlur}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded={false}
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="Priority"
+          projectLabel="Project"
+          recording={false}
+          recordingBusy
+          recordingReady={false}
+          saving
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={t}
+          tc={tc}
+          value="Capture me"
+          visible
+        />
+      );
+    });
+
+    const controls = tree.root.findAllByType(TouchableOpacity);
+    act(() => {
+      tree.root.findByType(Modal).props.onShow();
+      const titleInput = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'Task title');
+      titleInput!.props.onFocus({ nativeEvent: { text: 'private task' } });
+      titleInput!.props.onBlur({ nativeEvent: { text: 'private task' } });
+    });
+    expect(onModalShow).toHaveBeenCalledExactlyOnceWith();
+    expect(onInputFocus).toHaveBeenCalledOnce();
+    expect(onInputBlur).toHaveBeenCalledOnce();
+    const closeControls = controls.filter((node) => node.props.accessibilityLabel === 'Close');
+    const save = controls.find((node) => node.props.accessibilityLabel === 'Save');
+    expect(closeControls.length).toBeGreaterThan(0);
+    expect(closeControls.every((node) => node.props.disabled === true)).toBe(true);
+    expect(save?.props.disabled).toBe(true);
+    expect(save?.props.accessibilityState).toEqual({ busy: true, disabled: true });
+    const description = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'taskEdit.descriptionLabel');
+    expect(description?.props.editable).toBe(false);
+    expect(description?.props.accessibilityState).toEqual({ busy: true, disabled: true });
+    expect(tree.root.findByType(Modal).props.onRequestClose).not.toBe(handleClose);
+    expect(tree.root.findAllByType(Text).some((node) => node.props.children === 'Processing audio capture...')).toBe(true);
+  });
+
+  it('does not mount picker modals while every picker is closed', () => {
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetPickers
+          filteredAreas={[]}
+          contextInputRef={{ current: null }}
+          contextOptionsLoading={false}
+          contextQuery=""
+          contextTags={[]}
+          dueDate={null}
+          filteredContexts={[]}
+          filteredProjects={[]}
+          hasAddableContextTokens={false}
+          hasExactProjectMatch={false}
+          onAddContextFromQuery={vi.fn()}
+          onClearContexts={vi.fn()}
+          onCloseAreaPicker={vi.fn()}
+          onCloseContextPicker={vi.fn()}
+          onClosePriorityPicker={vi.fn()}
+          onCloseProjectPicker={vi.fn()}
+          onContextQueryChange={vi.fn()}
+          onDueDateChange={vi.fn()}
+          onDueTimeChange={vi.fn()}
+          onProjectQueryChange={vi.fn()}
+          onRemoveContext={vi.fn()}
+          onSelectArea={vi.fn()}
+          onSelectContext={vi.fn()}
+          onSelectPriority={vi.fn()}
+          onSelectProject={vi.fn()}
+          onSubmitContextQuery={vi.fn()}
+          onSubmitProjectQuery={vi.fn()}
+          prioritiesEnabled
+          priorityOptions={['low', 'medium', 'high', 'urgent']}
+          projectQuery=""
+          selectedAreaId={null}
+          selectedPriority={null}
+          showAreaPicker={false}
+          showContextPicker={false}
+          showDatePicker={false}
+          showDueTimePicker={false}
+          showPriorityPicker={false}
+          showProjectPicker={false}
+          t={(key) => key}
+          tc={tc}
+        />
+      );
+    });
+
+    expect(tree.root.findAllByType(Modal)).toHaveLength(0);
+  });
+
+  it('renders the requested picker overlay without a nested native modal', () => {
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetPickers
+          filteredAreas={[]}
+          contextInputRef={{ current: null }}
+          contextOptionsLoading={false}
+          contextQuery=""
+          contextTags={[]}
+          dueDate={null}
+          filteredContexts={['@home']}
+          filteredProjects={[]}
+          hasAddableContextTokens={false}
+          hasExactProjectMatch={false}
+          onAddContextFromQuery={vi.fn()}
+          onClearContexts={vi.fn()}
+          onCloseAreaPicker={vi.fn()}
+          onCloseContextPicker={vi.fn()}
+          onClosePriorityPicker={vi.fn()}
+          onCloseProjectPicker={vi.fn()}
+          onContextQueryChange={vi.fn()}
+          onDueDateChange={vi.fn()}
+          onDueTimeChange={vi.fn()}
+          onProjectQueryChange={vi.fn()}
+          onRemoveContext={vi.fn()}
+          onSelectArea={vi.fn()}
+          onSelectContext={vi.fn()}
+          onSelectPriority={vi.fn()}
+          onSelectProject={vi.fn()}
+          onSubmitContextQuery={vi.fn()}
+          onSubmitProjectQuery={vi.fn()}
+          prioritiesEnabled
+          priorityOptions={['low', 'medium', 'high', 'urgent']}
+          projectQuery=""
+          selectedAreaId={null}
+          selectedPriority={null}
+          showAreaPicker={false}
+          showContextPicker
+          showDatePicker={false}
+          showDueTimePicker={false}
+          showPriorityPicker={false}
+          showProjectPicker={false}
+          t={(key) => key}
+          tc={tc}
+        />
+      );
+    });
+
+    expect(tree.root.findAllByType(Modal)).toHaveLength(0);
+    const overlays = tree.root.findAll((node) => node.props.accessibilityViewIsModal === true);
+    expect(overlays.length).toBeGreaterThan(0);
+    expect(tree.root.findByType(FlatList).props.accessibilityRole).toBe('list');
+    expect(tree.root.findByProps({ accessibilityRole: 'header' }).props.children).toBe('taskEdit.contextsLabel');
+  });
+
+  it('disables Android modal animation to avoid ghosted sheet trails', () => {
+    let tree!: ReturnType<typeof create>;
+    const originalPlatformOs = Platform.OS;
+    const handleClose = vi.fn();
+    const handleRequestClose = vi.fn();
+
+    Object.defineProperty(Platform, 'OS', {
+      configurable: true,
+      value: 'android',
+    });
+
+    try {
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={null}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            contentAccessibilityHidden
+            handleClose={handleClose}
+            handleRequestClose={handleRequestClose}
+            handleSave={vi.fn()}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded={false}
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Priority"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value=""
+            visible
+          />
+        );
+      });
+    } finally {
+      Object.defineProperty(Platform, 'OS', {
+        configurable: true,
+        value: originalPlatformOs,
+      });
+    }
+
+    const modal = tree.root.findByType(Modal);
+    expect(modal.props.transparent).toBe(true);
+    expect(modal.props.animationType).toBe('none');
+    expect(modal.props.hardwareAccelerated).toBe(true);
+    expect(modal.props.onRequestClose).toBe(handleRequestClose);
+    const keyboardAvoiding = tree.root.findByType(KeyboardAvoidingView);
+    expect(keyboardAvoiding.props.behavior).toBeUndefined();
+    expect(keyboardAvoiding.props.accessibilityElementsHidden).toBe(true);
+    expect(keyboardAvoiding.props.importantForAccessibility).toBe('no-hide-descendants');
+    const backdrop = tree.root.find(
+      (node) => node.props.accessibilityRole === 'button'
+        && node.props.accessibilityLabel === 'common.close'
+        && node.props.accessibilityElementsHidden === true
+    );
+    expect(backdrop.props.accessibilityElementsHidden).toBe(true);
+    expect(backdrop.props.importantForAccessibility).toBe('no-hide-descendants');
+    expect(modal.props.statusBarTranslucent).toBe(true);
+    expect(modal.props.accessibilityViewIsModal).toBe(true);
+  });
+
+  it('lifts the Android sheet by the measured keyboard inset instead of resizing', () => {
+    let tree!: ReturnType<typeof create>;
+    const originalPlatformOs = Platform.OS;
+
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
+
+    try {
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={null}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            handleClose={vi.fn()}
+            handleSave={vi.fn()}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            androidKeyboardInset={280}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded={false}
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Priority"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value=""
+            visible
+          />
+        );
+      });
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatformOs });
+    }
+
+    const kav = tree.root.findByType(KeyboardAvoidingView);
+    expect(kav.props.behavior).toBeUndefined();
+    expect(flattenStyle(kav.props.style).paddingBottom).toBe(280);
+  });
+
+  it('lifts the picker overlay above the keyboard by the measured inset', () => {
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetPickers
+          filteredAreas={[]}
+          contextInputRef={{ current: null }}
+          contextOptionsLoading={false}
+          contextQuery=""
+          contextTags={[]}
+          dueDate={null}
+          filteredContexts={['@home']}
+          filteredProjects={[]}
+          hasAddableContextTokens={false}
+          hasExactProjectMatch={false}
+          onAddContextFromQuery={vi.fn()}
+          onClearContexts={vi.fn()}
+          onCloseAreaPicker={vi.fn()}
+          onCloseContextPicker={vi.fn()}
+          onClosePriorityPicker={vi.fn()}
+          onCloseProjectPicker={vi.fn()}
+          onContextQueryChange={vi.fn()}
+          onDueDateChange={vi.fn()}
+          onDueTimeChange={vi.fn()}
+          onProjectQueryChange={vi.fn()}
+          onRemoveContext={vi.fn()}
+          onSelectArea={vi.fn()}
+          onSelectContext={vi.fn()}
+          onSelectPriority={vi.fn()}
+          onSelectProject={vi.fn()}
+          onSubmitContextQuery={vi.fn()}
+          onSubmitProjectQuery={vi.fn()}
+          overlayKeyboardInset={280}
+          prioritiesEnabled
+          priorityOptions={['low', 'medium', 'high', 'urgent']}
+          projectQuery=""
+          selectedAreaId={null}
+          selectedPriority={null}
+          showAreaPicker={false}
+          showContextPicker
+          showDatePicker={false}
+          showDueTimePicker={false}
+          showPriorityPicker={false}
+          showProjectPicker={false}
+          t={(key) => key}
+          tc={tc}
+        />
+      );
+    });
+
+    const overlay = tree.root.find((node) => node.props.accessibilityViewIsModal === true);
+    expect(flattenStyle(overlay.props.style).paddingBottom).toBe(280);
+  });
+
+  it('creates an area from the quick capture area picker query', () => {
+    const onAreaQueryChange = vi.fn();
+    const onSubmitAreaQuery = vi.fn();
+    let tree!: ReturnType<typeof create>;
+    const t = (key: string) => ({
+      'areas.create': 'Create',
+      'common.close': 'Close',
+      'common.search': 'Search',
+      'taskEdit.areaLabel': 'Area',
+      'taskEdit.noAreaOption': 'No Area',
+    }[key] ?? key);
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetPickers
+          filteredAreas={[]}
+          areaQuery="Work"
+          contextInputRef={{ current: null }}
+          contextOptionsLoading={false}
+          contextQuery=""
+          contextTags={[]}
+          dueDate={null}
+          filteredContexts={[]}
+          filteredProjects={[]}
+          hasAddableContextTokens={false}
+          hasExactAreaMatch={false}
+          hasExactProjectMatch={false}
+          onAddContextFromQuery={vi.fn()}
+          onAreaQueryChange={onAreaQueryChange}
+          onClearContexts={vi.fn()}
+          onCloseAreaPicker={vi.fn()}
+          onCloseContextPicker={vi.fn()}
+          onClosePriorityPicker={vi.fn()}
+          onCloseProjectPicker={vi.fn()}
+          onContextQueryChange={vi.fn()}
+          onDueDateChange={vi.fn()}
+          onDueTimeChange={vi.fn()}
+          onProjectQueryChange={vi.fn()}
+          onRemoveContext={vi.fn()}
+          onSelectArea={vi.fn()}
+          onSelectContext={vi.fn()}
+          onSelectPriority={vi.fn()}
+          onSelectProject={vi.fn()}
+          onSubmitAreaQuery={onSubmitAreaQuery}
+          onSubmitContextQuery={vi.fn()}
+          onSubmitProjectQuery={vi.fn()}
+          prioritiesEnabled
+          priorityOptions={['low', 'medium', 'high', 'urgent']}
+          projectQuery=""
+          selectedAreaId={null}
+          selectedPriority={null}
+          showAreaPicker
+          showContextPicker={false}
+          showDatePicker={false}
+          showDueTimePicker={false}
+          showPriorityPicker={false}
+          showProjectPicker={false}
+          t={t}
+          tc={tc}
+        />
+      );
+    });
+
+    const input = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'Area');
+    expect(input).toBeTruthy();
+    act(() => {
+      input?.props.onChangeText('Home');
+    });
+    expect(onAreaQueryChange).toHaveBeenCalledWith('Home');
+
+    const createRow = tree.root.findByProps({ accessibilityLabel: 'Create: Work' });
+    act(() => {
+      createRow.props.onPress();
+    });
+
+    expect(onSubmitAreaQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps collapsed capture focused on context and hides organizing fields behind More', () => {
+    let tree!: ReturnType<typeof create>;
+    const t = (key: string) => ({
+      'common.close': 'Close',
+      'common.more': 'More',
+      'common.save': 'Save',
+      'nav.addTask': 'Add Task',
+      'quickAdd.addAnother': 'Add another',
+      'quickAdd.audioRecord': 'Record',
+      'quickAdd.inputHint': 'Capture task title',
+      'quickAdd.inputLabel': 'Task title',
+      'taskEdit.areaLabel': 'Area',
+      'taskEdit.contextsLabel': 'Contexts',
+      'taskEdit.dueDate': 'Due Date',
+      'taskEdit.project': 'Project',
+      'taskEdit.projectLabel': 'Project',
+      'taskEdit.priorityLabel': 'Priority',
+    })[key] ?? key;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="Work"
+          contextLabel="@computer"
+          dueDate={new Date('2026-06-04T12:00:00.000Z')}
+          dueLabel="Tomorrow"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded={false}
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="High"
+          projectLabel="Project"
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={t}
+          tc={tc}
+          value=""
+          visible
+        />
+      );
+    });
+
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Contexts: @computer' }).length).toBeGreaterThan(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'More' }).length).toBeGreaterThan(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Due Date: Tomorrow' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Area: Work' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Project: Project' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Priority: High' })).toHaveLength(0);
+    expect(tree.root.findAllByType(Text).some((node) => node.props.children === 'More')).toBe(true);
+  });
+
+  it('folds the quick-add syntax reference behind a toggle in the expanded panel (#1120)', () => {
+    let tree!: ReturnType<typeof create>;
+    const t = (key: string) => ({
+      'common.close': 'Close',
+      'common.more': 'More',
+      'common.save': 'Save',
+      'nav.addTask': 'Add Task',
+      'quickAdd.help': 'Quick add supports /due:<when> and friends.',
+      'quickAdd.syntaxHelp': 'Quick Add syntax help',
+      'taskEdit.hideOptions': 'Hide options',
+    })[key] ?? key;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="Work"
+          contextLabel="@computer"
+          dueDate={null}
+          dueLabel="Due"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="High"
+          projectLabel="Project"
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={t}
+          tc={tc}
+          value=""
+          visible
+        />
+      );
+    });
+
+    const helpText = 'Quick add supports /due:<when> and friends.';
+    const hasHelpText = () => tree.root.findAllByType(Text)
+      .some((node) => node.props.children === helpText);
+    expect(hasHelpText()).toBe(false);
+    const toggle = tree.root.findByProps({ testID: 'quick-capture-syntax-help-toggle' });
+    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    act(() => {
+      toggle.props.onPress();
+    });
+    expect(hasHelpText()).toBe(true);
+  });
+
+  it('shows a compact selected-project cue in collapsed capture', () => {
+    let tree!: ReturnType<typeof create>;
+    const longProjectName = 'Extremely Long Project Name That Should Not Crowd Quick Capture Controls';
+    const t = (key: string) => ({
+      'common.close': 'Close',
+      'common.more': 'More',
+      'common.save': 'Save',
+      'nav.addTask': 'Add Task',
+      'quickAdd.addAnother': 'Add another',
+      'quickAdd.audioRecord': 'Record',
+      'quickAdd.inputHint': 'Capture task title',
+      'quickAdd.inputLabel': 'Task title',
+      'taskEdit.contextsLabel': 'Contexts',
+      'taskEdit.projectLabel': 'Project',
+    })[key] ?? key;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="No Area"
+          contextLabel="@computer"
+          dueDate={null}
+          dueLabel="Due Date"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded={false}
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="Priority"
+          projectLabel={longProjectName}
+          projectSelected
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={t}
+          tc={tc}
+          value=""
+          visible
+        />
+      );
+    });
+
+    const projectChip = tree.root.findByProps({ accessibilityLabel: `Project: ${longProjectName}` });
+    const projectText = tree.root.findAllByType(Text).find((node) => node.props.children === longProjectName);
+    expect(projectChip).toBeTruthy();
+    expect(projectText?.props.numberOfLines).toBe(1);
+    expect(projectText?.props.ellipsizeMode).toBe('tail');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Contexts: @computer' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'More' }).length).toBeGreaterThan(0);
+  });
+
+  it('bounds compact sheet text scaling so tablet controls cannot overlap', () => {
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="No Area"
+          contextLabel="Very Long Context Label"
+          dueDate={null}
+          dueLabel="Due Date"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded={false}
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="Priority"
+          projectLabel="Very Long Project Label"
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={(key) => key}
+          tc={tc}
+          value=""
+          visible
+        />
+      );
+    });
+
+    const inputs = tree.root.findAllByType(TextInput);
+    expect(inputs.every((node) => node.props.maxFontSizeMultiplier === 1.2)).toBe(true);
+    expect(inputs.find((node) => node.props.accessibilityLabel === 'quickAdd.inputLabel')!.props.textAlignVertical).toBe('center');
+    const compactTexts = tree.root
+      .findAllByType(Text)
+      .filter((node) => typeof node.props.children === 'string');
+    expect(compactTexts.length).toBeGreaterThan(0);
+    expect(compactTexts.every((node) => node.props.maxFontSizeMultiplier === 1.2)).toBe(true);
+    const moreText = compactTexts.find((node) => node.props.children === 'More');
+    const saveText = compactTexts.find((node) => node.props.children === 'common.save');
+    expect(moreText?.props.numberOfLines).toBe(1);
+    expect(moreText?.props.adjustsFontSizeToFit).toBe(true);
+    expect(saveText?.props.numberOfLines).toBe(1);
+    expect(saveText?.props.adjustsFontSizeToFit).toBe(true);
+  });
+
+  it('submits the quick capture input from the keyboard Done action on iOS', () => {
+    const handleSave = vi.fn();
+    let tree!: ReturnType<typeof create>;
+    const originalPlatformOs = Platform.OS;
+
+    Object.defineProperty(Platform, 'OS', {
+      configurable: true,
+      value: 'ios',
+    });
+
+    try {
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={null}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            handleClose={vi.fn()}
+            handleSave={handleSave}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded={false}
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Priority"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value="Capture me"
+            visible
+          />
+        );
+      });
+
+      const input = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'quickAdd.inputLabel')!;
+
+      expect(input.props.multiline).toBe(true);
+      expect(input.props.submitBehavior).toBe('blurAndSubmit');
+
+      act(() => {
+        input.props.onSubmitEditing();
+      });
+    } finally {
+      Object.defineProperty(Platform, 'OS', {
+        configurable: true,
+        value: originalPlatformOs,
+      });
+    }
+
+    expect(handleSave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the input focused when keyboard submit saves and adds another', () => {
+    const handleSave = vi.fn();
+    const blur = vi.fn();
+    const inputRef = { current: { blur } } as unknown as React.RefObject<TextInput | null>;
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother
+          selectedPriority={null}
+          areaLabel="No Area"
+          contextLabel="Contexts"
+          dueDate={null}
+          dueLabel="Due Date"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={handleSave}
+          insetsBottom={0}
+          inputRef={inputRef}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded={false}
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="Priority"
+          projectLabel="Project"
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={(key) => key}
+          tc={tc}
+          value="Capture me"
+          visible
+        />
+      );
+    });
+
+    const input = tree.root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'quickAdd.inputLabel')!;
+
+
+    expect(input.props.multiline).toBe(true);
+    expect(input.props.submitBehavior).toBe('submit');
+
+    act(() => {
+      input.props.onSubmitEditing();
+    });
+
+    expect(handleSave).toHaveBeenCalledOnce();
+    expect(blur).not.toHaveBeenCalled();
+  });
+
+  it('uses translated field labels for project and due date accessibility', () => {
+    const t = (key: string) => ({
+      'taskEdit.projectLabel': 'Project',
+      'taskEdit.dueDateLabel': 'Due date',
+    }[key] ?? key);
+    let tree!: ReturnType<typeof create>;
+
+    act(() => {
+      tree = create(
+        <QuickCaptureSheetBody
+          addAnother={false}
+          selectedPriority={null}
+          areaLabel="No Area"
+          contextLabel="Contexts"
+          dueDate={null}
+          dueLabel="Tomorrow"
+          dueTimeLabel="Change time"
+          handleClose={vi.fn()}
+          handleSave={vi.fn()}
+          insetsBottom={0}
+          inputRef={{ current: null }}
+          noteValue=""
+          onNoteChange={vi.fn()}
+          onOpenAreaPicker={vi.fn()}
+          onOpenContextPicker={vi.fn()}
+          onOpenDueDatePicker={vi.fn()}
+          onOpenDueTimePicker={vi.fn()}
+          onOpenPriorityPicker={vi.fn()}
+          onOpenProjectPicker={vi.fn()}
+          onQuickDueDateSelect={vi.fn()}
+          onResetArea={vi.fn()}
+          onResetContexts={vi.fn()}
+          onResetDueDate={vi.fn()}
+          onResetDueTime={vi.fn()}
+          onResetPriority={vi.fn()}
+          onResetProject={vi.fn()}
+          onToggleOptions={vi.fn()}
+          onToggleAddAnother={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onValueChange={vi.fn()}
+          optionsExpanded
+          prioritiesEnabled
+          timeEstimatesEnabled
+          priorityLabel="Priority"
+          projectLabel="Inbox"
+          recording={false}
+          recordingBusy={false}
+          recordingReady={false}
+          sheetMaxHeight={500}
+          showDueTime={false}
+          t={t}
+          tc={tc}
+          value=""
+          visible
+        />
+      );
+    });
+
+    const labels = tree.root
+      .findAll((node) => typeof node.props.accessibilityLabel === 'string')
+      .map((node) => node.props.accessibilityLabel);
+
+    expect(labels).toContain('Project: Inbox');
+    expect(labels).toContain('Due date: Tomorrow');
+    expect(labels).not.toContain('taskEdit.project: Inbox');
+    expect(labels).not.toContain('taskEdit.dueDate: Tomorrow');
+  });
+
+  it('scrolls the expanded iOS sheet body so the title input stays reachable', () => {
+    let tree!: ReturnType<typeof create>;
+    const originalPlatformOs = Platform.OS;
+
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
+
+    try {
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={null}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            handleClose={vi.fn()}
+            handleSave={vi.fn()}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Priority"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value="Capture me"
+            visible
+          />
+        );
+      });
+
+      const scroll = tree.root.findByType(ScrollView);
+      expect(scroll.props.testID).toBe('quick-capture-scroll');
+      expect(scroll.props.keyboardShouldPersistTaps).toBe('handled');
+
+
+      expect(scroll.findAllByType(TextInput).map((node) => node.props.accessibilityLabel))
+        .toEqual(['taskEdit.descriptionLabel']);
+      expect(tree.root.findAllByType(TextInput)[0].props.accessibilityLabel).toBe('quickAdd.inputLabel');
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatformOs });
+    }
+  });
+
+  it('scrolls the expanded Android sheet body and lets the sheet shrink for the keyboard', () => {
+    let tree!: ReturnType<typeof create>;
+    const originalPlatformOs = Platform.OS;
+
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
+
+    try {
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={null}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            handleClose={vi.fn()}
+            handleSave={vi.fn()}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Priority"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value="Capture me"
+            visible
+          />
+        );
+      });
+
+
+      const scroll = tree.root.findByType(ScrollView);
+      expect(scroll.props.testID).toBe('quick-capture-scroll');
+      expect(scroll.findAllByType(TextInput).map((node) => node.props.accessibilityLabel))
+        .toEqual(['taskEdit.descriptionLabel']);
+      const sheet = tree.root
+        .findAllByType(View)
+        .find((node) => flattenStyle(node.props.style).maxHeight === 500);
+
+
+      expect(flattenStyle(sheet?.props.style).flexShrink).toBe(1);
+
+      expect(tree.root.findAllByType(TextInput)[0].props.accessibilityLabel).toBe('quickAdd.inputLabel');
+
+
+      expect(tree.root.findByType(KeyboardAvoidingView).findAllByType(ToastViewport)).toHaveLength(1);
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatformOs });
+    }
+  });
+  it('keeps a compact multiline description first in the scrolling body outside More', () => {
+    const onNoteChange = vi.fn();
+    const onValueChange = vi.fn();
+    const renderBody = (optionsExpanded: boolean) => (
+      <QuickCaptureSheetBody
+        addAnother={false}
+        selectedPriority={null}
+        areaLabel="No Area"
+        contextLabel="Contexts"
+        dueDate={null}
+        dueLabel="Due Date"
+        dueTimeLabel="Change time"
+        handleClose={vi.fn()}
+        handleSave={vi.fn()}
+        insetsBottom={0}
+        inputRef={{ current: null }}
+        noteValue="Bring the signed form"
+        onNoteChange={onNoteChange}
+        onOpenAreaPicker={vi.fn()}
+        onOpenContextPicker={vi.fn()}
+        onOpenDueDatePicker={vi.fn()}
+        onOpenDueTimePicker={vi.fn()}
+        onOpenPriorityPicker={vi.fn()}
+        onOpenProjectPicker={vi.fn()}
+        onQuickDueDateSelect={vi.fn()}
+        onResetArea={vi.fn()}
+        onResetContexts={vi.fn()}
+        onResetDueDate={vi.fn()}
+        onResetDueTime={vi.fn()}
+        onResetPriority={vi.fn()}
+        onResetProject={vi.fn()}
+        onToggleOptions={vi.fn()}
+        onToggleAddAnother={vi.fn()}
+        onToggleRecording={vi.fn()}
+        onValueChange={onValueChange}
+        optionsExpanded={optionsExpanded}
+        prioritiesEnabled
+        timeEstimatesEnabled
+        priorityLabel="Priority"
+        projectLabel="Project"
+        recording={false}
+        recordingBusy={false}
+        recordingReady={false}
+        sheetMaxHeight={500}
+        showDueTime={false}
+        t={(key) => key}
+        tc={tc}
+        value="Capture me"
+        visible
+      />
+    );
+
+    const findNote = (tree: ReturnType<typeof create>) => tree.root
+      .findAllByType(TextInput)
+      .filter((node) => node.props.accessibilityLabel === 'taskEdit.descriptionLabel');
+
+    let collapsed!: ReturnType<typeof create>;
+    act(() => {
+      collapsed = create(renderBody(false));
+    });
+    const inputs = collapsed.root.findAllByType(TextInput);
+    expect(inputs.map((node) => node.props.accessibilityLabel))
+      .toEqual(['quickAdd.inputLabel', 'taskEdit.descriptionLabel']);
+    const note = findNote(collapsed)[0];
+    expect(note.props.value).toBe('Bring the signed form');
+    expect(note.props.multiline).toBe(true);
+    expect(note.props.submitBehavior).toBe('newline');
+    expect(note.props.onSubmitEditing).toBeUndefined();
+    expect(note.props.autoFocus).not.toBe(true);
+    expect(flattenStyle(note.props.style).minHeight).toBe(44);
+    expect(flattenStyle(note.props.style).maxHeight).toBe(96);
+    const scroll = collapsed.root.findByType(ScrollView);
+    expect(scroll.findAllByType(TextInput)).toEqual([note]);
+    expect(scroll.findAllByType(TouchableOpacity).some((node) => node.props.accessibilityLabel === 'common.save')).toBe(false);
+    expect(collapsed.root.findAllByType(ScrollView)).toHaveLength(1);
+    act(() => note.props.onChangeText('Line one\n@home /due:tomorrow #literal'));
+    expect(onNoteChange).toHaveBeenCalledExactlyOnceWith('Line one\n@home /due:tomorrow #literal');
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    act(() => collapsed.update(renderBody(true)));
+    expect(findNote(collapsed)).toHaveLength(1);
+
+    expect(findNote(collapsed)[0]).toBe(note);
+    expect(collapsed.root.findByType(ScrollView).findAllByType(TextInput)).toEqual([note]);
+    expect(collapsed.root.findAllByType(ScrollView)).toHaveLength(1);
+  });
+
+  it('carries the canonical priority flag on overlay rows and tints the trigger flag when set', () => {
+
+    let pickerTree!: ReactTestRenderer;
+    act(() => {
+      pickerTree = create(
+        <QuickCaptureSheetPickers
+          filteredAreas={[]}
+          contextInputRef={{ current: null }}
+          contextOptionsLoading={false}
+          contextQuery=""
+          contextTags={[]}
+          dueDate={null}
+          filteredContexts={[]}
+          filteredProjects={[]}
+          hasAddableContextTokens={false}
+          hasExactProjectMatch={false}
+          onAddContextFromQuery={vi.fn()}
+          onClearContexts={vi.fn()}
+          onCloseAreaPicker={vi.fn()}
+          onCloseContextPicker={vi.fn()}
+          onClosePriorityPicker={vi.fn()}
+          onCloseProjectPicker={vi.fn()}
+          onContextQueryChange={vi.fn()}
+          onDueDateChange={vi.fn()}
+          onDueTimeChange={vi.fn()}
+          onProjectQueryChange={vi.fn()}
+          onRemoveContext={vi.fn()}
+          onSelectArea={vi.fn()}
+          onSelectContext={vi.fn()}
+          onSelectPriority={vi.fn()}
+          onSelectProject={vi.fn()}
+          onSubmitContextQuery={vi.fn()}
+          onSubmitProjectQuery={vi.fn()}
+          prioritiesEnabled
+          priorityOptions={['low', 'medium', 'high', 'urgent']}
+          projectQuery=""
+          selectedAreaId={null}
+          selectedPriority={null}
+          showAreaPicker={false}
+          showContextPicker={false}
+          showDatePicker={false}
+          showDueTimePicker={false}
+          showPriorityPicker
+          showProjectPicker={false}
+          t={(key) => key}
+          tc={tc}
+        />
+      );
+    });
+
+    const flagColor = (priority: string) =>
+      pickerTree.root.findByProps({ testID: `priority-flag-${priority}` }).props.color;
+    expect(flagColor('low')).toBe('#3b82f6');
+    expect(flagColor('medium')).toBe('#ca8a04');
+    expect(flagColor('high')).toBe('#f97316');
+    expect(flagColor('urgent')).toBe('#dc2626');
+    const clearFlag = pickerTree.root.findByProps({ testID: 'priority-flag-clear' });
+
+    expect(clearFlag.props.color).toBe(tc.text);
+
+
+    const renderTrigger = (selectedPriority: 'medium' | null) => {
+      let tree!: ReactTestRenderer;
+      act(() => {
+        tree = create(
+          <QuickCaptureSheetBody
+            addAnother={false}
+            selectedPriority={selectedPriority}
+            areaLabel="No Area"
+            contextLabel="Contexts"
+            dueDate={null}
+            dueLabel="Due Date"
+            dueTimeLabel="Change time"
+            handleClose={vi.fn()}
+            handleSave={vi.fn()}
+            insetsBottom={0}
+            inputRef={{ current: null }}
+            noteValue=""
+            onNoteChange={vi.fn()}
+            onOpenAreaPicker={vi.fn()}
+            onOpenContextPicker={vi.fn()}
+            onOpenDueDatePicker={vi.fn()}
+            onOpenDueTimePicker={vi.fn()}
+            onOpenPriorityPicker={vi.fn()}
+            onOpenProjectPicker={vi.fn()}
+            onQuickDueDateSelect={vi.fn()}
+            onResetArea={vi.fn()}
+            onResetContexts={vi.fn()}
+            onResetDueDate={vi.fn()}
+            onResetDueTime={vi.fn()}
+            onResetPriority={vi.fn()}
+            onResetProject={vi.fn()}
+            onToggleOptions={vi.fn()}
+            onToggleAddAnother={vi.fn()}
+            onToggleRecording={vi.fn()}
+            onValueChange={vi.fn()}
+            optionsExpanded
+            prioritiesEnabled
+            timeEstimatesEnabled
+            priorityLabel="Medium"
+            projectLabel="Project"
+            recording={false}
+            recordingBusy={false}
+            recordingReady={false}
+            saving={false}
+            sheetMaxHeight={500}
+            showDueTime={false}
+            t={(key) => key}
+            tc={tc}
+            value="Capture me"
+            visible
+          />
+        );
+      });
+      return tree;
+    };
+
+    const triggerFlag = (selectedPriority: 'medium' | null) => {
+      const chip = renderTrigger(selectedPriority).root
+        .findByProps({ accessibilityLabel: 'taskEdit.priorityLabel: Medium' });
+      return chip.findAll((node) => typeof node.props?.size === 'number');
+    };
+    expect(triggerFlag('medium').map((node) => node.props.color)).toContain('#ca8a04');
+    expect(triggerFlag(null).map((node) => node.props.color)).toContain(tc.text);
+    expect(triggerFlag(null).map((node) => node.props.color)).not.toContain('#ca8a04');
+  });
+});

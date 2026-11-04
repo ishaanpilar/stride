@@ -1,0 +1,660 @@
+import { describe, expect, it, vi } from 'vitest';
+import { NativeAttachmentCleanupUnconfirmedError } from './native-attachment-cleanup';
+import { runSerializedSyncDocumentOperation } from './data-transfer-transaction';
+import { buildDiagnosticsLogEntry, createDiagnosticsLog } from './diagnostics-log';
+import * as sandbox from './sandbox';
+import { createSyncSettingsTransport, SyncSettingsWriteError, type SyncSettingsSyncResult, type SyncSettingsToast, type SyncSettingsTransportHost } from './sync-settings-transport';
+import { SYNC_BACKEND_KEY, SYNC_PATH_BOOKMARK_KEY, SYNC_PATH_KEY, WEBDAV_PASSWORD_KEY, WEBDAV_URL_KEY, WEBDAV_USERNAME_KEY } from './sync-storage-keys';
+
+const picked = { value: null as unknown };
+
+vi.mock('./webdav', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./webdav')>()),
+    probeWebdavSyncCompatibility: async () => 'strong-etag',
+}));
+
+
+function setup(syncResults: SyncSettingsSyncResult[], coreOverrides: SyncSettingsTransportHost['core'] = {}) {
+    const storage = new Map<string, string>();
+    const secrets = new Map<string, string>();
+    const toasts: SyncSettingsToast[] = [];
+    const syncs: unknown[] = [];
+    const t = (key: string) => key;
+    const host: SyncSettingsTransportHost = {
+        params: () => ({
+            dropboxAppKey: '', dropboxConfigured: false, isExpoGo: false, isFossBuild: false,
+            getCloudKitStatusDetails: () => ({ helpText: '', syncEnabled: false }),
+            getSyncFailureToastMessage: (error) => `failed: ${error instanceof Error ? error.message : String(error)}`,
+            lastSyncStats: null, lastSyncStatus: undefined, tr: t, t,
+            resetSyncStatusForBackendSwitch: () => undefined,
+            showSettingsErrorToast: (title, message, durationMs) => toasts.push({ title, message, tone: 'error', durationMs }),
+            showSettingsWarning: (title, message, durationMs) => toasts.push({ title, message, tone: 'warning', durationMs }),
+            showToast: (toast) => toasts.push(toast),
+            supportsNativeICloudSync: false,
+        }),
+        storage: {
+            multiGet: async (keys) => keys.map((key) => [key, storage.get(key) ?? null] as const),
+            setItem: async (key, value) => { storage.set(key, value); },
+            multiSet: async (entries) => { for (const [key, value] of entries) storage.set(key, value); },
+            removeItem: async (key) => { storage.delete(key); },
+        },
+        secrets: {
+            get: async (key) => secrets.get(key) ?? null,
+            set: async (key, value) => { secrets.set(key, value); },
+            delete: async (key) => { secrets.delete(key); },
+        },
+        platform: { os: () => 'android' },
+        logInfo: () => undefined,
+        logSettingsError: () => undefined,
+        performSync: async (_path, options) => {
+            syncs.push(options);
+            return syncResults.shift() ?? { success: true };
+        },
+        clearSyncConfigCache: () => undefined,
+        reconcileBackgroundSync: async () => undefined,
+        pickSyncFolder: async () => picked.value,
+        getCloudKitAccountStatus: async () => 'unknown',
+        rememberWebdavCapabilityProof: async () => undefined,
+        encryption: { getStatus: async () => ({ state: 'off' }), getIncompleteTransition: async () => null },
+        dropbox: {} as SyncSettingsTransportHost['dropbox'],
+        core: { addBreadcrumb: () => undefined, ...coreOverrides },
+    };
+    return { transport: createSyncSettingsTransport(host), host, storage, secrets, toasts, syncs };
+}
+
+const fields = { allowInsecureHttp: false, password: 'secret', url: ' https://dav.example.com/ ', username: 'alice' };
+
+describe('sync settings transport', () => {
+    it.each(['test', 'save'].flatMap((action) => ['http', 'network', 'invalid-json'].map((reason) => ({ action, reason }))))(
+        'records bounded WebDAV $action $reason failures without activating or exposing the response', async ({ action, reason }) => {
+            const { probeWebdavSyncCompatibility } = await vi.importActual<typeof import('./webdav')>('./webdav');
+            const privateText = 'private-document https://alice:secret@dav.example.com/private';
+            const fetcher = async () => {
+                if (reason === 'network') throw new TypeError(`Network request failed ${privateText}`);
+                return new Response(privateText, { status: reason === 'http' ? 401 : 200 });
+            };
+            const { transport, host, storage, secrets, toasts, syncs } = setup([], {
+                probeWebdavSyncCompatibility: (url, options, policy) => probeWebdavSyncCompatibility(url, { ...options, fetcher }, policy),
+            });
+            const logged = vi.spyOn(host, 'logInfo');
+            const proof = vi.spyOn(host, 'rememberWebdavCapabilityProof');
+            await transport.load().done;
+            if (action === 'test') await transport.handleTestConnection('webdav', { webdav: fields });
+            else await transport.handleSaveWebDavSettings(fields);
+            const receipts = logged.mock.calls.filter(([, context]) => context.extra.releaseCheck === 'v1.3.5/webdav-setup-probe');
+            expect(receipts).toEqual([['WebDAV setup compatibility probe', {
+                scope: 'sync-settings', force: true, extra: {
+                    releaseCheck: 'v1.3.5/webdav-setup-probe', phase: 'compatibility', outcome: 'failed',
+                    reason, requireStrongEtag: 'false',
+                    ...(reason === 'http' ? { httpStatus: '401' } : {}),
+                },
+            }]]);
+            const diagnostic = JSON.stringify(receipts);
+            for (const sensitive of ['private-document', 'https://', 'alice', 'secret', 'dav.example.com', 'Network request failed']) {
+                expect(diagnostic).not.toContain(sensitive);
+            }
+            expect(toasts.at(-1)?.tone).toBe('error');
+            expect(storage.size).toBe(0);
+            expect(secrets.size).toBe(0);
+            expect(syncs).toEqual([]);
+            expect(proof).not.toHaveBeenCalled();
+        });
+
+    it('records unreadable encryption posture and keeps its original failure toast', async () => {
+        const probe = vi.fn(async () => 'strong-etag' as const);
+        const { transport, host, toasts, storage, secrets, syncs } = setup([], { probeWebdavSyncCompatibility: probe });
+        const failure = new Error('posture unavailable');
+        host.encryption.getStatus = async () => { throw failure; };
+        const logged = vi.spyOn(host, 'logInfo');
+        await transport.load().done;
+        await transport.handleTestConnection('webdav', { webdav: fields });
+        expect(logged).toHaveBeenCalledWith('WebDAV setup compatibility probe', {
+            scope: 'sync-settings', force: true, extra: {
+                releaseCheck: 'v1.3.5/webdav-setup-probe', phase: 'encryption-status', outcome: 'failed',
+                reason: 'encryption-status-unavailable', requireStrongEtag: 'unknown',
+            },
+        });
+        expect(toasts.at(-1)?.message).toBe(failure.message);
+        expect(probe).not.toHaveBeenCalled();
+        expect(storage.size + secrets.size).toBe(0);
+        expect(syncs).toEqual([]);
+    });
+
+    it.each([false, true])('preserves successful activation and the logging gate in sandbox=%s', async (sandboxMode) => {
+        const mode = vi.spyOn(sandbox, 'isSandboxMode').mockReturnValue(sandboxMode);
+        try {
+            const { transport, host, storage, secrets, syncs } = setup([]);
+            const logged = vi.spyOn(host, 'logInfo');
+            await transport.load().done;
+            await transport.handleSaveWebDavSettings(fields);
+            expect(logged).toHaveBeenCalledWith('WebDAV setup compatibility probe', {
+                scope: 'sync-settings', force: !sandboxMode, extra: {
+                    releaseCheck: 'v1.3.5/webdav-setup-probe', phase: 'compatibility', outcome: 'completed',
+                    reason: 'strong-etag', requireStrongEtag: 'false',
+                },
+            });
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+            expect(secrets.get(WEBDAV_PASSWORD_KEY)).toBe(fields.password);
+            expect(syncs).toHaveLength(2);
+        } finally { mode.mockRestore(); }
+    });
+
+    it.each([false, true].flatMap((sandboxMode) => [false, true].map((enabled) => ({ sandboxMode, enabled }))))(
+        'writes the probe through the real log gate with sandbox=$sandboxMode logging=$enabled', async ({ sandboxMode, enabled }) => {
+            const mode = vi.spyOn(sandbox, 'isSandboxMode').mockReturnValue(sandboxMode);
+            try {
+                let text = '';
+                const log = createDiagnosticsLog({ isEnabled: () => enabled, files: [{
+                    path: async () => 'log', ensure: async () => 'log', exists: async () => true,
+                    read: async () => text, write: async (value) => { text = value; }, delete: async () => true,
+                }] });
+                const { transport, host } = setup([]);
+                const writes: Promise<unknown>[] = [];
+                host.logInfo = (message, context) => {
+                    const pending = log.append(buildDiagnosticsLogEntry('info', message, context), { force: context.force });
+                    writes.push(pending);
+                    return pending;
+                };
+                await transport.load().done;
+                await transport.handleTestConnection('webdav', { webdav: fields });
+                await Promise.all(writes);
+                expect(text.includes('v1.3.5/webdav-setup-probe')).toBe(!sandboxMode || enabled);
+            } finally { mode.mockRestore(); }
+        });
+
+    it.each(['throw', 'reject'] as const)('preserves the original compatibility guard when diagnostics %s', async (sink) => {
+        const { transport, host, toasts, storage, secrets, syncs } = setup([], {
+            probeWebdavSyncCompatibility: async () => 'legacy-plaintext',
+        });
+        host.encryption.getStatus = async () => ({ state: 'on' });
+        await transport.load().done;
+        host.logInfo = sink === 'throw'
+            ? () => { throw new Error('log unavailable'); }
+            : () => Promise.reject(new Error('log unavailable'));
+        await transport.handleTestConnection('webdav', { webdav: fields });
+        expect(toasts.at(-1)?.message).toBe('settings.syncEncryptionErrorBackendIncompatible');
+        expect(storage.size + secrets.size).toBe(0);
+        expect(syncs).toEqual([]);
+    });
+
+    it.each(['throw', 'reject'] as const)('preserves probe success when diagnostics %s', async (sink) => {
+        const { transport, host, toasts } = setup([]);
+        await transport.load().done;
+        host.logInfo = sink === 'throw'
+            ? () => { throw new Error('log unavailable'); }
+            : () => Promise.reject(new Error('log unavailable'));
+        await transport.handleTestConnection('webdav', { webdav: fields });
+        expect(toasts.at(-1)?.tone).toBe('success');
+    });
+
+    it.each(['401 private', NaN, 600, 0])('omits an unsafe HTTP status %s from the receipt', async (status) => {
+        const { transport, host } = setup([], {
+            probeWebdavSyncCompatibility: async () => { throw Object.assign(new Error('private'), { status }); },
+        });
+        await transport.load().done;
+        const logged = vi.spyOn(host, 'logInfo');
+        await transport.handleTestConnection('webdav', { webdav: fields });
+        expect(logged.mock.calls[0][1].extra).toMatchObject({ reason: 'unknown', outcome: 'failed' });
+        expect(logged.mock.calls[0][1].extra).not.toHaveProperty('httpStatus');
+        expect(JSON.stringify(logged.mock.calls)).not.toContain('private');
+    });
+
+    it.each(['verification', 'first sync', 'sync now'] as const)('propagates fatal cleanup during WebDAV %s without any later callback', async (phase) => {
+        const { transport, host, storage, secrets, toasts } = setup([]);
+        if (phase === 'sync now') {
+            storage.set(SYNC_BACKEND_KEY, 'webdav');
+            storage.set(WEBDAV_URL_KEY, fields.url.trim());
+            storage.set(WEBDAV_USERNAME_KEY, fields.username);
+            secrets.set(WEBDAV_PASSWORD_KEY, fields.password);
+        }
+        await transport.load().done;
+        const params = host.params();
+        host.params = () => params;
+        const changed = vi.fn();
+        transport.subscribe(changed);
+        const ports = [
+            vi.spyOn(host.storage, 'multiGet'), vi.spyOn(host.storage, 'setItem'),
+            vi.spyOn(host.storage, 'multiSet'), vi.spyOn(host.storage, 'removeItem'),
+            vi.spyOn(host.secrets, 'get'), vi.spyOn(host.secrets, 'set'), vi.spyOn(host.secrets, 'delete'),
+            vi.spyOn(host, 'logInfo'), vi.spyOn(host, 'logSettingsError'),
+            vi.spyOn(host, 'clearSyncConfigCache'), vi.spyOn(host, 'reconcileBackgroundSync'),
+            vi.spyOn(host, 'rememberWebdavCapabilityProof'),
+            vi.spyOn(host.encryption, 'getStatus'), vi.spyOn(host.encryption, 'getIncompleteTransition'),
+            vi.spyOn(params, 'getSyncFailureToastMessage'), changed,
+        ];
+        const fatal = new NativeAttachmentCleanupUnconfirmedError();
+        let calls = 0;
+        let at!: { counts: number[]; storage: [string, string][]; secrets: [string, string][]; toasts: SyncSettingsToast[] };
+        host.performSync = async () => {
+            if (phase === 'first sync' && calls++ === 0) return { success: true };
+            at = { counts: ports.map((port) => port.mock.calls.length), storage: [...storage], secrets: [...secrets], toasts: [...toasts] };
+            throw fatal;
+        };
+        const result = phase === 'sync now'
+            ? transport.handleSync({ backend: 'webdav', webdav: { ...fields, url: fields.url.trim() } })
+            : transport.handleSaveWebDavSettings(fields);
+        await expect(result).rejects.toBe(fatal);
+        expect(ports.map((port) => port.mock.calls.length)).toEqual(at.counts);
+        expect([...storage]).toEqual(at.storage);
+        expect([...secrets]).toEqual(at.secrets);
+        expect(toasts).toEqual(at.toasts);
+        expect(transport.getState().isSyncing).toBe(true);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe(phase === 'verification' ? undefined : 'webdav');
+        expect(secrets.get(WEBDAV_PASSWORD_KEY)).toBe(phase === 'verification' ? undefined : fields.password);
+    });
+
+    it('handles an ordinary error with the fatal class name through the normal toast and state reset', async () => {
+        const { transport, host, toasts } = setup([]);
+        await transport.load().done;
+        const ordinary = Object.assign(new Error('ordinary sync failure'), { name: 'NativeAttachmentCleanupUnconfirmedError' });
+        host.performSync = async () => { throw ordinary; };
+        await transport.handleSaveWebDavSettings(fields);
+        expect(toasts).toEqual([{ title: 'settings.syncMobile.error', message: 'failed: ordinary sync failure', tone: 'error', durationMs: undefined }]);
+        expect(transport.getState().isSyncing).toBe(false);
+    });
+
+    it.each(['fatal', 'ordinary'] as const)('handles a held background-reconcile %s rejection after the first sync refuses', async (kind) => {
+        const { transport, host, storage, secrets } = setup([]);
+        await transport.load().done;
+        let rejectReconcile!: (error: Error) => void;
+        host.reconcileBackgroundSync = () => new Promise<void>((_resolve, reject) => { rejectReconcile = reject; });
+        const logged = vi.spyOn(host, 'logSettingsError');
+        const fatal = new NativeAttachmentCleanupUnconfirmedError();
+        let calls = 0;
+        host.performSync = async () => {
+            if (calls++ === 0) return { success: true };
+            throw fatal;
+        };
+        await expect(transport.handleSaveWebDavSettings(fields)).rejects.toBe(fatal);
+        expect(rejectReconcile).toBeDefined();
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(secrets.get(WEBDAV_PASSWORD_KEY)).toBe(fields.password);
+        expect(logged).not.toHaveBeenCalled();
+        const failure = kind === 'fatal' ? fatal : new Error('ordinary reconciliation failure');
+        rejectReconcile(failure);
+        await Promise.resolve();
+        if (kind === 'fatal') expect(logged).not.toHaveBeenCalled();
+        else expect(logged).toHaveBeenCalledWith(expect.objectContaining({ name: 'Error', message: failure.message }));
+    });
+
+    it('never saves a configuration whose first round trip failed', async () => {
+        const { transport, storage, secrets, toasts } = setup([{ success: false, error: 'HTTP 500' }]);
+        await transport.load().done;
+        await transport.handleSaveWebDavSettings(fields);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBeUndefined();
+        expect(storage.get(WEBDAV_URL_KEY)).toBeUndefined();
+        expect(secrets.size).toBe(0);
+        expect(toasts).toEqual([{ title: 'settings.syncMobile.error', message: 'failed: HTTP 500', tone: 'error', durationMs: undefined }]);
+
+        expect(transport.getState()).toMatchObject({ syncBackend: 'webdav', webdavUrl: 'https://dav.example.com/', isSyncing: false });
+        expect(transport.getProven()).toEqual({ backend: 'off', cloudProvider: 'selfhosted', pending: true });
+    });
+
+    describe('activation that finds attachment files on neither this device nor the new location', () => {
+        const missing = [{ id: 'a1', ownerType: 'task' as const, ownerId: 't1', title: 'scan.pdf', ownerTitle: 'Tax return' }];
+        const refusal: SyncSettingsSyncResult = {
+            success: false,
+            error: 'Candidate attachment proof failed for "scan.pdf" on task "Tax return"',
+            activationMissingAttachments: missing,
+        };
+        const webdavProbe = { activationProbe: true, manual: true, configOverride: { backend: 'webdav', webdav: { allowInsecureHttp: false, password: 'secret', url: 'https://dav.example.com/', username: 'alice' } } };
+        const withConfirm = (answer: boolean) => {
+            const harness = setup([refusal]);
+            const confirm = vi.fn(async () => answer);
+            const params = harness.host.params;
+            harness.host.params = () => ({ ...params(), confirmActivationWithoutFiles: confirm });
+            return { ...harness, confirm };
+        };
+
+        it('continues without them when the user says so, then activates', async () => {
+            const { transport, storage, syncs, confirm } = withConfirm(true);
+            await transport.load().done;
+            await transport.handleSaveWebDavSettings(fields);
+            expect(confirm).toHaveBeenCalledWith(missing);
+            expect(syncs).toEqual([
+                webdavProbe,
+                { ...webdavProbe, acceptMissingAttachmentIds: ['a1'] },
+                { manual: true, ignorePendingRemoteWriteBackoff: true },
+            ]);
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        });
+
+        it('keeps everything as it is on Cancel', async () => {
+            const { transport, storage, secrets, syncs, toasts } = withConfirm(false);
+            await transport.load().done;
+            await transport.handleSaveWebDavSettings(fields);
+            expect(syncs).toEqual([webdavProbe]);
+            expect(storage.get(SYNC_BACKEND_KEY)).toBeUndefined();
+            expect(secrets.size).toBe(0);
+            expect(toasts).toEqual([]);
+            expect(transport.getState().isSyncing).toBe(false);
+        });
+
+        it('shows the refusal as an error on a host that cannot ask', async () => {
+            const { transport, storage, syncs, toasts } = setup([refusal]);
+            await transport.load().done;
+            await transport.handleSaveWebDavSettings(fields);
+            expect(syncs).toEqual([webdavProbe]);
+            expect(storage.get(SYNC_BACKEND_KEY)).toBeUndefined();
+            expect(toasts.at(-1)).toMatchObject({ tone: 'error', message: `failed: ${refusal.error}` });
+        });
+    });
+
+    it('stores a proven WebDAV configuration, then runs the first sync', async () => {
+        const { transport, storage, secrets, syncs } = setup([]);
+        await transport.load().done;
+        await transport.handleSaveWebDavSettings(fields);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(storage.get(WEBDAV_URL_KEY)).toBe('https://dav.example.com/');
+        expect(secrets.get(WEBDAV_PASSWORD_KEY)).toBe('secret');
+        expect(syncs).toEqual([
+            { activationProbe: true, manual: true, configOverride: { backend: 'webdav', webdav: { allowInsecureHttp: false, password: 'secret', url: 'https://dav.example.com/', username: 'alice' } } },
+            { manual: true, ignorePendingRemoteWriteBackoff: true },
+        ]);
+        expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: false });
+    });
+
+    it('stages a backend whose settings are incomplete, and a build without Dropbox ignores Dropbox', async () => {
+        const { transport, storage, syncs } = setup([]);
+        await transport.load().done;
+        expect(transport.handleSelectSyncBackend('webdav')).toBeUndefined();
+        expect(transport.handleSelectCloudProvider('dropbox')).toBeUndefined();
+        expect(transport.getState().syncBackend).toBe('webdav');
+        expect(syncs).toEqual([]);
+        expect(storage.size).toBe(0);
+    });
+
+    it('warns once about insecure HTTP when a form is saved, not once for the save and again for its first sync', async () => {
+        const { transport, toasts, storage } = setup([]);
+        await transport.load().done;
+        await transport.handleSaveWebDavSettings({ ...fields, url: 'http://dav.example.com', allowInsecureHttp: true });
+        await transport.handleSaveSelfHostedSettings({ allowInsecureHttp: true, token: 'abcdefghijklmnopqrstuvwxyz012345', url: 'http://cloud.example.com' });
+        expect(toasts.map((toast) => toast.title)).toEqual([
+            'settings.syncMobile.insecureHttpEnabled', 'common.success',
+            'settings.syncMobile.insecureHttpEnabled', 'common.success',
+        ]);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('cloud');
+
+        await transport.handleSync({ backend: 'cloud', cloudProvider: 'selfhosted', cloud: { allowInsecureHttp: true, token: 'abcdefghijklmnopqrstuvwxyz012345', url: 'http://cloud.example.com' } });
+        expect(toasts.slice(4).map((toast) => toast.title)).toEqual(['settings.syncMobile.insecureHttpEnabled', 'common.success']);
+    });
+
+    it('stores a folder picked without a bookmark with no bookmark, not the previous folder\'s', async () => {
+        const { transport, storage, syncs } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'file');
+        storage.set(SYNC_PATH_KEY, 'file:///old/data.json');
+        storage.set(SYNC_PATH_BOOKMARK_KEY, 'old-bookmark');
+        await transport.load().done;
+        picked.value = { __fileUri: 'file:///new/data.json' };
+        await transport.handleSetSyncPath();
+        expect(syncs[0]).toMatchObject({ configOverride: { backend: 'file', syncPath: 'file:///new/data.json', syncPathBookmark: null } });
+        expect(storage.get(SYNC_PATH_KEY)).toBe('file:///new/data.json');
+        expect(storage.has(SYNC_PATH_BOOKMARK_KEY)).toBe(false);
+    });
+
+    it('keeps showing the stored backend when Off cannot be stored, and rejects so the caller can say so', async () => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        storage.set(WEBDAV_URL_KEY, 'https://dav.example.com');
+        await transport.load().done;
+        const setItem = host.storage.setItem;
+        host.storage.setItem = async (key, value) => {
+            if (key === SYNC_BACKEND_KEY) throw new Error('The device store refused the write');
+            return setItem(key, value);
+        };
+        await expect(transport.handleSelectSyncBackend('off')).rejects.toBeInstanceOf(SyncSettingsWriteError);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(transport.getState().syncBackend).toBe('webdav');
+        expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: false });
+    });
+
+    it('refuses Off during an unfinished encryption change without losing the saved target or announcing Off', async () => {
+        const { transport, storage, host, toasts } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        storage.set(WEBDAV_URL_KEY, 'https://dav.example.com');
+        await transport.load().done;
+        const params = host.params();
+        host.params = () => params;
+        host.encryption.getStatus = async () => ({ state: 'off', incompleteTransition: 'enable' });
+        host.encryption.getIncompleteTransition = async () => 'enable';
+        const setItem = vi.spyOn(host.storage, 'setItem');
+        const reset = vi.spyOn(params, 'resetSyncStatusForBackendSwitch');
+        const logged = vi.spyOn(host, 'logInfo');
+        await expect(transport.handleSelectSyncBackend('off')).rejects.toThrow('SYNC_ENCRYPTION_TRANSITION_INCOMPLETE');
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(setItem).not.toHaveBeenCalled();
+        expect(reset).not.toHaveBeenCalled();
+        expect(transport.getState().syncBackend).toBe('webdav');
+        expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: false });
+        expect(toasts).toContainEqual(expect.objectContaining({
+            tone: 'warning', message: 'settings.syncEncryptionErrorTransitionIncomplete',
+        }));
+        expect(logged).toHaveBeenCalledWith('Sync Off refused during incomplete encryption transition', {
+            scope: 'sync-settings', force: true, extra: {
+                releaseCheck: 'v1.3.5/sync-encryption-off-guard', operation: 'select-off', outcome: 'refused',
+            },
+        });
+    });
+
+    it.each(['status', 'journal'] as const)('fails closed when encryption %s cannot be read', async (unreadable) => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        await transport.load().done;
+        const params = host.params();
+        host.params = () => params;
+        if (unreadable === 'status') host.encryption.getStatus = async () => { throw new Error('status unavailable'); };
+        else host.encryption.getIncompleteTransition = async () => { throw new Error('journal unavailable'); };
+        const setItem = vi.spyOn(host.storage, 'setItem');
+        const reset = vi.spyOn(params, 'resetSyncStatusForBackendSwitch');
+        await expect(transport.handleSelectSyncBackend('off')).rejects.toBeInstanceOf(SyncSettingsWriteError);
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(setItem).not.toHaveBeenCalled();
+        expect(reset).not.toHaveBeenCalled();
+        expect(transport.getState().syncBackend).toBe('webdav');
+    });
+
+    it('keeps the original refusal when the forced diagnostic sink fails', async () => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        await transport.load().done;
+        host.encryption.getStatus = async () => ({ state: 'off', incompleteTransition: 'enable' });
+        host.encryption.getIncompleteTransition = async () => 'enable';
+        host.logInfo = async () => { throw new Error('diagnostic sink unavailable'); };
+        await expect(transport.handleSelectSyncBackend('off')).rejects.toThrow('SYNC_ENCRYPTION_TRANSITION_INCOMPLETE');
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        expect(transport.getState().syncBackend).toBe('webdav');
+    });
+
+    it('checks the journal after earlier document work before writing Off', async () => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        await transport.load().done;
+        let release!: () => void;
+        let entered!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        let incomplete = false;
+        host.encryption.getStatus = async () => ({ state: 'off', incompleteTransition: incomplete ? 'enable' : null });
+        host.encryption.getIncompleteTransition = async () => incomplete ? 'enable' : null;
+        const prior = runSerializedSyncDocumentOperation(async () => { entered(); await held; incomplete = true; });
+        await started;
+        const off = transport.handleSelectSyncBackend('off');
+        try {
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+            expect(transport.getState().syncBackend).toBe('webdav');
+            release();
+            await prior;
+            await expect(off).rejects.toThrow('SYNC_ENCRYPTION_TRANSITION_INCOMPLETE');
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+        } finally {
+            release();
+            await off.catch(() => undefined);
+        }
+    });
+
+    it('never echoes the password in a failure toast', async () => {
+        const { transport, toasts } = setup([{ success: false, error: 'server said: bad password secret-pw for alice' }]);
+        await transport.load().done;
+        await transport.handleSaveWebDavSettings({ ...fields, password: 'secret-pw' });
+        expect(toasts).toHaveLength(1);
+        expect(JSON.stringify(toasts)).not.toContain('secret-pw');
+    });
+
+    it('does not let a queued Off request overwrite a later staged backend selection', async () => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        storage.set(WEBDAV_URL_KEY, 'https://dav.example.com');
+        await transport.load().done;
+        let release!: () => void;
+        let entered!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        const prior = runSerializedSyncDocumentOperation(async () => { entered(); await held; });
+        await started;
+        const setItem = vi.spyOn(host.storage, 'setItem');
+        const firstOff = transport.handleSelectSyncBackend('off');
+        transport.handleSelectSyncBackend('file');
+        try {
+            release();
+            await prior;
+            await expect(firstOff).rejects.toThrow('newer sync backend selection');
+            expect(setItem).not.toHaveBeenCalled();
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+            expect(transport.getState().syncBackend).toBe('file');
+            expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: true });
+        } finally {
+            release();
+            await firstOff.catch(() => undefined);
+        }
+    });
+
+    it.each(['successful sync', 'encrypted remote', 'after activation commit'] as const)(
+        'keeps a later Off selection authoritative after activation completes (%s)', async (phase) => {
+            const { transport, storage, host, syncs } = setup([]);
+            storage.set(SYNC_BACKEND_KEY, 'off');
+            storage.set(SYNC_PATH_KEY, 'file:///sync/data.json');
+            await transport.load().done;
+            let release!: () => void;
+            let entered!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const started = new Promise<void>((resolve) => { entered = resolve; });
+            host.performSync = async (_path, options) => runSerializedSyncDocumentOperation(async () => {
+                syncs.push(options);
+                if (options.activationProbe) { entered(); await held; }
+                return phase === 'encrypted remote'
+                    ? { success: false, activationProof: 'remote-encrypted-no-key' }
+                    : { success: true };
+            });
+            let off: Promise<void> | undefined;
+            host.reconcileBackgroundSync = async () => {
+                if (phase === 'after activation commit' && !off) off = transport.handleSelectSyncBackend('off');
+            };
+            const logged = vi.spyOn(host, 'logInfo');
+            const activation = transport.handleSelectSyncBackend('file');
+            await started;
+            if (phase !== 'after activation commit') off = transport.handleSelectSyncBackend('off');
+            try {
+                release();
+                await activation;
+                await expect(off).resolves.toBeUndefined();
+                expect(storage.get(SYNC_BACKEND_KEY)).toBe('off');
+                expect(transport.getState()).toMatchObject({ syncBackend: 'off', isSyncing: false });
+                expect(transport.getProven()).toEqual({ backend: 'off', cloudProvider: 'selfhosted', pending: false });
+                expect(syncs).toEqual([
+                    { activationProbe: true, manual: true, configOverride: { backend: 'file', syncPath: 'file:///sync/data.json', syncPathBookmark: null } },
+                ]);
+                expect(logged).toHaveBeenCalledWith('Sync activation proof superseded by a later backend selection', {
+                    scope: 'sync-settings', extra: {
+                        releaseCheck: 'v1.3.5/sync-setup-stale-proof', outcome: 'superseded',
+                    },
+                });
+            } finally {
+                release();
+                await off?.catch(() => undefined);
+                await activation;
+            }
+        },
+    );
+
+    it('activates a current encrypted-remote proof without a follow-on sync', async () => {
+        const { transport, storage, syncs, toasts } = setup([
+            { success: false, activationProof: 'remote-encrypted-no-key' },
+        ]);
+        storage.set(SYNC_BACKEND_KEY, 'off');
+        storage.set(SYNC_PATH_KEY, 'file:///sync/data.json');
+        await transport.load().done;
+        await transport.handleSelectSyncBackend('file');
+        expect(storage.get(SYNC_BACKEND_KEY)).toBe('file');
+        expect(transport.getProven()).toEqual({ backend: 'file', cloudProvider: 'selfhosted', pending: false });
+        expect(syncs).toHaveLength(1);
+        expect(toasts).toContainEqual(expect.objectContaining({ tone: 'warning', message: 'settings.syncEncryptionRemoteEncrypted' }));
+    });
+
+    it('keeps a later selection visible while an admitted Off write commits, then activates that selection', async () => {
+        const { transport, storage, secrets, host, syncs } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        storage.set(WEBDAV_URL_KEY, 'https://dav.example.com');
+        storage.set(WEBDAV_USERNAME_KEY, 'alice');
+        secrets.set(WEBDAV_PASSWORD_KEY, 'secret');
+        await transport.load().done;
+        host.performSync = async (_path, options) => runSerializedSyncDocumentOperation(async () => {
+            syncs.push(options);
+            return { success: true };
+        });
+        let release!: () => void;
+        let entered!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        const setItem = host.storage.setItem;
+        host.storage.setItem = async (key, value) => {
+            if (key === SYNC_BACKEND_KEY && value === 'off') { entered(); await held; }
+            await setItem(key, value);
+        };
+        const off = transport.handleSelectSyncBackend('off');
+        await started;
+        expect(transport.getState().syncBackend).toBe('webdav');
+        expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: false });
+        const selected = transport.handleSelectSyncBackend('webdav');
+        try {
+            release();
+            await expect(off).rejects.toThrow('newer sync backend selection');
+            await selected;
+            expect(syncs.length).toBeGreaterThan(0);
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('webdav');
+            expect(transport.getState().syncBackend).toBe('webdav');
+            expect(transport.getProven()).toEqual({ backend: 'webdav', cloudProvider: 'selfhosted', pending: false });
+        } finally {
+            release();
+            await off.catch(() => undefined);
+            await selected;
+        }
+    });
+
+    it('represents durable Off as proven while keeping a later incomplete selection staged', async () => {
+        const { transport, storage, host } = setup([]);
+        storage.set(SYNC_BACKEND_KEY, 'webdav');
+        await transport.load().done;
+        let release!: () => void;
+        let entered!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        const setItem = host.storage.setItem;
+        host.storage.setItem = async (key, value) => {
+            if (key === SYNC_BACKEND_KEY && value === 'off') { entered(); await held; }
+            await setItem(key, value);
+        };
+        const off = transport.handleSelectSyncBackend('off');
+        await started;
+        expect(transport.handleSelectSyncBackend('file')).toBeUndefined();
+        try {
+            release();
+            await expect(off).rejects.toThrow('newer sync backend selection');
+            expect(storage.get(SYNC_BACKEND_KEY)).toBe('off');
+            expect(transport.getState().syncBackend).toBe('file');
+            expect(transport.getProven()).toEqual({ backend: 'off', cloudProvider: 'selfhosted', pending: true });
+        } finally {
+            release();
+            await off.catch(() => undefined);
+        }
+    });
+});

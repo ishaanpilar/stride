@@ -1,0 +1,29 @@
+app-id: com.ishaanpilar.stride
+finish-args:
+  - --socket=wayland
+  - --share=network
+  - --talk-name=org.com_ishaanpilar_stride.SingleInstance
+build-options:
+  env:
+    - VITE_ANALYTICS_HEARTBEAT_URL=https://old.example/
+    - VITE_DROPBOX_APP_KEY=old-key
+modules:
+  - name: helper
+    buildsystem: simple
+  - name: stride
+    buildsystem: simple
+    build-commands:
+      - |
+        if requested_spec.startswith(("file:", "workspace:", "git+", "github:", "http:", "https:", "link:", "npm:")):
+            continue
+        locked = packages.get(f"node_modules/{dependency_name}")
+      - cargo --offline build --manifest-path apps/desktop/src-tauri/Cargo.toml --bins --features tauri/custom-protocol --release
+      - install -Dm755 apps/desktop/src-tauri/target/release/stride /app/bin/stride
+    sources:
+      - type: patch
+        path: appstream-homepage.patch
+      - type: git
+        url: https://github.com/ishaanpilar/stride.git
+        commit: 0123456789abcdef0123456789abcdef01234567
+      - type: patch
+        path: patches/stride-hotfix.patch

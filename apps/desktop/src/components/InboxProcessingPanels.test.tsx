@@ -1,0 +1,565 @@
+import { useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render } from '@testing-library/react';
+import { createTaskDraft, setTaskDraftField, type Project, type Task, type TaskDraft, type TaskDraftField } from '@stride/core';
+
+import { LanguageProvider } from '../contexts/language-context';
+import { InboxProcessingQuickPanel, type InboxProcessingQuickPanelProps } from './InboxProcessingQuickPanel';
+import { InboxProcessingWizard, type InboxProcessingWizardProps, type ProcessingStep } from './InboxProcessingWizard';
+import type {
+    InboxProcessingOptionLists,
+    InboxProcessingVisibility,
+} from './views/inbox/inbox-processing-utils';
+
+const t = (key: string) => key;
+
+const processingTask: Task = {
+    id: 'task-1',
+    title: 'Plan launch',
+    status: 'inbox',
+    contexts: [],
+    tags: [],
+    createdAt: '2026-07-30T00:00:00.000Z',
+    updatedAt: '2026-07-30T00:00:00.000Z',
+};
+
+const similarTask: Task = {
+    ...processingTask,
+    id: 'task-similar',
+    title: 'Plan the product launch with a title long enough to wrap instead of truncating',
+    status: 'done',
+    projectId: 'project-launch',
+};
+
+const similarProject: Project = {
+    id: 'project-launch',
+    title: 'Launch project',
+    status: 'active',
+    color: '#2563eb',
+    order: 0,
+    tagIds: [],
+    createdAt: '2026-07-30T00:00:00.000Z',
+    updatedAt: '2026-07-30T00:00:00.000Z',
+};
+
+const visibility: InboxProcessingVisibility = {
+    showProjectField: true,
+    showAreaField: true,
+    showContextsField: true,
+    showTagsField: true,
+    showPriorityField: true,
+    showEnergyLevelField: true,
+    showAssignedToField: true,
+    showTimeEstimateField: true,
+    showScheduleFields: false,
+    showReferenceOption: true,
+};
+
+const options: InboxProcessingOptionLists = {
+    projects: [],
+    sections: [],
+    areas: [],
+    allContexts: [],
+    allTags: [],
+    suggestedContexts: ['@home', '@office'],
+    suggestedTags: ['#deep'],
+    personOptions: [],
+    timeEstimateOptions: ['30min', '1hr'],
+};
+
+const noop = vi.fn();
+
+const scheduleField = () => ({
+    date: '',
+    timeDraft: '',
+    hasTime: false,
+    onDateChange: noop,
+    onTimeDraftChange: noop,
+    onTimeCommit: noop,
+    onClear: noop,
+    onDateOnly: noop,
+});
+
+const scheduleFields = {
+    start: scheduleField(),
+    due: scheduleField(),
+    review: scheduleField(),
+};
+
+
+const useLiveDraft = (initial: Partial<TaskDraft> = {}) => {
+    const [draft, setDraft] = useState<TaskDraft>(() => ({ ...createTaskDraft(processingTask), ...initial }));
+    return {
+        draft,
+        setField: <K extends TaskDraftField>(field: K, value: TaskDraft[K]) => {
+            setDraft((current) => setTaskDraftField(current, field, value));
+        },
+    };
+};
+
+type HarnessDraft = { initialDraft?: Partial<TaskDraft> };
+
+function QuickPanelHarness({ initialDraft, ...overrides }: Partial<InboxProcessingQuickPanelProps> & HarnessDraft = {}) {
+    const { draft, setField } = useLiveDraft(initialDraft);
+
+    return (
+        <LanguageProvider>
+        <InboxProcessingQuickPanel
+            t={t}
+            processingTask={processingTask}
+            remainingCount={1}
+            draft={draft}
+            setField={setField}
+            similarTasks={[]}
+            visibility={visibility}
+            options={options}
+            processingMode="quick"
+            onModeChange={noop}
+            onSkip={noop}
+            isReturningItem={false}
+            onClose={noop}
+            actionabilityChoice="actionable"
+            setActionabilityChoice={noop}
+            twoMinuteChoice="no"
+            setTwoMinuteChoice={noop}
+            executionChoice="defer"
+            setExecutionChoice={noop}
+            scheduleFields={scheduleFields}
+            visibleScheduleFieldKeys={[]}
+            delegateWho=""
+            setDelegateWho={noop}
+            delegateFollowUp=""
+            setDelegateFollowUp={noop}
+            onSendDelegateRequest={noop}
+            onCreatePerson={noop}
+            onCreateSomedaySection={noop as InboxProcessingQuickPanelProps['onCreateSomedaySection']}
+            onCreateSection={noop as InboxProcessingQuickPanelProps['onCreateSection']}
+            toggleContext={noop}
+            toggleTag={noop}
+            convertToProject={false}
+            setConvertToProject={noop}
+            nextActionDraft=""
+            setNextActionDraft={noop}
+            extraActionDrafts={[]}
+            setExtraActionDrafts={noop}
+            addProject={async () => null}
+            onSubmit={noop}
+            {...overrides}
+        />
+        </LanguageProvider>
+    );
+}
+
+function WizardHarness({ processingStep = 'refine' as ProcessingStep, initialDraft, ...overrides }: Partial<InboxProcessingWizardProps> & HarnessDraft = {}) {
+    const { draft, setField } = useLiveDraft(initialDraft);
+
+    return (
+        <LanguageProvider>
+        <InboxProcessingWizard
+            t={t}
+            isProcessing
+            processingTask={processingTask}
+            processingMode="guided"
+            onModeChange={noop}
+            processingStep={processingStep}
+            draft={draft}
+            setField={setField}
+            similarTasks={[]}
+            visibility={visibility}
+            options={options}
+            setIsProcessing={noop}
+            canGoBack={false}
+            onBack={noop}
+            handleRefineNext={noop}
+            handleSkip={noop}
+            handleNotActionable={noop}
+            handleLater={noop}
+            handleIncubate={noop}
+            isReturningItem={false}
+            handleActionable={noop}
+            showDoneNowShortcut={false}
+            handleProjectCheckNo={noop}
+            handleProjectCheckYes={noop}
+            handleTwoMinDone={noop}
+            handleTwoMinNo={noop}
+            handleDefer={noop}
+            handleDelegate={noop}
+            delegateWho=""
+            setDelegateWho={noop}
+            delegateFollowUp=""
+            setDelegateFollowUp={noop}
+            handleDelegateBack={noop}
+            handleSendDelegateRequest={noop}
+            handleConfirmWaiting={noop}
+            handleConfirmReference={noop}
+            handleConfirmSomeday={noop}
+            onCreatePerson={noop}
+            onCreateSomedaySection={noop as InboxProcessingWizardProps['onCreateSomedaySection']}
+            onCreateSection={noop as InboxProcessingWizardProps['onCreateSection']}
+            customContext=""
+            setCustomContext={noop}
+            addCustomContext={noop}
+            customTag=""
+            setCustomTag={noop}
+            addCustomTag={noop}
+            toggleContext={noop}
+            toggleTag={noop}
+            handleConfirmContexts={noop}
+            convertToProject={false}
+            setConvertToProject={noop}
+            setNextActionDraft={noop}
+            nextActionDraft=""
+            extraActionDrafts={[]}
+            setExtraActionDrafts={noop}
+            handleConvertToProject={noop}
+            projectSearch=""
+            setProjectSearch={noop}
+            filteredProjects={[]}
+            addProject={async () => null}
+            handleSetProject={noop}
+            hasExactProjectMatch={false}
+            areaById={new Map()}
+            remainingCount={1}
+            showProjectInRefine={false}
+            scheduleFields={scheduleFields}
+            visibleScheduleFieldKeys={[]}
+            {...overrides}
+        />
+        </LanguageProvider>
+    );
+}
+
+describe('Inbox processing similar-task hint', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    it.each([
+        ['guided', () => render(<WizardHarness
+            similarTasks={[similarTask]}
+            options={{ ...options, projects: [similarProject] }}
+        />)],
+        ['quick', () => render(<QuickPanelHarness
+            similarTasks={[similarTask]}
+            options={{ ...options, projects: [similarProject] }}
+        />)],
+    ] as const)('shows the read-only hint below the title in %s mode', (_mode, renderPanel) => {
+        const view = renderPanel();
+        const hint = view.getByRole('region', { name: 'process.similarTasks' });
+
+        expect(hint).toHaveTextContent(similarTask.title);
+        expect(hint).toHaveTextContent('status.done');
+        expect(hint).toHaveTextContent(similarProject.title);
+        expect(view.getByDisplayValue(processingTask.title)).toBeEnabled();
+    });
+
+    it.each([
+        ['guided', () => render(<WizardHarness />)],
+        ['quick', () => render(<QuickPanelHarness />)],
+    ] as const)('does not render an empty hint in %s mode', (_mode, renderPanel) => {
+        expect(renderPanel().queryByRole('region', { name: 'process.similarTasks' })).toBeNull();
+    });
+});
+
+describe('InboxProcessingQuickPanel draft editing', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    it('writes title edits through the draft', () => {
+        const { getByLabelText } = render(<QuickPanelHarness />);
+        const title = getByLabelText('taskEdit.titleLabel') as HTMLInputElement;
+
+        expect(title.value).toBe('Plan launch');
+        fireEvent.change(title, { target: { value: 'Clarified launch' } });
+
+        expect((getByLabelText('taskEdit.titleLabel') as HTMLInputElement).value).toBe('Clarified launch');
+    });
+
+    it('lets a quick-mode project conversion collect more than one next action (#1167)', () => {
+        const setExtraActionDrafts = vi.fn();
+        const { getByText, getAllByPlaceholderText } = render(
+            <QuickPanelHarness convertToProject extraActionDrafts={['Book venue']} setExtraActionDrafts={setExtraActionDrafts} />,
+        );
+
+        expect(getAllByPlaceholderText('taskEdit.titleLabel')).toHaveLength(2);
+        fireEvent.click(getByText('+ process.addAnotherAction'));
+
+        expect(setExtraActionDrafts).toHaveBeenCalledWith(['Book venue', '']);
+    });
+
+    it('uses the title input as the only project name input during conversion', () => {
+        const { getByLabelText, queryByLabelText } = render(
+            <QuickPanelHarness convertToProject />,
+        );
+
+        expect((getByLabelText('projects.projectName') as HTMLInputElement).value).toBe('Plan launch');
+        expect(queryByLabelText('taskEdit.titleLabel')).toBeNull();
+        expect(queryByLabelText('projects.title')).toBeNull();
+    });
+
+
+    it('derives the selected contexts from the typed token text', () => {
+        const { getByLabelText, getByRole } = render(<QuickPanelHarness />);
+
+        expect(getByRole('button', { name: '@home' })).not.toHaveClass('bg-primary');
+        fireEvent.change(getByLabelText('taskEdit.contextsLabel'), { target: { value: '@home' } });
+
+        expect(getByRole('button', { name: '@home' })).toHaveClass('bg-primary');
+        expect(getByRole('button', { name: '@office' })).not.toHaveClass('bg-primary');
+    });
+
+    it('clears an optional field when its chip is toggled off', () => {
+        const { getByRole } = render(<QuickPanelHarness />);
+
+        fireEvent.click(getByRole('button', { name: 'priority.high' }));
+        expect(getByRole('button', { name: 'priority.high' })).toHaveClass('bg-primary');
+        expect(getByRole('button', { name: 'priority.high' }).querySelector('[data-priority-flag="high"]'))
+            .toHaveAttribute('stroke', '#f97316');
+
+        fireEvent.click(getByRole('button', { name: 'priority.high' }));
+        expect(getByRole('button', { name: 'priority.high' })).not.toHaveClass('bg-primary');
+    });
+
+    it('offers Area and Project controls before filing a Someday item', () => {
+        const { getByText } = render(
+            <QuickPanelHarness actionabilityChoice="someday" />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+        expect(getByText('+ New section…')).toBeInTheDocument();
+    });
+
+
+    it('offers Area and Project controls before filing a Reference item', () => {
+        const { getByText } = render(
+            <QuickPanelHarness actionabilityChoice="reference" />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+    });
+
+    it('offers the same Area and Project controls before incubating an item', () => {
+        const { getByText } = render(
+            <QuickPanelHarness actionabilityChoice="incubate" />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+        expect(getByText('+ New section…')).toBeInTheDocument();
+    });
+
+    it('offers Area and Project controls before filing a Start later item (#1239)', () => {
+        const { getByText } = render(
+            <QuickPanelHarness actionabilityChoice="later" />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+    });
+});
+
+describe('InboxProcessingWizard draft editing', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    it.each([{ suggestedContexts: [] }, { suggestedContexts: ['@home'] }])('keeps the Contexts heading above its input with suggestions $suggestedContexts', ({ suggestedContexts }) => {
+        const view = render(<WizardHarness processingStep="context" options={{ ...options, suggestedContexts }} />);
+        expect(view.getByText('filters.contexts')).toBeInTheDocument();
+        const heading = view.getByText('taskEdit.contextsLabel');
+        const input = view.getByRole('combobox', { name: 'taskEdit.contextsLabel' });
+        expect(heading.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it.each([
+        [true, false, 'taskEdit.contextsLabel'],
+        [false, true, 'taskEdit.tagsLabel'],
+        [false, false, 'taskEdit.details'],
+    ] as const)('labels organization accurately for contexts=%s tags=%s', (showContextsField, showTagsField, label) => {
+        const view = render(<WizardHarness processingStep="context" visibility={{ ...visibility, showContextsField, showTagsField }} />);
+        expect(view.queryByText('filters.contexts')).not.toBeInTheDocument();
+        expect(view.getAllByText(label).length).toBeGreaterThan(0);
+        expect(view.queryByPlaceholderText('@home') !== null).toBe(showContextsField);
+        expect(view.queryByPlaceholderText('#deep-work') !== null).toBe(showTagsField);
+    });
+
+    it('writes refine-step title edits through the draft', () => {
+        const { getByDisplayValue } = render(<WizardHarness />);
+
+        fireEvent.change(getByDisplayValue('Plan launch'), { target: { value: 'Clarified launch' } });
+
+        expect(getByDisplayValue('Clarified launch')).toBeTruthy();
+    });
+
+    it('labels the refine title as the project name while conversion is on', () => {
+        const { getByText, queryByText } = render(<WizardHarness convertToProject />);
+
+        expect(getByText('projects.projectName')).toBeInTheDocument();
+        expect(queryByText('taskEdit.titleLabel')).toBeNull();
+    });
+
+    it('does not render a second project name input in the project step', () => {
+        const { queryByText } = render(
+            <WizardHarness processingStep="project" convertToProject />,
+        );
+
+        expect(queryByText('projects.projectName')).toBeNull();
+    });
+
+    it('writes organization-step selections through the draft', () => {
+        const { getByLabelText, getByRole } = render(<WizardHarness processingStep="context" />);
+
+        fireEvent.change(getByLabelText('taskEdit.energyLevel'), { target: { value: 'high' } });
+        expect((getByLabelText('taskEdit.energyLevel') as HTMLSelectElement).value).toBe('high');
+
+        fireEvent.click(getByRole('button', { name: 'priority.urgent' }));
+        expect(getByRole('button', { name: 'priority.urgent' })).toHaveClass('bg-primary');
+    });
+
+    it('offers Area and Project controls before confirming Someday', () => {
+        const handleConfirmSomeday = vi.fn();
+        const { getByRole, getByText } = render(
+            <WizardHarness processingStep="someday" handleConfirmSomeday={handleConfirmSomeday} />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+        expect(getByText('+ New section…')).toBeInTheDocument();
+        fireEvent.click(getByRole('button', { name: 'process.someday' }));
+        expect(handleConfirmSomeday).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers Area and Project controls before confirming Reference', () => {
+        const handleConfirmReference = vi.fn();
+        const { getByRole, getByText } = render(
+            <WizardHarness processingStep="reference" handleConfirmReference={handleConfirmReference} />,
+        );
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+        fireEvent.click(getByRole('button', { name: /process\.next/ }));
+        expect(handleConfirmReference).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers Area and Project controls before confirming Incubate', () => {
+        const { getByRole, getByText } = render(
+            <WizardHarness processingStep="actionable" />,
+        );
+
+        fireEvent.click(getByRole('button', { name: 'inbox.no' }));
+        fireEvent.click(getByRole('button', { name: 'Incubate' }));
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+        expect(getByText('+ New section…')).toBeInTheDocument();
+    });
+
+    it('offers Area and Project controls before confirming Start later (#1239)', () => {
+        const { getByRole, getByText } = render(
+            <WizardHarness processingStep="actionable" />,
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Start later' }));
+
+        expect(getByText('taskEdit.areaLabel')).toBeInTheDocument();
+        expect(getByText('taskEdit.projectLabel')).toBeInTheDocument();
+    });
+});
+
+
+describe('Incubate requires a review date (#1338)', () => {
+    afterEach(cleanup);
+    it.each(['guided', 'quick'] as const)('offers only dates in %s mode, including the calendar popover', (mode) => {
+        const onDateChange = vi.fn();
+        const fields = { ...scheduleFields, review: { ...scheduleField(), date: '2026-10-10', onDateChange } };
+        const view = mode === 'quick'
+            ? render(<QuickPanelHarness actionabilityChoice="incubate" scheduleFields={fields} />)
+            : render(<WizardHarness processingStep="actionable" scheduleFields={fields} />);
+        if (mode === 'guided') {
+            fireEvent.click(view.getByRole('button', { name: 'inbox.no' }));
+            fireEvent.click(view.getByRole('button', { name: 'Incubate' }));
+        }
+        expect(view.queryByRole('button', { name: 'No date' })).toBeNull();
+        expect(view.queryByRole('button', { name: /common.clear/ })).toBeNull();
+        fireEvent.click(view.getByRole('button', { name: 'Tomorrow' }));
+        expect(onDateChange).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
+        fireEvent.click(view.getByRole('button', { name: /taskEdit.reviewDateLabel/, hidden: false }));
+        expect(view.getByRole('dialog')).toBeInTheDocument();
+        expect(view.queryByRole('button', { name: 'No date' })).toBeNull();
+    });
+    it.each(['guided', 'quick'] as const)('offers only dates for Start later in %s mode (#768)', (mode) => {
+        const view = mode === 'quick'
+            ? render(<QuickPanelHarness actionabilityChoice="later" />)
+            : render(<WizardHarness processingStep="actionable" />);
+        if (mode === 'guided') fireEvent.click(view.getByRole('button', { name: 'Start later' }));
+        expect(view.getByRole('button', { name: 'Tomorrow' })).toBeInTheDocument();
+        expect(view.queryByRole('button', { name: 'No date' })).toBeNull();
+    });
+    it('retains No date for optional scheduling fields', () => {
+        const view = render(<QuickPanelHarness visibility={{ ...visibility, showScheduleFields: true }} visibleScheduleFieldKeys={['start']} />);
+        expect(view.getByRole('button', { name: 'No date' })).toBeInTheDocument();
+    });
+});
+
+
+describe('Inbox processing project section picker', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    const workProject: Project = { ...similarProject, id: 'p-work', title: 'Work' };
+    const homeProject: Project = { ...similarProject, id: 'p-home', title: 'Home' };
+    const sectionOptions: InboxProcessingOptionLists = {
+        ...options,
+        projects: [workProject, homeProject],
+        sections: [
+            { id: 's-design', projectId: 'p-work', title: 'Design', order: 0, createdAt: '', updatedAt: '' },
+            { id: 's-review', projectId: 'p-work', title: 'Review', order: 1, createdAt: '', updatedAt: '' },
+        ],
+    };
+
+    it('shows no Section picker without a project or for a project with no sections', () => {
+        const none = render(<WizardHarness processingStep="someday" options={sectionOptions} />);
+        expect(none.queryByText('taskEdit.sectionLabel')).toBeNull();
+        none.unmount();
+        const home = render(<WizardHarness processingStep="someday" options={sectionOptions} initialDraft={{ projectId: 'p-home' }} />);
+        expect(home.queryByText('taskEdit.sectionLabel')).toBeNull();
+    });
+
+    it.each([
+        ['guided', () => render(<WizardHarness processingStep="someday" options={sectionOptions} initialDraft={{ projectId: 'p-work' }} />)],
+        ['quick', () => render(<QuickPanelHarness actionabilityChoice="someday" options={sectionOptions} initialDraft={{ projectId: 'p-work' }} />)],
+    ] as const)('offers the chosen project\'s sections in %s mode and writes the pick to the draft', (_mode, renderPanel) => {
+        const { getByRole, getByText } = renderPanel();
+
+        expect(getByText('taskEdit.sectionLabel')).toBeInTheDocument();
+        const trigger = getByRole('button', { name: 'taskEdit.sectionLabel' });
+        expect(trigger).toHaveTextContent('taskEdit.noSectionOption');
+        fireEvent.click(trigger);
+        fireEvent.click(getByRole('option', { name: 'Review' }));
+        expect(getByRole('button', { name: 'taskEdit.sectionLabel' })).toHaveTextContent('Review');
+    });
+
+    it('selects a project with sections in the project step instead of filing at once', () => {
+        const handleSetProject = vi.fn();
+        const { getByRole, getByText } = render(
+            <WizardHarness
+                processingStep="project"
+                options={sectionOptions}
+                filteredProjects={[workProject, homeProject]}
+                handleSetProject={handleSetProject}
+            />,
+        );
+
+        fireEvent.click(getByRole('button', { name: 'Work' }));
+        expect(handleSetProject).not.toHaveBeenCalled();
+        expect(getByText('taskEdit.sectionLabel')).toBeInTheDocument();
+
+        fireEvent.click(getByRole('button', { name: 'Home' }));
+        expect(handleSetProject).toHaveBeenCalledExactlyOnceWith('p-home');
+    });
+});
+

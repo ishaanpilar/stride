@@ -1,0 +1,15 @@
+<en-US>
+- Complete tasks directly from the home screen widget.
+- Inbox Processing steps now respect your settings and flow correctly.
+- Improved offline Whisper model downloads and notification permissions on Android.
+</en-US>
+<zh-CN>
+- 在桌面小部件上直接完成任务。
+- 收件箱处理步骤更符合设置，流程更顺畅。
+- 改进离线 Whisper 模型下载与 Android 通知权限处理。
+</zh-CN>
+<es-ES>
+- Completa tareas directamente desde el widget de la pantalla de inicio.
+- Los pasos de Procesamiento de Bandeja ahora respetan tus ajustes y el flujo es correcto.
+- Mejoras en la descarga del modelo Whisper sin conexión y en permisos de notificaciones en Android.
+</es-ES>

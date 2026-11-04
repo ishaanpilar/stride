@@ -1,0 +1,27 @@
+{
+    "schemaVersion": 1,
+    "fields": [
+        { "name": "id", "nullability": "required", "cloudSynced": false, "cloudWrite": "managed", "sqliteColumn": "id", "sqliteOrder": 0, "sqliteType": null },
+        { "name": "name", "nullability": "required", "cloudSynced": true, "cloudWrite": "patch", "sqliteColumn": "name", "sqliteOrder": 1, "sqliteType": null },
+        { "name": "color", "nullability": "optional", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "color", "sqliteOrder": 2, "sqliteType": "TEXT" },
+        { "name": "icon", "nullability": "optional", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "icon", "sqliteOrder": 3, "sqliteType": "TEXT" },
+        { "name": "order", "nullability": "required", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "orderNum", "sqliteOrder": 4, "sqliteType": "INTEGER" },
+        { "name": "rev", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "rev", "sqliteOrder": 5, "sqliteType": "INTEGER" },
+        { "name": "revBy", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "revBy", "sqliteOrder": 6, "sqliteType": "TEXT" },
+        { "name": "createdAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "createdAt", "sqliteOrder": 7, "sqliteType": "TEXT" },
+        { "name": "updatedAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "updatedAt", "sqliteOrder": 8, "sqliteType": "TEXT" },
+        { "name": "deletedAt", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "deletedAt", "sqliteOrder": 9, "sqliteType": "TEXT" }
+    ],
+    "fixture": {
+        "id": "area-schema-fixture",
+        "name": "Verify every Area field",
+        "color": "#3B82F6",
+        "icon": "🏠",
+        "order": 4,
+        "rev": 3,
+        "revBy": "device-schema",
+        "createdAt": "2026-07-01T10:00:00.000Z",
+        "updatedAt": "2026-07-14T11:00:00.000Z",
+        "deletedAt": "2026-07-14T11:30:00.000Z"
+    }
+}

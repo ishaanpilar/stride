@@ -1,0 +1,18 @@
+<en-US>
+- Inbox processing fixes: long descriptions no longer hide action buttons.
+- Capture overlay now fills the screen properly with the keyboard open.
+- Attachment sync is more reliable across devices.
+- Thanks to @karl1990 for sponsoring Stride.
+</en-US>
+<zh-CN>
+- 收件箱处理修复：超长描述不再把操作按钮挤出屏幕。
+- 捕获任务时，键盘弹出也能正确覆盖背景遮罩。
+- 附件同步在多设备之间更可靠。
+- 感谢 @karl1990 对 Stride 的赞助支持。
+</zh-CN>
+<es-ES>
+- Correcciones en el procesamiento de la bandeja: las descripciones largas ya no ocultan los botones.
+- La superposición ahora cubre bien la pantalla con el teclado abierto.
+- La sincronización de adjuntos es más fiable entre dispositivos.
+- Gracias a @karl1990 por patrocinar Stride.
+</es-ES>

@@ -1,0 +1,619 @@
+import type { AppData, Attachment, SavedFilter, SettingsSyncGroup } from './types';
+import { prepareRestoredTaxonomyCatalog, retainTaxonomyEffects } from './taxonomy-catalog';
+import { createImportDiagnostics, type ImportDiagnostic } from './import-diagnostics';
+import { logInfo } from './logger';
+import { keepSavedFilters } from './saved-filters';
+import { isSettingsSyncGroupEnabled } from './settings-options';
+import { nextRevision, normalizeRevision, SYNC_BACKUP_RESTORE_REV_BY } from './sync-revision';
+import {
+    compactPurgedProjectForLocalStorage,
+    compactPurgedProjectTombstone,
+    compactPurgedTaskForLocalStorage,
+    compactPurgedTaskTombstone,
+    compactSectionsForPurgedProjects,
+} from './tombstone-compaction';
+import {
+    isObjectRecord,
+    normalizeAttachmentsForSyncMerge,
+    validateMergedSyncData,
+} from './sync-normalization';
+import { parseSyncDocument } from './sync-document';
+import { advanceLatestSyncTimestamp, sanitizeAppDataForRemote } from './sync-helpers';
+import { DELETE_VS_LIVE_AMBIGUOUS_WINDOW_MS } from './sync-types';
+
+export const BACKUP_FILE_PREFIX = 'stride-backup-';
+
+
+export const MAX_BACKUP_SOURCE_BYTES = 128 * 1024 * 1024;
+const MAX_BACKUP_SOURCE_MEBIBYTES = MAX_BACKUP_SOURCE_BYTES / (1024 * 1024);
+
+export type BackupSourceFileDiagnosticCode =
+    | 'backup-source-size-unknown'
+    | 'backup-source-too-large';
+
+export class BackupSourceFileError extends Error {
+    readonly code: BackupSourceFileDiagnosticCode;
+    readonly params: Record<string, number | string>;
+
+    constructor(
+        code: BackupSourceFileDiagnosticCode,
+        message: string,
+        params: Record<string, number | string> = {},
+    ) {
+        super(message);
+        this.name = 'BackupSourceFileError';
+        this.code = code;
+        this.params = params;
+    }
+}
+
+export const getBackupSourceFileDiagnostic = (error: unknown): ImportDiagnostic | null => {
+    if (!error || typeof error !== 'object') return null;
+    const candidate = error as { code?: unknown; params?: unknown };
+    if (candidate.code !== 'backup-source-size-unknown' && candidate.code !== 'backup-source-too-large') {
+        return null;
+    }
+    const params = candidate.params && typeof candidate.params === 'object'
+        ? candidate.params as Record<string, number | string>
+        : {};
+    return { code: candidate.code, params, severity: 'error' };
+};
+
+export const assertBackupSourceFileSize = (size: number | null | undefined): void => {
+    if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) {
+        throw new BackupSourceFileError(
+            'backup-source-size-unknown',
+            'Stride could not verify the selected backup file size. Copy it locally and try again.',
+        );
+    }
+    if (size > MAX_BACKUP_SOURCE_BYTES) {
+        throw new BackupSourceFileError(
+            'backup-source-too-large',
+            'The selected backup file is too large. Choose a backup no larger than 128 MB.',
+            { maxSizeMb: MAX_BACKUP_SOURCE_MEBIBYTES },
+        );
+    }
+};
+
+export type ActiveRecordCounts = {
+    areas: number;
+    people: number;
+    projects: number;
+    sections: number;
+    tasks: number;
+};
+
+
+export const countActiveRecords = (data: AppData): ActiveRecordCounts => ({
+    tasks: data.tasks.filter((task) => !task.deletedAt).length,
+    projects: data.projects.filter((project) => !project.deletedAt).length,
+    sections: data.sections.filter((section) => !section.deletedAt).length,
+    areas: data.areas.filter((area) => !area.deletedAt).length,
+    people: (data.people ?? []).filter((person) => !person.deletedAt).length,
+});
+
+export type BackupMetadata = {
+    fileName?: string;
+    backupAt?: string;
+    version?: string;
+    taskCount: number;
+    projectCount: number;
+    sectionCount: number;
+    areaCount: number;
+};
+
+export type BackupValidation = {
+    valid: boolean;
+    data: AppData | null;
+    metadata: BackupMetadata | null;
+    errors: string[];
+    warnings: string[];
+    diagnostics: ImportDiagnostic[];
+};
+
+type BackupValidationOptions = {
+    appVersion?: string | null;
+    fileModifiedAt?: string | number | Date | null;
+    fileName?: string | null;
+};
+
+type BackupEnvelope = {
+    backupMetadata?: {
+        version?: unknown;
+        createdAt?: unknown;
+    };
+    data?: unknown;
+};
+
+type BackupRestoreSyncPreparationOptions = {
+    restoredAt?: string | number | Date | null;
+
+
+    previousData?: AppData | null;
+};
+
+type RestorableEntity = {
+    id: string;
+    deletedAt?: string;
+    purgedAt?: string;
+    rev?: number;
+    revBy?: string;
+    updatedAt: string;
+};
+
+const BACKUP_TIMESTAMP_PATTERN = new RegExp(
+    `^(?:${BACKUP_FILE_PREFIX}|mindwtr-backup-)(\\d{4}-\\d{2}-\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})(?:-(\\d{3}))?Z?\\.json$`,
+    'i'
+);
+
+const normalizeVersion = (value?: string | null): string => String(value || '').trim().replace(/^v/i, '');
+
+const compareVersions = (left?: string | null, right?: string | null): number => {
+    const leftParts = normalizeVersion(left).split('.').map((part) => Number(part));
+    const rightParts = normalizeVersion(right).split('.').map((part) => Number(part));
+    const length = Math.max(leftParts.length, rightParts.length, 0);
+    for (let index = 0; index < length; index += 1) {
+        const leftValue = Number.isFinite(leftParts[index]) ? leftParts[index] as number : 0;
+        const rightValue = Number.isFinite(rightParts[index]) ? rightParts[index] as number : 0;
+        if (leftValue > rightValue) return 1;
+        if (leftValue < rightValue) return -1;
+    }
+    return 0;
+};
+
+const toIsoString = (value?: string | number | Date | null): string | undefined => {
+    if (!value) return undefined;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+};
+
+const deriveBackupAtFromFileName = (fileName?: string | null): string | undefined => {
+    const trimmed = String(fileName || '').trim();
+    if (!trimmed) return undefined;
+    const match = trimmed.match(BACKUP_TIMESTAMP_PATTERN);
+    if (!match) return undefined;
+    const [, date, hour, minute, second, millisecond] = match;
+    const iso = `${date}T${hour}:${minute}:${second}.${millisecond ?? '000'}Z`;
+    const parsed = new Date(iso);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+};
+
+const extractBackupEnvelope = (value: unknown): { data: unknown; metadata: BackupEnvelope['backupMetadata'] | null } => {
+    if (!isObjectRecord(value)) return { data: value, metadata: null };
+    const record = value as BackupEnvelope;
+    if (isObjectRecord(record.data)) {
+        return {
+            data: record.data,
+            metadata: isObjectRecord(record.backupMetadata) ? record.backupMetadata : null,
+        };
+    }
+    return {
+        data: value,
+        metadata: isObjectRecord(record.backupMetadata) ? record.backupMetadata : null,
+    };
+};
+
+export function sanitizeSerializedJsonText(raw: string): string {
+    let text = String(raw || '').replace(/^\uFEFF/, '').trim();
+    // eslint-disable-next-line no-control-regex
+    text = text.replace(/\u0000+$/g, '').trim();
+    return text;
+}
+
+export const createBackupFileName = (date: Date = new Date()): string => {
+    const timestamp = date.toISOString().replace(/[:.]/g, '-');
+    return `${BACKUP_FILE_PREFIX}${timestamp}.json`;
+};
+
+const compactBackupSettings = (settings: AppData['settings']): AppData['settings'] => {
+    const pendingRemoteDeletes = settings.attachments?.pendingRemoteDeletes;
+    if (!pendingRemoteDeletes?.length) return settings;
+    return {
+        ...settings,
+        attachments: {
+            ...settings.attachments,
+            pendingRemoteDeletes: pendingRemoteDeletes.map(({ cloudKey, attempts, lastErrorAt }) => ({
+                cloudKey,
+                attempts,
+                lastErrorAt,
+            })),
+        },
+    };
+};
+
+export const serializeBackupData = (data: AppData): string => JSON.stringify({
+    ...data,
+    tasks: data.tasks.map(compactPurgedTaskTombstone),
+    projects: data.projects.map(compactPurgedProjectTombstone),
+    sections: compactSectionsForPurgedProjects(data.sections, data.projects),
+    settings: compactBackupSettings(data.settings),
+}, null, 2);
+
+const prepareRestoredEntityForSync = <T extends RestorableEntity>(
+    item: T,
+    restoredAt: string,
+    previous?: T,
+): T => {
+    const retentionTimestamps = item.purgedAt
+        ? {
+            deletedAt: item.deletedAt ?? restoredAt,
+            purgedAt: restoredAt,
+        }
+        : item.deletedAt
+            ? { deletedAt: restoredAt }
+            : {};
+    return {
+        ...item,
+        ...retentionTimestamps,
+        updatedAt: restoredAt,
+        rev: nextRevision(Math.max(
+            normalizeRevision(item.rev),
+            normalizeRevision(previous?.rev),
+        )),
+        revBy: SYNC_BACKUP_RESTORE_REV_BY,
+    };
+};
+
+
+const carryForwardEntitiesMissingFromBackup = <T extends RestorableEntity>(
+    restored: T[],
+    previous: T[] | undefined,
+    restoredAt: string
+): T[] => {
+    if (!previous?.length) return restored;
+    const restoredIds = new Set(restored.map((item) => item.id));
+    const carried = previous
+        .filter((item) => !restoredIds.has(item.id))
+        .map((item) => ({
+            ...item,
+            deletedAt: item.deletedAt ?? restoredAt,
+        }));
+    return carried.length > 0 ? [...restored, ...carried] : restored;
+};
+
+
+const stripDeviceLocalRestoreSettings = (settings: AppData['settings']): AppData['settings'] => {
+    if (settings.security === undefined) return settings;
+    const nextSettings: AppData['settings'] = { ...settings };
+    delete nextSettings.security;
+    return nextSettings;
+};
+
+
+const keepDeviceLocalRestoreSettings = (
+    restored: AppData['settings'],
+    previous: AppData['settings'] | undefined,
+): AppData['settings'] => {
+    const security = previous?.security;
+    if (security === undefined) return restored;
+    return { ...restored, security: { ...security } };
+};
+
+const RESTORED_SETTINGS_SYNC_GROUPS: SettingsSyncGroup[] = [
+    'appearance',
+    'language',
+    'gtd',
+    'externalCalendars',
+    'ai',
+    'savedFilters',
+];
+
+const timestampMs = (value: unknown): number | undefined => {
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const restoreTimestampAfter = (
+    restoredAt: string,
+    knownValues: unknown[],
+    minimumGapMs = 0,
+): string => {
+
+    const knownLatest = knownValues.reduce<number>((latest, value) => Math.max(latest, timestampMs(value) ?? latest), Number.NEGATIVE_INFINITY);
+    const restoreFloor = new Date(Math.max(
+        Date.parse(restoredAt) - 1,
+        knownLatest + minimumGapMs,
+    )).toISOString();
+    return advanceLatestSyncTimestamp(restoreFloor) ?? restoredAt;
+};
+
+const prepareRestoredSavedFiltersForSync = (
+    restoredValue: AppData['settings']['savedFilters'],
+    previousValue: AppData['settings']['savedFilters'],
+    restoredAt: string,
+): SavedFilter[] => {
+    const restored = keepSavedFilters(restoredValue);
+    const previous = keepSavedFilters(previousValue);
+    const operationTimes = [...restored, ...previous].flatMap((filter) => [
+        filter.updatedAt,
+        filter.deletedAt,
+    ]);
+    const filterRestoredAt = restoreTimestampAfter(
+        restoredAt,
+        operationTimes,
+        DELETE_VS_LIVE_AMBIGUOUS_WINDOW_MS,
+    );
+    const restoredIds = new Set(restored.map((filter) => filter.id));
+    return [
+        ...restored.map((filter) => ({
+            ...filter,
+            updatedAt: filterRestoredAt,
+            ...(filter.deletedAt ? { deletedAt: filterRestoredAt } : {}),
+        })),
+        ...previous
+            .filter((filter) => !restoredIds.has(filter.id))
+            .map((filter) => ({
+                ...filter,
+                updatedAt: filterRestoredAt,
+                deletedAt: filterRestoredAt,
+            })),
+    ];
+};
+
+const prepareRestoredSettingsForSync = (
+    settings: AppData['settings'],
+    previous: AppData['settings'] | undefined,
+    restoredAt: string,
+): AppData['settings'] => {
+    const restored = keepDeviceLocalRestoreSettings(stripDeviceLocalRestoreSettings(settings), previous);
+    const settingsOnWire = (value: AppData['settings']) => sanitizeAppDataForRemote({
+        tasks: [], projects: [], sections: [], areas: [], people: [], settings: value,
+    }).settings;
+    const restoredWire = settingsOnWire(restored);
+    const previousWire = previous ? settingsOnWire(previous) : undefined;
+    const syncPreferencesUpdatedAt = { ...(restored.syncPreferencesUpdatedAt ?? {}) };
+    syncPreferencesUpdatedAt.preferences = restoreTimestampAfter(restoredAt, [
+        restored.syncPreferencesUpdatedAt?.preferences,
+        previous?.syncPreferencesUpdatedAt?.preferences,
+        restoredWire.syncPreferencesUpdatedAt?.preferences,
+        previousWire?.syncPreferencesUpdatedAt?.preferences,
+    ]);
+    for (const group of RESTORED_SETTINGS_SYNC_GROUPS) {
+        if (!isSettingsSyncGroupEnabled(restored.syncPreferences, group)) continue;
+        syncPreferencesUpdatedAt[group] = restoreTimestampAfter(restoredAt, [
+            restored.syncPreferencesUpdatedAt?.[group],
+            previous?.syncPreferencesUpdatedAt?.[group],
+        ]);
+    }
+
+    return {
+        ...restored,
+        ...(restored.taxonomy !== undefined || previous?.taxonomy !== undefined
+            ? { taxonomy: prepareRestoredTaxonomyCatalog(restored.taxonomy, previous?.taxonomy, restoredAt, SYNC_BACKUP_RESTORE_REV_BY) } : {}),
+        ...(
+            restored.savedFilters !== undefined || previous?.savedFilters !== undefined
+                ? { savedFilters: prepareRestoredSavedFiltersForSync(restored.savedFilters, previous?.savedFilters, restoredAt) }
+                : {}
+        ),
+        syncPreferencesUpdatedAt,
+    };
+};
+
+
+const sanitizeRestoredAttachments = <T extends { attachments?: Attachment[] }>(item: T): T => (
+    item.attachments ? { ...item, attachments: normalizeAttachmentsForSyncMerge(item.attachments) } : item
+);
+
+
+const prepareRestoredAttachmentsForSync = <T extends { attachments?: Attachment[]; deletedAt?: string }>(
+    item: T,
+    restoredAt: string,
+    previous?: T,
+): T => {
+    const restoredAttachments = normalizeAttachmentsForSyncMerge(item.attachments) ?? [];
+    const previousAttachments = normalizeAttachmentsForSyncMerge(previous?.attachments) ?? [];
+    if (restoredAttachments.length === 0 && previousAttachments.length === 0) {
+        return sanitizeRestoredAttachments(item);
+    }
+
+    const restoredIds = new Set(restoredAttachments.map((attachment) => attachment.id));
+    const previousAttachmentsById = new Map(
+        previousAttachments.map((attachment) => [attachment.id, attachment]),
+    );
+    const refreshed = restoredAttachments.map((attachment) => {
+        const previousAttachment = previousAttachmentsById.get(attachment.id);
+        const shouldPublishRestoredBytes = attachment.kind === 'file'
+            && !item.deletedAt
+            && !attachment.deletedAt;
+        return {
+            ...attachment,
+            ...(attachment.kind === 'file' ? {
+                contentRev: nextRevision(Math.max(
+                    normalizeRevision(attachment.contentRev),
+                    normalizeRevision(previousAttachment?.contentRev),
+                )),
+            } : {}),
+            ...(shouldPublishRestoredBytes ? { pendingContentUpload: true } : {}),
+
+            staleContentHash: undefined,
+            ...(attachment.deletedAt ? { deletedAt: restoredAt } : {}),
+            updatedAt: restoredAt,
+        };
+    });
+    const carriedTombstones = previousAttachments
+        .filter((attachment) => !restoredIds.has(attachment.id))
+        .map((attachment) => ({
+            ...attachment,
+            deletedAt: restoredAt,
+            updatedAt: restoredAt,
+        }));
+
+    return {
+        ...item,
+        attachments: [...refreshed, ...carriedTombstones],
+    };
+};
+
+export const prepareRestoredBackupDataForSync = (
+    data: AppData,
+    options: BackupRestoreSyncPreparationOptions = {}
+): AppData => {
+    const restoredAt = toIsoString(options.restoredAt) ?? new Date().toISOString();
+    const previous = options.previousData ?? null;
+    const restoredSettings = prepareRestoredSettingsForSync(data.settings, previous?.settings, restoredAt);
+    const prepare = <T extends RestorableEntity>(restored: T[], before: T[] | undefined): T[] => {
+        const beforeById = new Map((before ?? []).map((item) => [item.id, item]));
+        return carryForwardEntitiesMissingFromBackup(restored, before, restoredAt)
+            .map((item) => prepareRestoredEntityForSync(item, restoredAt, beforeById.get(item.id)));
+    };
+    const previousTasksById = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
+    const previousProjectsById = new Map((previous?.projects ?? []).map((project) => [project.id, project]));
+    const tasks = prepare(data.tasks, previous?.tasks).map((task) => {
+        return task.purgedAt
+            ? compactPurgedTaskForLocalStorage({
+                ...task,
+                attachments: previousTasksById.get(task.id)?.attachments,
+            })
+            : prepareRestoredAttachmentsForSync(task, restoredAt, previousTasksById.get(task.id));
+    });
+    const projects = prepare(data.projects, previous?.projects).map((project) => {
+        return project.purgedAt
+            ? compactPurgedProjectForLocalStorage({
+                ...project,
+                attachments: previousProjectsById.get(project.id)?.attachments,
+            })
+            : prepareRestoredAttachmentsForSync(project, restoredAt, previousProjectsById.get(project.id));
+    });
+    const sections = compactSectionsForPurgedProjects(
+        prepare(data.sections, previous?.sections),
+        projects,
+    );
+    try {
+        logInfo('Restored settings prepared for sync', {
+            scope: 'backup',
+            category: 'sync',
+            context: { releaseCheck: 'v1.3.3/restore-settings-sync' },
+        });
+    } catch {
+
+    }
+    return {
+        ...data,
+        tasks,
+        projects,
+        sections,
+        areas: prepare(data.areas, previous?.areas),
+        people: prepare(data.people ?? [], previous?.people),
+        settings: {
+            ...retainTaxonomyEffects(restoredSettings, tasks.map((after) => ({ after })), projects.map((after) => ({ after }))),
+            pendingRemoteWriteAt: restoredAt,
+            pendingRemoteWriteRetryAt: undefined,
+            pendingRemoteWriteAttempts: undefined,
+        },
+    };
+};
+
+export const validateBackupJson = (
+    rawJson: string,
+    options: BackupValidationOptions = {}
+): BackupValidation => {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const diagnostics: ImportDiagnostic[] = [];
+    const sanitized = sanitizeSerializedJsonText(rawJson);
+    if (!sanitized) {
+        return {
+            valid: false,
+            data: null,
+            metadata: null,
+            errors: ['Backup file is empty.'],
+            warnings,
+            diagnostics: createImportDiagnostics(['Backup file is empty.'], 'error'),
+        };
+    }
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(sanitized);
+    } catch (error) {
+        return {
+            valid: false,
+            data: null,
+            metadata: null,
+            errors: [
+                error instanceof Error && error.message
+                    ? `Backup file is not valid JSON: ${error.message}`
+                    : 'Backup file is not valid JSON.',
+            ],
+            warnings,
+            diagnostics: createImportDiagnostics([
+                error instanceof Error && error.message
+                    ? `Backup file is not valid JSON: ${error.message}`
+                    : 'Backup file is not valid JSON.',
+            ], 'error'),
+        };
+    }
+
+    const envelope = extractBackupEnvelope(parsed);
+    const document = parseSyncDocument(envelope.data, 'local');
+    if (!document.ok) {
+        return {
+            valid: false,
+            data: null,
+            metadata: null,
+            errors: document.errors,
+            warnings,
+            diagnostics: createImportDiagnostics(document.errors, 'error'),
+        };
+    }
+
+    const normalized = document.data;
+    const dataErrors = validateMergedSyncData(normalized);
+    if (dataErrors.length > 0) {
+        return {
+            valid: false,
+            data: null,
+            metadata: null,
+            errors: dataErrors,
+            warnings,
+            diagnostics: createImportDiagnostics(dataErrors, 'error'),
+        };
+    }
+
+    const taskCount = normalized.tasks.filter((task) => !task.deletedAt).length;
+    const projectCount = normalized.projects.filter((project) => !project.deletedAt).length;
+    const sectionCount = normalized.sections.filter((section) => !section.deletedAt).length;
+    const areaCount = normalized.areas.filter((area) => !area.deletedAt).length;
+    if (taskCount === 0 && projectCount === 0) {
+        warnings.push('This backup does not contain any active tasks or projects.');
+        diagnostics.push({ code: 'backup-empty-active-records', params: {}, severity: 'warning' });
+    }
+
+    const metadataVersion = typeof envelope.metadata?.version === 'string'
+        ? normalizeVersion(envelope.metadata.version)
+        : undefined;
+    const appVersion = normalizeVersion(options.appVersion);
+    if (metadataVersion && appVersion) {
+        const comparison = compareVersions(metadataVersion, appVersion);
+        if (comparison > 0) {
+            warnings.push(`This backup was created by a newer Stride version (${metadataVersion}).`);
+            diagnostics.push({ code: 'backup-newer-version', params: { version: metadataVersion }, severity: 'warning' });
+        } else if (comparison < 0) {
+            warnings.push(`This backup was created by an older Stride version (${metadataVersion}).`);
+            diagnostics.push({ code: 'backup-older-version', params: { version: metadataVersion }, severity: 'warning' });
+        }
+    }
+
+    const metadata: BackupMetadata = {
+        fileName: String(options.fileName || '').trim() || undefined,
+        backupAt:
+            toIsoString(envelope.metadata?.createdAt as string | number | Date | null)
+            ?? toIsoString(options.fileModifiedAt)
+            ?? deriveBackupAtFromFileName(options.fileName),
+        version: metadataVersion,
+        taskCount,
+        projectCount,
+        sectionCount,
+        areaCount,
+    };
+
+    return {
+        valid: true,
+        data: normalized,
+        metadata,
+        errors,
+        warnings,
+        diagnostics,
+    };
+};

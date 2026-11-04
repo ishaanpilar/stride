@@ -1,0 +1,2379 @@
+import React from 'react';
+import { Alert, Keyboard, Platform } from 'react-native';
+import { act, create } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  QuickCaptureSheet,
+  subscribeQuickCaptureSubmissionFailure,
+} from './quick-capture-sheet';
+import { ANDROID_ACTIVITY_SESSION_TTL_MS } from '@/lib/android-activity-session';
+import * as appLog from '@/lib/app-log';
+
+const selectedAreaIdForNewTasksMock = vi.hoisted(() => ({ current: undefined as string | null | undefined }));
+const audioHookMock = vi.hoisted(() => ({ params: null as Record<string, any> | null }));
+const activityConfigurationMock = vi.hoisted(() => ({ changing: false, sourceActivityId: 41 }));
+const clearActivitySessionMock = vi.hoisted(() => vi.fn());
+const rearmActivitySessionMock = vi.hoisted(() => vi.fn());
+const recoveryFileDeleteMock = vi.hoisted(() => vi.fn());
+
+const {
+  addTask,
+  addTasks,
+  addProject,
+  updateSettings,
+  showToast,
+  openTaskScreen,
+  getDerivedState,
+  getFocusedCount,
+  splitQuickAddBulkLines,
+  selectStore,
+  documentPickerGetDocumentAsync,
+  fileSystemReadAsStringAsync,
+  createMobileRecoverySnapshot,
+} = vi.hoisted(() => {
+  const addTask = vi.fn();
+  const addTasks = vi.fn();
+  const addProject = vi.fn();
+  const updateSettings = vi.fn();
+  const showToast = vi.fn();
+  const openTaskScreen = vi.fn();
+  const getDerivedState = vi.fn(() => ({ focusedCount: 0 }));
+  const getFocusedCount = vi.fn(() => 0);
+  const splitQuickAddBulkLines = vi.fn((input: string) => input
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean));
+  const documentPickerGetDocumentAsync = vi.fn();
+  const fileSystemReadAsStringAsync = vi.fn();
+  const createMobileRecoverySnapshot = vi.fn();
+  const storeState = {
+    addTask,
+    addTasks,
+    addProject,
+    updateSettings,
+    areas: [],
+    projects: [],
+    settings: {},
+    tasks: [],
+    _allTasks: [],
+    getDerivedState,
+    getFocusedCount,
+  };
+  const selectStore = ((selector?: (state: typeof storeState) => unknown) => (
+    selector ? selector(storeState) : storeState
+  )) as any;
+  selectStore.getState = () => storeState;
+  return {
+    addTask,
+    addTasks,
+    addProject,
+    updateSettings,
+    showToast,
+    openTaskScreen,
+    getDerivedState,
+    getFocusedCount,
+    splitQuickAddBulkLines,
+    selectStore,
+    documentPickerGetDocumentAsync,
+    fileSystemReadAsStringAsync,
+    createMobileRecoverySnapshot,
+  };
+});
+
+
+const quickCaptureSpies = vi.hoisted(() => ({
+  buildQuickCapturePreview: vi.fn(),
+  getQuickCaptureContextChoices: vi.fn(),
+  saveQuickCapture: vi.fn(),
+}));
+
+vi.mock('@stride/core', async () => {
+
+  const actual = await vi.importActual<typeof import('@stride/core')>('@stride/core');
+  quickCaptureSpies.buildQuickCapturePreview.mockImplementation(actual.buildQuickCapturePreview);
+  quickCaptureSpies.getQuickCaptureContextChoices.mockImplementation(actual.getQuickCaptureContextChoices);
+  quickCaptureSpies.saveQuickCapture.mockImplementation(actual.saveQuickCapture);
+  const sessionActual = await vi.importActual<typeof import('../../../packages/core/src/capture-session')>(
+    '../../../packages/core/src/capture-session'
+  );
+  return {
+  CaptureSessionCoordinator: sessionActual.CaptureSessionCoordinator,
+
+
+  applyQuickCaptureEdit: actual.applyQuickCaptureEdit,
+  buildQuickCapturePreview: quickCaptureSpies.buildQuickCapturePreview,
+  buildQuickCaptureRequest: actual.buildQuickCaptureRequest,
+  createQuickCaptureOptions: actual.createQuickCaptureOptions,
+  getQuickCaptureBulkConfirm: actual.getQuickCaptureBulkConfirm,
+  getQuickCaptureBulkFailedNotice: actual.getQuickCaptureBulkFailedNotice,
+  getQuickCaptureContextChoices: quickCaptureSpies.getQuickCaptureContextChoices,
+  getQuickCaptureContextPicker: actual.getQuickCaptureContextPicker,
+  getSavedTaxonomyTokens: actual.getSavedTaxonomyTokens,
+  getQuickCaptureLabels: actual.getQuickCaptureLabels,
+  parseQuickCaptureContextQuery: actual.parseQuickCaptureContextQuery,
+  planQuickCaptureSave: actual.planQuickCaptureSave,
+  QUICK_CAPTURE_PRIORITY_OPTIONS: actual.QUICK_CAPTURE_PRIORITY_OPTIONS,
+  resolveQuickCaptureDefaultAreaId: actual.resolveQuickCaptureDefaultAreaId,
+  saveQuickCapture: quickCaptureSpies.saveQuickCapture,
+  saveQuickCaptureBulk: actual.saveQuickCaptureBulk,
+  executeCaptureTransaction: actual.executeCaptureTransaction,
+  prepareCaptureTask: actual.prepareCaptureTask,
+  buildQuickAddParseOptions: actual.buildQuickAddParseOptions,
+  buildQuickAddPreviewEntries: actual.buildQuickAddPreviewEntries,
+  createFeedbackDiagnosticsBuffer: actual.createFeedbackDiagnosticsBuffer,
+  DEFAULT_PROJECT_COLOR: actual.DEFAULT_PROJECT_COLOR,
+  getDefaultTaskAreaMode: (settings: any) => {
+    const mode = settings?.gtd?.defaultAreaMode;
+    if (mode === 'none' || mode === 'fixed' || mode === 'active') return mode;
+    return settings?.gtd?.defaultAreaId ? 'fixed' : 'none';
+  },
+  getQuickAddProjectInitialProps: (props: any, fallbackAreaId?: string | null) => {
+    const areaId = props?.areaId || fallbackAreaId || undefined;
+    return areaId ? { areaId } : undefined;
+  },
+  formatFocusTaskLimitText: (template: string, limit: number) => template.replace('{{count}}', String(limit)),
+  canStarNewCapture: ({ focusedCount, focusTaskLimit }: { focusedCount: number; focusTaskLimit: number }) => focusedCount < focusTaskLimit,
+  hasTimeComponent: (value?: string | null) => Boolean(value && /[T\s]\d{2}:\d{2}/.test(value)),
+  isNaturalLanguageDatesEnabled: (settings?: { gtd?: { naturalLanguageDates?: boolean } } | null) =>
+    settings?.gtd?.naturalLanguageDates !== false,
+  isSandboxMode: () => false,
+  isSelectableProjectForTaskAssignment: (project: any) => (
+    !project.deletedAt && project.status !== 'archived' && project.status !== 'completed'
+  ),
+  normalizeClockTimeInput: (value?: string | null) => String(value ?? '').trim(),
+  normalizeFocusTaskLimit: (value: unknown) => (typeof value === 'number' ? value : 3),
+  resolveDefaultNewTaskAreaId: (settings: any, areas: any[]) => {
+    const mode = settings?.gtd?.defaultAreaMode ?? (settings?.gtd?.defaultAreaId ? 'fixed' : 'none');
+    if (mode !== 'fixed') return undefined;
+    const areaId = settings?.gtd?.defaultAreaId;
+    return typeof areaId === 'string' && areas.some((area) => area.id === areaId && !area.deletedAt)
+      ? areaId
+      : undefined;
+  },
+  resolveFeatureFlags: actual.resolveFeatureFlags,
+  splitQuickAddBulkLines,
+  safeFormatDate: (value: Date | string, formatStr: string) => {
+    const date = value instanceof Date ? value : new Date(value);
+    if (formatStr === 'p') {
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    }
+    if (formatStr !== 'yyyy-MM-dd') return actual.safeFormatDate(value, formatStr);
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ].join('-');
+  },
+  safeParseDate: () => null,
+  shallow: (left: unknown, right: unknown) => left === right,
+  tFallback: (t: (key: string) => string, key: string, fallback: string) => {
+    const value = t(key);
+    return value && value !== key ? value : fallback;
+  },
+  useTaskStore: selectStore,
+};
+});
+
+const mockThemeTokens = vi.hoisted(() => ({
+  value: { isMaterial: false, roles: null, shape: { large: 16 } } as {
+    isMaterial: boolean;
+    roles: Record<string, string> | null;
+    shape: { large: number };
+  },
+}));
+
+vi.mock('expo-document-picker', () => ({
+  getDocumentAsync: documentPickerGetDocumentAsync,
+}));
+
+vi.mock('expo-file-system', () => ({
+  File: class MockFile {
+    uri: string;
+
+    constructor(uri: string) {
+      this.uri = uri;
+    }
+
+    info() {
+      return { exists: true, isDirectory: false };
+    }
+
+    delete() {
+      recoveryFileDeleteMock(this.uri);
+    }
+  },
+  readAsStringAsync: fileSystemReadAsStringAsync,
+}));
+
+vi.mock('../lib/recovery-snapshot', () => ({
+  createMobileRecoverySnapshot,
+}));
+
+vi.mock('@/hooks/use-android-activity-session', () => ({
+  useAndroidActivitySession: () => ({
+    clear: clearActivitySessionMock,
+    rearm: rearmActivitySessionMock,
+    sourceActivityId: activityConfigurationMock.sourceActivityId,
+  }),
+}));
+
+vi.mock('@/lib/android-activity-session', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/android-activity-session')>();
+  return {
+    ...actual,
+    isAndroidActivityChangingConfigurations: () => activityConfigurationMock.changing,
+  };
+});
+
+vi.mock('react-native', async () => {
+  const actual = await vi.importActual<typeof import('react-native')>('react-native');
+  return {
+    ...actual,
+    useWindowDimensions: () => ({
+      fontScale: 1,
+      height: 800,
+      scale: 1,
+      width: 400,
+    }),
+  };
+});
+
+vi.mock('../contexts/language-context', () => ({
+  useLanguage: () => ({
+    t: (key: string) => ({
+      'common.notice': 'Notice',
+      'agenda.addToFocus': "Add to today's focus",
+      'agenda.maxFocusItems': 'Max {{count}} focus items',
+      'agenda.removeFromFocus': 'Remove from focus',
+      'quickAdd.invalidDateCommand': 'Invalid date',
+      'taskEdit.contextsLabel': 'Contexts',
+      'taskEdit.dueDateLabel': 'Due Date',
+      'taskEdit.noAreaOption': 'No Area',
+      'taskEdit.priorityLabel': 'Priority',
+      'taskEdit.projectLabel': 'Project',
+      'units.minutesShort': '{{minutes}}m',
+    }[key] ?? key),
+  }),
+}));
+
+vi.mock('@/contexts/toast-context', () => ({
+  ToastViewport: () => null,
+  useToast: () => ({ showToast }),
+}));
+
+vi.mock('@/hooks/use-mobile-area-filter', () => ({
+  useMobileAreaFilter: () => ({ selectedAreaIdForNewTasks: selectedAreaIdForNewTasksMock.current }),
+}));
+
+vi.mock('@/hooks/use-theme-colors', () => ({
+  useThemeColors: () => ({
+    bg: '#0f172a',
+    border: '#334155',
+    cardBg: '#111827',
+    filterBg: '#1f2937',
+    inputBg: '#0f172a',
+    onTint: '#ffffff',
+    secondaryText: '#94a3b8',
+    text: '#f8fafc',
+    tint: '#3b82f6',
+  }),
+}));
+
+vi.mock('@/hooks/use-theme-tokens', () => ({
+  useThemeTokens: () => mockThemeTokens.value,
+}));
+
+vi.mock('@/lib/task-meta-navigation', () => ({
+  openTaskScreen,
+}));
+
+vi.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
+
+vi.mock('./use-quick-capture-audio', () => ({
+  useQuickCaptureAudio: (params: Record<string, any>) => {
+    audioHookMock.params = params;
+    return {
+    recording: false,
+    recordingBusy: false,
+    recordingReady: false,
+    startRecording: vi.fn(),
+    stopRecording: vi.fn(),
+    };
+  },
+}));
+
+vi.mock('./quick-capture-sheet/QuickCaptureSheetBody', () => ({
+  QuickCaptureSheetBody: (props: Record<string, unknown>) => React.createElement('QuickCaptureSheetBody', props),
+}));
+
+vi.mock('./quick-capture-sheet/QuickCaptureSheetPickers', () => ({
+  QuickCaptureSheetPickers: (props: Record<string, unknown>) => React.createElement('QuickCaptureSheetPickers', props),
+}));
+
+const withPlatform = async (os: typeof Platform.OS, run: () => Promise<void>) => {
+  const originalPlatformOs = Platform.OS;
+  Object.defineProperty(Platform, 'OS', {
+    configurable: true,
+    value: os,
+  });
+  try {
+    await run();
+  } finally {
+    Object.defineProperty(Platform, 'OS', {
+      configurable: true,
+      value: originalPlatformOs,
+    });
+  }
+};
+
+
+const contextScans = () => quickCaptureSpies.getQuickCaptureContextChoices.mock.calls
+  .filter(([tasks]) => tasks === selectStore.getState().tasks).length;
+
+describe('QuickCaptureSheet save handling', () => {
+  it('previews and saves the exact typed custom estimate (#1358)', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(<QuickCaptureSheet visible openRequestId={1} initialValue="Write report /duration:45m" onClose={vi.fn()} />);
+    });
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    expect(body.props.preview.props.entries).toContainEqual(expect.objectContaining({ kind: 'estimate', value: '45m' }));
+    await act(async () => { await body.props.handleSave(); });
+    expect(addTask).toHaveBeenCalledWith('Write report', expect.objectContaining({ timeEstimate: 'custom:45' }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  beforeEach(() => {
+    addTask.mockReset();
+    addTasks.mockReset();
+    addProject.mockReset();
+    updateSettings.mockReset();
+    showToast.mockReset();
+    selectStore.getState().areas = [];
+    selectStore.getState().projects = [];
+    selectStore.getState().tasks = [];
+    selectStore.getState()._allTasks = selectStore.getState().tasks;
+    selectStore.getState().settings = {};
+    selectedAreaIdForNewTasksMock.current = undefined;
+    audioHookMock.params = null;
+    getDerivedState.mockClear();
+    getDerivedState.mockReturnValue({ focusedCount: 0 });
+    getFocusedCount.mockClear();
+    getFocusedCount.mockReturnValue(0);
+    quickCaptureSpies.buildQuickCapturePreview.mockClear();
+    quickCaptureSpies.getQuickCaptureContextChoices.mockClear();
+    quickCaptureSpies.saveQuickCapture.mockClear();
+    documentPickerGetDocumentAsync.mockReset();
+    fileSystemReadAsStringAsync.mockReset();
+    createMobileRecoverySnapshot.mockReset();
+    createMobileRecoverySnapshot.mockResolvedValue('data.snapshot.json');
+    activityConfigurationMock.changing = false;
+    activityConfigurationMock.sourceActivityId = 41;
+    clearActivitySessionMock.mockReset();
+    rearmActivitySessionMock.mockReset();
+    recoveryFileDeleteMock.mockReset();
+    mockThemeTokens.value = { isMaterial: false, roles: null, shape: { large: 16 } };
+  });
+
+  it.each([false, true])('waits for Android modal show before requesting focus (logger throws: %s)', async (throws) => {
+    vi.useFakeTimers();
+    await withPlatform('android', async () => {
+      vi.spyOn(appLog, 'isLoggingEnabled').mockReturnValue(true);
+      const log = vi.spyOn(appLog, 'logInfo').mockImplementation(() => {
+        if (throws) throw new Error('private logging failure');
+        return Promise.resolve(null);
+      });
+      let tree!: ReturnType<typeof create>;
+      await act(async () => { tree = create(<QuickCaptureSheet visible openRequestId={1} onClose={vi.fn()} />); });
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      const focus = vi.fn();
+      body.props.inputRef.current = { focus, isFocused: () => false, measureInWindow: vi.fn() };
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(focus).not.toHaveBeenCalled();
+      act(() => { body.props.onModalShow(); body.props.onInputFocus(); body.props.onInputBlur(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(120); });
+      expect(focus).toHaveBeenCalledOnce();
+      expect(log.mock.calls.map(([, context]) => context?.extra?.phase)).toEqual([
+        'open', 'inset-applied', 'modal-shown', 'input-focus', 'input-blur', 'auto-focus-request',
+      ]);
+      expect(log.mock.calls.some(([, context]) => context?.extra?.releaseCheck === 'v1.3.7/quick-capture-focus-after-show')).toBe(true);
+      act(() => tree.unmount());
+    });
+  });
+
+  it('cancels pending Android focus on close and focuses a new request in an already shown modal', async () => {
+    vi.useFakeTimers();
+    await withPlatform('android', async () => {
+      const onClose = vi.fn();
+      let tree!: ReturnType<typeof create>;
+      await act(async () => { tree = create(<QuickCaptureSheet visible openRequestId={1} onClose={onClose} />); });
+      const getBody = () => tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      const focus = vi.fn();
+      getBody().props.inputRef.current = { focus, isFocused: () => false, measureInWindow: vi.fn() };
+      const staleShow = getBody().props.onModalShow;
+      act(() => staleShow());
+      await act(async () => { tree.update(<QuickCaptureSheet visible={false} openRequestId={1} onClose={onClose} />); });
+      act(() => staleShow());
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(focus).not.toHaveBeenCalled();
+      await act(async () => { tree.update(<QuickCaptureSheet visible openRequestId={2} onClose={onClose} />); });
+      act(() => staleShow());
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(focus).not.toHaveBeenCalled();
+      act(() => getBody().props.onModalShow());
+      await act(async () => { await vi.advanceTimersByTimeAsync(120); });
+      expect(focus).toHaveBeenCalledTimes(1);
+      await act(async () => { tree.update(<QuickCaptureSheet visible openRequestId={3} onClose={onClose} />); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(120); });
+      expect(focus).toHaveBeenCalledTimes(2);
+      act(() => tree.unmount());
+    });
+  });
+
+  it('uses primaryContainer for the save button under Material, below the high-emphasis capture FAB', async () => {
+    mockThemeTokens.value = {
+      isMaterial: true,
+      roles: { primaryContainer: '#00458B', onPrimaryContainer: '#D7E2FF' },
+      shape: { large: 16 },
+    };
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="" onClose={vi.fn()} />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    expect(body.props.saveButtonBackgroundColor).toBe('#00458B');
+    expect(body.props.saveButtonTextColor).toBe('#D7E2FF');
+  });
+
+  it('keeps the save button on the primary tint under non-Material themes', async () => {
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="" onClose={vi.fn()} />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    expect(body.props.saveButtonBackgroundColor).toBe('#3b82f6');
+    expect(body.props.saveButtonTextColor).toBe('#ffffff');
+  });
+
+  it.each(['android', 'ios'] as const)('requests focus 120ms after readiness on %s', async (platform) => {
+    vi.useFakeTimers();
+    await withPlatform(platform, async () => {
+      let tree!: ReturnType<typeof create>;
+      await act(async () => { tree = create(<QuickCaptureSheet visible openRequestId={1} onClose={vi.fn()} />); });
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      const focus = vi.fn();
+      body.props.inputRef.current = { focus, blur: vi.fn() };
+      if (platform === 'android') act(() => body.props.onModalShow());
+      act(() => { vi.advanceTimersByTime(119); });
+      expect(focus).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(focus).toHaveBeenCalledOnce();
+      act(() => { vi.advanceTimersByTime(500); });
+      expect(focus).toHaveBeenCalledOnce();
+      act(() => { tree.unmount(); });
+    });
+  });
+
+  it.each(['close', 'more', 'audio', 'hidden', 'unmount'].flatMap((reason) =>
+    [false, true].map((shown) => ({ reason, shown })),
+  ))(
+    'cancels pending Android initial focus after $reason (shown: $shown)', async ({ reason, shown }) => {
+      vi.useFakeTimers();
+      await withPlatform('android', async () => {
+        let tree!: ReturnType<typeof create>;
+        const onClose = vi.fn();
+        await act(async () => { tree = create(<QuickCaptureSheet visible openRequestId={1} onClose={onClose} />); });
+        const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+        const focus = vi.fn();
+        body.props.inputRef.current = { focus, blur: vi.fn() };
+        if (shown) act(() => body.props.onModalShow());
+        act(() => { vi.advanceTimersByTime(119); });
+        await act(async () => {
+          if (reason === 'close') body.props.handleClose();
+          if (reason === 'more') body.props.onToggleOptions();
+          if (reason === 'audio') tree.update(<QuickCaptureSheet visible openRequestId={2} autoRecord onClose={onClose} />);
+          if (reason === 'hidden') tree.update(<QuickCaptureSheet visible={false} openRequestId={1} onClose={onClose} />);
+          if (reason === 'unmount') tree.unmount();
+        });
+        if (!shown && reason !== 'unmount') act(() => body.props.onModalShow());
+        act(() => { vi.advanceTimersByTime(500); });
+        expect(focus).not.toHaveBeenCalled();
+        if (reason !== 'unmount') act(() => { tree.unmount(); });
+      });
+    },
+  );
+
+  it('opens organize options collapsed for global capture', async () => {
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    expect(body.props.optionsExpanded).toBe(false);
+    expect(contextScans()).toBe(0);
+  });
+
+  it('keeps the sheet lifted until the Android keyboard finishes hiding, then expands', async () => {
+    vi.useFakeTimers();
+    const keyboardDismiss = vi.spyOn(Keyboard, 'dismiss').mockImplementation(vi.fn());
+    vi.spyOn(Keyboard, 'isVisible').mockReturnValue(true);
+    const hideListeners: (() => void)[] = [];
+    const showListeners: (() => void)[] = [];
+    const removeListener = vi.fn();
+    vi.spyOn(Keyboard, 'addListener').mockImplementation(((event: string, cb: () => void) => {
+      if (event === 'keyboardDidHide') hideListeners.push(cb);
+      if (event === 'keyboardDidShow') showListeners.push(cb);
+      return { remove: removeListener };
+    }) as unknown as typeof Keyboard.addListener);
+
+    await withPlatform('android', async () => {
+      let tree!: ReturnType<typeof create>;
+      await act(async () => {
+        tree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+
+      const getBody = () => {
+        const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+        if (!body) throw new Error('QuickCaptureSheetBody not found');
+        return body;
+      };
+
+      expect(getBody().props.optionsExpanded).toBe(false);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(true);
+
+      const focus = vi.fn();
+      const blur = vi.fn();
+      getBody().props.inputRef.current = { blur, focus };
+
+
+      hideListeners.length = 0;
+      showListeners.length = 0;
+
+      await act(async () => {
+        getBody().props.onToggleOptions();
+        await Promise.resolve();
+      });
+
+
+      expect(keyboardDismiss).toHaveBeenCalledOnce();
+      expect(blur).toHaveBeenCalledOnce();
+      expect(hideListeners).toHaveLength(1);
+      expect(getBody().props.optionsExpanded).toBe(false);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(true);
+
+
+      await act(async () => {
+        vi.advanceTimersByTime(160);
+        await Promise.resolve();
+      });
+      expect(getBody().props.optionsExpanded).toBe(false);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(true);
+
+
+      await act(async () => {
+        hideListeners.forEach((cb) => cb());
+        await Promise.resolve();
+      });
+
+      expect(focus).not.toHaveBeenCalled();
+      expect(getBody().props.optionsExpanded).toBe(true);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(false);
+      expect(removeListener).toHaveBeenCalled();
+      expect(showListeners).toHaveLength(1);
+
+      await act(async () => {
+        showListeners.forEach((cb) => cb());
+        await Promise.resolve();
+      });
+
+      expect(getBody().props.optionsExpanded).toBe(true);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(true);
+
+      await act(async () => {
+        getBody().props.onToggleOptions();
+        await Promise.resolve();
+      });
+
+      expect(getBody().props.optionsExpanded).toBe(false);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(true);
+    });
+  });
+
+  it('expands Android organize options immediately when the keyboard is already hidden', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Keyboard, 'dismiss').mockImplementation(vi.fn());
+    vi.spyOn(Keyboard, 'isVisible').mockReturnValue(false);
+    const addListener = vi.spyOn(Keyboard, 'addListener');
+
+    await withPlatform('android', async () => {
+      let tree!: ReturnType<typeof create>;
+      await act(async () => {
+        tree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+
+      const getBody = () => {
+        const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+        if (!body) throw new Error('QuickCaptureSheetBody not found');
+        return body;
+      };
+
+      getBody().props.inputRef.current = { blur: vi.fn(), focus: vi.fn() };
+
+
+      addListener.mockClear();
+
+      await act(async () => {
+        getBody().props.onToggleOptions();
+        await Promise.resolve();
+      });
+
+      expect(addListener).toHaveBeenCalledWith('keyboardDidShow', expect.any(Function));
+      expect(getBody().props.optionsExpanded).toBe(true);
+      expect(getBody().props.keyboardAvoidingEnabled).toBe(false);
+    });
+  });
+
+  it('loads context autocomplete only after the context picker opens', async () => {
+    vi.useFakeTimers();
+    const active = { id: 'active', title: 'Active', status: 'next', contexts: ['@active-only'], tags: [] };
+    const done = { id: 'done', title: 'Done', status: 'done', contexts: ['@done-only'], tags: [] };
+    const archived = { id: 'archived', title: 'Archived', status: 'archived', contexts: ['@archived-only'], tags: [] };
+    const bare = { id: 'bare', title: 'Bare', status: 'archived', contexts: ['Seasonal Planning'], tags: [] };
+    const deleted = { id: 'deleted', title: 'Deleted', status: 'next', contexts: ['@deleted-only'], tags: [], deletedAt: '2026-09-27T00:00:00.000Z' };
+    selectStore.getState().tasks = [active, done] as never;
+    selectStore.getState()._allTasks = [active, done, archived, bare, deleted] as never;
+    selectStore.getState().settings = { taxonomy: { contexts: [{ token: '@unused', rev: 1, revBy: 'test', updatedAt: '2026-10-20T00:00:00.000Z' }] } };
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(contextScans()).toBe(0);
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    await act(async () => {
+      body.props.onOpenContextPicker();
+      await Promise.resolve();
+    });
+
+    expect(contextScans()).toBe(0);
+
+    await act(async () => {
+      vi.runOnlyPendingTimers();
+      await Promise.resolve();
+    });
+
+    expect(contextScans()).toBe(1);
+    const pickers = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetPickers')[0];
+    if (!pickers) throw new Error('QuickCaptureSheetPickers not found');
+    expect(pickers.props.filteredContexts).toEqual(['@active-only', '@done-only', '@unused']);
+    expect(pickers.props.contextOptionsLoading).toBe(false);
+    await act(async () => {
+      pickers.props.onContextQueryChange('arch');
+      await Promise.resolve();
+    });
+    expect(pickers.props.filteredContexts).toEqual(['@archived-only']);
+    await act(async () => {
+      pickers.props.onContextQueryChange('Seas');
+      await Promise.resolve();
+    });
+    expect(pickers.props.filteredContexts).toEqual(['@Seasonal Planning']);
+    await act(async () => {
+      pickers.props.onContextQueryChange('dele');
+      await Promise.resolve();
+    });
+    expect(pickers.props.filteredContexts).toEqual([]);
+  });
+
+  it('previews the draft with the exact parse configuration its save runs', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="" onClose={vi.fn()} />
+      );
+      await Promise.resolve();
+    });
+
+    const getBody = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      return body;
+    };
+
+    await act(async () => {
+      getBody().props.onValueChange('call mom @errands');
+      await Promise.resolve();
+    });
+
+
+    expect(getBody().props.preview).toBeTruthy();
+    expect(getBody().props.preview.props.entries).toContainEqual(
+      expect.objectContaining({ kind: 'context', value: '@errands' }),
+    );
+
+    const previewCall = quickCaptureSpies.buildQuickCapturePreview.mock.calls.at(-1)!;
+    expect(previewCall[0]).toBe('call mom @errands');
+
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+    });
+
+    const saveCall = quickCaptureSpies.saveQuickCapture.mock.calls[0]?.[0];
+    expect(saveCall).toBeDefined();
+    expect(saveCall.text).toBe(previewCall[0]);
+
+    expect(saveCall.context.parseOptions).toBe(previewCall[2].parseOptions);
+    expect(addTask).toHaveBeenCalledWith('call mom', expect.objectContaining({ contexts: ['@errands'] }));
+  });
+
+  it('knows a multi-word context created earlier in the same capture burst', async () => {
+
+
+    addTask.mockImplementation(async (title: string, props: Record<string, unknown>) => {
+      selectStore.getState().tasks.push({ id: `task-${title}`, title, ...props } as never);
+      return { success: true, id: `task-${title}` };
+    });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="" onClose={vi.fn()} />
+      );
+      await Promise.resolve();
+    });
+
+    const getBody = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      return body;
+    };
+
+    await act(async () => {
+      getBody().props.onToggleAddAnother(true);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      getBody().props.onValueChange('plan review @"deep work"');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+    });
+    expect(addTask).toHaveBeenLastCalledWith('plan review', expect.objectContaining({
+      contexts: ['@deep work'],
+    }));
+
+
+    await act(async () => {
+      getBody().props.onValueChange('write notes @deep work');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenLastCalledWith('write notes', expect.objectContaining({
+      contexts: ['@deep work'],
+    }));
+  });
+
+  it('keeps the strip away when the draft is a plain title', async () => {
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="call mom" onClose={vi.fn()} />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    expect(body.props.preview).toBeNull();
+  });
+
+  it('ignores duplicate save presses while the first save is in flight', async () => {
+    let resolveAddTask: ((value: unknown) => void) | null = null;
+    addTask.mockImplementation(() => new Promise((resolve) => {
+      resolveAddTask = resolve;
+    }));
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Double tap task"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    await act(async () => {
+      body.props.handleSave();
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask).toHaveBeenCalledWith('Double tap task', expect.objectContaining({ status: 'inbox' }));
+    expect(tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0]?.props.saving).toBe(true);
+
+    await act(async () => {
+      resolveAddTask?.({ success: true, id: 'task-1' });
+      await Promise.resolve();
+    });
+  });
+
+  it('does not let a stale save close or clear a reopened capture session', async () => {
+    let resolveAddTask: ((value: unknown) => void) | null = null;
+    addTask.mockImplementation(() => new Promise((resolve) => {
+      resolveAddTask = resolve;
+    }));
+    const onClose = vi.fn();
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="First capture"
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const firstBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!firstBody) throw new Error('QuickCaptureSheetBody not found');
+    await act(async () => {
+      firstBody.props.handleSave();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      tree.update(
+        <QuickCaptureSheet
+          visible={false}
+          openRequestId={1}
+          initialValue="First capture"
+          onClose={onClose}
+        />
+      );
+      tree.update(
+        <QuickCaptureSheet
+          visible
+          openRequestId={2}
+          initialValue="Second capture"
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveAddTask?.({ success: true, id: 'task-1' });
+      await Promise.resolve();
+    });
+
+    const reopenedBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!reopenedBody) throw new Error('QuickCaptureSheetBody not found');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(reopenedBody.props.value).toBe('Second capture');
+    expect(reopenedBody.props.saving).toBe(false);
+  });
+
+  it('does not restore or replay a deferred capture that succeeds after Activity teardown', async () => {
+    let resolveAddTask: ((value: unknown) => void) | null = null;
+    const onSubmissionStart = vi.fn();
+    addTask.mockImplementation(() => new Promise((resolve) => {
+      expect(onSubmissionStart).toHaveBeenCalledOnce();
+      resolveAddTask = resolve;
+    }));
+    const recoveryRequested = vi.fn();
+    const unsubscribe = subscribeQuickCaptureSubmissionFailure(
+      'test:successful-pending-capture',
+      recoveryRequested,
+    );
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Saved exactly once"
+          activitySessionOwnerId="test:successful-pending-capture"
+          onSubmissionStart={onSubmissionStart}
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+    expect(onSubmissionStart).toHaveBeenCalledOnce();
+    expect(addTask).toHaveBeenCalledOnce();
+
+    act(() => tree.unmount());
+    expect(recoveryRequested).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveAddTask?.({ success: true, id: 'task-once' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledOnce();
+    expect(recoveryRequested).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('returns a rejected deferred capture to the replacement Activity without replaying it', async () => {
+    await withPlatform('android', async () => {
+    activityConfigurationMock.changing = true;
+    let resolveAddTask: ((value: unknown) => void) | null = null;
+    addTask.mockImplementation(() => new Promise((resolve) => {
+      resolveAddTask = resolve;
+    }));
+    const recoveryRequested = vi.fn();
+    const ownerId = 'test:failed-pending-capture';
+    const unsubscribe = subscribeQuickCaptureSubmissionFailure(ownerId, recoveryRequested);
+
+    let oldTree!: ReturnType<typeof create>;
+    await act(async () => {
+      oldTree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Keep this failed draft"
+          activitySessionOwnerId={ownerId}
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+    const oldBody = oldTree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!oldBody) throw new Error('QuickCaptureSheetBody not found');
+    await act(async () => {
+      oldBody.props.handleSave();
+      await Promise.resolve();
+    });
+    act(() => oldTree.unmount());
+
+    await act(async () => {
+      resolveAddTask?.({ success: false, error: 'offline' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(recoveryRequested).toHaveBeenCalledOnce();
+    expect(addTask).toHaveBeenCalledOnce();
+
+    let replacementTree!: ReturnType<typeof create>;
+    await act(async () => {
+      replacementTree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          activitySessionOwnerId={ownerId}
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+    const replacementBody = replacementTree.root.findAll(
+      (node) => String(node.type) === 'QuickCaptureSheetBody',
+    )[0];
+    if (!replacementBody) throw new Error('replacement QuickCaptureSheetBody not found');
+    expect(replacementBody.props.value).toBe('Keep this failed draft');
+    expect(replacementBody.props.saving).toBe(false);
+    expect(addTask).toHaveBeenCalledOnce();
+
+    act(() => replacementTree.unmount());
+    unsubscribe();
+    });
+  });
+
+  it('restores a failed audio draft and attachment after verified Activity replacement', async () => {
+    await withPlatform('android', async () => {
+      activityConfigurationMock.changing = true;
+      const ownerId = 'test:failed-audio-pending-capture';
+      const recoveryRequested = vi.fn();
+      const unsubscribe = subscribeQuickCaptureSubmissionFailure(ownerId, recoveryRequested);
+      const recoveryAttachment = {
+        id: 'audio-recovery-1',
+        kind: 'file' as const,
+        title: 'Audio note',
+        uri: 'file:///document/attachments/audio-recovery-1.wav',
+        mimeType: 'audio/wav',
+        createdAt: '2026-09-11T12:00:00.000Z',
+        updatedAt: '2026-09-11T12:00:00.000Z',
+        localStatus: 'available' as const,
+      };
+      const initialAttachment = {
+        ...recoveryAttachment,
+        id: 'preexisting-attachment',
+        title: 'Preexisting attachment',
+        uri: 'file:///document/attachments/preexisting.wav',
+      };
+
+      let oldTree!: ReturnType<typeof create>;
+      await act(async () => {
+        oldTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            initialProps={{ attachments: [initialAttachment] }}
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const audioA = audioHookMock.params;
+      if (!audioA) throw new Error('audio hook params unavailable');
+      const sourceSession = audioA.getActiveSubmissionSession();
+      expect(sourceSession).not.toBeNull();
+      expect(audioA.submissionCoordinator.tryBeginSubmission(sourceSession)).toBe(true);
+      const submissionId = audioA.beginActivitySubmission(
+        [initialAttachment, recoveryAttachment],
+        'Audio note 9/11/2026, 8:00 AM',
+        [recoveryAttachment.uri],
+      );
+      act(() => oldTree.unmount());
+
+      expect(audioA.settleActivitySubmission(submissionId, {
+        durableSucceeded: false,
+        keepEditing: true,
+        sessionCurrent: false,
+      })).toBe(true);
+      expect(recoveryRequested).toHaveBeenCalledOnce();
+
+      let replacementTree!: ReturnType<typeof create>;
+      await act(async () => {
+        replacementTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const replacementBody = replacementTree.root.findByType('QuickCaptureSheetBody' as any);
+      expect(replacementBody.props.value).toBe('Audio note 9/11/2026, 8:00 AM');
+      expect(audioHookMock.params?.initialAttachments).toEqual([initialAttachment, recoveryAttachment]);
+      expect(addTask).not.toHaveBeenCalled();
+
+      await act(async () => {
+        replacementBody.props.handleClose();
+        await Promise.resolve();
+      });
+      expect(recoveryFileDeleteMock).toHaveBeenCalledWith(recoveryAttachment.uri);
+      expect(recoveryFileDeleteMock).not.toHaveBeenCalledWith(initialAttachment.uri);
+
+      act(() => replacementTree.unmount());
+      unsubscribe();
+    });
+  });
+
+  it('hands a restored audio attachment to a successful retry without deleting it', async () => {
+    await withPlatform('android', async () => {
+      activityConfigurationMock.changing = true;
+      addTask.mockResolvedValue({ success: true, id: 'retried-audio-task' });
+      const ownerId = 'test:retried-audio-pending-capture';
+      const recoveryAttachment = {
+        id: 'audio-retry-1',
+        kind: 'file' as const,
+        title: 'Audio retry',
+        uri: 'file:///document/attachments/audio-retry-1.wav',
+        mimeType: 'audio/wav',
+        createdAt: '2026-09-11T12:00:00.000Z',
+        updatedAt: '2026-09-11T12:00:00.000Z',
+        localStatus: 'available' as const,
+      };
+
+      let oldTree!: ReturnType<typeof create>;
+      await act(async () => {
+        oldTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const audioA = audioHookMock.params;
+      if (!audioA) throw new Error('audio hook params unavailable');
+      const sourceSession = audioA.getActiveSubmissionSession();
+      expect(audioA.submissionCoordinator.tryBeginSubmission(sourceSession)).toBe(true);
+      const submissionId = audioA.beginActivitySubmission(
+        [recoveryAttachment],
+        'Retry this audio note',
+        [recoveryAttachment.uri],
+      );
+      act(() => oldTree.unmount());
+      expect(audioA.settleActivitySubmission(submissionId, {
+        durableSucceeded: false,
+        keepEditing: true,
+        sessionCurrent: false,
+      })).toBe(true);
+
+      let replacementTree!: ReturnType<typeof create>;
+      await act(async () => {
+        replacementTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const replacementBody = replacementTree.root.findByType('QuickCaptureSheetBody' as any);
+      await act(async () => {
+        await replacementBody.props.handleSave();
+        await Promise.resolve();
+      });
+
+      expect(addTask).toHaveBeenCalledOnce();
+      expect(addTask.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+        attachments: [recoveryAttachment],
+      }));
+      expect(recoveryFileDeleteMock).not.toHaveBeenCalledWith(recoveryAttachment.uri);
+      act(() => replacementTree.unmount());
+    });
+  });
+
+  it('cleans a recovery-owned audio attachment when its failed submission expires', async () => {
+    await withPlatform('android', async () => {
+      activityConfigurationMock.changing = true;
+      const createdAt = 1_800_000_000_000;
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(createdAt);
+      const ownerId = 'test:expired-audio-pending-capture';
+      const recoveryAttachment = {
+        id: 'audio-expired-1',
+        kind: 'file' as const,
+        title: 'Expired audio',
+        uri: 'file:///document/attachments/audio-expired-1.wav',
+        createdAt: '2026-09-11T12:00:00.000Z',
+        updatedAt: '2026-09-11T12:00:00.000Z',
+      };
+      let tree!: ReturnType<typeof create>;
+      await act(async () => {
+        tree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const audioA = audioHookMock.params;
+      if (!audioA) throw new Error('audio hook params unavailable');
+      const sourceSession = audioA.getActiveSubmissionSession();
+      expect(audioA.submissionCoordinator.tryBeginSubmission(sourceSession)).toBe(true);
+      const submissionId = audioA.beginActivitySubmission(
+        [recoveryAttachment],
+        'Expired audio',
+        [recoveryAttachment.uri],
+      );
+      act(() => tree.unmount());
+      expect(audioA.settleActivitySubmission(submissionId, {
+        durableSucceeded: false,
+        keepEditing: true,
+        sessionCurrent: false,
+      })).toBe(true);
+
+      nowSpy.mockReturnValue(createdAt + ANDROID_ACTIVITY_SESSION_TTL_MS + 1);
+      const unsubscribe = subscribeQuickCaptureSubmissionFailure('test:prune-expired-audio', vi.fn());
+      expect(recoveryFileDeleteMock).toHaveBeenCalledWith(recoveryAttachment.uri);
+      unsubscribe();
+    });
+  });
+
+  it('never evicts a pending audio write when the recovery queue reaches its failed-entry cap', async () => {
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          activitySessionOwnerId="test:pending-audio-cap"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+    const audio = audioHookMock.params;
+    if (!audio) throw new Error('audio hook params unavailable');
+    const submissionIds = Array.from({ length: 17 }, (_, index) => {
+      const uri = `file:///document/attachments/pending-${index}.wav`;
+      return audio.beginActivitySubmission(
+        [{
+          id: `pending-${index}`,
+          kind: 'file' as const,
+          title: `Pending ${index}`,
+          uri,
+          createdAt: '2026-09-11T12:00:00.000Z',
+          updatedAt: '2026-09-11T12:00:00.000Z',
+        }],
+        `Pending ${index}`,
+        [uri],
+      );
+    });
+
+    expect(recoveryFileDeleteMock).not.toHaveBeenCalled();
+    for (const submissionId of submissionIds) {
+      expect(audio.settleActivitySubmission(submissionId, {
+        durableSucceeded: true,
+        keepEditing: false,
+        sessionCurrent: false,
+      })).toBe(true);
+    }
+    expect(recoveryFileDeleteMock).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('reoffers two failed audio submissions for one owner one at a time', async () => {
+    await withPlatform('android', async () => {
+      activityConfigurationMock.changing = true;
+      const ownerId = 'test:two-failed-audio-captures';
+      const recoveryRequested = vi.fn();
+      const unsubscribe = subscribeQuickCaptureSubmissionFailure(ownerId, recoveryRequested);
+      const makeAttachment = (suffix: string) => ({
+        id: `audio-${suffix}`,
+        kind: 'file' as const,
+        title: `Audio ${suffix}`,
+        uri: `file:///document/attachments/audio-${suffix}.wav`,
+        createdAt: '2026-09-11T12:00:00.000Z',
+        updatedAt: '2026-09-11T12:00:00.000Z',
+      });
+      const attachmentA = makeAttachment('a');
+      const attachmentB = makeAttachment('b');
+      let oldTree!: ReturnType<typeof create>;
+      await act(async () => {
+        oldTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const audioA = audioHookMock.params;
+      if (!audioA) throw new Error('audio hook params unavailable');
+      const submissionA = audioA.beginActivitySubmission(
+        [attachmentA],
+        'Failed audio A',
+        [attachmentA.uri],
+      );
+      const submissionB = audioA.beginActivitySubmission(
+        [attachmentB],
+        'Failed audio B',
+        [attachmentB.uri],
+      );
+      act(() => oldTree.unmount());
+      expect(audioA.settleActivitySubmission(submissionA, {
+        durableSucceeded: false,
+        keepEditing: true,
+        sessionCurrent: false,
+      })).toBe(true);
+      expect(audioA.settleActivitySubmission(submissionB, {
+        durableSucceeded: false,
+        keepEditing: true,
+        sessionCurrent: false,
+      })).toBe(true);
+      expect(recoveryRequested).toHaveBeenCalledTimes(2);
+
+      const onClose = vi.fn();
+      let replacementTree!: ReturnType<typeof create>;
+      await act(async () => {
+        replacementTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={onClose}
+          />
+        );
+        await Promise.resolve();
+      });
+      let body = replacementTree.root.findByType('QuickCaptureSheetBody' as any);
+      expect(body.props.value).toBe('Failed audio A');
+      expect(audioHookMock.params?.initialAttachments).toEqual([attachmentA]);
+      expect(recoveryRequested).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        body.props.handleClose();
+        await Promise.resolve();
+      });
+      expect(recoveryFileDeleteMock).toHaveBeenCalledWith(attachmentA.uri);
+
+      await act(async () => {
+        replacementTree.update(
+          <QuickCaptureSheet
+            visible
+            openRequestId={2}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={onClose}
+          />
+        );
+        await Promise.resolve();
+      });
+      body = replacementTree.root.findByType('QuickCaptureSheetBody' as any);
+      expect(body.props.value).toBe('Failed audio B');
+      expect(audioHookMock.params?.initialAttachments).toEqual([attachmentB]);
+      await act(async () => {
+        body.props.handleClose();
+        await Promise.resolve();
+      });
+      expect(recoveryFileDeleteMock).toHaveBeenCalledWith(attachmentB.uri);
+
+      await act(async () => {
+        replacementTree.update(
+          <QuickCaptureSheet
+            visible
+            openRequestId={3}
+            initialValue="Fresh C"
+            activitySessionOwnerId={ownerId}
+            onClose={onClose}
+          />
+        );
+        await Promise.resolve();
+      });
+      expect(replacementTree.root.findByType('QuickCaptureSheetBody' as any).props.value)
+        .toBe('Fresh C');
+      act(() => replacementTree.unmount());
+      unsubscribe();
+    });
+  });
+
+  it('discards a deferred failure after an ordinary unmount', async () => {
+    await withPlatform('android', async () => {
+      let resolveAddTask: ((value: unknown) => void) | null = null;
+      addTask.mockImplementation(() => new Promise((resolve) => {
+        resolveAddTask = resolve;
+      }));
+      const recoveryRequested = vi.fn();
+      const ownerId = 'test:ordinary-unmount-capture';
+      const unsubscribe = subscribeQuickCaptureSubmissionFailure(ownerId, recoveryRequested);
+      let tree!: ReturnType<typeof create>;
+      await act(async () => {
+        tree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue="Do not restore after navigation"
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      await act(async () => {
+        body.props.handleSave();
+        await Promise.resolve();
+      });
+      act(() => tree.unmount());
+      await act(async () => {
+        resolveAddTask?.({ success: false, error: 'offline' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(recoveryRequested).not.toHaveBeenCalled();
+      unsubscribe();
+    });
+  });
+
+  it('retains the title and multiline description after a rejected capture for retry', async () => {
+    addTask.mockResolvedValue({ success: false, error: 'Archived project' });
+    const onClose = vi.fn();
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet visible openRequestId={1} initialValue="Rejected capture" onClose={onClose} />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    const description = 'First line\n@home /due:tomorrow #literal';
+    await act(async () => {
+      body.props.onNoteChange(description);
+    });
+    await act(async () => {
+      tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0].props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Failed to add task',
+    }));
+    expect(onClose).not.toHaveBeenCalled();
+    const retryBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    expect(retryBody.props.value).toBe('Rejected capture');
+    expect(retryBody.props.noteValue).toBe(description);
+    addTask.mockResolvedValue({ success: true, id: 'task-retry' });
+    await act(async () => {
+      retryBody.props.handleSave();
+    });
+    expect(addTask).toHaveBeenLastCalledWith('Rejected capture', expect.objectContaining({ description }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('queues a late failed capture without overwriting a newer draft and consumes it once', async () => {
+    await withPlatform('android', async () => {
+      activityConfigurationMock.changing = true;
+      let resolveAddTask: ((value: unknown) => void) | null = null;
+      addTask.mockImplementation(() => new Promise((resolve) => {
+        resolveAddTask = resolve;
+      }));
+      const recoveryRequested = vi.fn();
+      const ownerId = 'test:queued-failed-capture';
+      const unsubscribe = subscribeQuickCaptureSubmissionFailure(ownerId, recoveryRequested);
+
+      let oldTree!: ReturnType<typeof create>;
+      await act(async () => {
+        oldTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue="Older failed A"
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      const oldBody = oldTree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!oldBody) throw new Error('QuickCaptureSheetBody not found');
+      await act(async () => {
+        oldBody.props.handleSave();
+        await Promise.resolve();
+      });
+      act(() => oldTree.unmount());
+
+      let replacementTree!: ReturnType<typeof create>;
+      await act(async () => {
+        replacementTree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue="Newer draft B"
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      await act(async () => {
+        resolveAddTask?.({ success: false, error: 'offline' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(recoveryRequested).toHaveBeenCalledOnce();
+      expect(replacementTree.root.findByType('QuickCaptureSheetBody' as any).props.value)
+        .toBe('Newer draft B');
+
+      await act(async () => {
+        replacementTree.update(
+          <QuickCaptureSheet
+            visible
+            openRequestId={2}
+            initialValue=""
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      expect(replacementTree.root.findByType('QuickCaptureSheetBody' as any).props.value)
+        .toBe('Older failed A');
+      expect(addTask).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        replacementTree.update(
+          <QuickCaptureSheet
+            visible
+            openRequestId={3}
+            initialValue="Fresh draft C"
+            activitySessionOwnerId={ownerId}
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+      expect(replacementTree.root.findByType('QuickCaptureSheetBody' as any).props.value)
+        .toBe('Fresh draft C');
+
+      act(() => replacementTree.unmount());
+      unsubscribe();
+    });
+  });
+
+  it('blocks dismissal while audio owns the session and preserves reopened capture B', async () => {
+    const onClose = vi.fn();
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="First capture"
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const audioA = audioHookMock.params;
+    if (!audioA) throw new Error('audio hook params unavailable');
+    const firstSession = audioA.getActiveSubmissionSession();
+    expect(firstSession).not.toBeNull();
+    expect(audioA.submissionCoordinator.tryBeginSubmission(firstSession)).toBe(true);
+    await act(async () => {
+      audioA.onSubmissionBusyChange(true);
+      await Promise.resolve();
+    });
+    const busyBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!busyBody) throw new Error('QuickCaptureSheetBody not found');
+    expect(busyBody.props.saving).toBe(true);
+    await act(async () => {
+      busyBody.props.handleClose();
+      await Promise.resolve();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      tree.update(
+        <QuickCaptureSheet
+          visible={false}
+          openRequestId={1}
+          initialValue="First capture"
+          onClose={onClose}
+        />
+      );
+      tree.update(
+        <QuickCaptureSheet
+          visible
+          openRequestId={2}
+          initialValue="Second capture"
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const audioB = audioHookMock.params;
+    if (!audioB) throw new Error('reopened audio hook params unavailable');
+    const reopenedSession = audioB.getActiveSubmissionSession();
+    expect(reopenedSession).not.toBe(firstSession);
+    expect(audioB.submissionCoordinator.finishSubmission(firstSession)).toBe(false);
+    expect(audioB.submissionCoordinator.isCurrent(reopenedSession)).toBe(true);
+    const reopenedBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    expect(reopenedBody?.props.value).toBe('Second capture');
+    expect(reopenedBody?.props.saving).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("stars a task for Today's Focus from the capture sheet", async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="File Q3 estimated tax payment"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    expect(body.props.focusNewTask).toBe(false);
+
+    await act(async () => {
+      body.props.onToggleFocusNewTask();
+      await Promise.resolve();
+    });
+
+    const updatedBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!updatedBody) throw new Error('QuickCaptureSheetBody not found after toggle');
+    expect(updatedBody.props.focusNewTask).toBe(true);
+
+    await act(async () => {
+      updatedBody.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('File Q3 estimated tax payment', expect.objectContaining({
+      status: 'inbox',
+      isFocusedToday: true,
+    }));
+  });
+
+
+  const findBulkConfirm = (tree: ReturnType<typeof create>) => (
+    tree.root.findAll((node) => (node.type as { name?: string })?.name === 'BulkQuickAddConfirm')[0]
+  );
+
+  it('confirms multiline capture before creating one task per line', async () => {
+    const alertSpy = vi.spyOn(Alert, 'alert').mockImplementation(vi.fn());
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue={'Email Bob\nCall Alice /next'}
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    const confirm = findBulkConfirm(tree);
+    if (!confirm) throw new Error('Bulk confirm not rendered in the sheet');
+    expect(confirm.props.title).toBe('Create 2 tasks?');
+    expect(confirm.props.message).toContain('Email Bob');
+
+    await act(async () => {
+      confirm.props.onConfirm();
+      await Promise.resolve();
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+    expect(addTasks).toHaveBeenCalledTimes(1);
+    expect(createMobileRecoverySnapshot).toHaveBeenCalledOnce();
+    expect(createMobileRecoverySnapshot.mock.invocationCallOrder[0])
+      .toBeLessThan(addTasks.mock.invocationCallOrder[0]);
+    expect(addTasks).toHaveBeenCalledWith([
+      { title: 'Email Bob', initialProps: expect.objectContaining({ status: 'inbox' }) },
+      { title: 'Call Alice', initialProps: expect.objectContaining({ status: 'next' }) },
+    ]);
+  });
+
+  it('dismisses bulk confirmation on modal request close without closing the sheet', async () => {
+    const onClose = vi.fn();
+    const draft = 'Email Bob\nCall Alice /next';
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue={draft}
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    const pendingBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!pendingBody) throw new Error('QuickCaptureSheetBody not found');
+    expect(findBulkConfirm(tree)).toBeTruthy();
+    expect(pendingBody.props.contentAccessibilityHidden).toBe(true);
+
+    await act(async () => {
+      pendingBody.props.handleRequestClose();
+      await Promise.resolve();
+    });
+
+    const restoredBody = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!restoredBody) throw new Error('QuickCaptureSheetBody not found');
+    expect(findBulkConfirm(tree)).toBeUndefined();
+    expect(restoredBody.props.contentAccessibilityHidden).toBe(false);
+    expect(restoredBody.props.value).toBe(draft);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(addTasks).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('imports a text file through the in-sheet bulk confirmation', async () => {
+    const alertSpy = vi.spyOn(Alert, 'alert').mockImplementation(vi.fn());
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+    documentPickerGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ name: 'tasks.txt', uri: 'file://tasks.txt', mimeType: 'text/plain' }],
+    });
+    fileSystemReadAsStringAsync.mockResolvedValue('First imported task\nSecond imported task\n');
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      await body.props.handleImportTextFile();
+      await Promise.resolve();
+    });
+
+    expect(documentPickerGetDocumentAsync).toHaveBeenCalledWith(expect.objectContaining({
+      multiple: false,
+      type: 'text/plain',
+    }));
+    expect(fileSystemReadAsStringAsync).toHaveBeenCalledWith('file://tasks.txt');
+
+    const confirm = findBulkConfirm(tree);
+    if (!confirm) throw new Error('Bulk confirm not rendered in the sheet');
+    expect(confirm.props.title).toBe('Create 2 tasks?');
+    expect(confirm.props.message).toContain('First imported task');
+
+    await act(async () => {
+      confirm.props.onConfirm();
+      await Promise.resolve();
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+    expect(addTasks).toHaveBeenCalledTimes(1);
+    expect(addTasks).toHaveBeenCalledWith([
+      { title: 'First imported task', initialProps: expect.objectContaining({ status: 'inbox' }) },
+      { title: 'Second imported task', initialProps: expect.objectContaining({ status: 'inbox' }) },
+    ]);
+  });
+
+  it('never raises a native Alert for an iOS import confirmation', async () => {
+    const alertSpy = vi.spyOn(Alert, 'alert').mockImplementation(vi.fn());
+    documentPickerGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ name: 'tasks.txt', uri: 'file://tasks.txt', mimeType: 'text/plain' }],
+    });
+    fileSystemReadAsStringAsync.mockResolvedValue('First imported task\nSecond imported task\n');
+
+    await withPlatform('ios', async () => {
+      let tree!: ReturnType<typeof create>;
+      await act(async () => {
+        tree = create(
+          <QuickCaptureSheet
+            visible
+            openRequestId={1}
+            initialValue=""
+            onClose={vi.fn()}
+          />
+        );
+        await Promise.resolve();
+      });
+
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+      await act(async () => {
+        await body.props.handleImportTextFile();
+        await Promise.resolve();
+      });
+
+
+      expect(alertSpy).not.toHaveBeenCalled();
+      expect(findBulkConfirm(tree)?.props.title).toBe('Create 2 tasks?');
+    });
+  });
+
+  it('creates nothing when the bulk confirmation is dismissed', async () => {
+    documentPickerGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ name: 'tasks.txt', uri: 'file://tasks.txt', mimeType: 'text/plain' }],
+    });
+    fileSystemReadAsStringAsync.mockResolvedValue('First imported task\nSecond imported task\n');
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue=""
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      await body.props.handleImportTextFile();
+      await Promise.resolve();
+    });
+
+    const confirm = findBulkConfirm(tree);
+    if (!confirm) throw new Error('Bulk confirm not rendered in the sheet');
+
+    await act(async () => {
+      confirm.props.onCancel();
+      await Promise.resolve();
+    });
+
+    expect(findBulkConfirm(tree)).toBeUndefined();
+    expect(addTasks).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('opens the created task when save and edit is requested', async () => {
+    addTask.mockResolvedValueOnce({ success: true, id: 'task-new' });
+    const onClose = vi.fn();
+    selectStore.getState().projects = [{
+      id: 'project-1',
+      title: 'Launch',
+      status: 'active',
+    }];
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Draft launch brief"
+          initialProps={{ projectId: 'project-1', status: 'next' }}
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+    await act(async () => {
+      body.props.handleSaveAndEdit();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('Draft launch brief', expect.objectContaining({
+      projectId: 'project-1',
+      status: 'next',
+    }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(openTaskScreen).toHaveBeenCalledWith('task-new', 'project-1', 'task');
+  });
+
+  it('uses the selected area filter for new captures in active area mode', async () => {
+    selectedAreaIdForNewTasksMock.current = 'area-work';
+    selectStore.getState().areas = [
+      { id: 'area-home', name: 'Home', order: 0, createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z' },
+      { id: 'area-work', name: 'Work', order: 1, createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z' },
+    ];
+    selectStore.getState().settings = { gtd: { defaultAreaMode: 'active', defaultAreaId: 'area-home' } };
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Area-filtered task"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('Area-filtered task', expect.objectContaining({
+      areaId: 'area-work',
+      status: 'inbox',
+    }));
+  });
+
+  it('uses the fixed GTD default area before the selected area filter in fixed area mode', async () => {
+    selectedAreaIdForNewTasksMock.current = 'area-work';
+    selectStore.getState().areas = [
+      { id: 'area-home', name: 'Home', order: 0, createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z' },
+      { id: 'area-work', name: 'Work', order: 1, createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z' },
+    ];
+    selectStore.getState().settings = { gtd: { defaultAreaMode: 'fixed', defaultAreaId: 'area-home' } };
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Fixed-default task"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('Fixed-default task', expect.objectContaining({
+      areaId: 'area-home',
+      status: 'inbox',
+    }));
+  });
+
+  it('does not apply the GTD default area while the no-area filter is active', async () => {
+    selectedAreaIdForNewTasksMock.current = null;
+    selectStore.getState().areas = [
+      { id: 'area-home', name: 'Home', order: 0, createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z' },
+    ];
+    selectStore.getState().settings = { gtd: { defaultAreaMode: 'active', defaultAreaId: 'area-home' } };
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="No-area task"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    const savedProps = addTask.mock.calls[0]?.[1] as { areaId?: string } | undefined;
+    expect(savedProps?.areaId).toBeUndefined();
+  });
+
+  it('saves picker due dates as date-only values', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Plan the day"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const pickers = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetPickers')[0];
+    if (!pickers) throw new Error('QuickCaptureSheetPickers not found');
+
+    await act(async () => {
+      pickers.props.onDueDateChange({ type: 'set' }, new Date(2026, 4, 10, 14, 37, 0, 0));
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask).toHaveBeenCalledWith('Plan the day', expect.objectContaining({
+      dueDate: '2026-05-10',
+      status: 'inbox',
+    }));
+  });
+
+  it('previews the picked due date instead of the one the text parsed to', async () => {
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Ship the build /due:monday"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const dueChip = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      const entries = (body?.props?.preview?.props?.entries ?? []) as { kind: string; value: string }[];
+      return entries.find((entry) => entry.kind === 'due')?.value;
+    };
+
+    expect(dueChip()).toContain('2026');
+
+    const pickers = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetPickers')[0];
+    if (!pickers) throw new Error('QuickCaptureSheetPickers not found');
+    await act(async () => {
+      pickers.props.onDueDateChange({ type: 'set' }, new Date(2027, 2, 5, 9, 0, 0, 0));
+      await Promise.resolve();
+    });
+
+    expect(dueChip()).toContain('2027');
+  });
+
+  it('saves picker due times only after the user explicitly selects one', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Call the office"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const pickers = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetPickers')[0];
+    if (!pickers) throw new Error('QuickCaptureSheetPickers not found');
+
+    await act(async () => {
+      pickers.props.onDueDateChange({ type: 'set' }, new Date(2026, 4, 10, 14, 37, 0, 0));
+      await Promise.resolve();
+    });
+
+    const refreshedPickers = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetPickers')[0];
+    if (!refreshedPickers) throw new Error('QuickCaptureSheetPickers not found');
+    await act(async () => {
+      refreshedPickers.props.onDueTimeChange({ type: 'set' }, new Date(2026, 4, 10, 16, 15, 0, 0));
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask).toHaveBeenCalledWith('Call the office', expect.objectContaining({
+      dueDate: new Date(2026, 4, 10, 16, 15, 0, 0).toISOString(),
+      status: 'inbox',
+    }));
+  });
+
+  it('creates parsed quick-add projects inside the parsed area', async () => {
+    addProject.mockResolvedValue({ id: 'project-launch' });
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+    selectStore.getState().areas = [{ id: 'area-work', name: 'Work', order: 0, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }] as never;
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Plan campaign +Launch !Work"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+    if (!body) throw new Error('QuickCaptureSheetBody not found');
+
+    await act(async () => {
+      body.props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addProject).toHaveBeenCalledWith('Launch', '#94a3b8', { areaId: 'area-work' });
+    expect(addTask).toHaveBeenCalledWith('Plan campaign', expect.objectContaining({
+      projectId: 'project-launch',
+      areaId: undefined,
+    }));
+  });
+
+  it('keeps project initial props when saving and adding another', async () => {
+    selectStore.getState().projects = [{
+      id: 'project-1',
+      title: 'Launch',
+      status: 'active',
+    }];
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+    const onClose = vi.fn();
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="First task"
+          initialProps={{ projectId: 'project-1', status: 'next' }}
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const getBody = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      return body;
+    };
+
+    await act(async () => {
+      getBody().props.onToggleAddAnother(true);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('First task', expect.objectContaining({
+      projectId: 'project-1',
+      status: 'next',
+    }));
+    expect(getBody().props.value).toBe('');
+    expect(getBody().props.projectLabel).toBe('Launch');
+    expect(getBody().props.projectSelected).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      getBody().props.onValueChange('Second task');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenLastCalledWith('Second task', expect.objectContaining({
+      projectId: 'project-1',
+      status: 'next',
+    }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it('saves the optional quick-capture description without parsing its lines', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Renew passport"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const getBody = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      return body;
+    };
+
+    expect(getBody().props.noteValue).toBe('');
+
+    await act(async () => {
+      getBody().props.onNoteChange('  Bring the old one and two photos\n@home /due:tomorrow #literal  ');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+    });
+
+    expect(addTask).toHaveBeenCalledWith('Renew passport', expect.objectContaining({
+      description: 'Bring the old one and two photos\n@home /due:tomorrow #literal',
+      status: 'inbox',
+    }));
+  });
+
+  it('keeps a /note: token typed in the title after the note field text', async () => {
+    addTask.mockResolvedValue({ success: true, id: 'task-1' });
+
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <QuickCaptureSheet
+          visible
+          openRequestId={1}
+          initialValue="Renew passport /note: from the token"
+          onClose={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const getBody = () => {
+      const body = tree.root.findAll((node) => String(node.type) === 'QuickCaptureSheetBody')[0];
+      if (!body) throw new Error('QuickCaptureSheetBody not found');
+      return body;
+    };
+
+    await act(async () => {
+      getBody().props.onNoteChange('typed in the field');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      getBody().props.handleSave();
+      await Promise.resolve();
+    });
+
+
+    expect(addTask).toHaveBeenCalledWith('Renew passport', expect.objectContaining({
+      description: 'typed in the field\nfrom the token',
+    }));
+  });
+});

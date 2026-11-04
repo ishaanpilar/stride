@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Stride
+Comment=Local-first GTD task manager
+Exec=stride %u
+MimeType=x-scheme-handler/stride;
+Icon=com.ishaanpilar.stride
+Terminal=false
+Categories=Office;
+Keywords=Tasks;Todo;GTD;Productivity;
+StartupNotify=true
+StartupWMClass=Stride
+Actions=QuickAdd;
+
+[Desktop Action QuickAdd]
+Name=Quick Add
+Exec=stride --quick-add

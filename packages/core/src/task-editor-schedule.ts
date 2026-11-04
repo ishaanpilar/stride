@@ -1,0 +1,662 @@
+import {
+    createCustomTimeEstimate,
+    formatTimeEstimateLabel,
+    isCustomTimeEstimate,
+    parseTimeEstimateInput,
+    timeEstimateToMinutes,
+} from './calendar-scheduling';
+import {
+    getQuickDate,
+    hasTimeComponent,
+    isQuickDatePresetSelected,
+    QUICK_DATE_PRESETS,
+    safeParseDate,
+    safeParseDueDate,
+    type DateFormatter,
+    type QuickDatePreset,
+} from './date';
+import { tFallback } from './i18n';
+import { buildRRuleString, editRRuleString, getProjectedRecurringTaskCalendarDate, isMonthlyWeekdaySet, MONTHLY_WEEKDAYS, parseRRuleString, RECURRENCE_INTERVAL_MAX, type RRuleEditOverrides } from './recurrence';
+import { getLocalizedWeekdayButtons, getLocalizedWeekdayLabels, WEEKDAY_ORDER } from './recurrence-constants';
+import { resolveFeatureFlags } from './resolve-feature-flags';
+import { normalizeDueReminderLeadMinutes, normalizeStartReminderLeadMinutes, REPEAT_REMINDER_INTERVAL_OPTIONS } from './schedule-utils';
+import type { TaskDraft } from './task-draft';
+import { computeRelativeStartTime } from './task-relative-start';
+import { getTaskReminderPolicy, shouldSendTaskReminders } from './task-reminder-policy';
+import type {
+    AppSettings,
+    NotificationSettings,
+    RecurrenceByDay,
+    RecurrenceRule,
+    RecurrenceStrategy,
+    RecurrenceWeekday,
+    RelativeStartOffsetUnit,
+    Task,
+    TimeEstimate,
+} from './types';
+
+
+type Translate = (key: string) => string;
+
+export type TaskEditorDateField = 'startTime' | 'dueDate' | 'reviewAt';
+
+
+export function formatTaskEditorDate(
+    value: string | undefined,
+    formatDate: DateFormatter,
+    notSet: string,
+    options: { due?: boolean } = {},
+): string {
+    if (!value) return notSet;
+    const parsed = options.due ? safeParseDueDate(value) : safeParseDate(value);
+    if (!parsed) return notSet;
+    return formatDate(parsed, hasTimeComponent(value) ? 'P p' : 'P', notSet) || notSet;
+}
+
+
+export function getTaskDraftDateOnly(value: string | undefined, formatDate: DateFormatter): string {
+    const parsed = safeParseDate(value);
+    return parsed ? formatDate(parsed, 'yyyy-MM-dd') : '';
+}
+
+
+export function setTaskDraftDate(
+    field: TaskEditorDateField,
+    value: string | undefined,
+    day: Date,
+    options: { defaultScheduleTime?: string; formatDate: DateFormatter },
+): string {
+    const { formatDate } = options;
+    const dateOnly = formatDate(day, 'yyyy-MM-dd');
+    const existing = value && hasTimeComponent(value) ? safeParseDate(value) : null;
+    if (existing) {
+        if (field === 'reviewAt') return `${dateOnly}T${formatDate(existing, 'HH:mm')}`;
+        const combined = new Date(day);
+        combined.setHours(existing.getHours(), existing.getMinutes(), 0, 0);
+        return combined.toISOString();
+    }
+    return options.defaultScheduleTime ? `${dateOnly}T${options.defaultScheduleTime}` : dateOnly;
+}
+
+
+export function setTaskDraftTime(
+    value: string | undefined,
+    time: { hours: number; minutes: number },
+    base?: Date | null,
+    now: Date = new Date(),
+): string {
+    const combined = new Date(base ?? safeParseDate(value) ?? now);
+    combined.setHours(time.hours, time.minutes, 0, 0);
+    return combined.toISOString();
+}
+
+
+export function setTaskDraftReviewTime(
+    value: string | undefined,
+    time: { hours: number; minutes: number },
+    formatDate: DateFormatter,
+    now: Date = new Date(),
+): string {
+    const picked = new Date(setTaskDraftTime(value, time, null, now));
+    return `${formatDate(picked, 'yyyy-MM-dd')}T${formatDate(picked, 'HH:mm')}`;
+}
+
+
+export function getTaskDraftDateEdit(field: TaskEditorDateField, value: string): Partial<TaskDraft> {
+    if (field === 'startTime') return { startTime: value, relativeStartOffset: undefined };
+    return field === 'dueDate' ? { dueDate: value } : { reviewAt: value };
+}
+
+export const QUICK_DATE_LABELS: Record<QuickDatePreset, { key: string; fallback: string }> = {
+    today: { key: 'quickDate.today', fallback: 'Today' },
+    tomorrow: { key: 'quickDate.tomorrow', fallback: 'Tomorrow' },
+    in_2_days: { key: 'quickDate.in2Days', fallback: '+2 days' },
+    in_3_days: { key: 'quickDate.in3Days', fallback: '+3 days' },
+    next_week: { key: 'quickDate.nextWeek', fallback: 'Next week' },
+    next_month: { key: 'quickDate.nextMonth', fallback: 'Next month' },
+    no_date: { key: 'quickDate.noDate', fallback: 'No date' },
+};
+
+export const getQuickDateLabel = (preset: QuickDatePreset, t: Translate): string => (
+    tFallback(t, QUICK_DATE_LABELS[preset].key, QUICK_DATE_LABELS[preset].fallback)
+);
+
+export type TaskEditorQuickDate = {
+    preset: QuickDatePreset;
+    label: string;
+    selected: boolean;
+
+    value: string;
+};
+
+
+export function getTaskEditorQuickDates(
+    field: TaskEditorDateField,
+    value: string | undefined,
+    options: { t: Translate; now: Date; defaultScheduleTime?: string; formatDate: DateFormatter },
+): TaskEditorQuickDate[] {
+    const selectedDate = value ? safeParseDate(value) : null;
+    return QUICK_DATE_PRESETS.map((preset) => {
+        const selected = isQuickDatePresetSelected(preset, selectedDate, options.now);
+        const day = selected ? null : getQuickDate(preset, options.now);
+        return {
+            preset,
+            label: getQuickDateLabel(preset, options.t),
+            selected,
+            value: day ? setTaskDraftDate(field, value, day, options) : '',
+        };
+    });
+}
+
+export type TaskEditorDatePart = {
+
+    value: string;
+
+    label: string;
+    hasTime: boolean;
+
+    dateOnly: string;
+
+    time: string;
+
+    picker: { date: string; time: string };
+    quickDates: TaskEditorQuickDate[];
+};
+
+export function getTaskEditorDatePart(
+    field: TaskEditorDateField,
+    value: string,
+    options: { t: Translate; now: Date; defaultScheduleTime?: string; formatDate: DateFormatter },
+): TaskEditorDatePart {
+    const { formatDate } = options;
+    const parsed = value ? safeParseDate(value) : null;
+    const hasTime = hasTimeComponent(value);
+    const pickerDate = parsed ?? options.now;
+    return {
+        value,
+        label: formatTaskEditorDate(value, formatDate, options.t('common.notSet'), { due: field === 'dueDate' }),
+        hasTime,
+        dateOnly: getTaskDraftDateOnly(value, formatDate),
+        time: hasTime && parsed ? formatDate(parsed, 'HH:mm') : '',
+        picker: { date: formatDate(pickerDate, 'yyyy-MM-dd'), time: formatDate(pickerDate, 'HH:mm') },
+        quickDates: getTaskEditorQuickDates(field, value, options),
+    };
+}
+
+
+const isSubDayUnit = (unit: RelativeStartOffsetUnit) => unit === 'minute' || unit === 'hour';
+
+
+export const getTaskEditorRelativeStartUnit = (
+    dueDate: string | undefined,
+    unit: RelativeStartOffsetUnit,
+): RelativeStartOffsetUnit => (dueDate && !hasTimeComponent(dueDate) && isSubDayUnit(unit) ? 'day' : unit);
+
+
+export function getTaskDraftRelativeStartEdit(
+    dueDate: string,
+    amount: number,
+    unit: RelativeStartOffsetUnit,
+): Partial<TaskDraft> | null {
+    if (!dueDate || !Number.isFinite(amount)) return null;
+
+    const magnitude = Math.max(0, Math.floor(amount));
+    const offset = { amount: magnitude === 0 ? 0 : -magnitude, unit: getTaskEditorRelativeStartUnit(dueDate, unit) };
+    const startTime = computeRelativeStartTime(dueDate, offset);
+    return startTime ? { relativeStartOffset: offset, startTime } : { relativeStartOffset: undefined };
+}
+
+export type TaskEditorRelativeStart = {
+
+    active: boolean;
+
+    amount: number;
+    unit: RelativeStartOffsetUnit;
+    units: Array<{ unit: RelativeStartOffsetUnit; label: string }>;
+};
+
+
+export function getTaskEditorRelativeStart(
+    draft: Pick<TaskDraft, 'dueDate' | 'relativeStartOffset'>,
+    t: Translate,
+): TaskEditorRelativeStart | null {
+    if (!draft.dueDate) return null;
+    const units: RelativeStartOffsetUnit[] = hasTimeComponent(draft.dueDate)
+        ? ['minute', 'hour', 'day', 'week']
+        : ['day', 'week'];
+    const unitLabelKeys: Record<RelativeStartOffsetUnit, string> = {
+        minute: 'taskEdit.relativeStartMinutesShort',
+        hour: 'taskEdit.relativeStartHoursShort',
+        day: 'taskEdit.relativeStartDaysShort',
+        week: 'taskEdit.relativeStartWeeksShort',
+    };
+    return {
+        active: Boolean(draft.relativeStartOffset),
+        amount: draft.relativeStartOffset ? Math.abs(draft.relativeStartOffset.amount) : 3,
+        unit: getTaskEditorRelativeStartUnit(draft.dueDate, draft.relativeStartOffset?.unit ?? 'day'),
+        units: units.map((unit) => ({ unit, label: t(unitLabelKeys[unit]) })),
+    };
+}
+
+
+export const DUE_REMINDER_LEAD_OPTIONS = [5, 15, 30, 60, 1440, 2880, 10080] as const;
+
+export type TaskEditorReminders = {
+    startAdvance: {
+        enabled: boolean;
+        label: string;
+        valueLabel: string;
+        hint: string | null;
+        options: Array<{ value: number; label: string; selected: boolean }>;
+    } | null;
+    showAdvance: boolean;
+    advanceLabel: string;
+    advanceValueLabel: string;
+    advanceHint: string | null;
+    advanceOptions: Array<{ value: number; label: string; selected: boolean }>;
+
+    showSkip: boolean;
+
+    showRepeat: boolean;
+    policyLabel: string;
+    policyValueLabel: string;
+    policyOptions: Array<{ value: NonNullable<Task['reminderPolicy']>; label: string; selected: boolean }>;
+    hint: string;
+    disabledHint: string | null;
+    repeatLabel: string;
+
+    repeatValueLabel: string;
+
+    repeatOptions: Array<{ value: number | null; label: string; selected: boolean }>;
+};
+
+export function getTaskEditorReminders(
+    draft: Pick<TaskDraft, 'startTime' | 'dueDate' | 'repeatReminderMinutes' | 'suppressStrideReminders'> & Partial<Pick<TaskDraft, 'reminderPolicy' | 'dueReminderLeadMinutes' | 'startReminderLeadMinutes'>>,
+    t: Translate,
+    settings: Pick<NotificationSettings, 'taskReminderDefault' | 'notificationsEnabled'> = {},
+): TaskEditorReminders {
+    const current = draft.repeatReminderMinutes ?? 0;
+    const off = tFallback(t, 'taskEdit.repeatReminderOff', 'Off');
+    const count = (key: string, fallback: string, minutes: number) => (
+        minutes === 0 ? off : tFallback(t, key, fallback).replace('{count}', String(minutes))
+    );
+    const policy = getTaskReminderPolicy(draft);
+    const send = tFallback(t, 'taskEdit.reminderPolicySend', 'Send');
+    const skip = tFallback(t, 'taskEdit.reminderPolicySkip', 'Skip');
+    const policyOptions: TaskEditorReminders['policyOptions'] = [
+        { value: 'inherit', label: tFallback(t, 'taskEdit.reminderPolicyInherit', 'Use default ({value})').replace('{value}', settings.taskReminderDefault === 'skip' ? skip : send), selected: policy === 'inherit' },
+        { value: 'send', label: send, selected: policy === 'send' },
+        { value: 'skip', label: skip, selected: policy === 'skip' },
+    ];
+    const advanceCurrent = normalizeDueReminderLeadMinutes(draft.dueReminderLeadMinutes) ?? 0;
+    const advanceValues: number[] = [0, ...DUE_REMINDER_LEAD_OPTIONS];
+    if (!advanceValues.includes(advanceCurrent)) advanceValues.push(advanceCurrent);
+    const advanceLabel = (minutes: number): string => {
+        if (minutes === 0) return off;
+        if (minutes === 10080) return tFallback(t, 'taskEdit.advanceReminderWeek', '1 week before');
+        if (minutes === 1440) return tFallback(t, 'taskEdit.advanceReminderDay', '1 day before');
+        if (minutes === 2880) return tFallback(t, 'taskEdit.advanceReminderTwoDays', '2 days before');
+        if (minutes === 60) return tFallback(t, 'taskEdit.advanceReminderHour', '1 hour before');
+        return tFallback(t, 'taskEdit.advanceReminderMinutes', '{count} min before').replace('{count}', String(minutes));
+    };
+    const showAdvance = hasTimeComponent(draft.dueDate) && !!safeParseDate(draft.dueDate) && shouldSendTaskReminders(draft, settings);
+    const startCurrent = normalizeStartReminderLeadMinutes(draft.startReminderLeadMinutes) ?? 0;
+    return {
+        startAdvance: hasTimeComponent(draft.startTime) && !!safeParseDate(draft.startTime) ? {
+            enabled: shouldSendTaskReminders(draft, settings),
+            label: tFallback(t, 'taskEdit.startAdvanceReminderLabel', 'Before start'),
+            valueLabel: advanceLabel(startCurrent),
+            hint: shouldSendTaskReminders(draft, settings) ? null
+                : tFallback(t, 'taskEdit.advanceReminderSkipped', 'Enable start/due reminders for this task to use an advance reminder.'),
+            options: [0, 5, 15, 30, 60].map((value) => ({ value, label: advanceLabel(value), selected: value === startCurrent })),
+        } : null,
+        showAdvance,
+        advanceLabel: tFallback(t, 'taskEdit.advanceReminderLabel', 'Advance reminder'),
+        advanceValueLabel: advanceLabel(advanceCurrent),
+        advanceHint: !hasTimeComponent(draft.dueDate) || !safeParseDate(draft.dueDate)
+            ? tFallback(t, 'taskEdit.advanceReminderNeedsDueTime', 'Add a due date and time to set an advance reminder.')
+            : !showAdvance ? tFallback(t, 'taskEdit.advanceReminderSkipped', 'Enable start/due reminders for this task to use an advance reminder.') : null,
+        advanceOptions: advanceValues.map((value) => ({ value, label: advanceLabel(value), selected: value === advanceCurrent })),
+        showSkip: hasTimeComponent(draft.startTime) || hasTimeComponent(draft.dueDate),
+        showRepeat: hasTimeComponent(draft.dueDate) && shouldSendTaskReminders(draft, settings),
+        policyLabel: tFallback(t, 'taskEdit.reminders', 'Start/due reminders'),
+        policyValueLabel: policyOptions.find((option) => option.selected)!.label,
+        policyOptions,
+        hint: tFallback(t, 'taskEdit.reminderPolicyHint', 'Start and due reminders need an explicit time. Focus and review reminders are unchanged.'),
+        disabledHint: settings.notificationsEnabled === false
+            ? tFallback(t, 'taskEdit.remindersDisabledHint', 'Task reminders are turned off in Notifications settings on this device.') : null,
+        repeatLabel: tFallback(t, 'taskEdit.repeatReminderLabel', 'Repeat reminder'),
+        repeatValueLabel: count('taskEdit.repeatReminderEveryMinutes', 'Every {count} min', current),
+        repeatOptions: [0, ...REPEAT_REMINDER_INTERVAL_OPTIONS].map((minutes) => ({
+            value: minutes > 0 ? minutes : null,
+            label: count('taskEdit.repeatReminderMinutesShort', '{count} min', minutes),
+            selected: current === minutes,
+        })),
+    };
+}
+
+
+export function parseTaskEditorTimeEstimate(text: string): TimeEstimate | null {
+    const minutes = parseTimeEstimateInput(text);
+    return minutes === null ? null : createCustomTimeEstimate(minutes);
+}
+
+export type TaskEditorTimeEstimate = {
+    customLabel: string;
+    customSelected: boolean;
+
+    customValue: TimeEstimate;
+
+    customText: string;
+};
+
+export function getTaskEditorTimeEstimate(current: TimeEstimate | '', t: Translate): TaskEditorTimeEstimate {
+    const customSelected = isCustomTimeEstimate(current || undefined);
+    return {
+        customLabel: tFallback(t, 'recurrence.custom', 'Custom…'),
+        customSelected,
+        customValue: createCustomTimeEstimate(timeEstimateToMinutes(current || undefined)),
+
+        customText: customSelected && current ? formatTimeEstimateLabel(current) : '',
+    };
+}
+
+
+export const isTaskEditorTimeSpentEnabled = (settings: AppSettings): boolean => (
+    resolveFeatureFlags(settings).pomodoro && settings.gtd?.pomodoro?.linkTask === true
+);
+
+
+export const parseTaskEditorTimeSpent = (text: string): number | undefined => {
+    const digits = text.replace(/[^0-9]/g, '');
+    return digits ? Number(digits) : undefined;
+};
+
+
+export type TaskDraftRecurrence = Pick<TaskDraft, 'recurrence' | 'recurrenceStrategy' | 'recurrenceRRule'>;
+
+
+export function getTaskEditorRecurrenceCalendarPreviewHint(input: {
+    draft: TaskDraft;
+    task: Task | null;
+    t: Translate;
+    formatDate: DateFormatter;
+    now?: Date;
+}): string {
+    const { draft, task, t, formatDate } = input;
+    if (!draft.recurrence) return '';
+    const parsed = parseRRuleString(draft.recurrenceRRule);
+    const completedOccurrences = task?.recurrence && typeof task.recurrence === 'object'
+        ? task.recurrence.completedOccurrences : undefined;
+    const recurrence = {
+        rule: draft.recurrence,
+        strategy: draft.recurrenceStrategy,
+        ...(parsed.byDay?.length ? { byDay: parsed.byDay } : {}),
+        ...(parsed.byMonthDay?.length ? { byMonthDay: parsed.byMonthDay } : {}),
+        ...(parsed.count ? { count: parsed.count } : {}),
+        ...(parsed.until ? { until: parsed.until } : {}),
+        ...(typeof completedOccurrences === 'number' ? { completedOccurrences } : {}),
+        rrule: editRRuleString(draft.recurrenceRRule, draft.recurrence, {}),
+    };
+    const nowIso = (input.now ?? new Date()).toISOString();
+    const splitTokens = (value: string) => value.split(',').map((token) => token.trim()).filter(Boolean);
+    const previewTask: Task = {
+        ...(task ?? {}),
+        id: task?.id ?? 'draft-recurrence-preview',
+        title: draft.title,
+        status: draft.status,
+        tags: splitTokens(draft.tags),
+        contexts: splitTokens(draft.contexts),
+        createdAt: task?.createdAt ?? nowIso,
+        updatedAt: task?.updatedAt ?? nowIso,
+        startTime: draft.startTime || undefined,
+        dueDate: draft.dueDate || undefined,
+        reviewAt: draft.reviewAt || undefined,
+        recurrence,
+        showFutureRecurrence: true,
+    };
+    const label = formatDate(getProjectedRecurringTaskCalendarDate(previewTask, nowIso), 'PP');
+    return label ? `${tFallback(t, 'recurrence.nextCalendarPreview', 'Next calendar preview')}: ${label}.` : '';
+}
+
+export type TaskEditorMonthlyCustom = {
+    interval: number;
+    mode: 'date' | 'nth' | 'lastDay';
+    ordinal: '1' | '2' | '3' | '4' | '-1';
+    weekday: RecurrenceWeekday | 'WEEKDAY';
+    monthDays: number[];
+};
+
+export type TaskDraftRecurrenceEdit =
+    | { kind: 'rule'; rule: RecurrenceRule | '' }
+
+    | { kind: 'interval'; interval: number }
+
+    | { kind: 'weekdays'; weekdays: RecurrenceWeekday[] }
+    | { kind: 'monthlyOnDay' }
+    | { kind: 'ends'; ends: 'never' | 'until' | 'count' }
+
+    | { kind: 'count'; text: string }
+
+    | { kind: 'until'; date: string }
+    | { kind: 'strategy' }
+    | { kind: 'monthlyCustom'; custom: TaskEditorMonthlyCustom };
+
+const normalizeRecurrenceInterval = (value: number): number => (
+    Number.isFinite(value) && value > 0 ? Math.min(Math.round(value), RECURRENCE_INTERVAL_MAX) : 1
+);
+
+
+export function parseRecurrenceIntervalInput(text: string): number | null {
+    const trimmed = text.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? normalizeRecurrenceInterval(parsed) : null;
+}
+
+
+export const getRecurrenceIntervalDisplay = normalizeRecurrenceInterval;
+
+
+export function getTaskDraftRecurrenceWeekdays(recurrence: RecurrenceRule | '', rrule: string): RecurrenceWeekday[] {
+    if (recurrence !== 'weekly') return [];
+    return (parseRRuleString(rrule).byDay ?? [])
+        .filter((day): day is RecurrenceWeekday => WEEKDAY_ORDER.includes(day as RecurrenceWeekday));
+}
+
+
+export function getTaskEditorRecurrenceDefaultUntil(
+    draft: Pick<TaskDraft, 'recurrenceRRule' | 'dueDate' | 'startTime'>,
+    task: Pick<Task, 'dueDate' | 'startTime'> | null | undefined,
+    formatDate: DateFormatter,
+    now: Date = new Date(),
+): string {
+    return parseRRuleString(draft.recurrenceRRule).until
+        || formatDate(safeParseDate(draft.dueDate || draft.startTime || task?.dueDate || task?.startTime) ?? now, 'yyyy-MM-dd');
+}
+
+
+export function getTaskEditorMonthlyCustom(rrule: string, anchorDate: Date): TaskEditorMonthlyCustom {
+    const parsed = parseRRuleString(rrule);
+    const state: TaskEditorMonthlyCustom = {
+        interval: parsed.interval && parsed.interval > 0 ? parsed.interval : 1,
+        mode: 'date',
+        ordinal: '1',
+        weekday: WEEKDAY_ORDER[anchorDate.getDay()],
+        monthDays: [anchorDate.getDate()],
+    };
+    const monthDays = (parsed.byMonthDay ?? []).filter((day) => day === -1 || (day >= 1 && day <= 31));
+    if (monthDays.length === 1 && monthDays[0] === -1) {
+        state.mode = 'lastDay';
+    } else if (monthDays.length > 0) {
+        state.monthDays = monthDays;
+    }
+    const token = parsed.byDay?.find((day) => /^(-1|1|2|3|4)/.test(String(day)));
+    const match = token ? String(token).match(/^(-1|1|2|3|4)?(SU|MO|TU|WE|TH|FR|SA)$/) : null;
+    if (isMonthlyWeekdaySet(parsed.byDay) && [-1, 1, 2, 3, 4].includes(parsed.bySetPos ?? 0)) {
+        state.mode = 'nth';
+        state.ordinal = String(parsed.bySetPos) as TaskEditorMonthlyCustom['ordinal'];
+        state.weekday = 'WEEKDAY';
+    } else if (match) {
+        state.mode = 'nth';
+        state.ordinal = (match[1] ?? '1') as TaskEditorMonthlyCustom['ordinal'];
+        state.weekday = match[2] as RecurrenceWeekday;
+    }
+    return state;
+}
+
+
+export function buildTaskEditorMonthlyCustomRRule(rrule: string, custom: TaskEditorMonthlyCustom): string {
+    const parsed = parseRRuleString(rrule);
+    const intervalValue = Number(custom.interval);
+    const interval = Number.isFinite(intervalValue) && intervalValue > 0 ? intervalValue : 1;
+    const ends = { count: parsed.count, until: parsed.until };
+
+    return custom.mode === 'nth'
+        ? buildRRuleString('monthly', custom.weekday === 'WEEKDAY'
+            ? MONTHLY_WEEKDAYS
+            : [`${custom.ordinal}${custom.weekday}` as RecurrenceByDay], interval, {
+            ...ends,
+            bySetPos: custom.weekday === 'WEEKDAY' ? Number(custom.ordinal) : undefined,
+        })
+        : buildRRuleString('monthly', undefined, interval, {
+            ...ends,
+            byMonthDay: custom.mode === 'lastDay' ? [-1] : (custom.monthDays.length > 0 ? custom.monthDays : [1]),
+        });
+}
+
+
+export function editTaskDraftRecurrence(
+    current: TaskDraftRecurrence,
+    edit: TaskDraftRecurrenceEdit,
+    context: { weekdays: readonly RecurrenceWeekday[]; defaultUntil: string },
+): TaskDraftRecurrence {
+    const parsed = parseRRuleString(current.recurrenceRRule);
+    const rule = current.recurrence;
+    const build = (
+        nextRule: RecurrenceRule,
+        overrides: RRuleEditOverrides,
+        strategy: RecurrenceStrategy = current.recurrenceStrategy,
+    ): TaskDraftRecurrence => ({
+        recurrence: nextRule,
+        recurrenceStrategy: strategy === 'fluid' ? 'fluid' : 'strict',
+        recurrenceRRule: editRRuleString(current.recurrenceRRule, nextRule, overrides),
+    });
+    const sameRuleInterval = (target: RecurrenceRule) => (
+        parsed.rule === target && parsed.interval && parsed.interval > 0 ? parsed.interval : 1
+    );
+    const weekdays = [...context.weekdays];
+    switch (edit.kind) {
+        case 'rule':
+            if (edit.rule === rule) return current;
+            if (!edit.rule) return { recurrence: '', recurrenceStrategy: 'strict', recurrenceRRule: '' };
+            if (edit.rule === 'weekly') return build('weekly', { byDay: undefined, byMonthDay: undefined, interval: undefined });
+            return build(edit.rule, { byDay: undefined, byMonthDay: undefined, interval: sameRuleInterval(edit.rule) });
+        case 'weekdays':
+            return build('weekly', { byDay: [...edit.weekdays], byMonthDay: undefined });
+        case 'monthlyOnDay':
+            return build('monthly', { byDay: undefined, byMonthDay: undefined });
+        case 'monthlyCustom':
+            return {
+                recurrence: 'monthly',
+                recurrenceStrategy: current.recurrenceStrategy,
+                recurrenceRRule: buildTaskEditorMonthlyCustomRRule(current.recurrenceRRule, edit.custom),
+            };
+        default:
+            break;
+    }
+    if (!rule) return current;
+    switch (edit.kind) {
+        case 'interval':
+            if (rule === 'weekly') {
+                return build('weekly', {
+                    ...(weekdays.length > 0 ? { byDay: weekdays } : {}),
+                    byMonthDay: undefined,
+                    interval: edit.interval,
+                });
+            }
+            if (rule === 'monthly') return build('monthly', { interval: edit.interval });
+            return build(rule, { byDay: undefined, byMonthDay: undefined, interval: edit.interval });
+        case 'ends':
+            if (edit.ends === 'never') return build(rule, { count: undefined, until: undefined });
+            if (edit.ends === 'until') return build(rule, { count: undefined, until: parsed.until || context.defaultUntil });
+            return build(rule, { count: parsed.count ?? 1, until: undefined });
+        case 'count': {
+            const value = Number.parseInt(edit.text, 10);
+            const count = Number.isFinite(value) && value > 0 ? Math.min(value, 999) : 1;
+            return build(rule, { count, until: undefined });
+        }
+        case 'until':
+            return build(rule, { count: undefined, until: edit.date });
+        case 'strategy':
+            return build(
+                rule,
+                {},
+                current.recurrenceStrategy === 'fluid' ? 'strict' : 'fluid',
+            );
+        default:
+            return current;
+    }
+}
+
+export type TaskEditorRecurrenceDetails = {
+
+    interval: number;
+    ends: 'never' | 'until' | 'count';
+
+    count: number;
+
+    until: string;
+    untilLabel: string;
+};
+
+
+export function getTaskEditorRecurrenceInputValues(
+    draft: Pick<TaskDraft, 'recurrence' | 'recurrenceRRule'>,
+    dailyInterval: number,
+): Pick<TaskEditorRecurrenceDetails, 'interval' | 'count' | 'ends'> {
+    const parsed = parseRRuleString(draft.recurrenceRRule);
+    const intervalByRule: Record<RecurrenceRule, number> = {
+        daily: dailyInterval,
+        weekly: parsed.interval ?? 1,
+        monthly: parsed.interval && parsed.interval > 0 ? parsed.interval : 1,
+        yearly: parsed.interval ?? 1,
+    };
+    return {
+        interval: normalizeRecurrenceInterval(draft.recurrence ? intervalByRule[draft.recurrence] : 1),
+        ends: parsed.count ? 'count' : parsed.until ? 'until' : 'never',
+        count: Math.max(parsed.count ?? 1, 1),
+    };
+}
+
+export function getTaskEditorRecurrenceDetails(input: {
+    draft: Pick<TaskDraft, 'recurrence' | 'recurrenceRRule' | 'dueDate' | 'startTime'>;
+    task: Pick<Task, 'dueDate' | 'startTime'> | null;
+    dailyInterval: number;
+    t: Translate;
+    formatDate: DateFormatter;
+    now: Date;
+}): TaskEditorRecurrenceDetails {
+    const { draft, formatDate } = input;
+    const values = getTaskEditorRecurrenceInputValues(draft, input.dailyInterval);
+    const until = getTaskEditorRecurrenceDefaultUntil(draft, input.task, formatDate, input.now);
+    return {
+        ...values,
+        until,
+        untilLabel: formatTaskEditorDate(until, formatDate, input.t('common.notSet')),
+    };
+}
+
+
+export function getTaskEditorWeekdayButtons(
+    language: string | undefined,
+    selected: readonly RecurrenceWeekday[],
+): Array<{ day: RecurrenceWeekday; label: string; longLabel: string; selected: boolean }> {
+    const longLabels = getLocalizedWeekdayLabels(language, 'long');
+    return getLocalizedWeekdayButtons(language, 'narrow').map(({ key, label }) => ({
+        day: key,
+        label,
+        longLabel: longLabels[key],
+        selected: selected.includes(key),
+    }));
+}

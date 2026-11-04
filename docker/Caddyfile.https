@@ -1,0 +1,5 @@
+# Public HTTPS setup. Point STRIDE_CLOUD_DOMAIN at this host and let
+# Caddy obtain and renew a certificate automatically.
+{$STRIDE_CLOUD_DOMAIN} {
+	reverse_proxy stride-cloud:8787
+}

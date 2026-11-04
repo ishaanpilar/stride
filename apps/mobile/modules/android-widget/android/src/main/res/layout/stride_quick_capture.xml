@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/stride_quick_capture_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/stride_dialog_surface"
+    android:elevation="8dp"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/stride_quick_capture_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/stride_widget_text"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:id="@+id/stride_quick_capture_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <EditText
+                android:id="@+id/stride_quick_capture_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/stride_dialog_field"
+                android:gravity="top|start"
+                android:imeOptions="actionDone"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine|textCapSentences|textAutoCorrect"
+                android:maxLength="2000"
+                android:maxLines="6"
+                android:minLines="2"
+                android:padding="12dp"
+                android:textColor="@color/stride_widget_text"
+                android:textColorHint="@color/stride_widget_muted_text"
+                android:textSize="16sp" />
+
+            <EditText
+                android:id="@+id/stride_quick_capture_description"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/stride_dialog_field"
+                android:gravity="top|start"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine|textCapSentences|textAutoCorrect"
+                android:maxLines="4"
+                android:minLines="1"
+                android:padding="12dp"
+                android:textColor="@color/stride_widget_text"
+                android:textColorHint="@color/stride_widget_muted_text"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/stride_quick_capture_status"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="start|center_vertical"
+                android:minHeight="48dp"
+                android:textAllCaps="false"
+                android:textColor="@color/stride_widget_accent" />
+
+
+            <Button
+                android:id="@+id/stride_quick_capture_contexts"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="start|center_vertical"
+                android:minHeight="48dp"
+                android:textAllCaps="false"
+                android:textColor="@color/stride_widget_accent"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/stride_quick_capture_context_panel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/stride_quick_capture_context_filter"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/stride_dialog_field"
+                    android:imeOptions="actionDone"
+                    android:importantForAutofill="no"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:padding="12dp"
+                    android:textColor="@color/stride_widget_text"
+                    android:textColorHint="@color/stride_widget_muted_text"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:id="@+id/stride_quick_capture_context_matches"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/stride_quick_capture_audio_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageButton
+                    android:id="@+id/stride_quick_capture_audio"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:padding="12dp"
+                    android:src="@drawable/stride_capture_mic"
+                    android:tint="@color/stride_widget_accent" />
+
+                <TextView
+                    android:id="@+id/stride_quick_capture_audio_status"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:accessibilityLiveRegion="polite"
+                    android:textColor="@color/stride_widget_muted_text"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="end|center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/stride_quick_capture_cancel"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAllCaps="false"
+            android:textColor="@color/stride_widget_accent" />
+
+        <Button
+            android:id="@+id/stride_quick_capture_save"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/stride_dialog_pill"
+            android:minWidth="88dp"
+            android:minHeight="48dp"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:textAllCaps="false"
+            android:textColor="@color/stride_widget_on_accent" />
+    </LinearLayout>
+</LinearLayout>

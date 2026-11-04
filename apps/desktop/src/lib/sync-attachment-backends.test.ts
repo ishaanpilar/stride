@@ -1,0 +1,3394 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import desktopCapability from '../../src-tauri/capabilities/default.json';
+import {
+    findPendingAttachmentUploads,
+    globalProgressTracker,
+    MAX_DOWNLOAD_BYTES,
+    SyncRemoteMutationFenceLostError,
+    type AppData,
+} from '@stride/core';
+
+import {
+    clearAttachmentPresenceStamp,
+    hasCompletedAttachmentPresenceReconciliation,
+    isAttachmentPresenceReconciliationDue,
+    markAttachmentPresenceReconciled,
+} from './attachment-presence-scope';
+import { clearAttachmentValidationFailures } from './sync-attachment-validation';
+import { DropboxFileNotFoundError } from './dropbox-sync';
+import {
+    clearAttachmentSyncState,
+    syncCloudAttachments,
+    syncCloudKitAttachments,
+    syncDropboxAttachments,
+    syncFileAttachments,
+    syncWebdavAttachments,
+    isAttachmentDownloadBackedOff,
+    type AttachmentBackendDeps,
+} from './sync-attachment-backends';
+
+const coreMocks = vi.hoisted(() => ({
+    computeSha256Hex: vi.fn(),
+    webdavFileExists: vi.fn(),
+    webdavHeadFile: vi.fn(),
+    webdavMakeDirectory: vi.fn(),
+    withRetry: vi.fn((operation: () => Promise<unknown>) => operation()),
+}));
+
+const fsMocks = vi.hoisted(() => ({
+    BaseDirectory: { Data: 'Data' },
+    exists: vi.fn(),
+    mkdir: vi.fn(),
+    open: vi.fn(),
+    readFile: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+
+
+    stat: vi.fn().mockRejectedValue(new Error('not stubbed')),
+    writeFile: vi.fn(),
+}));
+
+
+const syncFsMocks = vi.hoisted(() => ({
+    abandonAttachmentGeneration: vi.fn(),
+    exists: vi.fn(),
+    mkdir: vi.fn(),
+    publishAttachmentGeneration: vi.fn(),
+    reserveAttachmentGeneration: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+    stat: vi.fn(),
+}));
+
+const pathMocks = vi.hoisted(() => ({
+    dataDir: vi.fn(),
+    dirname: vi.fn(),
+    join: vi.fn(),
+}));
+
+const cloudKitMocks = vi.hoisted(() => {
+    class CloudKitAttachmentNotFoundError extends Error {}
+    return {
+        CloudKitAttachmentNotFoundError,
+        deleteCloudKitAttachmentAssets: vi.fn(),
+        fetchCloudKitAttachmentAsset: vi.fn(),
+        isCloudKitAttachmentNotFoundError: (error: unknown) => (
+            error instanceof CloudKitAttachmentNotFoundError
+        ),
+        saveCloudKitAttachmentAsset: vi.fn(),
+    };
+});
+
+const dropboxMocks = vi.hoisted(() => ({
+    downloadDropboxFile: vi.fn(),
+    getDropboxFileMetadata: vi.fn(),
+    listDropboxFolderFiles: vi.fn(),
+    uploadDropboxFile: vi.fn(),
+}));
+
+const installerMocks = vi.hoisted(() => ({
+    installAttachmentDownload: vi.fn(),
+}));
+
+vi.mock('@stride/core', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@stride/core')>();
+    coreMocks.computeSha256Hex.mockImplementation(actual.computeSha256Hex);
+    return {
+        ...actual,
+
+
+        MAX_DOWNLOAD_BYTES: 16,
+        MAX_FILE_SYNC_BUFFERED_PLAINTEXT_BYTES: 15,
+        computeSha256Hex: coreMocks.computeSha256Hex,
+        webdavFileExists: coreMocks.webdavFileExists,
+        webdavHeadFile: coreMocks.webdavHeadFile,
+        webdavMakeDirectory: coreMocks.webdavMakeDirectory,
+        withRetry: coreMocks.withRetry,
+    };
+});
+vi.mock('@tauri-apps/plugin-fs', () => fsMocks);
+vi.mock('./sync-fs', () => syncFsMocks);
+vi.mock('@tauri-apps/api/path', () => pathMocks);
+vi.mock('./cloudkit-sync', () => cloudKitMocks);
+vi.mock('./dropbox-sync', () => ({
+    downloadDropboxFile: dropboxMocks.downloadDropboxFile,
+    getDropboxFileMetadata: dropboxMocks.getDropboxFileMetadata,
+    listDropboxFolderFiles: dropboxMocks.listDropboxFolderFiles,
+    uploadDropboxFileVersioned: dropboxMocks.uploadDropboxFile,
+    DropboxConflictError: class DropboxConflictError extends Error {},
+    DropboxFileNotFoundError: class DropboxFileNotFoundError extends Error {},
+    DropboxUnauthorizedError: class DropboxUnauthorizedError extends Error {},
+}));
+vi.mock('./attachment-installer', () => ({
+    installAttachmentDownload: installerMocks.installAttachmentDownload,
+}));
+
+
+const expectFoldedData = (result: AppData | boolean | null | undefined): AppData => {
+    expect(typeof result === 'object' && result !== null).toBe(true);
+    return result as AppData;
+};
+
+const deepFreeze = <T>(value: T): T => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+        Object.freeze(value);
+        for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    }
+    return value;
+};
+
+const errorResponse = (status: number, statusText: string): Response =>
+    ({
+        ok: false,
+        status,
+        statusText,
+        headers: new Headers(),
+        body: null,
+        arrayBuffer: async () => new ArrayBuffer(0),
+    }) as Response;
+
+const createCandidateAttachmentData = (): AppData => ({
+    tasks: [
+        {
+            id: 'task-1',
+            title: 'Task',
+            status: 'next',
+            tags: [],
+            contexts: [],
+            attachments: [
+                {
+                    id: 'attachment-1',
+                    kind: 'file',
+                    title: 'candidate-proof.txt',
+                    uri: '/app-data/stride/attachments/candidate-proof.txt',
+                    cloudKey: 'attachments/attachment-1.txt',
+                    localStatus: 'available',
+                    createdAt: '2026-08-03T00:00:00.000Z',
+                    updatedAt: '2026-08-03T00:00:00.000Z',
+                },
+            ],
+            createdAt: '2026-08-03T00:00:00.000Z',
+            updatedAt: '2026-08-03T00:00:00.000Z',
+        },
+    ],
+    projects: [],
+    sections: [],
+    areas: [],
+    settings: {},
+});
+
+const activationHelpers = () => ({
+    activationProbe: true,
+    ensureLocalSnapshotFresh: vi.fn(),
+});
+
+const DOWNLOAD_BYTES = new Uint8Array([1, 2, 3]);
+const DOWNLOAD_BYTES_HASH = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+
+type DownloadBackend = 'webdav' | 'cloud' | 'dropbox' | 'cloudkit' | 'file';
+
+describe('desktop sync attachment backends', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        installerMocks.installAttachmentDownload.mockReset();
+        installerMocks.installAttachmentDownload.mockResolvedValue({ kind: 'installed' });
+        clearAttachmentSyncState();
+        clearAttachmentValidationFailures();
+        pathMocks.dataDir.mockResolvedValue('/app-data');
+        pathMocks.dirname.mockImplementation(async (path: string) => path.replace(/[\\/][^\\/]+$/, ''));
+        pathMocks.join.mockImplementation(async (...parts: string[]) => parts.join('/'));
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.open.mockImplementation(async (path: string, options?: { write?: boolean }) => {
+            if (options?.write) {
+                return {
+                    write: vi.fn(async (bytes: Uint8Array) => bytes.byteLength),
+                    close: vi.fn().mockResolvedValue(undefined),
+                };
+            }
+            const bytes = await fsMocks.readFile(path) as Uint8Array;
+            let offset = 0;
+            return {
+                read: vi.fn(async (buffer: Uint8Array) => {
+                    if (offset >= bytes.byteLength) return null;
+                    const bytesRead = Math.min(buffer.byteLength, bytes.byteLength - offset);
+                    buffer.set(bytes.subarray(offset, offset + bytesRead));
+                    offset += bytesRead;
+                    return bytesRead;
+                }),
+                close: vi.fn().mockResolvedValue(undefined),
+            };
+        });
+        fsMocks.mkdir.mockResolvedValue(undefined);
+        fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: 3 });
+        syncFsMocks.mkdir.mockResolvedValue(undefined);
+        syncFsMocks.abandonAttachmentGeneration.mockResolvedValue(undefined);
+        syncFsMocks.reserveAttachmentGeneration.mockResolvedValue({
+            operationId: 'operation-1',
+            scratchPath: '/candidate-sync/attachments/.stride-attachment-generation-operation-1.tmp',
+        });
+        syncFsMocks.publishAttachmentGeneration.mockResolvedValue({ status: 'published' });
+        syncFsMocks.rename.mockResolvedValue(undefined);
+        syncFsMocks.remove.mockResolvedValue(undefined);
+        syncFsMocks.stat.mockResolvedValue({ mtimeMs: 1000, size: DOWNLOAD_BYTES.length });
+        coreMocks.webdavHeadFile.mockResolvedValue({
+            exists: false,
+            fingerprint: null,
+            etag: null,
+            lastModified: null,
+            contentLength: null,
+        });
+        dropboxMocks.getDropboxFileMetadata.mockResolvedValue({ rev: null });
+        dropboxMocks.listDropboxFolderFiles.mockResolvedValue([
+            { name: 'attachment-1.txt', pathLower: '/attachments/attachment-1.txt' },
+        ]);
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const createDownloadData = (backend: DownloadBackend): AppData => ({
+        tasks: [
+            {
+                id: 'task-1',
+                title: 'Task',
+                status: 'next',
+                tags: [],
+                contexts: [],
+                attachments: [
+                    {
+                        id: 'attachment-1',
+                        kind: 'file',
+                        title: 'download.txt',
+                        uri: '',
+                        cloudKey: backend === 'cloudkit'
+                            ? 'cloudkit:attachment-1'
+                            : 'attachments/attachment-1.txt',
+                        localStatus: 'missing',
+                        createdAt: '2026-08-27T00:00:00.000Z',
+                        updatedAt: '2026-08-27T00:00:00.000Z',
+                    },
+                ],
+                createdAt: '2026-08-27T00:00:00.000Z',
+                updatedAt: '2026-08-27T00:00:00.000Z',
+            },
+        ],
+        projects: [],
+        sections: [],
+        areas: [],
+        settings: {},
+    });
+
+    const runDownload = async (
+        backend: DownloadBackend,
+        appData: AppData,
+        deps: AttachmentBackendDeps,
+    ): Promise<AppData | false | null> => {
+        switch (backend) {
+            case 'webdav':
+                return syncWebdavAttachments(
+                    appData,
+                    { url: 'https://dav.example/stride', username: 'alice' },
+                    'https://dav.example/stride',
+                    deps,
+                );
+            case 'cloud':
+                return syncCloudAttachments(
+                    appData,
+                    { url: 'https://cloud.example/v1/data', token: 'token' },
+                    'https://cloud.example/v1',
+                    deps,
+                );
+            case 'dropbox':
+                return syncDropboxAttachments(appData, async () => 'dropbox-token', deps);
+            case 'cloudkit':
+                return syncCloudKitAttachments(appData, deps);
+            case 'file':
+                return syncFileAttachments(appData, '/sync-root', deps);
+        }
+    };
+
+    it.each<DownloadBackend>(['cloud', 'dropbox', 'cloudkit'])(
+        'asks %s nothing on the next pass for a file that answered not-found, until its backoff ends',
+        async (backend) => {
+
+            const fetcher = vi.fn(async () => errorResponse(404, 'Not Found'));
+            const deps: AttachmentBackendDeps = {
+                getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                isTauriRuntimeEnv: () => true,
+                logSyncInfo: vi.fn(),
+                logSyncWarning: vi.fn(),
+                resolveWebdavPassword: vi.fn(async () => 'secret'),
+            };
+            dropboxMocks.downloadDropboxFile.mockRejectedValue(new DropboxFileNotFoundError('gone'));
+            cloudKitMocks.fetchCloudKitAttachmentAsset.mockRejectedValue(new cloudKitMocks.CloudKitAttachmentNotFoundError('attachment-record-not-found'));
+            const asked = () => (backend === 'cloud'
+                ? fetcher.mock.calls.filter((call) => String((call as unknown[])[0]).endsWith('attachments/attachment-1.txt')).length
+                : backend === 'dropbox'
+                    ? dropboxMocks.downloadDropboxFile.mock.calls.length
+                    : cloudKitMocks.fetchCloudKitAttachmentAsset.mock.calls.length);
+            const appData = createDownloadData(backend);
+
+            await runDownload(backend, appData, deps);
+            const first = asked();
+            expect(first).toBeGreaterThan(0);
+            await runDownload(backend, appData, deps);
+
+            expect(asked()).toBe(first);
+        },
+    );
+
+    it.each<DownloadBackend>(['webdav', 'cloud', 'dropbox', 'cloudkit', 'file'])(
+        'stages and generation-binds an absent %s attachment download before publishing metadata',
+        async (backend) => {
+            const fetcher = vi.fn(async () => new Response(DOWNLOAD_BYTES.slice().buffer, { status: 200 }));
+            const deps: AttachmentBackendDeps = {
+                getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                isTauriRuntimeEnv: () => true,
+                logSyncInfo: vi.fn(),
+                logSyncWarning: vi.fn(),
+                resolveWebdavPassword: vi.fn(async () => 'secret'),
+            };
+            const appData = createDownloadData(backend);
+            fsMocks.readFile.mockResolvedValue(DOWNLOAD_BYTES);
+            syncFsMocks.exists.mockResolvedValue(true);
+            dropboxMocks.downloadDropboxFile.mockResolvedValue(DOWNLOAD_BYTES.slice().buffer);
+            cloudKitMocks.fetchCloudKitAttachmentAsset.mockResolvedValue({
+                recordName: 'attachment-1',
+                attachmentId: 'attachment-1',
+                ownerType: 'task',
+                ownerId: 'task-1',
+                title: 'download.txt',
+                size: DOWNLOAD_BYTES.length,
+                updatedAt: '2026-08-27T00:00:00.000Z',
+            });
+
+            const result = expectFoldedData(await runDownload(backend, appData, deps));
+            const installCall = installerMocks.installAttachmentDownload.mock.calls[0];
+            expect(installCall).toBeDefined();
+            const [stagedPath, targetPath, expectation, expectedDownloadSha256] = installCall;
+            expect(stagedPath).toMatch(/^\/app-data\/stride\/attachments\/\.download-/);
+            expect(targetPath).toBe('/app-data/stride/attachments/attachment-1.txt');
+            expect(expectation).toEqual({ kind: 'absent' });
+            expect(expectedDownloadSha256).toBe(DOWNLOAD_BYTES_HASH);
+            if (backend === 'cloudkit') {
+                expect(cloudKitMocks.fetchCloudKitAttachmentAsset).toHaveBeenCalledWith(
+                    'attachment-1',
+                    stagedPath,
+                );
+                expect(cloudKitMocks.fetchCloudKitAttachmentAsset).not.toHaveBeenCalledWith(
+                    'attachment-1',
+                    targetPath,
+                );
+            } else {
+                expect(fsMocks.writeFile).toHaveBeenCalledWith(stagedPath, DOWNLOAD_BYTES);
+            }
+            expect(fsMocks.remove).toHaveBeenCalledWith(stagedPath);
+            expect(result.tasks[0].attachments?.[0]).toMatchObject({
+                uri: targetPath,
+                localStatus: 'available',
+                fileHash: DOWNLOAD_BYTES_HASH,
+            });
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                uri: '',
+                localStatus: 'missing',
+            });
+        },
+    );
+
+    it('rejects an oversized File Sync download before reading or installing it', async () => {
+        const appData = createDownloadData('file');
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockResolvedValue(true);
+        syncFsMocks.stat.mockResolvedValue({
+            mtimeMs: 1000,
+            size: MAX_DOWNLOAD_BYTES + 1,
+        });
+
+        const result = await syncFileAttachments(appData, '/sync-root', deps);
+
+        expect(result).toBe(false);
+        expect(syncFsMocks.stat).toHaveBeenCalledWith('/sync-root/attachments/attachment-1.txt');
+        expect(fsMocks.open).not.toHaveBeenCalled();
+        expect(fsMocks.readFile).not.toHaveBeenCalled();
+        expect(fsMocks.writeFile).not.toHaveBeenCalled();
+        expect(installerMocks.installAttachmentDownload).not.toHaveBeenCalled();
+    });
+
+    it('preserves a staged download and attachment metadata when the installer detects a local-edit race', async () => {
+        const localBytes = new Uint8Array([4, 5, 6]);
+        const localBytesHash = '787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472';
+        const canonicalPath = '/app-data/stride/attachments/local-edit.txt';
+        const appData = createDownloadData('cloud');
+        Object.assign(appData.tasks[0].attachments![0], {
+            uri: canonicalPath,
+            localStatus: 'available',
+            fileHash: DOWNLOAD_BYTES_HASH,
+            contentMtimeMs: 1000,
+            contentSize: localBytes.length,
+        });
+        const fetcher = vi.fn(async () => new Response(DOWNLOAD_BYTES.slice().buffer, { status: 200 }));
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(localBytes);
+        fsMocks.stat.mockResolvedValue({ mtime: new Date(2000), size: localBytes.length });
+        installerMocks.installAttachmentDownload.mockResolvedValue({
+            kind: 'conflict',
+            reason: 'generation-mismatch',
+            preservedPath: canonicalPath,
+        });
+
+        const result = await syncCloudAttachments(
+            appData,
+            { url: 'https://cloud.example/v1/data', token: 'token' },
+            'https://cloud.example/v1',
+            deps,
+            { activationProbe: false, ensureLocalSnapshotFresh: vi.fn(), phase: 'post-merge' },
+        );
+
+        expect(result).toBe(false);
+        const [stagedPath, targetPath, expectation, expectedDownloadSha256] =
+            installerMocks.installAttachmentDownload.mock.calls[0];
+        expect(stagedPath).toMatch(/^\/app-data\/stride\/attachments\/\.download-/);
+        expect(targetPath).toBe(canonicalPath);
+        expect(expectation).toEqual({ kind: 'present', sha256: localBytesHash });
+        expect(expectedDownloadSha256).toBe(DOWNLOAD_BYTES_HASH);
+        expect(fsMocks.remove).not.toHaveBeenCalledWith(stagedPath);
+        expect(deps.logSyncInfo).toHaveBeenCalledWith(
+            'Attachment download deferred after local-edit race',
+            {
+                id: 'attachment-1',
+                backend: 'cloud',
+                reason: 'generation-mismatch',
+            },
+        );
+        const conflictDetails = (deps.logSyncInfo as ReturnType<typeof vi.fn>).mock.calls
+            .find(([message]) => message === 'Attachment download deferred after local-edit race')?.[1];
+        expect(conflictDetails).not.toHaveProperty('stagedPath');
+        expect(conflictDetails).not.toHaveProperty('preservedPath');
+        expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+            uri: canonicalPath,
+            localStatus: 'available',
+            fileHash: DOWNLOAD_BYTES_HASH,
+            contentMtimeMs: 1000,
+            contentSize: localBytes.length,
+        });
+    });
+
+    it('keeps canonical CloudKit bytes and metadata untouched when staged plaintext fails hash validation', async () => {
+        const canonicalPath = '/app-data/stride/attachments/attachment-1.txt';
+        const appData = createDownloadData('cloudkit');
+        appData.tasks[0].attachments![0].fileHash = 'a'.repeat(64);
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        fsMocks.readFile.mockResolvedValue(DOWNLOAD_BYTES);
+        cloudKitMocks.fetchCloudKitAttachmentAsset.mockResolvedValue({
+            recordName: 'attachment-1',
+            attachmentId: 'attachment-1',
+            ownerType: 'task',
+            ownerId: 'task-1',
+            title: 'remote-title.txt',
+            fileHash: DOWNLOAD_BYTES_HASH,
+            size: 999,
+            updatedAt: '2026-08-27T01:00:00.000Z',
+        });
+
+        const result = await syncCloudKitAttachments(appData, deps);
+
+        expect(result).toBe(false);
+        const [recordName, stagedPath] = cloudKitMocks.fetchCloudKitAttachmentAsset.mock.calls[0];
+        expect(recordName).toBe('attachment-1');
+        expect(stagedPath).toMatch(/^\/app-data\/stride\/attachments\/\.download-/);
+        expect(stagedPath).not.toBe(canonicalPath);
+        expect(installerMocks.installAttachmentDownload).not.toHaveBeenCalled();
+        expect(fsMocks.remove).toHaveBeenCalledWith(stagedPath);
+        expect(fsMocks.writeFile).not.toHaveBeenCalledWith(canonicalPath, expect.anything());
+        expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+            uri: '',
+            localStatus: 'missing',
+            fileHash: 'a'.repeat(64),
+        });
+    });
+
+    it('backs off a WebDAV download that answered 404, so the next pass does not ask again', async () => {
+
+
+        const fetcher = vi.fn(async () => errorResponse(404, 'Not Found'));
+        const appData = createCandidateAttachmentData();
+        Object.assign(appData.tasks[0].attachments![0], { uri: '', localStatus: 'missing' });
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        const run = () => syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+        );
+        const gets = () => fetcher.mock.calls.filter((call) => String((call as unknown[])[0]).endsWith('attachments/attachment-1.txt')
+            && ((call as unknown[])[1] as RequestInit | undefined)?.method !== 'HEAD').length;
+
+        const firstResult = await run();
+        const first = gets();
+        expect(first).toBeGreaterThan(0);
+
+        const row = (firstResult || appData).tasks[0].attachments?.[0];
+        expect(row).toMatchObject({ cloudKey: 'attachments/attachment-1.txt', localStatus: 'missing' });
+        expect(row?.deletedAt).toBeUndefined();
+        expect(isAttachmentDownloadBackedOff('attachment-1')).toBe(true);
+        await run();
+        expect(gets()).toBe(first);
+    });
+
+    it('never lets the 404 backoff stop an activation probe, nor sets it from one', async () => {
+
+        const fetcher = vi.fn(async () => errorResponse(404, 'Not Found'));
+        const appData = createCandidateAttachmentData();
+        Object.assign(appData.tasks[0].attachments![0], { uri: '', localStatus: 'missing' });
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        const run = (helpers?: Parameters<typeof syncWebdavAttachments>[4]) => syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+            helpers,
+        );
+        const gets = () => fetcher.mock.calls.filter((call) => String((call as unknown[])[0]).endsWith('attachments/attachment-1.txt')
+            && ((call as unknown[])[1] as RequestInit | undefined)?.method !== 'HEAD').length;
+
+        await run(activationHelpers());
+        await run();
+        expect(gets()).toBe(2);
+        await run(activationHelpers());
+        expect(gets()).toBe(3);
+    });
+
+    it('leaves a cloud attachment live and keyed when the remote file is missing; only a probe marks its trial copy', async () => {
+        const fetcher = vi.fn(async () => errorResponse(404, 'Not Found'));
+        const logSyncWarning = vi.fn();
+        const appData: AppData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    attachments: [
+                        {
+                            id: 'attachment-1',
+                            kind: 'file',
+                            title: 'PXL_20260604_232051859.jpg',
+                            uri: '',
+                            cloudKey: 'attachments/attachment-1.jpg',
+                            localStatus: 'missing',
+                            fileHash: 'a'.repeat(64),
+                            createdAt: '2026-06-07T00:00:00.000Z',
+                            updatedAt: '2026-06-07T00:00:00.000Z',
+                        },
+                    ],
+                    createdAt: '2026-06-07T00:00:00.000Z',
+                    updatedAt: '2026-06-07T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        };
+
+        const result = await syncCloudAttachments(
+            appData,
+            { url: 'https://cloud.example/v1/data', token: 'token' },
+            'https://cloud.example/v1',
+            deps,
+        );
+
+
+        const attachment = (result || appData).tasks[0].attachments?.[0];
+        expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.jpg');
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(attachment).toMatchObject({ cloudKey: 'attachments/attachment-1.jpg', fileHash: 'a'.repeat(64), localStatus: 'missing' });
+        expect(attachment?.deletedAt).toBeUndefined();
+        expect(logSyncWarning).not.toHaveBeenCalledWith(
+            expect.stringContaining('Failed to download attachment'),
+            expect.anything(),
+        );
+
+        const probed = expectFoldedData(await syncCloudAttachments(
+            appData,
+            { url: 'https://cloud.example/v1/data', token: 'token' },
+            'https://cloud.example/v1',
+            deps,
+            activationHelpers(),
+        )).tasks[0].attachments?.[0];
+        expect(probed?.cloudKey).toBeUndefined();
+        expect(probed?.deletedAt).toBeDefined();
+    });
+
+    it('uploads self-hosted cloud attachments selected from Windows paths', async () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+        const logSyncWarning = vi.fn();
+        const appData: AppData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    attachments: [
+                        {
+                            id: 'attachment-1',
+                            kind: 'file',
+                            title: 'stride-upload-test.txt',
+                            uri: 'C:\\app-data\\stride\\attachments\\stride-upload-test.txt',
+                            localStatus: 'available',
+                            createdAt: '2026-06-27T00:00:00.000Z',
+                            updatedAt: '2026-06-27T00:00:00.000Z',
+                        },
+                    ],
+                    createdAt: '2026-06-27T00:00:00.000Z',
+                    updatedAt: '2026-06-27T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        };
+
+
+        pathMocks.dataDir.mockResolvedValue('C:\\app-data');
+        const relativePath = 'stride\\attachments\\stride-upload-test.txt';
+        fsMocks.exists.mockImplementation(async (path: string) => path === relativePath);
+        fsMocks.readFile.mockImplementation(async (path: string) => {
+            if (path !== relativePath) {
+                throw new Error('unexpected path ' + path);
+            }
+            return bytes;
+        });
+
+        const result = await syncCloudAttachments(
+            appData,
+            { url: 'http://cloud.local/v1/data', token: 'token', allowInsecureHttp: true },
+            'http://cloud.local/v1',
+            deps,
+        );
+
+        const attachment = expectFoldedData(result).tasks[0].attachments?.[0];
+        expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+
+
+        expect(fsMocks.exists).toHaveBeenCalledWith(relativePath, { baseDir: fsMocks.BaseDirectory.Data });
+        expect(fsMocks.readFile).toHaveBeenCalledWith(relativePath, { baseDir: fsMocks.BaseDirectory.Data });
+        expect(fsMocks.readFile).toHaveBeenCalledTimes(1);
+        expect(fetcher).toHaveBeenCalledWith(
+            'http://cloud.local/v1/attachments/attachment-1.txt',
+            expect.objectContaining({ method: 'PUT' }),
+        );
+        expect(attachment?.cloudKey).toBe('attachments/attachment-1.txt');
+        expect(attachment?.fileHash).toBe(
+            '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+        );
+        expect(attachment?.localStatus).toBe('available');
+        expect(logSyncWarning).not.toHaveBeenCalledWith(
+            expect.stringContaining('Failed to upload attachment'),
+            expect.anything(),
+        );
+    });
+
+    describe('self-hosted uploads the server refuses for good', () => {
+        const REFUSAL_BYTES = new Uint8Array([1, 2, 3]);
+
+        const refusalDeps = (
+            fetcher: ReturnType<typeof vi.fn>,
+            logSyncWarning = vi.fn(),
+        ): AttachmentBackendDeps => ({
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        });
+
+        const pendingUploadData = (): AppData => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            return appData;
+        };
+
+        const runCloudUpload = (
+            appData: AppData,
+            deps: AttachmentBackendDeps,
+            helpers?: Parameters<typeof syncCloudAttachments>[4],
+        ): Promise<AppData | false> => syncCloudAttachments(
+            appData,
+            { url: 'https://cloud.example/v1/data', token: 'token' },
+            'https://cloud.example/v1',
+            deps,
+            helpers,
+        );
+
+
+        const refusedAttachment = (result: AppData | false, appData: AppData) =>
+            (result === false ? appData : result).tasks[0].attachments?.[0];
+
+        const putCount = (fetcher: ReturnType<typeof vi.fn>): number =>
+            fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT').length;
+
+
+        const serverRefusal = (status: number, serverMessage: string) => {
+            const body = new TextEncoder().encode(JSON.stringify({ error: serverMessage }));
+            return vi.fn(async () => ({
+                ok: false,
+                status,
+                statusText: 'refused',
+                headers: new Headers(),
+                body: null,
+                arrayBuffer: async () => body.slice().buffer,
+            }) as Response);
+        };
+
+
+        const FINAL_REFUSALS: Array<[string, number, string]> = [
+            [
+                'a blocked executable signature',
+                400,
+                'Blocked executable attachment signature: elf',
+            ],
+            [
+                'a blocked content type',
+                400,
+                'Blocked attachment content type: application/x-msdownload',
+            ],
+            ['a body over the server limit', 413, 'Payload too large'],
+        ];
+
+        beforeEach(() => {
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(REFUSAL_BYTES);
+        });
+
+        it.each(FINAL_REFUSALS)(
+            'keeps a cloud attachment pending after fewer than three answers of %s',
+            async (_label, status, serverMessage) => {
+                const fetcher = serverRefusal(status, serverMessage);
+                const deps = refusalDeps(fetcher);
+                const appData = pendingUploadData();
+
+                for (const expectedPuts of [1, 2]) {
+                    const attachment = refusedAttachment(await runCloudUpload(appData, deps), appData);
+                    expect(attachment?.deletedAt).toBeUndefined();
+                    expect(attachment?.cloudKey).toBeUndefined();
+                    expect(putCount(fetcher)).toBe(expectedPuts);
+                }
+            },
+        );
+
+        it.each(FINAL_REFUSALS)(
+            'marks a cloud attachment unrecoverable on the third answer of %s',
+            async (_label, status, serverMessage) => {
+                const fetcher = serverRefusal(status, serverMessage);
+                const logSyncWarning = vi.fn();
+                const deps = refusalDeps(fetcher, logSyncWarning);
+                const appData = pendingUploadData();
+
+                await runCloudUpload(appData, deps);
+                await runCloudUpload(appData, deps);
+                const result = expectFoldedData(await runCloudUpload(appData, deps));
+
+                const attachment = result.tasks[0].attachments?.[0];
+                expect(attachment?.cloudKey).toBeUndefined();
+                expect(attachment?.localStatus).toBe('missing');
+                expect(attachment?.deletedAt).toBeDefined();
+                expect(putCount(fetcher)).toBe(3);
+
+                expect(appData.tasks[0].attachments?.[0]?.deletedAt).toBeUndefined();
+
+                expect(findPendingAttachmentUploads(result)).toHaveLength(0);
+                expect(logSyncWarning).toHaveBeenCalledWith(
+                    expect.stringContaining('marking attachment unrecoverable'),
+                );
+
+                expect(JSON.stringify(logSyncWarning.mock.calls)).not.toContain('Blocked');
+            },
+        );
+
+
+        it.each([
+            ['400 Invalid attachment path', 400, JSON.stringify({ error: 'Invalid attachment path' })],
+            ['a 400 with a proxy page for a body', 400, '<html>Blocked by the firewall</html>'],
+            ['a 400 with an empty body', 400, ''],
+            ['503 Unavailable', 503, JSON.stringify({ error: 'Cloud storage unavailable' })],
+        ])('never gives up when the server answers %s', async (_label, status, rawBody) => {
+            const bytes = new TextEncoder().encode(rawBody);
+            const fetcher = vi.fn(async () => ({
+                ok: false,
+                status,
+                statusText: 'refused',
+                headers: new Headers(),
+                body: null,
+                arrayBuffer: async () => bytes.slice().buffer,
+            }) as Response);
+            const deps = refusalDeps(fetcher);
+            const appData = pendingUploadData();
+
+            for (let cycle = 0; cycle < 3; cycle += 1) {
+                const attachment = refusedAttachment(await runCloudUpload(appData, deps), appData);
+                expect(attachment?.deletedAt).toBeUndefined();
+                expect(attachment?.localStatus).not.toBe('missing');
+            }
+            expect(putCount(fetcher)).toBe(3);
+        });
+
+        it('a successful upload resets the refusal count', async () => {
+            const fetcher = serverRefusal(400, 'Blocked executable attachment signature: elf');
+            const deps = refusalDeps(fetcher);
+            const appData = pendingUploadData();
+
+            await runCloudUpload(appData, deps);
+            await runCloudUpload(appData, deps);
+            fetcher.mockImplementationOnce(async () => new Response(null, { status: 200 }));
+            const uploaded = expectFoldedData(await runCloudUpload(appData, deps));
+            expect(uploaded.tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+
+            await runCloudUpload(appData, deps);
+            const attachment = refusedAttachment(await runCloudUpload(appData, deps), appData);
+            expect(attachment?.deletedAt).toBeUndefined();
+            expect(putCount(fetcher)).toBe(5);
+        });
+
+        it('does not count or mark anything during an activation probe', async () => {
+            const fetcher = serverRefusal(400, 'Blocked executable attachment signature: elf');
+            const deps = refusalDeps(fetcher);
+            const appData = pendingUploadData();
+
+            for (let cycle = 0; cycle < 3; cycle += 1) {
+                const attachment = refusedAttachment(
+                    await runCloudUpload(appData, deps, activationHelpers()),
+                    appData,
+                );
+                expect(attachment?.deletedAt).toBeUndefined();
+            }
+            expect(putCount(fetcher)).toBe(3);
+        });
+
+
+        it('keeps a refused replacement pending and bounds retries to its content identity', async () => {
+            const fetcher = serverRefusal(400, 'Blocked executable attachment signature: elf');
+            const logSyncWarning = vi.fn();
+            const deps = refusalDeps(fetcher, logSyncWarning);
+            const appData = createCandidateAttachmentData();
+            Object.assign(appData.tasks[0].attachments![0], {
+                fileHash: '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+                contentRev: 7,
+                contentMtimeMs: 1000,
+                contentSize: REFUSAL_BYTES.length,
+                pendingContentUpload: true,
+            });
+            const postMergeHelpers = () => ({
+                activationProbe: false,
+                ensureLocalSnapshotFresh: vi.fn(),
+                phase: 'post-merge' as const,
+            });
+
+            await runCloudUpload(appData, deps, postMergeHelpers());
+            await runCloudUpload(appData, deps, postMergeHelpers());
+            const result = await runCloudUpload(appData, deps, postMergeHelpers());
+
+            const attachment = refusedAttachment(result, appData);
+            expect(attachment?.deletedAt).toBeUndefined();
+            expect(attachment?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(attachment?.localStatus).toBe('available');
+            expect(attachment?.pendingContentUpload).toBe(true);
+            expect(attachment?.fileHash).toBe('039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81');
+            expect(findPendingAttachmentUploads(result === false ? appData : result)).toHaveLength(1);
+            expect(putCount(fetcher)).toBe(3);
+            expect(fsMocks.remove).not.toHaveBeenCalled();
+            expect(logSyncWarning).toHaveBeenCalledWith(
+                expect.stringContaining('keeping the edited content pending'),
+            );
+            expect(logSyncWarning).toHaveBeenCalledWith(
+                'Attachment replacement retained after upload refusal',
+                undefined,
+                { releaseCheck: 'v1.3.2/attachment-replacement-held' },
+            );
+
+            expect(await runCloudUpload(appData, deps, postMergeHelpers())).toBe(false);
+            expect(putCount(fetcher)).toBe(3);
+
+            const nextBytes = new Uint8Array([4, 5, 6]);
+            fsMocks.readFile.mockResolvedValue(nextBytes);
+            Object.assign(appData.tasks[0].attachments![0], {
+                fileHash: await coreMocks.computeSha256Hex(nextBytes),
+                contentRev: 8,
+                contentMtimeMs: 2000,
+                contentSize: nextBytes.length,
+            });
+
+            await runCloudUpload(appData, deps, postMergeHelpers());
+            expect(putCount(fetcher)).toBe(4);
+        });
+    });
+
+    it('uploads a candidate-cleared local attachment during a self-hosted activation probe', async () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(bytes);
+
+        const result = await syncCloudAttachments(
+            appData,
+            { url: 'https://candidate.example/v1/data', token: 'candidate-token' },
+            'https://candidate.example/v1',
+            deps,
+            activationHelpers(),
+        );
+
+        expect(fetcher).toHaveBeenCalledWith(
+            'https://candidate.example/v1/attachments/attachment-1.txt',
+            expect.objectContaining({ method: 'PUT' }),
+        );
+        expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+    });
+
+    it.each([false, true])(
+        'revalidates the self-hosted Cloud fence before every upload retry (activation=%s)',
+        async (activationProbe) => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+            const lost = new SyncRemoteMutationFenceLostError();
+            const assertRemoteMutationFenceHeld = vi.fn()
+                .mockResolvedValueOnce(undefined)
+                .mockRejectedValueOnce(lost);
+            const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+                errorResponse(503, 'Unavailable'),
+            );
+            coreMocks.withRetry.mockImplementationOnce(async (operation: () => Promise<unknown>) => {
+                await operation().catch(() => undefined);
+                return await operation();
+            });
+
+            await expect(syncCloudAttachments(
+                appData,
+                { url: 'https://cloud.example/v1/data', token: 'token' },
+                'https://cloud.example/v1',
+                {
+                    getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                    isTauriRuntimeEnv: () => true,
+                    logSyncInfo: vi.fn(),
+                    logSyncWarning: vi.fn(),
+                    resolveWebdavPassword: vi.fn(),
+                },
+                { activationProbe, ensureLocalSnapshotFresh: vi.fn(), assertRemoteMutationFenceHeld },
+            )).rejects.toBe(lost);
+
+            expect(assertRemoteMutationFenceHeld).toHaveBeenNthCalledWith(1, 125_000);
+            expect(assertRemoteMutationFenceHeld).toHaveBeenNthCalledWith(2, 125_000);
+            expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+        },
+    );
+
+    it('does not manufacture candidate proof when an activation upload fails', async () => {
+        const fetcher = vi.fn(async () => errorResponse(503, 'Unavailable'));
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+
+        const result = await syncCloudAttachments(
+            appData,
+            { url: 'https://candidate.example/v1/data', token: 'candidate-token' },
+            'https://candidate.example/v1',
+            deps,
+            activationHelpers(),
+        );
+
+        expect(fetcher).toHaveBeenCalledWith(
+            'https://candidate.example/v1/attachments/attachment-1.txt',
+            expect.objectContaining({ method: 'PUT' }),
+        );
+        expect(result).toBe(false);
+        expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+    });
+
+    it.each(['upload', 'download'] as const)('allows File Sync %s through the shipped streaming permissions', async (direction) => {
+
+
+        const openFile = fsMocks.open.getMockImplementation()!;
+        const commands: string[] = [];
+        const requireCommand = (command: string) => {
+            commands.push(command);
+            const allowed = desktopCapability.permissions.includes(`fs:allow-${command}`)
+                || (['open', 'write'].includes(command)
+                    && desktopCapability.permissions.includes('fs:allow-write-file'));
+            if (!allowed) {
+                throw new Error(`fs.${command} not allowed. Permissions associated with this command: fs:allow-${command}`);
+            }
+        };
+        fsMocks.open.mockImplementation(async (...args) => {
+            requireCommand('open');
+            const file = await openFile(...args);
+            return {
+                ...file,
+                read: async (buffer: Uint8Array) => {
+                    requireCommand('read');
+                    return file.read!(buffer);
+                },
+                write: async (bytes: Uint8Array) => {
+                    requireCommand('write');
+                    return file.write!(bytes);
+                },
+            };
+        });
+        const appData = direction === 'upload' ? createCandidateAttachmentData() : createDownloadData('file');
+        if (direction === 'upload') appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(DOWNLOAD_BYTES);
+
+        const result = expectFoldedData(await syncFileAttachments(appData, '/candidate-sync', deps));
+
+        expect(result.tasks[0].attachments![0].localStatus).toBe('available');
+        expect(result.tasks[0].attachments![0].cloudKey).toBeTruthy();
+        expect(commands).toContain('read');
+        expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+        expect(deps.logSyncWarning).not.toHaveBeenCalled();
+        expect(deps.logSyncInfo).toHaveBeenCalledWith('File Sync attachment transfer completed', {
+            releaseCheck: 'v1.3.0/file-sync-streaming-permissions',
+            operation: direction,
+        });
+    });
+
+    it.each(['open', 'read', 'write'])('names denied fs %s commands without exposing private paths', async (command) => {
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockResolvedValue(false);
+        fsMocks.readFile.mockResolvedValue(DOWNLOAD_BYTES);
+
+        fsMocks.open.mockRejectedValue(`fs.${command} not allowed. Private C:\\Documents\\personal.pdf`);
+
+        expect(await syncFileAttachments(appData, '/candidate-sync', deps)).toBe(false);
+
+        expect(deps.logSyncWarning).toHaveBeenCalledWith(
+            'Failed to copy attachment attachment-1 to sync folder',
+            expect.objectContaining({ message: `Attachment sync operation failed (fs:${command} permission denied)` }),
+        );
+        expect(JSON.stringify(vi.mocked(deps.logSyncWarning).mock.calls)).not.toContain('personal.pdf');
+        expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+        expect(deps.logSyncInfo).not.toHaveBeenCalledWith('File Sync attachment transfer completed', expect.anything());
+        expect(appData.tasks[0].attachments![0].cloudKey).toBeUndefined();
+    });
+
+    it('copies a candidate-cleared local attachment during a file activation probe', async () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockResolvedValue(false);
+        fsMocks.readFile.mockResolvedValue(bytes);
+
+        const result = await syncFileAttachments(
+            appData,
+            '/candidate-sync',
+            deps,
+            activationHelpers(),
+        );
+
+        const generationKey = `attachments/attachment-1.${DOWNLOAD_BYTES_HASH}.txt`;
+        expect(fsMocks.open).toHaveBeenCalledWith(
+            expect.stringMatching(
+                /^\/candidate-sync\/attachments\/\.stride-attachment-generation-.*\.tmp$/,
+            ),
+            { write: true, createNew: true },
+        );
+        expect(fsMocks.writeFile).not.toHaveBeenCalledWith(
+            expect.stringContaining('/candidate-sync'),
+            expect.anything(),
+        );
+        expect(syncFsMocks.reserveAttachmentGeneration).toHaveBeenCalledWith(
+            '',
+            `/candidate-sync/${generationKey}`,
+            bytes.byteLength,
+            DOWNLOAD_BYTES_HASH,
+        );
+        expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledWith('', 'operation-1');
+        expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe(generationKey);
+    });
+
+    it('re-copies a locally available attachment into a sync folder that is missing it on a regular sync', async () => {
+
+
+        const bytes = new Uint8Array([1, 2, 3]);
+        const appData = createCandidateAttachmentData();
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockImplementation(async (path: string) => !String(path).startsWith('/candidate-sync/'));
+        fsMocks.readFile.mockResolvedValue(bytes);
+
+        const mutated = await syncFileAttachments(appData, '/candidate-sync', deps);
+
+        const generationKey = `attachments/attachment-1.${DOWNLOAD_BYTES_HASH}.txt`;
+        expect(fsMocks.open).toHaveBeenCalledWith(
+            expect.stringMatching(
+                /^\/candidate-sync\/attachments\/\.stride-attachment-generation-.*\.tmp$/,
+            ),
+            { write: true, createNew: true },
+        );
+        expect(syncFsMocks.reserveAttachmentGeneration).toHaveBeenCalledWith(
+            '',
+            `/candidate-sync/${generationKey}`,
+            bytes.byteLength,
+            DOWNLOAD_BYTES_HASH,
+        );
+        expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledWith('', 'operation-1');
+        expect(expectFoldedData(mutated).tasks[0].attachments?.[0]?.cloudKey).toBe(generationKey);
+
+
+        expect(fsMocks.exists).not.toHaveBeenCalledWith(
+            expect.stringContaining('/candidate-sync'),
+            expect.anything(),
+        );
+        expect(fsMocks.mkdir).not.toHaveBeenCalled();
+    });
+
+    it('keeps an attachment cloud key when its local copy is missing, even if the sync folder lacks the file', async () => {
+        const appData = createCandidateAttachmentData();
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(),
+        };
+        syncFsMocks.exists.mockResolvedValue(false);
+        fsMocks.exists.mockResolvedValue(false);
+
+        const result = await syncFileAttachments(appData, '/candidate-sync', deps);
+
+
+        expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+        expect(fsMocks.writeFile).not.toHaveBeenCalled();
+
+
+        expect(fsMocks.exists).not.toHaveBeenCalledWith(
+            expect.stringContaining('/candidate-sync'),
+            expect.anything(),
+        );
+        expect(fsMocks.mkdir).not.toHaveBeenCalled();
+    });
+
+    it('keeps WebDAV attachment sync in cooldown across repeated sync runs after rate limiting', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-06-12T00:00:00.000Z'));
+        const rateLimitError = Object.assign(new Error('WebDAV MKCOL failed (503)'), { status: 503 });
+        const logSyncInfo = vi.fn();
+        const logSyncWarning = vi.fn();
+        const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo,
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+
+
+        const uploadableData = (): AppData => ({
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    attachments: [
+                        {
+                            id: 'attachment-1',
+                            kind: 'file',
+                            title: 'file.txt',
+                            uri: '/app-data/stride/attachments/file.txt',
+                            createdAt: '2026-06-12T00:00:00.000Z',
+                            updatedAt: '2026-06-12T00:00:00.000Z',
+                        },
+                    ],
+                    createdAt: '2026-06-12T00:00:00.000Z',
+                    updatedAt: '2026-06-12T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+        coreMocks.webdavMakeDirectory.mockRejectedValueOnce(rateLimitError);
+
+        const cloudKeyAfter = (result: AppData | null): string | undefined => (
+            result === null ? undefined : result.tasks[0].attachments?.[0]?.cloudKey
+        );
+        const rateLimitedRun = await syncWebdavAttachments(
+            uploadableData(),
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+        );
+
+
+        expect(cloudKeyAfter(rateLimitedRun)).toBeUndefined();
+        await expect(
+            syncWebdavAttachments(
+                uploadableData(),
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                deps,
+            ),
+        ).resolves.toBeNull();
+
+        expect(coreMocks.webdavMakeDirectory).toHaveBeenCalledTimes(1);
+        expect(logSyncWarning).toHaveBeenCalledWith(
+            'WebDAV rate limited; pausing attachment sync',
+            expect.objectContaining({ message: 'Attachment sync operation failed (503)' }),
+        );
+        expect(logSyncInfo).toHaveBeenCalledWith(
+            'WebDAV attachment sync skipped during rate-limit cooldown',
+            { remainingMs: '60000' },
+        );
+
+
+        vi.advanceTimersByTime(60_000);
+        vi.useRealTimers();
+        coreMocks.webdavMakeDirectory.mockResolvedValueOnce(undefined);
+
+        const recovered = await syncWebdavAttachments(
+            uploadableData(),
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+        );
+
+        expect(coreMocks.webdavMakeDirectory).toHaveBeenCalledTimes(2);
+        expect(recovered).not.toBeNull();
+        expect((recovered as AppData).tasks[0].attachments?.[0]?.cloudKey).toBeTruthy();
+    });
+
+    it.each([[false, 11], [true, 11], [true, 100]] as const)('caps WebDAV upload batches and reports deferred transfers (activation=%s, files=%s)', async (activationProbe, attachmentCount) => {
+
+        vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+            queueMicrotask(() => callback(performance.now()));
+            return 0;
+        });
+        let now = 0;
+        vi.spyOn(Date, 'now').mockImplementation(() => {
+            now += 1_000;
+            return now;
+        });
+
+        const bytes = new Uint8Array([1, 2, 3]);
+        const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+        const logSyncInfo = vi.fn();
+        const logSyncWarning = vi.fn();
+        const appData: AppData = {
+            tasks: Array.from({ length: attachmentCount }, (_, index) => ({
+                id: `task-${index}`,
+                title: `Task ${index}`,
+                status: 'next',
+                tags: [],
+                contexts: [],
+                attachments: [
+                    {
+                        id: `attachment-${index}`,
+                        kind: 'file',
+                        title: `file-${index}.txt`,
+                        uri: `/app-data/stride/attachments/file-${index}.txt`,
+                        createdAt: '2026-06-27T00:00:00.000Z',
+                        updatedAt: '2026-06-27T00:00:00.000Z',
+                    },
+                ],
+                createdAt: '2026-06-27T00:00:00.000Z',
+                updatedAt: '2026-06-27T00:00:00.000Z',
+            })),
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo,
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(bytes);
+        coreMocks.webdavFileExists.mockResolvedValue(true);
+        const onTransferBatchDeferred = vi.fn();
+        const helpers = { activationProbe, ensureLocalSnapshotFresh: vi.fn(), onTransferBatchDeferred };
+
+        const result = await syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+            helpers,
+        );
+
+        expect(result).not.toBeNull();
+        const uploadedCount = result!.tasks.filter((task) => task.attachments?.[0]?.cloudKey).length;
+        expect(uploadedCount).toBe(10);
+        const putCalls = fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT');
+        expect(putCalls).toHaveLength(10);
+        expect(onTransferBatchDeferred).toHaveBeenCalled();
+        expect(logSyncInfo).toHaveBeenCalledWith('WebDAV attachment upload limit reached', { limit: '10' });
+        expect(logSyncWarning).not.toHaveBeenCalledWith(
+            expect.stringContaining('Failed to upload attachment'),
+            expect.anything(),
+        );
+        if (activationProbe) {
+            let completed = result!;
+            for (let batch = 1; batch < Math.ceil(attachmentCount / 10); batch += 1) {
+                onTransferBatchDeferred.mockClear();
+                completed = expectFoldedData(await syncWebdavAttachments(
+                    completed,
+                    { url: 'https://dav.example/stride', username: 'alice' },
+                    'https://dav.example/stride',
+                    deps,
+                    { ...helpers, activationContinuation: true },
+                ));
+            }
+            expect(completed.tasks.filter((task) => task.attachments?.[0]?.cloudKey)).toHaveLength(attachmentCount);
+            expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(attachmentCount);
+            expect(coreMocks.webdavHeadFile).toHaveBeenCalledTimes(attachmentCount);
+            expect(coreMocks.webdavFileExists.mock.calls.length).toBe(0);
+            expect(onTransferBatchDeferred).not.toHaveBeenCalled();
+            expect(appData.tasks.every((task) => !task.attachments?.[0]?.cloudKey)).toBe(true);
+            await syncWebdavAttachments(completed,
+                { url: 'https://dav.example/stride', username: 'alice' }, 'https://dav.example/stride', deps, helpers);
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(attachmentCount);
+        }
+    });
+
+    it('reports an activation download batch limit without declaring the remaining file available', async () => {
+        let now = 0;
+        vi.spyOn(Date, 'now').mockImplementation(() => { now += 1_000; return now; });
+        const data = createDownloadData('webdav');
+        const template = data.tasks[0].attachments![0];
+        data.tasks[0].attachments = Array.from({ length: 11 }, (_, index) => ({
+            ...template, id: `download-batch-${index}`, cloudKey: `attachments/download-batch-${index}.txt`,
+        }));
+        fsMocks.exists.mockImplementation(async (path: string) => path.includes('.stride-download-'));
+        fsMocks.readFile.mockResolvedValue(DOWNLOAD_BYTES);
+        const fetcher = vi.fn(async () => new Response(DOWNLOAD_BYTES.slice().buffer, { status: 200 }));
+        const onTransferBatchDeferred = vi.fn();
+        const result = expectFoldedData(await syncWebdavAttachments(data,
+            { url: 'https://dav.example/stride', username: 'alice' }, 'https://dav.example/stride',
+            { getTauriFetch: async () => fetcher as unknown as typeof fetch, isTauriRuntimeEnv: () => true,
+                logSyncInfo: vi.fn(), logSyncWarning: vi.fn(), resolveWebdavPassword: vi.fn(async () => 'secret') },
+            { ...activationHelpers(), onTransferBatchDeferred },
+        ));
+        expect(installerMocks.installAttachmentDownload).toHaveBeenCalledTimes(10);
+        expect(result.tasks[0].attachments?.filter((attachment) => attachment.localStatus === 'available')).toHaveLength(10);
+        expect(result.tasks[0].attachments?.[10]).toMatchObject({ localStatus: 'missing', uri: '' });
+        expect(onTransferBatchDeferred).toHaveBeenCalled();
+    });
+
+    it('keeps private attachment titles and paths out of serialized desktop sync logs', async () => {
+        const privateTitle = 'Divorce settlement draft.pdf';
+        const privatePath = `/app-data/stride/attachments/${privateTitle}`;
+        const appData = createCandidateAttachmentData();
+        const attachment = appData.tasks[0].attachments![0];
+        attachment.title = privateTitle;
+        attachment.uri = privatePath;
+        attachment.cloudKey = undefined;
+        const logSyncInfo = vi.fn();
+        const logSyncWarning = vi.fn();
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => vi.fn() as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo,
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockRejectedValue(new Error(`Failed to read ${privatePath}`));
+
+        await syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+        );
+
+        const serialized = JSON.stringify({
+            info: logSyncInfo.mock.calls,
+            warnings: logSyncWarning.mock.calls,
+        });
+        expect(serialized).not.toContain(privateTitle);
+        expect(serialized).not.toContain(privatePath);
+        expect(serialized).toContain('attachment-1');
+        expect(logSyncInfo).toHaveBeenCalledWith(
+            'WebDAV attachment check',
+            expect.objectContaining({ uri: 'path:managed.pdf' }),
+        );
+        expect(logSyncWarning).toHaveBeenCalledWith(
+            'Failed to upload attachment attachment-1',
+            expect.objectContaining({ message: 'Attachment sync operation failed' }),
+        );
+    });
+
+    it('redacts a path-bearing attachment download error before logging it', async () => {
+        const privateTitle = 'Divorce settlement draft.pdf';
+        const privatePath = `/app-data/stride/attachments/${privateTitle}`;
+        const appData = createDownloadData('cloudkit');
+        appData.tasks[0].attachments![0].title = privateTitle;
+        const logSyncWarning = vi.fn();
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        };
+        cloudKitMocks.fetchCloudKitAttachmentAsset.mockRejectedValue(
+            new Error(`Failed to open ${privatePath}`),
+        );
+
+        const result = await syncCloudKitAttachments(appData, deps);
+
+        const serialized = JSON.stringify(logSyncWarning.mock.calls);
+        expect(serialized).not.toContain(privateTitle);
+        expect(serialized).not.toContain(privatePath);
+        expect(result).toBe(false);
+        expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+            cloudKey: 'cloudkit:attachment-1',
+            localStatus: 'missing',
+        });
+        expect(appData.tasks[0].attachments?.[0].deletedAt).toBeUndefined();
+        expect(logSyncWarning).toHaveBeenCalledWith(
+            'Failed to download CloudKit attachment attachment-1',
+            expect.objectContaining({ message: 'Attachment sync operation failed' }),
+        );
+    });
+
+    it.each([
+        'attachment-record-not-found',
+        'attachment-asset-missing',
+    ])('leaves a CloudKit attachment live and keyed after cleaning a terminal %s stage', async (reason) => {
+        const appData = createDownloadData('cloudkit');
+        appData.tasks[0].attachments![0].fileHash = DOWNLOAD_BYTES_HASH;
+        const logSyncWarning = vi.fn();
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        };
+        cloudKitMocks.fetchCloudKitAttachmentAsset.mockRejectedValue(
+            new cloudKitMocks.CloudKitAttachmentNotFoundError(reason),
+        );
+
+        const result = (await syncCloudKitAttachments(appData, deps)) || appData;
+        const stagedPath = cloudKitMocks.fetchCloudKitAttachmentAsset.mock.calls[0]?.[1];
+
+        expect(stagedPath).toMatch(/^\/app-data\/stride\/attachments\/\.download-/);
+        expect(fsMocks.remove).toHaveBeenCalledWith(stagedPath);
+        expect(installerMocks.installAttachmentDownload).not.toHaveBeenCalled();
+        expect(result.tasks[0].attachments?.[0]).toMatchObject({
+            cloudKey: 'cloudkit:attachment-1',
+            fileHash: DOWNLOAD_BYTES_HASH,
+            localStatus: 'missing',
+        });
+        expect(result.tasks[0].attachments?.[0].deletedAt).toBeUndefined();
+        expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+            cloudKey: 'cloudkit:attachment-1',
+            fileHash: DOWNLOAD_BYTES_HASH,
+            localStatus: 'missing',
+        });
+        expect(appData.tasks[0].attachments?.[0].deletedAt).toBeUndefined();
+        expect(globalProgressTracker.getProgress('attachment-1')).toMatchObject({
+            status: 'failed',
+            error: 'Attachment is no longer available',
+        });
+        expect(logSyncWarning).toHaveBeenCalledWith(
+            'CloudKit attachment attachment-1 is no longer available',
+            expect.objectContaining({ message: 'Attachment sync operation failed' }),
+        );
+    });
+
+    it('uploads a candidate-cleared local attachment during a WebDAV activation probe', async () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(bytes);
+        coreMocks.webdavFileExists.mockResolvedValue(true);
+
+        const result = await syncWebdavAttachments(
+            appData,
+            { url: 'https://candidate.example/stride', username: 'alice' },
+            'https://candidate.example/stride',
+            deps,
+            activationHelpers(),
+        );
+
+        expect(fetcher).toHaveBeenCalledWith(
+            'https://candidate.example/stride/attachments/attachment-1.txt',
+            expect.objectContaining({ method: 'PUT' }),
+        );
+        expect(result?.tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+    });
+
+    it('preserves attachment metadata and performs no transfer when local presence is unreadable', async () => {
+        const fetcher = vi.fn();
+        const appData = createCandidateAttachmentData();
+        Object.assign(appData.tasks[0].attachments![0], {
+            fileHash: 'ab'.repeat(32),
+            pendingContentUpload: true,
+            contentMtimeMs: 123,
+            contentSize: 456,
+        });
+        const original = structuredClone(appData);
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        fsMocks.exists.mockRejectedValue(new Error('Permission denied'));
+
+        await expect(syncWebdavAttachments(
+            appData,
+            { url: 'https://candidate.example/stride', username: 'alice' },
+            'https://candidate.example/stride',
+            deps,
+        )).resolves.toBeNull();
+
+        expect(appData).toEqual(original);
+        expect(coreMocks.webdavFileExists).not.toHaveBeenCalled();
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(fsMocks.readFile).not.toHaveBeenCalled();
+        expect(fsMocks.stat).not.toHaveBeenCalled();
+        expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])(
+        'prevents a WebDAV attachment PUT after lease takeover (activation=%s)',
+        async (activationProbe) => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+            const lost = new SyncRemoteMutationFenceLostError();
+            const assertRemoteMutationFenceHeld = vi.fn()
+                .mockResolvedValueOnce(undefined)
+                .mockRejectedValueOnce(lost);
+            const fetcher = vi.fn(async (
+                _input: RequestInfo | URL,
+                _init?: RequestInit,
+            ) => new Response(null, { status: 200 }));
+
+            await expect(syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                {
+                    getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                    isTauriRuntimeEnv: () => true,
+                    logSyncInfo: vi.fn(),
+                    logSyncWarning: vi.fn(),
+                    resolveWebdavPassword: vi.fn(async () => 'secret'),
+                },
+                { activationProbe, ensureLocalSnapshotFresh: vi.fn(), assertRemoteMutationFenceHeld },
+            )).rejects.toBe(lost);
+
+            expect(assertRemoteMutationFenceHeld).toHaveBeenCalledTimes(2);
+            expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+        },
+    );
+
+    it.each([false, true])(
+        'prevents a Dropbox attachment upload after lease takeover (activation=%s)',
+        async (activationProbe) => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+            const lost = new SyncRemoteMutationFenceLostError();
+            const assertRemoteMutationFenceHeld = vi.fn().mockRejectedValue(lost);
+
+            await expect(syncDropboxAttachments(
+                appData,
+                vi.fn(async () => 'token'),
+                {
+                    getTauriFetch: async () => undefined,
+                    isTauriRuntimeEnv: () => true,
+                    logSyncInfo: vi.fn(),
+                    logSyncWarning: vi.fn(),
+                    resolveWebdavPassword: vi.fn(),
+                },
+                { activationProbe, ensureLocalSnapshotFresh: vi.fn(), assertRemoteMutationFenceHeld },
+            )).rejects.toBe(lost);
+
+            expect(dropboxMocks.getDropboxFileMetadata).toHaveBeenCalled();
+            expect(dropboxMocks.uploadDropboxFile).not.toHaveBeenCalled();
+        },
+    );
+
+    it('never reads or uploads an attachment whose uri points outside the profile (SEC-07)', async () => {
+
+
+        const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+        const appData = createCandidateAttachmentData();
+        appData.tasks[0].attachments![0].uri = '/home/alice/.ssh/id_rsa';
+        appData.tasks[0].attachments![0].cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+        coreMocks.webdavFileExists.mockResolvedValue(true);
+
+        await syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+        );
+
+        expect(fsMocks.readFile).not.toHaveBeenCalled();
+        const putCalls = fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT');
+        expect(putCalls).toHaveLength(0);
+        expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+    });
+
+    it('aborts the transfer pass as soon as the local snapshot goes stale (BUG-26)', async () => {
+        const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+        const appData = createCandidateAttachmentData();
+        const first = appData.tasks[0].attachments![0];
+        appData.tasks[0].attachments!.push({
+            ...first,
+            id: 'attachment-2',
+            title: 'second.txt',
+            uri: '/app-data/stride/attachments/second.txt',
+            cloudKey: undefined,
+        });
+        first.cloudKey = undefined;
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        };
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+        coreMocks.webdavFileExists.mockResolvedValue(true);
+
+        let checks = 0;
+        const ensureLocalSnapshotFresh = vi.fn(() => {
+            checks += 1;
+            if (checks > 1) {
+                const abort = new Error('local data changed mid-sync');
+                abort.name = 'LocalSyncAbort';
+                throw abort;
+            }
+        });
+
+        await expect(syncWebdavAttachments(
+            appData,
+            { url: 'https://dav.example/stride', username: 'alice' },
+            'https://dav.example/stride',
+            deps,
+            { activationProbe: false, ensureLocalSnapshotFresh, phase: 'prepare' },
+        )).rejects.toMatchObject({ name: 'LocalSyncAbort' });
+
+        expect(ensureLocalSnapshotFresh).toHaveBeenCalledTimes(2);
+        const putCalls = fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT');
+        expect(putCalls).toHaveLength(0);
+    });
+
+    describe('check-on-touch content change detection (#1057)', () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+
+
+        const BYTES_HASH = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+
+        const prepareHelpers = () => ({
+            activationProbe: false,
+            ensureLocalSnapshotFresh: vi.fn(),
+            phase: 'prepare' as const,
+        });
+
+        const postMergeHelpers = () => ({
+            activationProbe: false,
+            ensureLocalSnapshotFresh: vi.fn(),
+            phase: 'post-merge' as const,
+        });
+
+        const makePendingData = (): AppData => {
+            const data = createCandidateAttachmentData();
+            Object.assign(data.tasks[0].attachments![0], {
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                contentMtimeMs: 1000,
+                contentSize: bytes.length,
+                pendingContentUpload: true,
+            });
+            return data;
+        };
+
+        const depsFor = (fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+            new Response(null, { status: 200 })
+        ))): AttachmentBackendDeps => ({
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        });
+
+        const expectFileUploadFailureDiagnostic = (
+            deps: AttachmentBackendDeps,
+            stage: string,
+            nativeCode = '5',
+        ) => {
+            expect(deps.logSyncWarning).toHaveBeenCalledWith(
+                'File Sync attachment operation failed',
+                undefined,
+                {
+                    releaseCheck: 'v1.3.1/file-sync-attachment-failure',
+                    backend: 'file',
+                    operation: 'upload',
+                    stage,
+                    errorType: 'native-os-error',
+                    nativeCode,
+
+                    reason: 'unlisted',
+                },
+            );
+            const calls = JSON.stringify(vi.mocked(deps.logSyncWarning).mock.calls);
+            expect(calls).not.toContain('customer-secret.txt');
+            expect(calls).not.toContain('Private');
+        };
+
+        it('reports a failed local source read before the File Sync uploader runs', async () => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const deps = depsFor();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockRejectedValue('Cannot read C:\\Private\\customer-secret.txt (os error 5)');
+
+            expect(await syncFileAttachments(appData, '/candidate-sync', deps)).toBe(false);
+
+            expectFileUploadFailureDiagnostic(deps, 'local-source-read');
+            expect(vi.mocked(deps.logSyncWarning).mock.calls.filter(
+                ([message]) => message === 'File Sync attachment operation failed',
+            )).toHaveLength(1);
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('does not label a post-download verification read failure as an upload failure', async () => {
+            const appData = createDownloadData('file');
+            const deps = depsFor();
+            const downloadedTarget = '/app-data/stride/attachments/attachment-1.txt';
+            syncFsMocks.exists.mockResolvedValue(true);
+            syncFsMocks.stat.mockResolvedValue({ mtimeMs: 1000, size: DOWNLOAD_BYTES.length });
+            fsMocks.readFile.mockImplementation(async (path: string) => {
+                if (path === downloadedTarget || path === 'stride/attachments/attachment-1.txt') {
+                    throw new Error(`Cannot verify ${downloadedTarget} (os error 5)`);
+                }
+                return DOWNLOAD_BYTES;
+            });
+
+            const result = expectFoldedData(await syncFileAttachments(appData, '/sync-root', deps));
+
+            expect(result.tasks[0].attachments?.[0]).toMatchObject({
+                uri: downloadedTarget,
+                localStatus: 'available',
+                fileHash: DOWNLOAD_BYTES_HASH,
+            });
+            expect(vi.mocked(deps.logSyncWarning).mock.calls.some(
+                ([message]) => message === 'File Sync attachment operation failed',
+            )).toBe(false);
+        });
+
+        it('reports the final local source stat failure without logging a recovered fallback', async () => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const deps = depsFor();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.stat.mockRejectedValue(new Error(
+                'Cannot stat C:\\Private\\customer-secret.txt (os error 3)',
+            ));
+
+            await expect(syncFileAttachments(appData, '/candidate-sync', deps)).rejects.toMatchObject({
+                name: 'AttachmentUploadSizeUnavailableError',
+            });
+
+            expectFileUploadFailureDiagnostic(deps, 'local-source-stat', '3');
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it.each([
+            ['generation-reserve', () => {
+                syncFsMocks.reserveAttachmentGeneration.mockRejectedValue(
+                    'Cannot reserve C:\\Private\\customer-secret.txt (os error 5)',
+                );
+            }],
+            ['scratch-open', () => {
+                fsMocks.open.mockRejectedValue(
+                    'Cannot open C:\\Private\\customer-secret.txt (os error 5)',
+                );
+            }],
+            ['scratch-write', () => {
+                fsMocks.open.mockResolvedValue({
+                    write: vi.fn().mockRejectedValue(
+                        'Cannot write C:\\Private\\customer-secret.txt (os error 5)',
+                    ),
+                    close: vi.fn().mockResolvedValue(undefined),
+                });
+            }],
+            ['scratch-close', () => {
+                fsMocks.open.mockResolvedValue({
+                    write: vi.fn(async (value: Uint8Array) => value.byteLength),
+                    close: vi.fn().mockRejectedValue(
+                        'Cannot close C:\\Private\\customer-secret.txt (os error 5)',
+                    ),
+                });
+            }],
+            ['native-publication', () => {
+                syncFsMocks.publishAttachmentGeneration.mockRejectedValue(
+                    'Cannot publish C:\\Private\\customer-secret.txt (os error 5)',
+                );
+            }],
+        ] as const)('reports the failing File Sync upload stage: %s', async (stage, failStage) => {
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const deps = depsFor();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+            failStage();
+
+            expect(await syncFileAttachments(appData, '/candidate-sync', deps)).toBe(false);
+
+            expectFileUploadFailureDiagnostic(deps, stage);
+            expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledTimes(
+                stage === 'native-publication' ? 1 : 0,
+            );
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('keeps the File Sync result independent from a throwing diagnostic callback', async () => {
+            const failedData = createCandidateAttachmentData();
+            failedData.tasks[0].attachments![0].cloudKey = undefined;
+            const failedDeps = depsFor();
+            vi.mocked(failedDeps.logSyncWarning).mockImplementation(() => {
+                throw new Error('diagnostic sink unavailable');
+            });
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+            syncFsMocks.reserveAttachmentGeneration.mockRejectedValue('os error 5');
+
+            await expect(syncFileAttachments(failedData, '/candidate-sync', failedDeps)).resolves.toBe(false);
+            expect(failedData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+
+            vi.clearAllMocks();
+            const successfulData = createCandidateAttachmentData();
+            successfulData.tasks[0].attachments![0].cloudKey = undefined;
+            const successfulDeps = depsFor();
+            vi.mocked(successfulDeps.logSyncWarning).mockImplementation(() => {
+                throw new Error('diagnostic sink unavailable');
+            });
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+            syncFsMocks.reserveAttachmentGeneration.mockResolvedValue({
+                operationId: 'operation-2',
+                scratchPath: '/candidate-sync/attachments/.stride-attachment-generation-operation-2.tmp',
+            });
+            syncFsMocks.publishAttachmentGeneration.mockResolvedValue({ status: 'published' });
+            fsMocks.open.mockResolvedValue({
+                write: vi.fn(async (value: Uint8Array) => value.byteLength),
+                close: vi.fn().mockResolvedValue(undefined),
+            });
+
+            const result = expectFoldedData(await syncFileAttachments(
+                successfulData,
+                '/candidate-sync',
+                successfulDeps,
+            ));
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe(
+                `attachments/attachment-1.${BYTES_HASH}.txt`,
+            );
+            expect(successfulDeps.logSyncWarning).not.toHaveBeenCalled();
+        });
+
+        it('reports an existing generation read failure through its wrapped native cause', async () => {
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const deps = depsFor();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(true);
+            syncFsMocks.stat.mockRejectedValue(
+                'Cannot inspect C:\\Private\\customer-secret.txt (os error 5)',
+            );
+
+            expect(await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                deps,
+                postMergeHelpers(),
+            )).toBe(false);
+
+            expectFileUploadFailureDiagnostic(deps, 'existing-generation-read');
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+
+            await expect(syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                deps,
+                postMergeHelpers(),
+            )).resolves.toBe(false);
+
+            expect(syncFsMocks.stat).toHaveBeenCalledTimes(2);
+            expect(syncFsMocks.remove).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]?.deletedAt).toBeUndefined();
+        });
+
+
+        const stageCorruptGeneration = () => {
+            const otherBytes = new Uint8Array([4, 5, 6]);
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockImplementation(async (path: string) => (
+                path.startsWith('/candidate-sync/') ? otherBytes : bytes
+            ));
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(true);
+            syncFsMocks.stat.mockResolvedValue({ mtimeMs: 1000, size: otherBytes.length });
+        };
+
+        it('preserves an existing generation after an integrity mismatch at verification', async () => {
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const deps = depsFor();
+            stageCorruptGeneration();
+
+            const result = await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                deps,
+                postMergeHelpers(),
+            );
+
+            expect(deps.logSyncWarning).toHaveBeenCalledWith(
+                'File Sync attachment operation failed',
+                undefined,
+                expect.objectContaining({
+                    stage: 'existing-generation-verify',
+                    errorType: 'error',
+                    nativeCode: 'unknown',
+                }),
+            );
+            expect(deps.logSyncWarning).toHaveBeenCalledWith(
+                'Preserved invalid File Sync attachment generation; refusing replacement',
+                undefined,
+                { releaseCheck: 'v1.3.2/file-generation-preserved' },
+            );
+            expect(result).toBe(false);
+            expect(syncFsMocks.remove).not.toHaveBeenCalled();
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+            expect(appData.tasks[0].attachments?.[0]?.deletedAt).toBeUndefined();
+        });
+
+        it('does not retry a preserved invalid generation again in the same session', async () => {
+            const generationPath = `/candidate-sync/attachments/attachment-1.${BYTES_HASH}.txt`;
+            const removals = () => syncFsMocks.remove.mock.calls.filter(([path]) => path === generationPath).length;
+            stageCorruptGeneration();
+
+            await syncFileAttachments(makePendingData(), '/candidate-sync', depsFor(), postMergeHelpers());
+            expect(removals()).toBe(0);
+
+            const secondData = makePendingData();
+            const secondDeps = depsFor();
+            const second = await syncFileAttachments(secondData, '/candidate-sync', secondDeps, postMergeHelpers());
+
+
+            expect(second).toBe(false);
+            expect(secondData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                localStatus: 'available',
+            });
+            expect(secondData.tasks[0].attachments?.[0]?.deletedAt).toBeUndefined();
+            expect(removals()).toBe(0);
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(secondDeps.logSyncWarning).not.toHaveBeenCalled();
+
+            const settledReads = syncFsMocks.exists.mock.calls.length + syncFsMocks.stat.mock.calls.length;
+            const thirdDeps = depsFor();
+            expect(await syncFileAttachments(
+                makePendingData(),
+                '/candidate-sync',
+                thirdDeps,
+                postMergeHelpers(),
+            )).toBe(false);
+
+
+            expect(syncFsMocks.exists.mock.calls.length + syncFsMocks.stat.mock.calls.length).toBe(settledReads);
+            expect(removals()).toBe(0);
+            expect(thirdDeps.logSyncWarning).not.toHaveBeenCalled();
+        });
+
+        it('retries verification after the attachment sync state is reset without replacing the generation', async () => {
+            const generationPath = `/candidate-sync/attachments/attachment-1.${BYTES_HASH}.txt`;
+            const removals = () => syncFsMocks.remove.mock.calls.filter(([path]) => path === generationPath).length;
+            stageCorruptGeneration();
+
+            await syncFileAttachments(makePendingData(), '/candidate-sync', depsFor(), postMergeHelpers());
+            await syncFileAttachments(makePendingData(), '/candidate-sync', depsFor(), postMergeHelpers());
+            const readsBeforeReset = syncFsMocks.stat.mock.calls.length;
+            expect(removals()).toBe(0);
+
+            clearAttachmentSyncState();
+            const deps = depsFor();
+            await syncFileAttachments(makePendingData(), '/candidate-sync', deps, postMergeHelpers());
+
+            expect(syncFsMocks.stat.mock.calls.length).toBeGreaterThan(readsBeforeReset);
+            expect(removals()).toBe(0);
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(deps.logSyncWarning).toHaveBeenCalledWith(
+                'Preserved invalid File Sync attachment generation; refusing replacement',
+                undefined,
+                { releaseCheck: 'v1.3.2/file-generation-preserved' },
+            );
+        });
+
+        it('never rewrites a healthy existing generation', async () => {
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const generationKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(true);
+            syncFsMocks.stat.mockResolvedValue({ mtimeMs: 1000, size: bytes.length });
+
+            const result = expectFoldedData(await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            ));
+
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(`/candidate-sync/${generationKey}`);
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe(generationKey);
+        });
+
+        it('retains a WebDAV pending candidate when the blob is absent and local bytes advanced again', async () => {
+            const newerBytes = new Uint8Array([4, 5, 6]);
+            const appData = makePendingData();
+            const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+                new Response(null, { status: 200 })
+            ));
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(newerBytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(2000), size: newerBytes.length });
+            coreMocks.webdavFileExists.mockResolvedValue(false);
+
+            const result = await syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                depsFor(fetcher),
+                postMergeHelpers(),
+            );
+
+            expect(result).toBeNull();
+            expect(coreMocks.webdavFileExists).not.toHaveBeenCalled();
+            expect(fetcher).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                pendingContentUpload: true,
+            });
+        });
+
+        it('creates an absent WebDAV blob only from the exact pending bytes', async () => {
+            const appData = makePendingData();
+            const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+                new Response(null, { status: 200 })
+            ));
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            coreMocks.webdavFileExists.mockResolvedValue(false);
+
+            const result = expectFoldedData(await syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                depsFor(fetcher),
+                postMergeHelpers(),
+            ));
+
+            expect(coreMocks.webdavFileExists).not.toHaveBeenCalled();
+            expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT')).toHaveLength(1);
+            expect(result.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                pendingContentUpload: undefined,
+            });
+        });
+
+        it('retains a File Sync pending candidate when the blob is absent and local bytes advanced again', async () => {
+            const newerBytes = new Uint8Array([4, 5, 6]);
+            const appData = makePendingData();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(newerBytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(2000), size: newerBytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+
+            const result = await syncFileAttachments(appData, '/candidate-sync', depsFor(), postMergeHelpers());
+
+            expect(result).toBe(false);
+            expect(syncFsMocks.exists).not.toHaveBeenCalled();
+            expect(fsMocks.writeFile).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                pendingContentUpload: true,
+            });
+        });
+
+        it('creates an absent File Sync blob only from the exact pending bytes', async () => {
+            const appData = makePendingData();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+
+            const result = expectFoldedData(await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+                'lease-1',
+            ));
+
+            const generationKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            expect(fsMocks.open).toHaveBeenCalledWith(
+                expect.stringMatching(
+                    /^\/candidate-sync\/attachments\/\.stride-attachment-generation-.*\.tmp$/,
+                ),
+                { write: true, createNew: true },
+            );
+            expect(syncFsMocks.reserveAttachmentGeneration).toHaveBeenCalledWith(
+                'lease-1',
+                `/candidate-sync/${generationKey}`,
+                bytes.byteLength,
+                BYTES_HASH,
+            );
+            expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledWith('lease-1', 'operation-1');
+            expect(result.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: generationKey,
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                pendingContentUpload: undefined,
+            });
+            expect(result.settings.attachments?.pendingRemoteDeletes).toBeUndefined();
+        });
+
+        it.each([
+            ['ordinary', postMergeHelpers],
+            ['activation', activationHelpers],
+        ])('reuses a verified peer winner after a %s publication collision', async (_label, helpers) => {
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            const generationKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            const generationPath = `/candidate-sync/${generationKey}`;
+            let targetChecks = 0;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.stat.mockResolvedValue({ mtimeMs: 1000, size: bytes.length });
+            syncFsMocks.exists.mockImplementation(async (path: string) => {
+                if (path !== generationPath) return false;
+                targetChecks += 1;
+                return targetChecks > 1;
+            });
+            syncFsMocks.publishAttachmentGeneration.mockResolvedValue({ status: 'alreadyExists' });
+
+            const result = expectFoldedData(await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                helpers(),
+            ));
+
+            const scratchPath = vi.mocked(fsMocks.open).mock.calls.find(
+                ([, options]) => options?.write === true,
+            )?.[0] as string;
+            expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledTimes(1);
+            expect(syncFsMocks.abandonAttachmentGeneration).toHaveBeenCalledWith('', 'operation-1');
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(scratchPath);
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(generationPath);
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe(generationKey);
+        });
+
+        it('blocks an oversized pending File Sync upload before reading or verifying an existing generation', async () => {
+            const oversizedLength = MAX_DOWNLOAD_BYTES;
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].cloudKey = undefined;
+            Object.assign(appData.tasks[0].attachments![0], {
+                contentSize: oversizedLength,
+            });
+            const generationKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            const generationPath = `/candidate-sync/${generationKey}`;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: oversizedLength });
+            syncFsMocks.exists.mockResolvedValue(true);
+
+            await expect(syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            )).rejects.toMatchObject({
+                name: 'AttachmentUploadTooLargeError',
+                actualBytes: oversizedLength,
+                limitBytes: 15,
+            });
+
+            expect(fsMocks.readFile).not.toHaveBeenCalled();
+            expect(syncFsMocks.stat).not.toHaveBeenCalledWith(generationPath);
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: undefined,
+                fileHash: BYTES_HASH,
+                pendingContentUpload: true,
+                localStatus: 'available',
+            });
+        });
+
+        it('fails the File Sync upload closed when the local size cannot be established', async () => {
+            const appData = makePendingData();
+            const original = structuredClone(appData.tasks[0].attachments?.[0]);
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.stat.mockRejectedValue(new Error('stat unavailable'));
+
+            await expect(syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            )).rejects.toMatchObject({ name: 'AttachmentUploadSizeUnavailableError' });
+
+            expect(fsMocks.readFile).not.toHaveBeenCalled();
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toEqual(original);
+        });
+
+        it('publishes a losing File Sync candidate under its own generation key', async () => {
+            const appData = makePendingData();
+            const winningHash = '787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472';
+            const winningPath = `/candidate-sync/attachments/attachment-1.${winningHash}.txt`;
+            const candidateKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockImplementation(async (path: string) => path === winningPath);
+
+            const result = expectFoldedData(await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            ));
+
+            expect(fsMocks.open).toHaveBeenCalledWith(
+                expect.stringMatching(
+                    /^\/candidate-sync\/attachments\/\.stride-attachment-generation-.*\.tmp$/,
+                ),
+                { write: true, createNew: true },
+            );
+            expect(fsMocks.open).not.toHaveBeenCalledWith(
+                winningPath,
+                expect.objectContaining({ write: true }),
+            );
+            expect(syncFsMocks.reserveAttachmentGeneration).toHaveBeenCalledWith(
+                '',
+                `/candidate-sync/${candidateKey}`,
+                bytes.byteLength,
+                BYTES_HASH,
+            );
+            expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledWith('', 'operation-1');
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(winningPath);
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe(candidateKey);
+        });
+
+        it('fails closed on a corrupt same-generation target without touching any generation', async () => {
+            const appData = makePendingData();
+            const generationKey = `attachments/attachment-1.${BYTES_HASH}.txt`;
+            const generationPath = `/candidate-sync/${generationKey}`;
+            const peerHash = '787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472';
+            const peerPath = `/candidate-sync/attachments/attachment-1.${peerHash}.txt`;
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockImplementation(async (path: string) => (
+                path === generationPath ? new Uint8Array([81]) : bytes
+            ));
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockImplementation(async (path: string) => (
+                path === generationPath || path === peerPath
+            ));
+            appData.tasks[0].attachments![0].cloudKey = generationKey;
+
+            const result = await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            );
+
+            expect(result).toBe(false);
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.publishAttachmentGeneration).not.toHaveBeenCalledWith(
+                expect.any(String),
+                peerPath,
+                expect.any(Number),
+                expect.any(String),
+            );
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(generationPath);
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(peerPath);
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: generationKey,
+                pendingContentUpload: true,
+            });
+        });
+
+        it('retains only its owned verified scratch when native publication fails', async () => {
+            const appData = makePendingData();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: bytes.length });
+            syncFsMocks.exists.mockResolvedValue(false);
+            syncFsMocks.publishAttachmentGeneration.mockRejectedValueOnce(
+                new Error('injected atomic publication failure'),
+            );
+
+            const result = await syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            );
+
+            const scratchPath = vi.mocked(fsMocks.open).mock.calls.find(
+                ([, options]) => options?.write === true,
+            )?.[0] as string;
+            const generationPath = `/candidate-sync/attachments/attachment-1.${BYTES_HASH}.txt`;
+            expect(result).toBe(false);
+            expect(scratchPath).toMatch(/\.stride-attachment-generation-.*\.tmp$/);
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(scratchPath);
+            expect(syncFsMocks.abandonAttachmentGeneration).not.toHaveBeenCalled();
+            expect(syncFsMocks.remove).not.toHaveBeenCalledWith(generationPath);
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                pendingContentUpload: true,
+            });
+        });
+
+        it('retries successfully after an oversized File Sync source shrinks below the cap', async () => {
+            const appData = makePendingData();
+            fsMocks.exists.mockResolvedValue(true);
+            syncFsMocks.exists.mockResolvedValue(false);
+            fsMocks.stat.mockResolvedValueOnce({ mtime: new Date(1000), size: MAX_DOWNLOAD_BYTES });
+
+            await expect(syncFileAttachments(
+                appData,
+                '/candidate-sync',
+                depsFor(),
+                postMergeHelpers(),
+            )).rejects.toMatchObject({ name: 'AttachmentUploadTooLargeError' });
+
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(2000), size: bytes.length });
+            fsMocks.readFile.mockResolvedValue(bytes);
+
+            await coreMocks.computeSha256Hex.withImplementation(
+                async () => BYTES_HASH,
+                async () => {
+                    const result = expectFoldedData(await syncFileAttachments(
+                        appData,
+                        '/candidate-sync',
+                        depsFor(),
+                        postMergeHelpers(),
+                    ));
+
+                    expect(syncFsMocks.reserveAttachmentGeneration).toHaveBeenCalledWith(
+                        '',
+                        `/candidate-sync/attachments/attachment-1.${BYTES_HASH}.txt`,
+                        bytes.length,
+                        BYTES_HASH,
+                    );
+                    expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledWith('', 'operation-1');
+                    expect(result.tasks[0].attachments?.[0]).toMatchObject({
+                        cloudKey: `attachments/attachment-1.${BYTES_HASH}.txt`,
+                        pendingContentUpload: undefined,
+                        localStatus: 'available',
+                    });
+                },
+            );
+        });
+
+        it('defers a missing pending Cloud candidate without touching its remote generation', async () => {
+            const appData = makePendingData();
+            appData.tasks[0].attachments![0].localStatus = 'available';
+            const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+            fsMocks.exists.mockResolvedValue(false);
+
+            const result = await syncCloudAttachments(
+                appData,
+                { url: 'https://cloud.example/v1/data', token: 'token' },
+                'https://cloud.example/v1',
+                depsFor(fetcher),
+                postMergeHelpers(),
+            );
+
+            expect(result).toBe(false);
+            expect(fetcher).not.toHaveBeenCalled();
+            expect(fsMocks.writeFile).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'attachments/attachment-1.txt',
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                localStatus: 'available',
+                pendingContentUpload: true,
+            });
+        });
+
+        it('defers a missing pending CloudKit candidate without fetching or saving an asset', async () => {
+            const appData = makePendingData();
+            Object.assign(appData.tasks[0].attachments![0], {
+                cloudKey: 'cloudkit:attachment-1',
+                localStatus: 'available',
+            });
+            fsMocks.exists.mockResolvedValue(false);
+
+            const result = await syncCloudKitAttachments(appData, depsFor(), postMergeHelpers());
+
+            expect(result).toBe(false);
+            expect(cloudKitMocks.fetchCloudKitAttachmentAsset).not.toHaveBeenCalled();
+            expect(cloudKitMocks.saveCloudKitAttachmentAsset).not.toHaveBeenCalled();
+            expect(fsMocks.writeFile).not.toHaveBeenCalled();
+            expect(appData.tasks[0].attachments?.[0]).toMatchObject({
+                cloudKey: 'cloudkit:attachment-1',
+                fileHash: BYTES_HASH,
+                contentRev: 7,
+                localStatus: 'available',
+                pendingContentUpload: true,
+            });
+        });
+
+        it('leaves an unchanged attachment alone: no PUT, no mutation, on a normal sync with check-on-touch active', async () => {
+            const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+            const appData = createCandidateAttachmentData();
+            appData.tasks[0].attachments![0].fileHash = BYTES_HASH;
+            appData.tasks[0].attachments![0].contentMtimeMs = 1000;
+            appData.tasks[0].attachments![0].contentSize = 3;
+            const deps: AttachmentBackendDeps = {
+                getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                isTauriRuntimeEnv: () => true,
+                logSyncInfo: vi.fn(),
+                logSyncWarning: vi.fn(),
+                resolveWebdavPassword: vi.fn(async () => 'secret'),
+            };
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: 3 });
+            coreMocks.webdavFileExists.mockResolvedValue(true);
+
+            const result = await syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                deps,
+                prepareHelpers(),
+            );
+
+            const putCalls = fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT');
+            expect(putCalls).toHaveLength(0);
+            expect(result).toBeNull();
+        });
+
+        it('records changed local content without overwriting the cloud key during prepare', async () => {
+            const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+                new Response(null, { status: 200 }),
+            );
+            const appData = createCandidateAttachmentData();
+            const attachment = appData.tasks[0].attachments![0];
+            attachment.fileHash = 'stale-hash-from-a-previous-version';
+            attachment.contentRev = 2;
+            attachment.contentMtimeMs = 1000;
+            attachment.contentSize = 3;
+            const deps: AttachmentBackendDeps = {
+                getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                isTauriRuntimeEnv: () => true,
+                logSyncInfo: vi.fn(),
+                logSyncWarning: vi.fn(),
+                resolveWebdavPassword: vi.fn(async () => 'secret'),
+            };
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(9_999), size: 3 });
+            coreMocks.webdavFileExists.mockResolvedValue(true);
+
+            const result = await syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                deps,
+                prepareHelpers(),
+            );
+
+            expect(fetcher.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false);
+            const merged = result?.tasks[0].attachments?.[0];
+            expect(merged?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(merged?.contentRev).toBe(3);
+            expect(merged?.fileHash).toBe(BYTES_HASH);
+            expect(merged?.contentMtimeMs).toBe(9_999);
+            expect(merged?.contentSize).toBe(3);
+            expect(merged?.pendingContentUpload).toBe(true);
+        });
+    });
+
+    it('uploads local attachments to CloudKit and flushes CloudKit pending deletes', async () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const logSyncWarning = vi.fn();
+        const appData: AppData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    attachments: [
+                        {
+                            id: 'attachment-1',
+                            kind: 'file',
+                            title: 'photo.jpg',
+                            uri: '/app-data/stride/attachments/photo.jpg',
+                            localStatus: 'available',
+                            createdAt: '2026-06-07T00:00:00.000Z',
+                            updatedAt: '2026-06-07T00:00:00.000Z',
+                        },
+                    ],
+                    createdAt: '2026-06-07T00:00:00.000Z',
+                    updatedAt: '2026-06-07T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                attachments: {
+                    pendingRemoteDeletes: [
+                        { cloudKey: 'cloudkit:old-attachment' },
+                        { cloudKey: 'attachments/legacy-file.jpg' },
+                    ],
+                },
+            },
+        };
+        const deps: AttachmentBackendDeps = {
+            getTauriFetch: vi.fn(),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning,
+            resolveWebdavPassword: vi.fn(),
+        };
+
+        pathMocks.dataDir.mockResolvedValue('/app-data');
+        pathMocks.join.mockImplementation(async (...parts: string[]) => parts.join('/'));
+        fsMocks.mkdir.mockResolvedValue(undefined);
+        fsMocks.exists.mockResolvedValue(true);
+        fsMocks.readFile.mockResolvedValue(bytes);
+        cloudKitMocks.deleteCloudKitAttachmentAssets.mockResolvedValue(undefined);
+        cloudKitMocks.saveCloudKitAttachmentAsset.mockResolvedValue({
+            recordName: 'attachment-1',
+            attachmentId: 'attachment-1',
+            ownerType: 'task',
+            ownerId: 'task-1',
+            title: 'photo.jpg',
+            size: 3,
+            updatedAt: '2026-06-07T00:00:00.000Z',
+        });
+
+        const result = expectFoldedData(await syncCloudKitAttachments(appData, deps));
+
+        const attachment = result.tasks[0].attachments?.[0];
+        expect(cloudKitMocks.deleteCloudKitAttachmentAssets).toHaveBeenCalledWith(['old-attachment']);
+        expect(cloudKitMocks.saveCloudKitAttachmentAsset).toHaveBeenCalledWith(
+            'attachment-1',
+            expect.stringMatching(/^\/app-data\/stride\/attachments\/\.upload-attachment-1-/),
+            expect.objectContaining({
+                attachmentId: 'attachment-1',
+                fileHash: '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+                ownerType: 'task',
+                ownerId: 'task-1',
+                title: 'photo.jpg',
+                size: 3,
+            }),
+        );
+        expect(fsMocks.remove).toHaveBeenCalledWith(
+            expect.stringMatching(/^\/app-data\/stride\/attachments\/\.upload-attachment-1-/),
+        );
+        expect(attachment?.cloudKey).toBe('cloudkit:attachment-1');
+        expect(attachment?.localStatus).toBe('available');
+        expect(attachment?.size).toBe(3);
+        expect(result.settings.attachments?.pendingRemoteDeletes).toEqual([
+            { cloudKey: 'attachments/legacy-file.jpg' },
+        ]);
+
+        expect(appData.settings.attachments?.pendingRemoteDeletes).toHaveLength(2);
+        expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        expect(logSyncWarning).not.toHaveBeenCalled();
+    });
+
+
+    describe('backend purity (frozen input document)', () => {
+        const bytes = new Uint8Array([1, 2, 3]);
+
+        const frozenDeps = (): AttachmentBackendDeps => ({
+            getTauriFetch: async () => (vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch),
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+        });
+
+
+        const frozenData = (): AppData => {
+            const data = createCandidateAttachmentData();
+            data.tasks[0].attachments![0].cloudKey = undefined;
+            data.settings = { attachments: { pendingRemoteDeletes: [{ cloudKey: 'cloudkit:old-attachment' }] } };
+            return deepFreeze(data);
+        };
+
+        beforeEach(() => {
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(bytes);
+            fsMocks.stat.mockResolvedValue({ mtime: new Date(1000), size: 3 });
+            syncFsMocks.exists.mockResolvedValue(false);
+            coreMocks.webdavFileExists.mockResolvedValue(false);
+            cloudKitMocks.deleteCloudKitAttachmentAssets.mockResolvedValue(undefined);
+            cloudKitMocks.saveCloudKitAttachmentAsset.mockResolvedValue({
+                recordName: 'attachment-1',
+                attachmentId: 'attachment-1',
+                ownerType: 'task',
+                ownerId: 'task-1',
+                title: 'candidate-proof.txt',
+                size: 3,
+                updatedAt: '2026-08-03T00:00:00.000Z',
+            });
+            dropboxMocks.uploadDropboxFile.mockResolvedValue(undefined);
+        });
+
+        const postMergeHelpers = () => ({
+            activationProbe: false,
+            ensureLocalSnapshotFresh: vi.fn(),
+            phase: 'post-merge' as const,
+        });
+
+        it('webdav', async () => {
+            const appData = frozenData();
+            const result = await syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                frozenDeps(),
+                postMergeHelpers(),
+            );
+            expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('cloud', async () => {
+            const appData = frozenData();
+            const result = await syncCloudAttachments(
+                appData,
+                { url: 'https://cloud.example/v1/data', token: 'token' },
+                'https://cloud.example/v1',
+                frozenDeps(),
+                postMergeHelpers(),
+            );
+            expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('dropbox', async () => {
+            const appData = frozenData();
+            const result = await syncDropboxAttachments(
+                appData,
+                async () => 'dropbox-token',
+                frozenDeps(),
+                postMergeHelpers(),
+            );
+            expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('file', async () => {
+            const appData = frozenData();
+            const result = await syncFileAttachments(appData, '/candidate-sync', frozenDeps(), postMergeHelpers());
+            expect(expectFoldedData(result).tasks[0].attachments?.[0]?.cloudKey)
+                .toBe(`attachments/attachment-1.${DOWNLOAD_BYTES_HASH}.txt`);
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+        });
+
+        it('cloudkit, including the pending-remote-delete flush', async () => {
+            const appData = frozenData();
+            const result = expectFoldedData(await syncCloudKitAttachments(appData, frozenDeps(), postMergeHelpers()));
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe('cloudkit:attachment-1');
+            expect(result.settings.attachments?.pendingRemoteDeletes).toEqual([]);
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBeUndefined();
+            expect(appData.settings.attachments?.pendingRemoteDeletes).toHaveLength(1);
+        });
+    });
+
+
+    describe('idle-cycle attachment traffic (#1119 follow-up)', () => {
+        const SCOPE = JSON.stringify(['webdav', 'https://dav.example/stride', 'alice']);
+        const OTHER_SCOPE = JSON.stringify(['webdav', 'https://other.example/stride', 'alice']);
+
+        const settledData = (): AppData => {
+            const appData = createCandidateAttachmentData();
+            Object.assign(appData.tasks[0].attachments![0], {
+                contentMtimeMs: 1000,
+                contentSize: 3,
+            });
+            return appData;
+        };
+
+        const webdavDeps = (presenceScope: string | null): AttachmentBackendDeps => ({
+            getTauriFetch: async () => (vi.fn(async () => new Response(null, { status: 200 }))) as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+            presenceScope,
+        });
+
+        const runWebdav = (appData: AppData, deps: AttachmentBackendDeps, helpers?: Parameters<typeof syncWebdavAttachments>[4]) =>
+            syncWebdavAttachments(
+                appData,
+                { url: 'https://dav.example/stride', username: 'alice' },
+                'https://dav.example/stride',
+                deps,
+                helpers,
+            );
+
+        beforeEach(() => {
+            clearAttachmentPresenceStamp();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+            coreMocks.webdavFileExists.mockResolvedValue(true);
+        });
+
+        afterEach(() => {
+            clearAttachmentPresenceStamp();
+        });
+
+        it('(a) issues no MKCOL and no HEAD for settled attachments inside the interval', async () => {
+            markAttachmentPresenceReconciled(SCOPE);
+
+            await runWebdav(settledData(), webdavDeps(SCOPE));
+
+            expect(coreMocks.webdavMakeDirectory).not.toHaveBeenCalled();
+            expect(coreMocks.webdavFileExists).not.toHaveBeenCalled();
+        });
+
+        it('(b) runs the HEAD pass once and re-stamps when the stamp is older than a day', async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-06-12T00:00:00.000Z'));
+            markAttachmentPresenceReconciled(SCOPE);
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(false);
+
+            vi.setSystemTime(new Date('2026-06-13T01:00:00.000Z'));
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(true);
+
+            await runWebdav(settledData(), webdavDeps(SCOPE));
+
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(false);
+            await runWebdav(settledData(), webdavDeps(SCOPE));
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([
+            ['HEAD 500', () => Object.assign(new Error('WebDAV HEAD failed (500)'), { status: 500 })],
+            ['HEAD 401', () => Object.assign(new Error('WebDAV HEAD failed (401)'), { status: 401 })],
+            ['network failure', () => new Error('network unavailable')],
+        ] as const)('(b2) retries the presence proof next cycle after %s', async (_label, makeError) => {
+            coreMocks.webdavFileExists
+                .mockRejectedValueOnce(makeError())
+                .mockResolvedValueOnce(true);
+            const appData = settledData();
+            const deps = webdavDeps(SCOPE);
+
+            const first = await runWebdav(appData, deps);
+
+            expect(first).toBeNull();
+            expect(appData.tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(coreMocks.webdavMakeDirectory).not.toHaveBeenCalled();
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(true);
+            expect(deps.logSyncInfo).toHaveBeenCalledWith(
+                'WebDAV attachment presence proof finished',
+                {
+                    releaseCheck: 'v1.3.0/webdav-presence-proof',
+                    checked: '1',
+                    cleared: '0',
+                    complete: 'false',
+                },
+            );
+
+            await runWebdav(appData, deps);
+
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(2);
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(false);
+        });
+
+        it('(b3) re-uploads an earlier missing blob but does not stamp after a later unknown', async () => {
+            const appData = settledData();
+            const first = appData.tasks[0].attachments![0];
+            appData.tasks.push({
+                ...appData.tasks[0],
+                id: 'task-2',
+                attachments: [{
+                    ...first,
+                    id: 'attachment-2',
+                    title: 'second.txt',
+                    uri: '/app-data/stride/attachments/second.txt',
+                    cloudKey: 'attachments/attachment-2.txt',
+                }],
+            });
+            const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => (
+                new Response(null, { status: 200 })
+            ));
+            const deps = {
+                ...webdavDeps(SCOPE),
+                getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            };
+            coreMocks.webdavFileExists
+                .mockResolvedValueOnce(false)
+                .mockRejectedValueOnce(new Error('network unavailable'));
+
+            const result = expectFoldedData(await runWebdav(appData, deps));
+
+            expect(result.tasks[0].attachments?.[0]?.cloudKey).toBe('attachments/attachment-1.txt');
+            expect(result.tasks[1].attachments?.[0]?.cloudKey).toBe('attachments/attachment-2.txt');
+            expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT')).toHaveLength(1);
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(true);
+            expect(deps.logSyncInfo).toHaveBeenCalledWith(
+                'WebDAV attachment presence proof finished',
+                expect.objectContaining({ checked: '2', cleared: '1', complete: 'false' }),
+            );
+        });
+
+        it.each([429, 503])(
+            '(b4) keeps the proof unstamped and stops later transfers after a HEAD %s',
+            async (status) => {
+                const appData = settledData();
+                const first = appData.tasks[0].attachments![0];
+                appData.tasks.push({
+                    ...appData.tasks[0],
+                    id: 'task-upload',
+                    attachments: [{
+                        ...first,
+                        id: 'attachment-upload',
+                        title: 'upload.txt',
+                        uri: '/app-data/stride/attachments/upload.txt',
+                        cloudKey: undefined,
+                    }],
+                });
+                const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => (
+                    new Response(null, { status: 200 })
+                ));
+                const deps = {
+                    ...webdavDeps(SCOPE),
+                    getTauriFetch: async () => fetcher as unknown as typeof fetch,
+                };
+                coreMocks.webdavFileExists.mockRejectedValueOnce(
+                    Object.assign(new Error(`WebDAV HEAD failed (${status})`), { status }),
+                );
+
+                await runWebdav(appData, deps);
+
+                expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit)?.method === 'PUT')).toHaveLength(0);
+                expect(coreMocks.webdavMakeDirectory).not.toHaveBeenCalled();
+                expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(true);
+                expect(deps.logSyncInfo).toHaveBeenCalledWith(
+                    'WebDAV attachment presence proof finished',
+                    expect.objectContaining({ checked: '1', cleared: '0', complete: 'false' }),
+                );
+
+                await expect(runWebdav(appData, deps)).resolves.toBeNull();
+                expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+            },
+        );
+
+        it('(b5) makes no remote request when a due proof has no candidates', async () => {
+            const deps = webdavDeps(SCOPE);
+            const appData: AppData = {
+                tasks: [], projects: [], sections: [], areas: [], settings: {},
+            };
+
+            await expect(runWebdav(appData, deps)).resolves.toBeNull();
+
+            expect(coreMocks.webdavFileExists).not.toHaveBeenCalled();
+            expect(coreMocks.webdavMakeDirectory).not.toHaveBeenCalled();
+            expect(deps.logSyncInfo).toHaveBeenCalledWith(
+                'WebDAV attachment presence proof finished',
+                expect.objectContaining({ checked: '0', cleared: '0', complete: 'true' }),
+            );
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(false);
+        });
+
+        it('(d) forces the HEAD pass when the stamp belongs to a different sync location', async () => {
+            markAttachmentPresenceReconciled(OTHER_SCOPE);
+
+            await runWebdav(settledData(), webdavDeps(SCOPE));
+
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+        });
+
+        it('(e) MKCOLs only when something is actually uploaded', async () => {
+            markAttachmentPresenceReconciled(SCOPE);
+
+            await runWebdav(settledData(), webdavDeps(SCOPE));
+            expect(coreMocks.webdavMakeDirectory).not.toHaveBeenCalled();
+
+            const uploadable = settledData();
+            uploadable.tasks[0].attachments![0].cloudKey = undefined;
+            await runWebdav(uploadable, webdavDeps(SCOPE));
+            expect(coreMocks.webdavMakeDirectory).toHaveBeenCalledTimes(1);
+        });
+
+        it('(f) an activation probe reconciles even when a fresh stamp says it is not due', async () => {
+            markAttachmentPresenceReconciled(SCOPE);
+            expect(isAttachmentPresenceReconciliationDue(SCOPE)).toBe(false);
+
+            await runWebdav(settledData(), webdavDeps(SCOPE), activationHelpers());
+
+
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+        });
+
+        it('(f2) an activation probe never writes the stamp', async () => {
+            await runWebdav(settledData(), webdavDeps(SCOPE), activationHelpers());
+
+            expect(coreMocks.webdavFileExists).toHaveBeenCalledTimes(1);
+
+            expect(hasCompletedAttachmentPresenceReconciliation(SCOPE)).toBe(false);
+        });
+
+        it('(g) skips the file backend sync-folder presence probe inside the interval', async () => {
+            const fileScope = JSON.stringify(['file', '/candidate-sync']);
+            markAttachmentPresenceReconciled(fileScope);
+            syncFsMocks.exists.mockResolvedValue(true);
+            const deps = { ...webdavDeps(fileScope) };
+
+            await syncFileAttachments(settledData(), '/candidate-sync', deps);
+
+            expect(syncFsMocks.exists).not.toHaveBeenCalledWith(
+                expect.stringContaining('/candidate-sync/attachments/attachment-1'),
+            );
+            expect(hasCompletedAttachmentPresenceReconciliation(fileScope)).toBe(true);
+        });
+
+        it('(h) stamps for cloudkit, which has no presence pass to gate', async () => {
+            const scope = JSON.stringify(['cloudkit']);
+
+            await syncCloudKitAttachments(settledData(), webdavDeps(scope));
+
+            expect(hasCompletedAttachmentPresenceReconciliation(scope)).toBe(true);
+        });
+    });
+
+
+    describe('remote attachment presence repair (#1119 follow-up)', () => {
+        const CLOUD_SCOPE = JSON.stringify(['cloud', 'selfhosted', 'https://cloud.example']);
+        const DROPBOX_SCOPE = JSON.stringify(['cloud', 'dropbox']);
+        const FILE_SCOPE = JSON.stringify(['file', '/candidate-sync']);
+
+
+        const uploadedData = (): AppData => {
+            const appData = createCandidateAttachmentData();
+            Object.assign(appData.tasks[0].attachments![0], { contentMtimeMs: 1000, contentSize: 3 });
+            return appData;
+        };
+
+        const cloudKeyOf = (appData: AppData): string | undefined =>
+            appData.tasks[0].attachments![0].cloudKey;
+
+        const depsWith = (
+            presenceScope: string,
+            fetcher: ReturnType<typeof vi.fn>,
+        ): AttachmentBackendDeps => ({
+            getTauriFetch: async () => fetcher as unknown as typeof fetch,
+            isTauriRuntimeEnv: () => true,
+            logSyncInfo: vi.fn(),
+            logSyncWarning: vi.fn(),
+            resolveWebdavPassword: vi.fn(async () => 'secret'),
+            presenceScope,
+        });
+
+
+        const cloudFetcher = (presence: Response) => vi.fn(async (_url: string, init?: RequestInit) => (
+            init?.method === 'HEAD' ? presence : new Response(null, { status: 200 })
+        ));
+        const methodsOf = (fetcher: ReturnType<typeof vi.fn>): string[] =>
+            fetcher.mock.calls.map(([, init]) => (init as RequestInit | undefined)?.method ?? 'GET');
+
+        const runFile = (appData: AppData, deps: AttachmentBackendDeps) =>
+            syncFileAttachments(appData, '/candidate-sync', deps);
+
+        const runCloud = (appData: AppData, deps: AttachmentBackendDeps) => syncCloudAttachments(
+            appData,
+            { url: 'https://cloud.example/v1/data', token: 't' },
+            'https://cloud.example/v1',
+            deps,
+        );
+
+        beforeEach(() => {
+            clearAttachmentPresenceStamp();
+            fsMocks.exists.mockResolvedValue(true);
+            fsMocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+        });
+
+        afterEach(() => {
+            clearAttachmentPresenceStamp();
+        });
+
+        it('cloud: a 404 clears the cloud reference and the same pass re-uploads the bytes', async () => {
+            const fetcher = cloudFetcher(new Response(null, { status: 404 }));
+            const appData = uploadedData();
+
+            const result = expectFoldedData(await runCloud(appData, depsWith(CLOUD_SCOPE, fetcher)));
+
+
+            expect(cloudKeyOf(result)).toBe('attachments/attachment-1.txt');
+            expect(methodsOf(fetcher)).toEqual(['HEAD', 'PUT']);
+        });
+
+        it('cloud: an error leaves the cloud reference alone and uploads nothing', async () => {
+            const fetcher = cloudFetcher(new Response(null, { status: 500 }));
+            const appData = uploadedData();
+
+            const result = await runCloud(appData, depsWith(CLOUD_SCOPE, fetcher));
+
+            const folded = typeof result === 'object' && result !== null ? result : appData;
+            expect(cloudKeyOf(folded)).toBe('attachments/attachment-1.txt');
+            expect(methodsOf(fetcher)).toEqual(['HEAD']);
+
+            expect(hasCompletedAttachmentPresenceReconciliation(CLOUD_SCOPE)).toBe(false);
+        });
+
+        it('cloud: a present blob is neither downloaded nor re-uploaded, and the pass stamps', async () => {
+            const fetcher = cloudFetcher(new Response(null, {
+                status: 200,
+                headers: { 'content-length': '3' },
+            }));
+
+            await runCloud(uploadedData(), depsWith(CLOUD_SCOPE, fetcher));
+
+            expect(methodsOf(fetcher)).toEqual(['HEAD']);
+            expect(hasCompletedAttachmentPresenceReconciliation(CLOUD_SCOPE)).toBe(true);
+        });
+
+        it('cloud: falls back to a bodiless GET against a server with no HEAD route', async () => {
+
+
+            const fetcher = vi.fn(async (_url: string, init?: RequestInit) => (
+                init?.method === 'HEAD'
+                    ? new Response(null, { status: 405 })
+                    : new Response(new Uint8Array([1, 2, 3]).buffer, {
+                        status: 200,
+                        headers: { 'content-length': '3' },
+                    })
+            ));
+
+            await runCloud(uploadedData(), depsWith(CLOUD_SCOPE, fetcher));
+
+            expect(methodsOf(fetcher)).toEqual(['HEAD', 'GET']);
+            expect(hasCompletedAttachmentPresenceReconciliation(CLOUD_SCOPE)).toBe(true);
+        });
+
+        it('cloud: skips the whole probe inside the daily interval', async () => {
+            markAttachmentPresenceReconciled(CLOUD_SCOPE);
+            const fetcher = cloudFetcher(new Response(null, { status: 404 }));
+
+            await runCloud(uploadedData(), depsWith(CLOUD_SCOPE, fetcher));
+
+            expect(fetcher).not.toHaveBeenCalled();
+        });
+
+        it('dropbox: a blob missing from the folder listing is cleared and re-uploaded', async () => {
+            dropboxMocks.listDropboxFolderFiles.mockResolvedValue([
+                { name: 'someone-elses.txt', pathLower: '/attachments/someone-elses.txt' },
+            ]);
+            dropboxMocks.uploadDropboxFile.mockResolvedValue(undefined);
+            const deps = depsWith(DROPBOX_SCOPE, vi.fn());
+
+            const result = expectFoldedData(
+                await syncDropboxAttachments(uploadedData(), async () => 'dropbox-token', deps),
+            );
+
+            expect(dropboxMocks.listDropboxFolderFiles).toHaveBeenCalledTimes(1);
+            expect(dropboxMocks.listDropboxFolderFiles).toHaveBeenCalledWith(
+                'dropbox-token',
+                '/attachments',
+                expect.anything(),
+                expect.anything(),
+            );
+            expect(dropboxMocks.uploadDropboxFile).toHaveBeenCalledTimes(1);
+            expect(cloudKeyOf(result)).toBe('attachments/attachment-1.txt');
+        });
+
+        it('dropbox: a listing that fails changes nothing and does not stamp', async () => {
+            dropboxMocks.listDropboxFolderFiles.mockRejectedValue(new Error('network down'));
+            const deps = depsWith(DROPBOX_SCOPE, vi.fn());
+            const appData = uploadedData();
+
+            const result = await syncDropboxAttachments(appData, async () => 'dropbox-token', deps);
+
+            const folded = typeof result === 'object' && result !== null ? result : appData;
+            expect(cloudKeyOf(folded)).toBe('attachments/attachment-1.txt');
+            expect(dropboxMocks.uploadDropboxFile).not.toHaveBeenCalled();
+            expect(hasCompletedAttachmentPresenceReconciliation(DROPBOX_SCOPE)).toBe(false);
+        });
+
+        it('dropbox: a listed blob is left alone and the pass stamps', async () => {
+            const deps = depsWith(DROPBOX_SCOPE, vi.fn());
+
+            await syncDropboxAttachments(uploadedData(), async () => 'dropbox-token', deps);
+
+            expect(dropboxMocks.uploadDropboxFile).not.toHaveBeenCalled();
+            expect(hasCompletedAttachmentPresenceReconciliation(DROPBOX_SCOPE)).toBe(true);
+        });
+
+        it('dropbox: issues no listing at all inside the daily interval', async () => {
+            markAttachmentPresenceReconciled(DROPBOX_SCOPE);
+
+            await syncDropboxAttachments(uploadedData(), async () => 'dropbox-token', depsWith(DROPBOX_SCOPE, vi.fn()));
+
+            expect(dropboxMocks.listDropboxFolderFiles).not.toHaveBeenCalled();
+        });
+
+        it('dropbox: an activation probe proves the candidate folder without stamping', async () => {
+            markAttachmentPresenceReconciled(DROPBOX_SCOPE);
+            clearAttachmentPresenceStamp();
+            const deps = depsWith(DROPBOX_SCOPE, vi.fn());
+
+            await syncDropboxAttachments(
+                uploadedData(),
+                async () => 'dropbox-token',
+                deps,
+                activationHelpers(),
+            );
+
+            expect(dropboxMocks.listDropboxFolderFiles).toHaveBeenCalledTimes(1);
+            expect(hasCompletedAttachmentPresenceReconciliation(DROPBOX_SCOPE)).toBe(false);
+        });
+
+        it('file: a sync-folder probe that throws leaves every cloud reference alone and does not stamp', async () => {
+            const deps = depsWith(FILE_SCOPE, vi.fn());
+            const appData = uploadedData();
+            syncFsMocks.exists.mockRejectedValue(new Error('sync mount unavailable'));
+
+            const result = await runFile(appData, deps);
+
+            const folded = typeof result === 'object' && result !== null ? result : appData;
+            expect(cloudKeyOf(folded)).toBe('attachments/attachment-1.txt');
+            expect(syncFsMocks.reserveAttachmentGeneration).not.toHaveBeenCalled();
+            expect(hasCompletedAttachmentPresenceReconciliation(FILE_SCOPE)).toBe(false);
+        });
+
+        it('file: a file missing from the sync folder is cleared, re-uploaded, and stamps', async () => {
+            const deps = depsWith(FILE_SCOPE, vi.fn());
+            syncFsMocks.exists.mockResolvedValue(false);
+
+            const result = expectFoldedData(await runFile(uploadedData(), deps));
+
+            expect(syncFsMocks.publishAttachmentGeneration).toHaveBeenCalledTimes(1);
+            expect(cloudKeyOf(result)).toBe(`attachments/attachment-1.${DOWNLOAD_BYTES_HASH}.txt`);
+            expect(hasCompletedAttachmentPresenceReconciliation(FILE_SCOPE)).toBe(true);
+        });
+
+        it('file: clears a proven-missing file but does not stamp after a later unknown', async () => {
+            const appData = uploadedData();
+            appData.tasks.push({
+                ...appData.tasks[0],
+                id: 'task-2',
+                attachments: [{
+                    ...appData.tasks[0].attachments![0],
+                    id: 'attachment-2',
+                    title: 'second.txt',
+                    uri: '/app-data/stride/attachments/second.txt',
+                    cloudKey: 'attachments/attachment-2.txt',
+                }],
+            });
+            const deps = depsWith(FILE_SCOPE, vi.fn());
+            syncFsMocks.exists.mockImplementation(async (path: string) => {
+                if (path === '/candidate-sync/attachments/attachment-2.txt') {
+                    throw new Error('sync mount unavailable');
+                }
+                return false;
+            });
+
+            const result = expectFoldedData(await runFile(appData, deps));
+
+            expect(cloudKeyOf(result)).toBe(`attachments/attachment-1.${DOWNLOAD_BYTES_HASH}.txt`);
+            expect(result.tasks[1].attachments?.[0]?.cloudKey).toBe('attachments/attachment-2.txt');
+            expect(hasCompletedAttachmentPresenceReconciliation(FILE_SCOPE)).toBe(false);
+        });
+
+        it('never clears a cloud reference for an attachment whose bytes are not readable here', async () => {
+            dropboxMocks.listDropboxFolderFiles.mockResolvedValue([]);
+            fsMocks.exists.mockResolvedValue(false);
+            const appData = uploadedData();
+
+            const result = await syncDropboxAttachments(
+                appData,
+                async () => 'dropbox-token',
+                depsWith(DROPBOX_SCOPE, vi.fn()),
+            );
+
+            const folded = typeof result === 'object' && result !== null ? result : appData;
+
+            expect(cloudKeyOf(folded)).toBe('attachments/attachment-1.txt');
+        });
+    });
+});

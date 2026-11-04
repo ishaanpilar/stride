@@ -1,0 +1,15 @@
+<en-US>
+- Quick-add now supports Areas, and you can choose Sunday/Monday as the week start.
+- Sync fixes keep theme, language, and keybinding style consistent across devices.
+- Mobile Whisper capture is more stable, and iOS back button titles are hidden.
+</en-US>
+<zh-CN>
+- 快速添加支持 Area（领域），并可选择周起始日（周日/周一）。
+- 同步修复让主题、语言与键位风格在设备间保持一致。
+- 移动端 Whisper 采集更稳定，iOS 返回按钮标题已隐藏。
+</zh-CN>
+<es-ES>
+- Quick-add ahora admite Areas y puedes elegir el inicio de semana (domingo/lunes).
+- Las correcciones de sincronización mantienen tema, idioma y estilo de teclas consistentes.
+- La captura de Whisper en móvil es más estable y se oculta el título del botón atrás en iOS.
+</es-ES>

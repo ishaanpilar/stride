@@ -1,0 +1,8 @@
+{
+  "platforms": ["ios"],
+  "ios": {
+    "podspecPath": "ios/StrideSystemDateFormat.podspec",
+    "swiftModuleName": "StrideSystemDateFormat",
+    "modules": ["StrideSystemDateFormatModule"]
+  }
+}

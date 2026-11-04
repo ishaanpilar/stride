@@ -1,0 +1,34 @@
+import { deterministicHash128Hex, isAllowedInsecureUrl, normalizeCloudUrl, normalizeWebdavUrl } from '@stride/core';
+import { getWorkspaceCache } from './workspace-cache';
+
+
+export function getCleartextSyncDestination(backend: 'webdav' | 'cloud', rawUrl: string): string | null {
+    try {
+        const url = new URL(rawUrl.trim());
+        if (url.protocol !== 'http:' || isAllowedInsecureUrl(url.href)) return null;
+        url.username = '';
+        url.password = '';
+        url.hash = '';
+        const endpoint = backend === 'webdav' ? normalizeWebdavUrl(url.href) : normalizeCloudUrl(url.href);
+
+        return `stride:cleartextSyncDismissed:${backend}:${deterministicHash128Hex(endpoint)}`;
+    } catch {
+        return null;
+    }
+}
+
+export function isCleartextSyncDismissed(destination: string): boolean {
+    try {
+        return getWorkspaceCache()?.getItem(destination) === 'true';
+    } catch {
+        return false;
+    }
+}
+
+export function dismissCleartextSyncWarning(destination: string): void {
+    try {
+        getWorkspaceCache()?.setItem(destination, 'true');
+    } catch {
+
+    }
+}

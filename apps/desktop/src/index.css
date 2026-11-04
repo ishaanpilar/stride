@@ -1,0 +1,1029 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 217 91% 50%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 240 5% 40%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --success: 142 58% 32%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 32%;
+    --warning-foreground: 0 0% 100%;
+    --focus-star: 45 100% 55%;
+    --focus-star-outline: 38 92% 34%;
+    --info: 217 91% 45%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 240 5.9% 85%;
+    --input: 240 5.9% 85%;
+    --ring: 217 91% 50%;
+
+    --status-inbox: 217 91% 45%;
+    --status-next: 142 58% 32%;
+    --status-waiting: 38 92% 32%;
+    --status-someday: 270 70% 55%;
+    --status-reference: 199 80% 30%;
+    --status-done: 220 10% 38%;
+    --status-archived: 217 91% 45%;
+
+    --badge-project-bg: 214 100% 96%;
+    --badge-project-fg: 214 30% 30%;
+    --badge-context-bg: 270 100% 96%;
+    --badge-context-fg: 270 35% 35%;
+    --badge-tag-bg: 0 0% 94%;
+    --badge-tag-fg: 220 10% 30%;
+    --badge-priority-bg: 34 100% 92%;
+    --badge-priority-fg: 30 80% 30%;
+    --badge-estimate-bg: 142 70% 92%;
+    --badge-estimate-fg: 142 40% 30%;
+    --badge-age-bg: 45 100% 94%;
+    --badge-age-fg: 24 45% 35%;
+    --badge-info-bg: 210 40% 96%;
+    --badge-info-fg: 220 10% 30%;
+
+    --radius: 0.5rem;
+    --stride-text-scale: 1;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --background: 220 13% 13%;
+    --foreground: 220 13% 91%;
+
+    --card: 220 13% 16%;
+    --card-foreground: 220 13% 91%;
+
+    --popover: 220 13% 14%;
+    --popover-foreground: 220 13% 91%;
+
+    --primary: 217 91% 65%;
+    --primary-foreground: 220 13% 13%;
+
+    --secondary: 220 13% 20%;
+    --secondary-foreground: 220 13% 88%;
+
+    --muted: 220 13% 22%;
+    --muted-foreground: 220 13% 70%;
+
+    --accent: 220 13% 22%;
+    --accent-foreground: 220 13% 91%;
+
+    --destructive: 0 72% 66%;
+    --destructive-foreground: 0 80% 10%;
+    --success: 142 55% 55%;
+    --success-foreground: 145 80% 10%;
+    --warning: 43 90% 62%;
+    --warning-foreground: 35 80% 12%;
+    --focus-star: 45 96% 65%;
+    --focus-star-outline: 40 90% 45%;
+    --info: 210 90% 65%;
+    --info-foreground: 220 50% 12%;
+
+    --border: 220 13% 30%;
+    --input: 220 13% 30%;
+    --ring: 217 91% 60%;
+
+    --status-inbox: 217 91% 65%;
+    --status-next: 142 60% 50%;
+    --status-waiting: 45 90% 55%;
+    --status-someday: 270 65% 70%;
+    --status-reference: 199 75% 60%;
+    --status-done: 220 10% 60%;
+    --status-archived: 217 91% 65%;
+
+    --badge-project-bg: 220 18% 24%;
+    --badge-project-fg: 210 40% 90%;
+    --badge-context-bg: 270 20% 26%;
+    --badge-context-fg: 270 40% 85%;
+    --badge-tag-bg: 220 13% 24%;
+    --badge-tag-fg: 220 10% 85%;
+    --badge-priority-bg: 30 40% 26%;
+    --badge-priority-fg: 35 85% 80%;
+    --badge-estimate-bg: 140 30% 24%;
+    --badge-estimate-fg: 140 50% 85%;
+    --badge-age-bg: 35 25% 24%;
+    --badge-age-fg: 35 70% 80%;
+    --badge-info-bg: 220 13% 24%;
+    --badge-info-fg: 220 13% 88%;
+  }
+
+  :root.theme-eink {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    --primary: 0 0% 0%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 100%;
+    --secondary-foreground: 0 0% 0%;
+    --muted: 0 0% 100%;
+    --muted-foreground: 0 0% 0%;
+    --accent: 0 0% 100%;
+    --accent-foreground: 0 0% 0%;
+    --destructive: 0 0% 0%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 0 0% 0%;
+    --success-foreground: 0 0% 100%;
+    --warning: 0 0% 0%;
+    --warning-foreground: 0 0% 100%;
+    --focus-star: 0 0% 0%;
+    --focus-star-outline: 0 0% 0%;
+    --info: 0 0% 0%;
+    --info-foreground: 0 0% 100%;
+    --border: 0 0% 0%;
+    --input: 0 0% 0%;
+    --ring: 0 0% 0%;
+    --status-inbox: 0 0% 0%;
+    --status-next: 0 0% 0%;
+    --status-waiting: 0 0% 0%;
+    --status-someday: 0 0% 0%;
+    --status-reference: 0 0% 0%;
+    --status-done: 0 0% 0%;
+    --status-archived: 0 0% 0%;
+    --badge-project-bg: 0 0% 100%;
+    --badge-project-fg: 0 0% 0%;
+    --badge-context-bg: 0 0% 100%;
+    --badge-context-fg: 0 0% 0%;
+    --badge-tag-bg: 0 0% 100%;
+    --badge-tag-fg: 0 0% 0%;
+    --badge-priority-bg: 0 0% 100%;
+    --badge-priority-fg: 0 0% 0%;
+    --badge-estimate-bg: 0 0% 100%;
+    --badge-estimate-fg: 0 0% 0%;
+    --badge-age-bg: 0 0% 100%;
+    --badge-age-fg: 0 0% 0%;
+    --badge-info-bg: 0 0% 100%;
+    --badge-info-fg: 0 0% 0%;
+  }
+
+  :root.theme-eink *, :root.theme-eink *::before, :root.theme-eink *::after {
+    box-shadow: none !important;
+  }
+
+
+  :root.theme-eink [role='option'][aria-selected='true'] {
+    outline: 2px solid hsl(var(--foreground));
+    outline-offset: -2px;
+  }
+
+
+  :root.theme-eink [aria-pressed='true'] {
+    outline: 2px solid hsl(var(--foreground));
+    outline-offset: -2px;
+  }
+
+
+  :root.theme-eink [aria-current='page'] {
+    outline: 2px solid hsl(var(--foreground));
+    outline-offset: -2px;
+  }
+
+  :root.theme-nord {
+    color-scheme: dark;
+    --background: 220 16.4% 21.6%;
+    --foreground: 217.5 26.7% 94.1%;
+    --card: 221.7 16.3% 27.6%;
+    --card-foreground: 217.5 26.7% 94.1%;
+    --popover: 221.7 16.3% 27.6%;
+    --popover-foreground: 217.5 26.7% 94.1%;
+    --primary: 193.3 43.4% 67.5%;
+    --primary-foreground: 220 16.4% 21.6%;
+    --secondary: 220 16.8% 31.6%;
+    --secondary-foreground: 218.8 27.9% 88%;
+    --muted: 220 16.8% 31.6%;
+    --muted-foreground: 218.8 27.9% 88%;
+    --accent: 220 16.5% 35.7%;
+    --accent-foreground: 217.5 26.7% 94.1%;
+    --destructive: 354 50% 78%;
+    --destructive-foreground: 220 16.4% 21.6%;
+    --success: 140 40% 62%;
+    --success-foreground: 220 16.4% 21.6%;
+    --warning: 40 70% 64%;
+    --warning-foreground: 220 16.4% 21.6%;
+    --focus-star: 45 90% 68%;
+    --focus-star-outline: 38 75% 45%;
+    --info: 193.3 43.4% 67.5%;
+    --info-foreground: 220 16.4% 21.6%;
+    --border: 220 16.5% 35.7%;
+    --input: 220 16.5% 35.7%;
+    --ring: 193.3 43.4% 67.5%;
+    --status-inbox: 193.3 43.4% 67.5%;
+    --status-next: 140 40% 62%;
+    --status-waiting: 40 70% 64%;
+    --status-someday: 280 35% 75%;
+    --status-reference: 199 55% 70%;
+    --status-done: 220 10% 70%;
+    --status-archived: 193.3 43.4% 67.5%;
+    --badge-project-bg: 220 16% 31%;
+    --badge-project-fg: 217.5 26.7% 94.1%;
+    --badge-context-bg: 270 20% 30%;
+    --badge-context-fg: 217.5 26.7% 94.1%;
+    --badge-tag-bg: 220 16% 31%;
+    --badge-tag-fg: 217.5 26.7% 94.1%;
+    --badge-priority-bg: 35 35% 35%;
+    --badge-priority-fg: 40 80% 85%;
+    --badge-estimate-bg: 140 30% 30%;
+    --badge-estimate-fg: 140 60% 85%;
+    --badge-age-bg: 40 25% 30%;
+    --badge-age-fg: 40 70% 85%;
+    --badge-info-bg: 220 16% 31%;
+    --badge-info-fg: 217.5 26.7% 94.1%;
+  }
+
+
+  :root.theme-catppuccin-macchiato {
+    color-scheme: dark;
+    --background: 231.8 23.4% 18.4%;
+    --foreground: 227.4 68.3% 87.6%;
+    --card: 230.4 18.8% 26.1%;
+    --card-foreground: 227.4 68.3% 87.6%;
+    --popover: 230.4 18.8% 26.1%;
+    --popover-foreground: 227.4 68.3% 87.6%;
+    --primary: 266.5 82.7% 79.6%;
+    --primary-foreground: 231.8 23.4% 18.4%;
+    --secondary: 231.1 15.6% 33.9%;
+    --secondary-foreground: 228 39.2% 80%;
+    --muted: 231.1 15.6% 33.9%;
+    --muted-foreground: 227.4 26.8% 72.2%;
+    --accent: 229.7 13.7% 41.4%;
+    --accent-foreground: 227.4 68.3% 87.6%;
+    --destructive: 351.2 73.9% 72.9%;
+    --destructive-foreground: 231.8 23.4% 18.4%;
+    --success: 105.2 48.3% 72%;
+    --success-foreground: 231.8 23.4% 18.4%;
+    --warning: 40.3 69.9% 77.8%;
+    --warning-foreground: 231.8 23.4% 18.4%;
+    --focus-star: 40.3 69.9% 77.8%;
+    --focus-star-outline: 21.4 85.5% 72.9%;
+    --info: 220.2 82.8% 74.9%;
+    --info-foreground: 231.8 23.4% 18.4%;
+    --border: 229.7 13.7% 41.4%;
+    --input: 229.7 13.7% 41.4%;
+    --ring: 266.5 82.7% 79.6%;
+    --status-inbox: 220.2 82.8% 74.9%;
+    --status-next: 105.2 48.3% 72%;
+    --status-waiting: 40.3 69.9% 77.8%;
+    --status-someday: 266.5 82.7% 79.6%;
+    --status-reference: 188.8 59.4% 72.9%;
+    --status-done: 228.3 20% 64.7%;
+    --status-archived: 220.2 82.8% 74.9%;
+    --badge-project-bg: 230.4 18.8% 26.1%;
+    --badge-project-fg: 227.4 68.3% 87.6%;
+    --badge-context-bg: 266.5 20% 30%;
+    --badge-context-fg: 227.4 68.3% 87.6%;
+    --badge-tag-bg: 230.4 18.8% 26.1%;
+    --badge-tag-fg: 227.4 68.3% 87.6%;
+    --badge-priority-bg: 21.4 30% 30%;
+    --badge-priority-fg: 21.4 85.5% 72.9%;
+    --badge-estimate-bg: 105.2 25% 28%;
+    --badge-estimate-fg: 105.2 48.3% 72%;
+    --badge-age-bg: 40.3 30% 28%;
+    --badge-age-fg: 40.3 69.9% 77.8%;
+    --badge-info-bg: 230.4 18.8% 26.1%;
+    --badge-info-fg: 227.4 68.3% 87.6%;
+  }
+
+
+  :root.theme-dracula {
+    color-scheme: dark;
+    --background: 231.4 14.9% 18.4%;
+    --foreground: 60 30% 96.1%;
+    --card: 230 14.8% 23.9%;
+    --card-foreground: 60 30% 96.1%;
+    --popover: 230 14.8% 23.9%;
+    --popover-foreground: 60 30% 96.1%;
+    --primary: 264.7 89.5% 77.6%;
+    --primary-foreground: 231.4 14.9% 18.4%;
+    --secondary: 231.4 9.6% 28.6%;
+    --secondary-foreground: 224 22.4% 73.7%;
+    --muted: 231.4 9.6% 28.6%;
+    --muted-foreground: 224 22.4% 73.7%;
+    --accent: 231.8 13.9% 31%;
+    --accent-foreground: 60 30% 96.1%;
+    --destructive: 0 100% 66.7%;
+    --destructive-foreground: 231.4 14.9% 18.4%;
+    --success: 135.2 94.4% 64.7%;
+    --success-foreground: 231.4 14.9% 18.4%;
+    --warning: 31 100% 71.2%;
+    --warning-foreground: 231.4 14.9% 18.4%;
+    --focus-star: 64.9 91.7% 76.5%;
+    --focus-star-outline: 31 100% 71.2%;
+    --info: 190.5 96.6% 76.9%;
+    --info-foreground: 231.4 14.9% 18.4%;
+    --border: 231.8 13.9% 31%;
+    --input: 231.8 13.9% 31%;
+    --ring: 264.7 89.5% 77.6%;
+    --status-inbox: 224 22.4% 73.7%;
+    --status-next: 135.2 94.4% 64.7%;
+    --status-waiting: 31 100% 71.2%;
+    --status-someday: 264.7 89.5% 77.6%;
+    --status-reference: 190.5 96.6% 76.9%;
+    --status-done: 225.5 26.6% 51.4%;
+    --status-archived: 224 22.4% 73.7%;
+    --badge-project-bg: 230 14.8% 23.9%;
+    --badge-project-fg: 60 30% 96.1%;
+    --badge-context-bg: 264.7 22% 30%;
+    --badge-context-fg: 60 30% 96.1%;
+    --badge-tag-bg: 230 14.8% 23.9%;
+    --badge-tag-fg: 60 30% 96.1%;
+    --badge-priority-bg: 31 35% 30%;
+    --badge-priority-fg: 31 100% 71.2%;
+    --badge-estimate-bg: 135.2 30% 26%;
+    --badge-estimate-fg: 135.2 94.4% 64.7%;
+    --badge-age-bg: 64.9 25% 26%;
+    --badge-age-fg: 64.9 91.7% 76.5%;
+    --badge-info-bg: 230 14.8% 23.9%;
+    --badge-info-fg: 60 30% 96.1%;
+  }
+
+
+  :root.theme-gruvbox-light {
+    color-scheme: light;
+    --background: 45.6 67.5% 84.3%;
+    --foreground: 20 5.3% 22.4%;
+    --card: 48.5 86.7% 88.2%;
+    --card-foreground: 20 5.3% 22.4%;
+    --popover: 48.5 86.7% 88.2%;
+    --popover-foreground: 20 5.3% 22.4%;
+    --primary: 189.6 89% 24.9%;
+    --primary-foreground: 48.5 86.7% 88.2%;
+    --secondary: 43.2 58.8% 81%;
+    --secondary-foreground: 21.8 7.4% 29.2%;
+    --muted: 43.2 58.8% 81%;
+    --muted-foreground: 26.7 9.7% 36.5%;
+    --accent: 40.4 38.2% 73.3%;
+    --accent-foreground: 20 5.3% 22.4%;
+    --destructive: 357.7 100% 30.8%;
+    --destructive-foreground: 48.5 86.7% 88.2%;
+    --success: 56.9 78.9% 24.1%;
+    --success-foreground: 48.5 86.7% 88.2%;
+    --warning: 19.2 96.6% 34.6%;
+    --warning-foreground: 48.5 86.7% 88.2%;
+    --focus-star: 39.6 73.4% 48.6%;
+    --focus-star-outline: 36.5 80.1% 39.4%;
+    --info: 189.6 89% 24.9%;
+    --info-foreground: 48.5 86.7% 88.2%;
+    --border: 40.4 38.2% 73.3%;
+    --input: 40.4 38.2% 73.3%;
+    --ring: 189.6 89% 24.9%;
+    --status-inbox: 21.8 7.4% 29.2%;
+    --status-next: 189.6 89% 23.3%;
+    --status-waiting: 19.2 96.6% 34.9%;
+    --status-someday: 322.5 38.8% 40.4%;
+    --status-reference: 143.1 29.9% 34.1%;
+    --status-done: 26.7 9.7% 36.5%;
+    --status-archived: 21.8 7.4% 29.2%;
+    --badge-project-bg: 63.5 35.4% 81.2%;
+    --badge-project-fg: 189.6 89% 24.9%;
+    --badge-context-bg: 38 59% 83.7%;
+    --badge-context-fg: 322.5 38.8% 40.4%;
+    --badge-tag-bg: 43.2 58.8% 81%;
+    --badge-tag-fg: 21.8 7.4% 29.2%;
+    --badge-priority-bg: 39.4 72% 81.8%;
+    --badge-priority-fg: 19.2 96.6% 34.9%;
+    --badge-estimate-bg: 50.5 57.6% 80.6%;
+    --badge-estimate-fg: 56.8 78.3% 23.5%;
+    --badge-age-bg: 44.2 79.2% 81.2%;
+    --badge-age-fg: 21.8 7.4% 29.2%;
+    --badge-info-bg: 43.2 58.8% 81%;
+    --badge-info-fg: 21.8 7.4% 29.2%;
+  }
+
+
+  :root.theme-gruvbox-dark {
+    color-scheme: dark;
+    --background: 0 0% 15.7%;
+    --foreground: 43.2 58.8% 81%;
+    --card: 20 3.1% 19%;
+    --card-foreground: 43.2 58.8% 81%;
+    --popover: 20 3.1% 19%;
+    --popover-foreground: 43.2 58.8% 81%;
+    --primary: 157.1 15.9% 67.2%;
+    --primary-foreground: 0 0% 15.7%;
+    --secondary: 20 5.3% 22.4%;
+    --secondary-foreground: 40.4 38.2% 73.3%;
+    --muted: 20 5.3% 22.4%;
+    --muted-foreground: 38.6 24.1% 65.9%;
+    --accent: 21.8 7.4% 29.2%;
+    --accent-foreground: 43.2 58.8% 81%;
+    --destructive: 6.3 96.1% 59.4%;
+    --destructive-foreground: 195 6.5% 12.2%;
+    --success: 61.2 66.2% 44.1%;
+    --success-foreground: 0 0% 15.7%;
+    --warning: 42 95.3% 58.2%;
+    --warning-foreground: 0 0% 15.7%;
+    --focus-star: 42 95.3% 58.2%;
+    --focus-star-outline: 39.6 73.4% 48.6%;
+    --info: 157.1 15.9% 58%;
+    --info-foreground: 0 0% 15.7%;
+    --border: 21.8 7.4% 29.2%;
+    --input: 21.8 7.4% 29.2%;
+    --ring: 157.1 15.9% 58%;
+    --status-inbox: 35 17.1% 58.8%;
+    --status-next: 157.1 15.9% 67.2%;
+    --status-waiting: 42 95.3% 58.2%;
+    --status-someday: 343.6 46.7% 67.6%;
+    --status-reference: 104.1 35.1% 62%;
+    --status-done: 61.2 66.2% 44.1%;
+    --status-archived: 35 17.1% 58.8%;
+    --badge-project-bg: 135 3% 26.3%;
+    --badge-project-fg: 43.2 58.8% 81%;
+    --badge-context-bg: 348.8 11.3% 27.8%;
+    --badge-context-fg: 43.2 58.8% 81%;
+    --badge-tag-bg: 20 5.3% 22.4%;
+    --badge-tag-fg: 40.4 38.2% 73.3%;
+    --badge-priority-bg: 27.3 22% 19.6%;
+    --badge-priority-fg: 27 99.1% 54.7%;
+    --badge-estimate-bg: 64 15.8% 18.6%;
+    --badge-estimate-fg: 61.2 66.2% 44.1%;
+    --badge-age-bg: 42 19.6% 20%;
+    --badge-age-fg: 42 95.3% 58.2%;
+    --badge-info-bg: 20 5.3% 22.4%;
+    --badge-info-fg: 40.4 38.2% 73.3%;
+  }
+
+
+  :root.theme-oled {
+    color-scheme: dark;
+    --background: 0 0% 0%;
+    --foreground: 220 13% 91%;
+    --card: 0 0% 0%;
+    --card-foreground: 220 13% 91%;
+    --popover: 0 0% 4%;
+    --popover-foreground: 220 13% 91%;
+    --primary: 213 100% 65%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 8%;
+    --secondary-foreground: 220 13% 88%;
+    --muted: 0 0% 10%;
+    --muted-foreground: 218 11% 65%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 220 13% 91%;
+    --destructive: 0 91% 71%;
+    --destructive-foreground: 0 0% 0%;
+    --success: 156 64% 52%;
+    --success-foreground: 0 0% 0%;
+    --warning: 43 96% 56%;
+    --warning-foreground: 0 0% 0%;
+    --focus-star: 45 96% 65%;
+    --focus-star-outline: 40 90% 45%;
+    --info: 213 100% 65%;
+    --info-foreground: 0 0% 0%;
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 213 100% 65%;
+    --status-inbox: 217 91% 65%;
+    --status-next: 142 60% 50%;
+    --status-waiting: 45 90% 55%;
+    --status-someday: 270 65% 70%;
+    --status-reference: 199 75% 60%;
+    --status-done: 220 10% 60%;
+    --status-archived: 217 91% 65%;
+    --badge-project-bg: 220 18% 12%;
+    --badge-project-fg: 210 40% 90%;
+    --badge-context-bg: 270 20% 13%;
+    --badge-context-fg: 270 40% 85%;
+    --badge-tag-bg: 0 0% 10%;
+    --badge-tag-fg: 220 10% 85%;
+    --badge-priority-bg: 30 40% 13%;
+    --badge-priority-fg: 35 85% 80%;
+    --badge-estimate-bg: 140 30% 12%;
+    --badge-estimate-fg: 140 50% 85%;
+    --badge-age-bg: 35 25% 12%;
+    --badge-age-fg: 35 70% 80%;
+    --badge-info-bg: 0 0% 10%;
+    --badge-info-fg: 220 13% 88%;
+  }
+
+  :root.theme-sepia {
+    color-scheme: light;
+    --background: 42.9 56% 90.2%;
+    --foreground: 0 11.3% 20.8%;
+    --card: 41.7 69.7% 93.5%;
+    --card-foreground: 0 11.3% 20.8%;
+    --popover: 41.7 69.7% 93.5%;
+    --popover-foreground: 0 11.3% 20.8%;
+    --primary: 31.9 44.4% 37%;
+    --primary-foreground: 42.9 56% 95%;
+    --secondary: 40.5 57.1% 86.3%;
+    --secondary-foreground: 30 32.6% 36.1%;
+    --muted: 40.5 55.6% 85.9%;
+    --muted-foreground: 30 32.6% 36.1%;
+    --accent: 37.6 54.8% 81.8%;
+    --accent-foreground: 0 11.3% 20.8%;
+    --destructive: 7.9 50.6% 45%;
+    --destructive-foreground: 42.9 56% 95%;
+    --success: 120 30% 35%;
+    --success-foreground: 42.9 56% 95%;
+    --warning: 31.9 44.4% 36%;
+    --warning-foreground: 42.9 56% 95%;
+    --focus-star: 44 95% 52%;
+    --focus-star-outline: 34 85% 32%;
+    --info: 199 60% 35%;
+    --info-foreground: 42.9 56% 95%;
+    --border: 40 43.7% 79.8%;
+    --input: 40 43.7% 79.8%;
+    --ring: 31.9 44.4% 37%;
+    --status-inbox: 31.9 44.4% 37%;
+    --status-next: 120 30% 35%;
+    --status-waiting: 31.9 44.4% 36%;
+    --status-someday: 270 40% 38%;
+    --status-reference: 199 60% 35%;
+    --status-done: 0 11.3% 38%;
+    --status-archived: 31.9 44.4% 37%;
+    --badge-project-bg: 41.7 69.7% 90%;
+    --badge-project-fg: 0 11.3% 20.8%;
+    --badge-context-bg: 37.6 54.8% 85%;
+    --badge-context-fg: 0 11.3% 20.8%;
+    --badge-tag-bg: 40.5 55.6% 88%;
+    --badge-tag-fg: 0 11.3% 20.8%;
+    --badge-priority-bg: 37.6 54.8% 82%;
+    --badge-priority-fg: 31.9 44.4% 33%;
+    --badge-estimate-bg: 40.5 57.1% 86.3%;
+    --badge-estimate-fg: 30 32.6% 36.1%;
+    --badge-age-bg: 40.5 57.1% 86.3%;
+    --badge-age-fg: 30 32.6% 36.1%;
+    --badge-info-bg: 40.5 57.1% 86.3%;
+    --badge-info-fg: 30 32.6% 36.1%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  :is(button, a, [role='button'], [role='tab']):not(:disabled):not([aria-disabled='true']):active {
+    filter: brightness(0.94);
+  }
+
+  :is(button, input, select, textarea):disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  h1,
+  h2,
+  h3 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  html {
+    font-size: calc(16px * var(--stride-text-scale));
+    overflow-x: clip;
+
+
+    overflow-y: hidden;
+    overscroll-behavior: none;
+  }
+
+  html[data-text-size='default'] {
+    --stride-text-scale: 1;
+  }
+
+  html[data-text-size='small'] {
+    --stride-text-scale: 0.875;
+  }
+
+  html[data-text-size='large'] {
+    --stride-text-scale: 1.125;
+  }
+
+  html[data-text-size='extra-large'] {
+    --stride-text-scale: 1.25;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: hsl(var(--background, 0 0% 100%));
+    color: hsl(var(--foreground, 222.2 84% 4.9%));
+  }
+
+  .dark,
+  .dark body,
+  .dark #root {
+    background-color: hsl(var(--background, 220 13% 13%));
+    color: hsl(var(--foreground, 220 13% 91%));
+  }
+
+  html[data-text-size] .text-\[10px\] {
+    font-size: calc(10px * var(--stride-text-scale));
+  }
+
+  html[data-text-size] .text-\[11px\] {
+    font-size: calc(11px * var(--stride-text-scale));
+  }
+
+  html[data-text-size] .text-\[13px\] {
+    font-size: calc(13px * var(--stride-text-scale));
+  }
+
+  html[data-text-size] .text-\[15px\] {
+    font-size: calc(15px * var(--stride-text-scale));
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    overflow-x: clip;
+    overflow-y: hidden;
+  }
+
+
+  input::placeholder,
+  textarea::placeholder {
+    color: hsl(var(--muted-foreground));
+    opacity: 0.65;
+  }
+
+  select {
+    color-scheme: light;
+  }
+
+  option,
+  optgroup {
+    background-color: hsl(var(--popover, 0 0% 100%));
+    color: hsl(var(--popover-foreground, 222.2 84% 4.9%));
+  }
+
+  option:checked {
+    background-color: hsl(var(--accent, 210 40% 96.1%));
+    color: hsl(var(--accent-foreground, 222.2 47.4% 11.2%));
+  }
+
+  .dark select,
+  .dark option,
+  .dark optgroup {
+    color-scheme: dark;
+  }
+
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.55);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  html[data-quick-add-window='true'],
+  html[data-quick-add-window='true'] body,
+  html[data-quick-add-window='true'] #root {
+    background-color: transparent;
+  }
+}
+
+@layer components {
+
+
+  [data-settings-highlight] {
+    outline: 2px solid hsl(var(--primary) / 0.7);
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+    background-color: hsl(var(--primary) / 0.05);
+  }
+
+  button[role='switch'] {
+    position: relative;
+  }
+
+  button[role='switch']::before {
+    content: '';
+    position: absolute;
+    inset: -0.5rem;
+    pointer-events: none;
+  }
+
+  button[role='switch']:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  button[role='switch'] > span {
+    background-color: hsl(var(--foreground));
+  }
+
+  button[role='switch'][aria-checked='true'] > span {
+    background-color: hsl(var(--primary-foreground));
+  }
+
+  .metadata-badge {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium tracking-wide;
+    max-width: 100%;
+    min-width: 0;
+    background-color: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+  }
+
+  .metadata-badge__dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 9999px;
+    flex-shrink: 0;
+  }
+
+  .metadata-badge__icon {
+    width: 0.75rem;
+    height: 0.75rem;
+    flex-shrink: 0;
+  }
+
+  .metadata-badge__label {
+    @apply min-w-0 truncate;
+  }
+
+  .metadata-badge--interactive {
+    @apply cursor-pointer;
+  }
+
+  .metadata-badge--interactive .metadata-badge {
+    @apply transition-opacity hover:opacity-80;
+  }
+
+  .metadata-badge--project {
+    background-color: hsl(var(--badge-project-bg));
+    color: hsl(var(--badge-project-fg));
+  }
+
+  .metadata-badge--context {
+    background-color: hsl(var(--badge-context-bg));
+    color: hsl(var(--badge-context-fg));
+  }
+
+  .metadata-badge--tag {
+    background-color: hsl(var(--badge-tag-bg));
+    color: hsl(var(--badge-tag-fg));
+  }
+
+  .metadata-badge--priority {
+    background-color: hsl(var(--badge-priority-bg));
+    color: hsl(var(--badge-priority-fg));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .metadata-badge--estimate {
+    background-color: hsl(var(--badge-estimate-bg));
+    color: hsl(var(--badge-estimate-fg));
+  }
+
+  .metadata-badge--age {
+    background-color: hsl(var(--badge-age-bg));
+    color: hsl(var(--badge-age-fg));
+  }
+
+  .metadata-badge--info {
+    background-color: hsl(var(--badge-info-bg));
+    color: hsl(var(--badge-info-fg));
+  }
+
+  .metadata-badge--age-fresh {
+    background-color: hsl(var(--success) / 0.05);
+    color: hsl(var(--success));
+  }
+
+  .metadata-badge--age-aging {
+    background-color: hsl(var(--warning) / 0.05);
+    color: hsl(var(--warning));
+  }
+
+  .metadata-badge--age-stale {
+    background-color: hsl(var(--destructive) / 0.08);
+    color: hsl(var(--destructive));
+  }
+
+  .metadata-badge--age-very-stale {
+    background-color: hsl(var(--destructive) / 0.08);
+    color: hsl(var(--destructive));
+  }
+
+  .project-workspace [data-project-task-toolbar] { box-shadow: none; }
+  .project-workspace [data-view-filter-input] { min-height: 2.75rem; font-size: 0.875rem; }
+  .project-workspace--list .project-section-title { font-size: 1.125rem; }
+  .project-workspace .task-item-display__title { font-weight: 400; }
+  .project-workspace--list .task-item-display__title.text-base { font-size: 1.125rem; }
+  .project-workspace--list .task-item-display__description-preview { font-size: 0.875rem; }
+  .project-workspace--list [data-task-complete] {
+    width: 1.5rem;
+    height: 1.5rem;
+    margin: 0.25rem;
+    padding: 0.125rem;
+    border: 1.5px solid hsl(var(--muted-foreground));
+    border-radius: 50%;
+    color: hsl(var(--primary));
+  }
+  .project-workspace--list [data-task-complete] svg { opacity: 0; }
+  .project-workspace--list [data-task-complete]:is(:hover, :focus-visible) svg { opacity: 1; }
+
+  .project-progress {
+    appearance: none;
+    border: 0;
+    background: hsl(var(--muted));
+  }
+  .project-progress::-webkit-progress-bar { background: hsl(var(--muted)); }
+  .project-progress::-webkit-progress-value { background: hsl(var(--primary)); }
+  .project-progress::-moz-progress-bar { background: hsl(var(--primary)); }
+
+  .project-details-header {
+    container-type: inline-size;
+  }
+
+  .review-toolbar {
+    container-type: inline-size;
+  }
+
+  .review-status-filter__pills {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  @container (min-width: 1050px) {
+    .review-status-filter__compact {
+      display: none;
+    }
+
+    .review-status-filter__pills {
+      display: flex;
+    }
+  }
+
+  .task-item-display {
+    container-type: inline-size;
+    position: relative;
+  }
+
+  @container (max-width: 560px) {
+    .task-item-display__main {
+      width: 100%;
+    }
+
+    .task-item-display__actions {
+      max-width: calc(100% - 0.5rem);
+      position: absolute;
+      right: 0.25rem;
+      top: 0.25rem;
+      z-index: 10;
+      justify-content: flex-end;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms ease;
+    }
+
+    .task-item-display__title {
+      padding-right: 0.125rem !important;
+    }
+
+    .task-item-display:hover .task-item-display__actions,
+    .task-item-display:focus-within .task-item-display__actions,
+    .task-item-display__actions:focus-within {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    @media (hover: none) {
+      .task-item-display__actions {
+        opacity: 1;
+        pointer-events: auto;
+      }
+    }
+  }
+
+  @container (max-width: 720px) {
+    .project-details-header__content {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .project-details-header__titleGroup {
+      flex: none;
+      width: 100%;
+    }
+
+    .project-details-header__actions {
+      justify-content: flex-start;
+      width: 100%;
+    }
+
+    .project-details-header__titleInput {
+      font-size: 1.75rem;
+      line-height: 2.125rem;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+
+html {
+    font-family: var(--stride-font-family, ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");
+}
+
+
+@property --stride-spin-angle {
+    syntax: '<angle>';
+    inherits: false;
+    initial-value: 0deg;
+}
+@property --stride-spin-animation {
+    syntax: '*';
+    inherits: false;
+    initial-value: stride-spin-redraw 1s linear infinite;
+}
+@keyframes stride-spin-redraw {
+    to { --stride-spin-angle: 360deg; }
+}
+.animate-spin {
+    animation: var(--stride-spin-animation, spin 1s linear infinite);
+
+    rotate: var(--stride-spin-angle, 0deg);
+}
+
+
+@media print {
+    html[data-app-locked] body > :not([data-app-lock-screen]) {
+        display: none !important;
+    }
+}
+
+/* macOS menu bar panel: the window is transparent (native vibrancy), the React root paints the
+   rounded translucent container. */
+html.menubar-panel-window,
+html.menubar-panel-window body,
+html.menubar-panel-window #root {
+  background-color: transparent !important;
+  overflow: hidden;
+}
+
+@keyframes menubar-check-draw {
+  from { stroke-dashoffset: 18; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes menubar-row-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}

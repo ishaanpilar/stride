@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "upstreamRepository": "https://github.com/ishaanpilar/stride",
+  "releaseSigningKeyFingerprint": "__STRIDE_GPG_FINGERPRINT__",
+  "packages": {
+    "stride-bin": {
+      "maintainer": "ishaanpilar",
+      "coMaintainers": [],
+      "trackedFiles": [
+        ".SRCINFO",
+        ".gitignore",
+        "PKGBUILD"
+      ]
+    },
+    "stride-beta-bin": {
+      "maintainer": "ishaanpilar",
+      "coMaintainers": [],
+      "trackedFiles": [
+        ".SRCINFO",
+        "PKGBUILD"
+      ]
+    }
+  }
+}

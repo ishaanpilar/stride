@@ -1,0 +1,576 @@
+import {
+  buildTaskFocusEligibilityContext,
+  CloudHttpError,
+  cloudGetJson,
+  cloudGetJsonWithMetadata,
+  cloudRequestJson,
+  filterTasksBySearch,
+  getTaskFocusEligibility,
+  normalizeCloudUrl,
+  PRIORITY_RANK,
+  taskMatchesQuery,
+  type AppData,
+  type RelativeStartOffset,
+} from '@stride/core';
+
+import { NotFoundError, ValidationError } from './errors.js';
+import { filterUndefined } from './filter-undefined.js';
+import {
+  MAX_TASK_LIST_LIMIT,
+  MAX_TASK_QUICK_ADD_LENGTH,
+  MAX_TASK_TITLE_LENGTH,
+  normalizeNullableTaskRecurrence,
+  normalizeNullableTaskRelativeStartOffset,
+  normalizeNullableTaskRepeatReminderMinutes,
+  normalizeNullableTaskDueReminderLeadMinutes,
+  normalizeNullableTaskStartReminderLeadMinutes,
+  normalizeNullableTaskTimeSpentMinutes,
+  normalizeNullableTaskTokens,
+  normalizeOptionalTaskRecurrence,
+  normalizeOptionalTaskRelativeStartOffset,
+  normalizeOptionalTaskRepeatReminderMinutes,
+  normalizeOptionalTaskDueReminderLeadMinutes,
+  normalizeOptionalTaskStartReminderLeadMinutes,
+  normalizeOptionalTaskTimeSpentMinutes,
+  normalizeOptionalTaskTokens,
+} from './input-validation.js';
+import type {
+  AddAreaInput,
+  AddPersonInput,
+  AddProjectInput,
+  AddSectionInput,
+  StrideService,
+  RenamePersonInput,
+  UpdateAreaInput,
+  UpdatePersonInput,
+  UpdateProjectInput,
+  UpdateSectionInput,
+} from './service.js';
+import type {
+  AddTaskInput,
+  Area,
+  GetPersonInput,
+  GetProjectInput,
+  GetSectionInput,
+  GetTaskInput,
+  ListPeopleInput,
+  ListSectionsInput,
+  ListTasksInput,
+  Person,
+  Project,
+  Section,
+  Task,
+  TaskRow,
+  UpdateTaskInput,
+} from './queries.js';
+import { pickDefinedTaskFields, TASK_CREATE_FIELD_NAMES, TASK_PATCH_FIELD_NAMES } from './task-write-fields.js';
+import { applyLinkAttachmentsWithResult, buildLinkAttachments } from './link-attachments.js';
+
+import { listViewSectionsFromSettings, logViewSectionWrite, normalizeViewSectionIds } from './view-sections.js';
+
+export type CloudServiceOptions = {
+  url: string;
+  token: string;
+  allowInsecureHttp?: boolean;
+  fetcher?: typeof fetch;
+  timeoutMs?: number;
+  logInfo?: (message: string, context?: Record<string, unknown>) => void;
+};
+
+type CloudData = AppData & { people: NonNullable<AppData['people']> };
+
+const emptyAppData = (): CloudData => ({
+  tasks: [],
+  projects: [],
+  sections: [],
+  areas: [],
+  people: [],
+  settings: {},
+});
+
+type SoftDeleted = { deletedAt?: string | null };
+
+const CLOUD_ATTACHMENT_PATCH_ATTEMPTS = 3;
+const CLOUD_ENTITY_ETAG_REQUIRED_ERROR = 'Attachment link updates require Stride Cloud 1.2.8 or newer; this server did not return a strong entity ETag.';
+
+const isLive = <T extends SoftDeleted>(item: T): boolean => !item.deletedAt;
+
+const normalizeCloudData = (data: AppData | null): CloudData => ({
+  ...emptyAppData(),
+  ...(data ?? {}),
+  tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+  projects: Array.isArray(data?.projects) ? data.projects : [],
+  sections: Array.isArray(data?.sections) ? data.sections : [],
+  areas: Array.isArray(data?.areas) ? data.areas : [],
+  people: Array.isArray(data?.people) ? data.people : [],
+  settings: data?.settings && typeof data.settings === 'object' ? data.settings : {},
+});
+
+const normalizeLimit = (value: number | undefined): number => (
+  Number.isFinite(value) ? Math.max(1, Math.min(MAX_TASK_LIST_LIMIT, value as number)) : 200
+);
+
+const normalizeOffset = (value: number | undefined): number => (
+  Number.isFinite(value) ? Math.max(0, value as number) : 0
+);
+
+
+const dateKey = (value: string | undefined | null): string => {
+  if (typeof value !== 'string' || value.length < 10) return '';
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : value.slice(0, 10);
+};
+
+const taskSortValue = (task: Task, sortBy: NonNullable<ListTasksInput['sortBy']>): string | number => {
+  if (sortBy === 'priority') return task.priority ? PRIORITY_RANK[task.priority] ?? 0 : 0;
+  const value = task[sortBy];
+  return typeof value === 'string' ? value : '';
+};
+
+const sortTasks = (tasks: Task[], input: ListTasksInput): Task[] => {
+  const sortBy = input.sortBy ?? 'updatedAt';
+  const direction = input.sortOrder === 'asc' ? 1 : -1;
+  return [...tasks].sort((left, right) => {
+    const leftValue = taskSortValue(left, sortBy);
+    const rightValue = taskSortValue(right, sortBy);
+    if (leftValue < rightValue) return -1 * direction;
+    if (leftValue > rightValue) return direction;
+    return left.id.localeCompare(right.id);
+  });
+};
+
+const mapProject = (project: AppData['projects'][number]): Project => ({
+  ...project,
+  orderNum: (project as Project).orderNum ?? project.order,
+});
+
+const mapArea = (area: AppData['areas'][number]): Area => area;
+const mapSection = (section: AppData['sections'][number]): Section => section;
+const mapPerson = (person: CloudData['people'][number]): Person => person;
+const mapTask = (task: AppData['tasks'][number]): TaskRow => task;
+
+const mapCloudError = (error: unknown): unknown => {
+  if (error instanceof CloudHttpError) {
+    if (error.status === 404) return new NotFoundError(error.message);
+    if (error.status === 400 || error.status === 413 || error.status === 422) {
+      return new ValidationError(error.message);
+    }
+  }
+  return error;
+};
+
+const personWritesUnsupported = (): never => {
+  throw new ValidationError('The Stride cloud API does not support person edits yet. Use the local database backend for person changes.');
+};
+
+export const createCloudService = (options: CloudServiceOptions): StrideService => {
+  const url = options.url.trim();
+  const token = options.token.trim();
+  if (!url) throw new ValidationError('Cloud URL is required');
+  if (!token) throw new ValidationError('Cloud token is required');
+  const dataUrl = normalizeCloudUrl(url);
+
+  const apiBase = dataUrl.replace(/\/data$/i, '');
+  const requestOptions = {
+    token,
+    allowInsecureHttp: options.allowInsecureHttp,
+    fetcher: options.fetcher,
+    timeoutMs: options.timeoutMs,
+  };
+
+  const readData = async (): Promise<CloudData> => normalizeCloudData(await cloudGetJson<AppData>(dataUrl, requestOptions));
+
+  const request = async <T>(
+    method: 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): Promise<T> => {
+    try {
+      return await cloudRequestJson<T>(method, `${apiBase}${path}`, body, {
+        ...requestOptions,
+        ...(headers ? { headers } : {}),
+      }) as T;
+    } catch (error) {
+      throw mapCloudError(error);
+    }
+  };
+
+  const readEntityForConditionalPatch = async <T>(
+    path: string,
+    itemKey: 'task' | 'project',
+    label: string,
+  ): Promise<{ entity: T; etag: string }> => {
+    try {
+      const result = await cloudGetJsonWithMetadata<Record<'task' | 'project', T>>(
+        `${apiBase}${path}`,
+        { ...requestOptions, headers: { 'Accept-Encoding': 'identity' } },
+      );
+      const entity = result.data?.[itemKey];
+      if (!entity) throw new NotFoundError(`${label} not found`);
+      const etag = result.metadata.etag;
+      if (!etag || !/^"[^"]*"$/.test(etag)) {
+        throw new Error(CLOUD_ENTITY_ETAG_REQUIRED_ERROR);
+      }
+      return { entity, etag };
+    } catch (error) {
+      throw mapCloudError(error);
+    }
+  };
+
+  const conditionalAttachmentPatch = async <T extends SoftDeleted>(
+    path: string,
+    itemKey: 'task' | 'project',
+    label: string,
+    staticPatch: Record<string, unknown>,
+    links: Exclude<UpdateTaskInput['attachments'], undefined>,
+  ): Promise<T> => {
+    for (let attempt = 1; attempt <= CLOUD_ATTACHMENT_PATCH_ATTEMPTS; attempt += 1) {
+      const current = await readEntityForConditionalPatch<T & { attachments?: Task['attachments'] }>(
+        path,
+        itemKey,
+        label,
+      );
+      try {
+        const applied = applyLinkAttachmentsWithResult(current.entity.attachments, links);
+        const result = await request<Record<'task' | 'project', T>>(
+          'PATCH',
+          path,
+          {
+            ...staticPatch,
+            attachments: applied.attachments,
+          },
+          { 'If-Match': current.etag },
+        );
+        const preservedExistingNetworkLink = applied.preservedNetworkLinkCount > 0;
+        options.logInfo?.('MCP attachment link replacement committed', {
+          ...(preservedExistingNetworkLink ? {
+            count: applied.preservedNetworkLinkCount,
+          } : {}),
+          backend: 'cloud',
+          entity: itemKey,
+        });
+        return result[itemKey];
+      } catch (error) {
+        if (!(error instanceof CloudHttpError) || error.status !== 412) throw error;
+        if (attempt === CLOUD_ATTACHMENT_PATCH_ATTEMPTS) {
+          throw new Error(`${label} changed during attachment link update after ${CLOUD_ATTACHMENT_PATCH_ATTEMPTS} attempts; refresh and retry.`);
+        }
+      }
+    }
+    throw new Error(`${label} attachment link update failed`);
+  };
+
+  const deleteEntity = async <T extends SoftDeleted & { id: string }>(
+    path: string,
+    id: string,
+    pickCollection: (data: CloudData) => T[],
+    label: string,
+  ): Promise<T> => {
+    await request('DELETE', `${path}/${encodeURIComponent(id)}`);
+    const data = await readData();
+    const entity = pickCollection(data).find((item) => item.id === id);
+    if (!entity) throw new NotFoundError(`${label} not found: ${id}`);
+    return entity;
+  };
+
+  const findTask = async (input: GetTaskInput): Promise<TaskRow> => {
+    const data = await readData();
+    const task = data.tasks.find((item) => item.id === input.id && (input.includeDeleted || isLive(item)));
+    if (!task) throw new NotFoundError(`Task not found: ${input.id}`);
+    return mapTask(task);
+  };
+
+  const findProject = async (input: GetProjectInput): Promise<Project> => {
+    const data = await readData();
+    const project = data.projects.find((item) => item.id === input.id && (input.includeDeleted || isLive(item)));
+    if (!project) throw new NotFoundError(`Project not found: ${input.id}`);
+    return mapProject(project);
+  };
+
+  const findSection = async (input: GetSectionInput): Promise<Section> => {
+    const data = await readData();
+    const section = data.sections.find((item) => item.id === input.id && (input.includeDeleted || isLive(item)));
+    if (!section) throw new NotFoundError(`Section not found: ${input.id}`);
+    return mapSection(section);
+  };
+
+  const findPerson = async (input: GetPersonInput): Promise<Person> => {
+    const data = await readData();
+    const person = data.people.find((item) => item.id === input.id && (input.includeDeleted || isLive(item)));
+    if (!person) throw new NotFoundError(`Person not found: ${input.id}`);
+    return mapPerson(person);
+  };
+
+  return {
+    listTasks: async (input) => {
+      const data = await readData();
+      const dueDateFrom = dateKey(input.dueDateFrom);
+      const dueDateTo = dateKey(input.dueDateTo);
+
+
+      const filtered = data.tasks.filter((task) => {
+        if (!taskMatchesQuery(task, {
+          status: input.status,
+          projectId: input.projectId,
+          includeDeleted: input.includeDeleted,
+          includeArchived: true,
+          isFocusedToday: input.isFocusedToday,
+        })) return false;
+        const due = dateKey(task.dueDate);
+        if (dueDateFrom && (!due || due < dueDateFrom)) return false;
+        if (dueDateTo && (!due || due > dueDateTo)) return false;
+        return true;
+      });
+
+
+      const searched = input.search ? filterTasksBySearch(filtered, data.projects, input.search) : filtered;
+
+
+      const viewed = input.view ? (() => {
+        const context = buildTaskFocusEligibilityContext({ tasks: data.tasks, projects: data.projects, sections: data.sections });
+        const wanted = input.view === 'blocked' ? 'sequential' : input.view === 'deferred' ? 'deferred' : 'eligible';
+        return searched.filter((task) => getTaskFocusEligibility(task, { tasks: data.tasks, ...context }).reason === wanted);
+      })() : searched;
+      const offset = normalizeOffset(input.offset);
+      return sortTasks(viewed, input).slice(offset, offset + normalizeLimit(input.limit)).map(mapTask);
+    },
+    listProjects: async () => {
+      const data = await readData();
+      return data.projects.filter(isLive).map(mapProject);
+    },
+    listViewSections: async (input = {}) => listViewSectionsFromSettings((await readData()).settings, input),
+    listSections: async (input: ListSectionsInput = {}) => {
+      const data = await readData();
+      return data.sections
+        .filter((section) => (input.includeDeleted || isLive(section)) && (!input.projectId || section.projectId === input.projectId))
+        .sort((left, right) => (
+          left.projectId.localeCompare(right.projectId)
+          || (left.order ?? 0) - (right.order ?? 0)
+          || left.title.localeCompare(right.title)
+        ))
+        .map(mapSection);
+    },
+    listAreas: async () => {
+      const data = await readData();
+      return data.areas
+        .filter(isLive)
+        .sort((left, right) => ((left.order ?? 0) - (right.order ?? 0)) || right.updatedAt.localeCompare(left.updatedAt))
+        .map(mapArea);
+    },
+    listPeople: async (input: ListPeopleInput = {}) => {
+      const data = await readData();
+      return data.people
+        .filter((person) => input.includeDeleted || isLive(person))
+        .sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()) || right.updatedAt.localeCompare(left.updatedAt))
+        .map(mapPerson);
+    },
+    getTask: findTask,
+    getProject: findProject,
+    getSection: findSection,
+    getPerson: findPerson,
+    addTask: async (input: AddTaskInput) => {
+      const hasTitle = typeof input.title === 'string' && input.title.trim().length > 0;
+      const hasQuickAdd = typeof input.quickAdd === 'string' && input.quickAdd.trim().length > 0;
+      if (!hasTitle && !hasQuickAdd) throw new ValidationError('Either title or quickAdd is required');
+      if (hasTitle && hasQuickAdd) throw new ValidationError('Provide either title or quickAdd, not both');
+      if (hasTitle && input.title!.trim().length > MAX_TASK_TITLE_LENGTH) {
+        throw new ValidationError(`Task title too long (max ${MAX_TASK_TITLE_LENGTH} characters)`);
+      }
+      if (hasQuickAdd && input.quickAdd!.trim().length > MAX_TASK_QUICK_ADD_LENGTH) {
+        throw new ValidationError(`Quick-add input too long (max ${MAX_TASK_QUICK_ADD_LENGTH} characters)`);
+      }
+      const props = filterUndefined({
+
+
+        ...pickDefinedTaskFields(TASK_CREATE_FIELD_NAMES, input),
+        viewSectionIds: normalizeViewSectionIds(input.viewSectionIds),
+        status: input.status,
+        projectId: input.projectId,
+        sectionId: input.sectionId,
+        dueDate: input.dueDate,
+        startTime: input.startTime,
+        recurrence: normalizeOptionalTaskRecurrence(input.recurrence),
+        contexts: normalizeOptionalTaskTokens('contexts', input.contexts),
+        tags: normalizeOptionalTaskTokens('tags', input.tags),
+        description: input.description,
+        priority: input.priority,
+        energyLevel: input.energyLevel,
+        assignedTo: input.assignedTo,
+        timeEstimate: input.timeEstimate,
+        relativeStartOffset: normalizeOptionalTaskRelativeStartOffset(input.relativeStartOffset),
+        timeSpentMinutes: normalizeOptionalTaskTimeSpentMinutes(input.timeSpentMinutes),
+        repeatReminderMinutes: normalizeOptionalTaskRepeatReminderMinutes(input.repeatReminderMinutes),
+        dueReminderLeadMinutes: normalizeOptionalTaskDueReminderLeadMinutes(input.dueReminderLeadMinutes),
+        startReminderLeadMinutes: normalizeOptionalTaskStartReminderLeadMinutes(input.startReminderLeadMinutes),
+        attachments: buildLinkAttachments(input.attachments),
+      });
+      const body = hasQuickAdd ? { input: input.quickAdd, props } : { title: input.title, props };
+      const result = await request<{ task: AppData['tasks'][number] }>('POST', '/tasks', body);
+      logViewSectionWrite(options.logInfo, 'task', 'create', input.viewSectionIds);
+      return mapTask(result.task);
+    },
+    updateTask: async (input: UpdateTaskInput) => {
+
+      const patch: Record<string, unknown> = {};
+      if (input.title !== undefined) patch.title = input.title;
+      if (input.status !== undefined) patch.status = input.status;
+      if (input.projectId !== undefined) patch.projectId = input.projectId;
+      if (input.sectionId !== undefined) patch.sectionId = input.sectionId;
+      if (input.dueDate !== undefined) patch.dueDate = input.dueDate;
+      if (input.startTime !== undefined) patch.startTime = input.startTime;
+      if (input.recurrence !== undefined) {
+        patch.recurrence = normalizeNullableTaskRecurrence(input.recurrence);
+      }
+      if (input.contexts !== undefined) patch.contexts = normalizeNullableTaskTokens('contexts', input.contexts) ?? [];
+      if (input.tags !== undefined) patch.tags = normalizeNullableTaskTokens('tags', input.tags) ?? [];
+      if (input.description !== undefined) patch.description = input.description;
+      if (input.priority !== undefined) patch.priority = input.priority;
+      if (input.energyLevel !== undefined) patch.energyLevel = input.energyLevel;
+      if (input.assignedTo !== undefined) patch.assignedTo = input.assignedTo;
+      if (input.timeEstimate !== undefined) patch.timeEstimate = input.timeEstimate;
+
+
+      for (const name of TASK_PATCH_FIELD_NAMES) {
+        const value = (input as Record<string, unknown>)[name];
+        if (value === undefined) continue;
+        if (name === 'viewSectionIds') {
+          patch.viewSectionIds = normalizeViewSectionIds(value, true);
+        } else if (name === 'relativeStartOffset') {
+          patch.relativeStartOffset = normalizeNullableTaskRelativeStartOffset(value as RelativeStartOffset | null);
+        } else if (name === 'timeSpentMinutes') {
+          patch.timeSpentMinutes = normalizeNullableTaskTimeSpentMinutes(value as number | null);
+        } else if (name === 'dueReminderLeadMinutes') {
+          patch.dueReminderLeadMinutes = normalizeNullableTaskDueReminderLeadMinutes(value as number | null) ?? 0;
+        } else if (name === 'startReminderLeadMinutes') {
+          patch.startReminderLeadMinutes = normalizeNullableTaskStartReminderLeadMinutes(value as number | null) ?? 0;
+        } else if (name === 'repeatReminderMinutes') {
+          patch.repeatReminderMinutes = normalizeNullableTaskRepeatReminderMinutes(value as number | null);
+        } else {
+          patch[name] = value;
+        }
+      }
+      if (input.attachments !== undefined) {
+        const task = await conditionalAttachmentPatch<AppData['tasks'][number]>(
+          `/tasks/${encodeURIComponent(input.id)}`,
+          'task',
+          'Task',
+          patch,
+          input.attachments,
+        );
+        logViewSectionWrite(options.logInfo, 'task', 'update', input.viewSectionIds);
+        return mapTask(task);
+      }
+      const result = await request<{ task: AppData['tasks'][number] }>('PATCH', `/tasks/${encodeURIComponent(input.id)}`, patch);
+      logViewSectionWrite(options.logInfo, 'task', 'update', input.viewSectionIds);
+      return mapTask(result.task);
+    },
+    completeTask: async (id: string) => {
+      const result = await request<{ task: AppData['tasks'][number] }>('POST', `/tasks/${encodeURIComponent(id)}/complete`);
+      return mapTask(result.task);
+    },
+    deleteTask: async (id: string) => deleteEntity('/tasks', id, (data) => data.tasks, 'Task'),
+    restoreTask: async (_id: string) => {
+      throw new ValidationError('The Stride cloud API does not support restoring deleted tasks. Restore it from a Stride app or use the local database backend.');
+    },
+    addProject: async (input: AddProjectInput) => {
+      const result = await request<{ project: AppData['projects'][number] }>('POST', '/projects', {
+        title: input.title,
+        props: filterUndefined({
+          viewSectionIds: normalizeViewSectionIds(input.viewSectionIds),
+          color: input.color,
+          colorOverride: input.colorOverride,
+          status: input.status,
+          cancelledAt: input.cancelledAt ?? undefined,
+          areaId: input.areaId ?? undefined,
+          isSequential: input.isSequential,
+          isFocused: input.isFocused,
+          dueDate: input.dueDate ?? undefined,
+          startDate: input.startDate ?? undefined,
+          reviewAt: input.reviewAt ?? undefined,
+          supportNotes: input.supportNotes ?? undefined,
+          attachments: buildLinkAttachments(input.attachments),
+        }),
+      });
+      logViewSectionWrite(options.logInfo, 'project', 'create', input.viewSectionIds);
+      return mapProject(result.project);
+    },
+    updateProject: async (input: UpdateProjectInput) => {
+      const patch: Record<string, unknown> = {};
+      if (input.viewSectionIds !== undefined) patch.viewSectionIds = normalizeViewSectionIds(input.viewSectionIds, true);
+      if (input.title !== undefined) patch.title = input.title;
+      if (input.color !== undefined) patch.color = input.color;
+      if (input.colorOverride !== undefined) patch.colorOverride = input.colorOverride;
+      if (input.status !== undefined) patch.status = input.status;
+      if (input.cancelledAt !== undefined) patch.cancelledAt = input.cancelledAt;
+      if (input.areaId !== undefined) patch.areaId = input.areaId;
+      if (input.isSequential !== undefined) patch.isSequential = input.isSequential;
+      if (input.isFocused !== undefined) patch.isFocused = input.isFocused;
+      if (input.dueDate !== undefined) patch.dueDate = input.dueDate;
+      if (input.startDate !== undefined) patch.startDate = input.startDate;
+      if (input.reviewAt !== undefined) patch.reviewAt = input.reviewAt;
+      if (input.supportNotes !== undefined) patch.supportNotes = input.supportNotes;
+      if (input.attachments !== undefined) {
+        const project = await conditionalAttachmentPatch<AppData['projects'][number]>(
+          `/projects/${encodeURIComponent(input.id)}`,
+          'project',
+          'Project',
+          patch,
+          input.attachments,
+        );
+        logViewSectionWrite(options.logInfo, 'project', 'update', input.viewSectionIds);
+        return mapProject(project);
+      }
+      const result = await request<{ project: AppData['projects'][number] }>('PATCH', `/projects/${encodeURIComponent(input.id)}`, patch);
+      logViewSectionWrite(options.logInfo, 'project', 'update', input.viewSectionIds);
+      return mapProject(result.project);
+    },
+    deleteProject: async (id: string) => mapProject(await deleteEntity('/projects', id, (data) => data.projects, 'Project')),
+    addSection: async (input: AddSectionInput) => {
+      const result = await request<{ section: AppData['sections'][number] }>('POST', '/sections', {
+        title: input.title,
+        projectId: input.projectId,
+        props: filterUndefined({
+          description: input.description ?? undefined,
+          order: input.order,
+          isCollapsed: input.isCollapsed,
+        }),
+      });
+      return mapSection(result.section);
+    },
+    updateSection: async (input: UpdateSectionInput) => {
+      const patch: Record<string, unknown> = {};
+      if (input.title !== undefined) patch.title = input.title;
+      if (input.description !== undefined) patch.description = input.description;
+      if (input.order !== undefined) patch.order = input.order;
+      if (input.isCollapsed !== undefined) patch.isCollapsed = input.isCollapsed;
+      const result = await request<{ section: AppData['sections'][number] }>('PATCH', `/sections/${encodeURIComponent(input.id)}`, patch);
+      return mapSection(result.section);
+    },
+    deleteSection: async (id: string) => deleteEntity('/sections', id, (data) => data.sections, 'Section'),
+    addArea: async (input: AddAreaInput) => {
+      const result = await request<{ area: AppData['areas'][number] }>('POST', '/areas', {
+        name: input.name,
+        props: filterUndefined({
+          color: input.color,
+          icon: input.icon,
+        }),
+      });
+      return mapArea(result.area);
+    },
+    updateArea: async (input: UpdateAreaInput) => {
+      const patch: Record<string, unknown> = {};
+      if (input.name !== undefined) patch.name = input.name;
+      if (input.color !== undefined) patch.color = input.color;
+      if (input.icon !== undefined) patch.icon = input.icon;
+      const result = await request<{ area: AppData['areas'][number] }>('PATCH', `/areas/${encodeURIComponent(input.id)}`, patch);
+      return mapArea(result.area);
+    },
+    deleteArea: async (id: string) => deleteEntity('/areas', id, (data) => data.areas, 'Area'),
+    addPerson: async (_input: AddPersonInput) => personWritesUnsupported(),
+    updatePerson: async (_input: UpdatePersonInput) => personWritesUnsupported(),
+    renamePerson: async (_input: RenamePersonInput) => personWritesUnsupported(),
+    deletePerson: async (_id: string) => personWritesUnsupported(),
+    close: async () => undefined,
+  };
+};

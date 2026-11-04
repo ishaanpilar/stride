@@ -1,0 +1,229 @@
+import { describe, expect, it } from 'vitest';
+
+import { startProcessInboxSession } from './process-inbox-session';
+import {
+    commitProcessInboxWorkflowEvent,
+    mergeParsedProcessInboxFields,
+    resolveProcessInboxContainerFields,
+    resolveProcessInboxWorkflowEvent,
+} from './process-inbox-workflow';
+import { parseProcessInboxTitleInput } from './quick-add';
+
+describe('resolveProcessInboxWorkflowEvent', () => {
+    it('turns discard into a delete effect', () => {
+        expect(resolveProcessInboxWorkflowEvent({ type: 'discard' })).toEqual({ type: 'delete' });
+    });
+
+    it.each([
+        ['someday', 'someday'],
+        ['reference', 'reference'],
+        ['complete', 'done'],
+    ] as const)('maps %s to the matching terminal status', (type, status) => {
+        expect(resolveProcessInboxWorkflowEvent({ type })).toEqual({
+            type: 'update',
+            updates: { status },
+        });
+    });
+
+    it.each(['someday', 'reference', 'complete'] as const)(
+        'keeps the picked project when %s ends the processing pass (#958)',
+        (type) => {
+            expect(resolveProcessInboxWorkflowEvent({
+                type,
+                fields: resolveProcessInboxContainerFields('project-1', 'area-1'),
+            })).toMatchObject({
+                type: 'update',
+                updates: { projectId: 'project-1', areaId: undefined },
+            });
+        },
+    );
+
+    it('drops the area once a project is picked, and keeps it otherwise', () => {
+        expect(resolveProcessInboxContainerFields('project-1', 'area-1'))
+            .toEqual({ projectId: 'project-1', areaId: undefined });
+        expect(resolveProcessInboxContainerFields(null, 'area-1'))
+            .toEqual({ projectId: undefined, areaId: 'area-1' });
+        expect(resolveProcessInboxContainerFields('', ''))
+            .toEqual({ projectId: undefined, areaId: undefined });
+    });
+
+    it('preserves the fields supplied by a platform for a next action', () => {
+        expect(resolveProcessInboxWorkflowEvent({
+            type: 'next',
+            fields: {
+                projectId: 'project-1',
+                areaId: undefined,
+                contexts: ['@office'],
+                startTime: '2026-07-15',
+            },
+        })).toEqual({
+            type: 'update',
+            updates: {
+                status: 'next',
+                projectId: 'project-1',
+                areaId: undefined,
+                contexts: ['@office'],
+                startTime: '2026-07-15',
+            },
+        });
+    });
+
+    it('uses next status for Later while retaining an explicit cleared date', () => {
+        expect(resolveProcessInboxWorkflowEvent({
+            type: 'later',
+            fields: { startTime: undefined },
+        })).toEqual({
+            type: 'update',
+            updates: { status: 'next', startTime: undefined },
+        });
+    });
+
+    it('normalizes the assignee and lets delegate follow-up override review', () => {
+        expect(resolveProcessInboxWorkflowEvent({
+            type: 'waiting',
+            fields: {
+                assignedTo: '  Alice  ',
+                reviewAt: '2026-07-16',
+                dueDate: '2026-07-15',
+            },
+            followUpAt: '2026-07-20',
+        })).toEqual({
+            type: 'update',
+            updates: {
+                status: 'waiting',
+                assignedTo: 'Alice',
+                reviewAt: '2026-07-20',
+                dueDate: '2026-07-15',
+            },
+        });
+    });
+
+    it('keeps an empty assignee as an explicit clear', () => {
+        expect(resolveProcessInboxWorkflowEvent({
+            type: 'waiting',
+            fields: { assignedTo: '   ' },
+        })).toEqual({
+            type: 'update',
+            updates: { status: 'waiting', assignedTo: undefined },
+        });
+    });
+
+    it('writes clarified fields without changing status when a candidate is skipped', () => {
+        expect(resolveProcessInboxWorkflowEvent({
+            type: 'skip',
+            fields: { contexts: ['@office'], assignedTo: '  Alice  ' },
+        })).toEqual({
+            type: 'update',
+            updates: { contexts: ['@office'], assignedTo: 'Alice' },
+        });
+    });
+
+    it('advances only after the task write succeeds', async () => {
+        const candidates = [{ id: 'task-1' }, { id: 'task-2' }];
+        const session = startProcessInboxSession(candidates);
+        const failed = await commitProcessInboxWorkflowEvent(
+            session,
+            candidates,
+            { type: 'complete' },
+            {
+                deleteTask: async () => ({ success: true }),
+                updateTask: async () => ({ success: false, error: 'disk full' }),
+            },
+        );
+
+        expect(failed.session.currentTaskId).toBe('task-1');
+        expect(failed.writeResult).toEqual({ success: false, error: 'disk full' });
+
+        const committed = await commitProcessInboxWorkflowEvent(
+            session,
+            candidates,
+            { type: 'complete' },
+            {
+                deleteTask: async () => ({ success: true }),
+                updateTask: async (_taskId, updates) => {
+                    expect(updates).toEqual({ status: 'done', title: 'Clarified title' });
+                    return { success: true };
+                },
+            },
+            { taskUpdates: { title: 'Clarified title' } },
+        );
+
+        expect(committed.session.currentTaskId).toBe('task-2');
+    });
+
+    it('records a successful skip so the candidate is not revisited', async () => {
+        const candidates = [{ id: 'task-1' }, { id: 'task-2' }];
+        const session = startProcessInboxSession(candidates);
+        const committed = await commitProcessInboxWorkflowEvent(
+            session,
+            candidates,
+            { type: 'skip', fields: { tags: ['#later'] } },
+            {
+                deleteTask: async () => ({ success: true }),
+                updateTask: async (_taskId, updates) => {
+                    expect(updates).toEqual({ tags: ['#later'], title: 'Clarified title' });
+                    return { success: true };
+                },
+            },
+            { taskUpdates: { title: 'Clarified title' } },
+        );
+
+        expect(committed.session.currentTaskId).toBe('task-2');
+        expect(committed.session.skippedTaskIds).toEqual(new Set(['task-1']));
+    });
+});
+
+describe('mergeParsedProcessInboxFields token parsing', () => {
+    it('carries the parsed estimate while keeping the selected estimate in charge (#1358)', () => {
+        const parsed = parseProcessInboxTitleInput('Write report /estimate:45m');
+        expect(parsed.title).toBe('Write report');
+        expect(mergeParsedProcessInboxFields({}, parsed.props).timeEstimate).toBe('custom:45');
+        expect(mergeParsedProcessInboxFields({ timeEstimate: '2hr' }, parsed.props).timeEstimate).toBe('2hr');
+    });
+
+    it('unions parsed contexts and tags with the chips the user already toggled', () => {
+        const merged = mergeParsedProcessInboxFields(
+            { contexts: ['@office'], tags: ['#home'] },
+            { contexts: ['@phone'], tags: ['#urgent'] },
+        );
+        expect(merged.contexts).toEqual(['@office', '@phone']);
+        expect(merged.tags).toEqual(['#home', '#urgent']);
+    });
+
+    it('lets a parsed assignedTo win over the picker, the only way an explicit token can act', () => {
+        expect(mergeParsedProcessInboxFields({}, { assignedTo: 'Bob' }).assignedTo).toBe('Bob');
+    });
+
+
+    it('lands a /priority: typed in the clarify title on the merged fields', () => {
+        const parsedTitle = parseProcessInboxTitleInput('Call plumber /priority:high /energy:low');
+        expect(parsedTitle.title).toBe('Call plumber');
+
+        const merged = mergeParsedProcessInboxFields({}, parsedTitle.props);
+        expect(merged.priority).toBe('high');
+        expect(merged.energyLevel).toBe('low');
+    });
+
+    it('lets the picked priority stand when the title carries no token', () => {
+        const parsedTitle = parseProcessInboxTitleInput('Call plumber');
+        expect(mergeParsedProcessInboxFields({ priority: 'urgent' }, parsedTitle.props).priority)
+            .toBe('urgent');
+    });
+});
+
+describe('mergeParsedProcessInboxFields container exclusivity', () => {
+    it('drops a picked area when the title names a project (#958)', () => {
+        expect(mergeParsedProcessInboxFields({ areaId: 'a1' }, { projectId: 'p1' }))
+            .toEqual({ projectId: 'p1', areaId: undefined });
+    });
+
+    it('leaves a picked project alone when the title only names an area', () => {
+        expect(mergeParsedProcessInboxFields({ projectId: 'p1' }, { areaId: 'a1' }))
+            .toEqual({ projectId: 'p1', areaId: undefined });
+    });
+
+    it('is a no-op when the title carried no tokens', () => {
+        const fields = { contexts: ['@office'], projectId: 'p1' };
+        expect(mergeParsedProcessInboxFields(fields, {})).toEqual(fields);
+    });
+});

@@ -1,0 +1,6009 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { addDays } from 'date-fns';
+import { safeParseDate } from './date';
+import { prepareRestoredBackupDataForSync } from './backup-transfer';
+import {
+    useTaskStore,
+    flushPendingSave,
+    getPersistenceStatus,
+    resetForTests,
+    runWithImmediateSaveTracking,
+    setStorageAdapter,
+} from './store';
+import { buildEntityMap } from './store-helpers';
+import { planTaskUpdateEffects } from './store-tasks';
+import { computeSyncPayloadFingerprint } from './sync-helpers';
+import { toRemoteSyncDocument } from './sync-document';
+import { mergeAppData } from './sync';
+import { markSavedFilterDeleted } from './saved-filters';
+import { mockAppData } from './sync-test-utils';
+import { shouldShowTaskForStart, sortTasksByBoardOrder } from './task-utils';
+import { generateUUID } from './uuid';
+import type { StorageAdapter } from './storage';
+import type { AppData, Area, Project, Section, Task } from './types';
+import { runDataTransferTransaction, runSerializedSyncDocumentWriteOperation } from './data-transfer-transaction';
+import { collectProjectTaskLinks, undoProjectDelete } from './undo-project-delete';
+
+const waitForExpectation = async (assertion: () => void, maxAttempts = 200): Promise<void> => {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+            assertion();
+            return;
+        } catch (error) {
+            lastError = error;
+            await Promise.resolve();
+        }
+    }
+    throw lastError ?? new Error('Timed out waiting for expectation');
+};
+
+const parseLoggedContext = (value: unknown): Record<string, unknown> => {
+    expect(typeof value).toBe('string');
+    return JSON.parse(String(value)) as Record<string, unknown>;
+};
+
+const createStoreTask = (id: string, overrides: Partial<Task> = {}): Task => ({
+    id,
+    title: `Task ${id}`,
+    status: 'inbox',
+    tags: [],
+    contexts: [],
+    createdAt: '2026-04-01T00:00:00.000Z',
+    updatedAt: '2026-04-01T00:00:00.000Z',
+    rev: 1,
+    revBy: 'device-a',
+    ...overrides,
+});
+
+const createStoreProject = (id: string, overrides: Partial<Project> = {}): Project => ({
+    id,
+    title: `Project ${id}`,
+    status: 'active',
+    color: '#2563EB',
+    order: 0,
+    tagIds: [],
+    createdAt: '2026-04-01T00:00:00.000Z',
+    updatedAt: '2026-04-01T00:00:00.000Z',
+    rev: 1,
+    revBy: 'device-a',
+    ...overrides,
+});
+
+const createStoreArea = (id: string, overrides: Partial<Area> = {}): Area => ({
+    id,
+    name: `Area ${id}`,
+    order: 0,
+    createdAt: '2026-04-01T00:00:00.000Z',
+    updatedAt: '2026-04-01T00:00:00.000Z',
+    rev: 1,
+    revBy: 'device-a',
+    ...overrides,
+});
+
+describe('planTaskUpdateEffects', () => {
+    const now = '2026-07-01T12:00:00.000Z';
+    const deviceId = 'device-b';
+
+    it('copies recurring children once and excludes an existing matching follow-up', () => {
+        const source = createStoreTask('recurring-source', {
+            title: 'Daily handoff',
+            status: 'next',
+            recurrence: 'daily',
+            dueDate: '2026-07-01T09:00:00.000Z',
+            checklist: [{ id: 'old-check', title: 'Confirm handoff', isCompleted: true }],
+            attachments: [{
+                id: 'old-file', kind: 'file', title: 'Handoff', uri: '/home/dd/handoff.pdf',
+                cloudKey: 'attachments/handoff.pdf',
+                createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z',
+            }],
+        });
+        const unrelated = createStoreTask('unrelated');
+        const allTasks = [source, unrelated];
+        const originalRows = structuredClone(allTasks);
+        let nextId = 0;
+        const plan = () => planTaskUpdateEffects({
+            task: source,
+            preparedUpdates: { status: 'done' },
+            allTasks,
+            allProjects: [],
+            allSections: [],
+            now,
+            deviceId,
+            createId: () => `new-${++nextId}`,
+        });
+
+        const first = plan();
+        expect(first.updatedTask).toMatchObject({ id: source.id, status: 'done', completedAt: now, rev: 2, revBy: deviceId });
+        expect(first.recurringFollowUpTask).toMatchObject({
+            status: 'next', dueDate: '2026-07-02T09:00:00.000Z', rev: 1, revBy: deviceId,
+        });
+        expect(first.recurringFollowUpTask?.id).toMatch(/^new-/);
+        expect(first.recurringFollowUpTask?.checklist).toEqual([
+            { id: expect.stringMatching(/^new-/), title: 'Confirm handoff', isCompleted: false },
+        ]);
+        expect(first.recurringFollowUpTask?.attachments).toEqual([
+            expect.objectContaining({ id: expect.stringMatching(/^new-/), cloudKey: 'attachments/handoff.pdf' }),
+        ]);
+        expect(first.tasks).toEqual([first.updatedTask, unrelated, first.recurringFollowUpTask]);
+        expect(first.tasks[1]).toBe(unrelated);
+        expect(first.projects).toEqual([]);
+        expect(first.sections).toEqual([]);
+        expect(first.reactivatedProjectIds).toEqual([]);
+        expect(allTasks).toEqual(originalRows);
+
+        const existingFollowUp = first.recurringFollowUpTask!;
+        const withExisting = [source, unrelated, existingFollowUp];
+        const second = planTaskUpdateEffects({
+            task: source,
+            preparedUpdates: { status: 'done' },
+            allTasks: withExisting,
+            allProjects: [],
+            allSections: [],
+            now,
+            deviceId,
+            createId: () => `retry-${++nextId}`,
+        });
+        expect(second.recurringFollowUpTask).toBeNull();
+        expect(second.tasks).toHaveLength(3);
+        expect(second.tasks[2]).toBe(existingFollowUp);
+        expect(withExisting).toEqual([source, unrelated, existingFollowUp]);
+    });
+
+    it('reactivates an archived project, its section and sibling without changing unrelated rows', () => {
+        const archivedAt = '2026-06-30T10:00:00.000Z';
+        const project = createStoreProject('archived-project', { status: 'archived' });
+        const otherProject = createStoreProject('other-project');
+        const source = createStoreTask('reopen-source', {
+            status: 'done', projectId: project.id, completedAt: archivedAt,
+            projectArchivedAt: archivedAt, statusBeforeProjectArchive: 'next',
+        });
+        const sibling = createStoreTask('archived-sibling', {
+            status: 'done', projectId: project.id, completedAt: archivedAt,
+            projectArchivedAt: archivedAt, statusBeforeProjectArchive: 'waiting',
+        });
+        const unrelated = createStoreTask('unrelated', { projectId: otherProject.id });
+        const section: Section = {
+            id: 'archived-section', projectId: project.id, title: 'Steps', order: 0,
+            createdAt: '2026-04-01T00:00:00.000Z', updatedAt: archivedAt,
+            deletedAt: archivedAt, projectArchivedAt: archivedAt, rev: 2, revBy: 'device-a',
+        };
+        const otherSection: Section = { ...section, id: 'other-section', projectId: otherProject.id,
+            deletedAt: undefined, projectArchivedAt: undefined };
+        const allTasks = [source, sibling, unrelated];
+        const allProjects = [project, otherProject];
+        const allSections = [section, otherSection];
+        const originals = structuredClone({ allTasks, allProjects, allSections });
+
+        const effects = planTaskUpdateEffects({
+            task: source,
+            preparedUpdates: { status: 'next' },
+            allTasks, allProjects, allSections, now, deviceId,
+        });
+
+        expect(effects.updatedTask).toMatchObject({ id: source.id, status: 'next', rev: 2, revBy: deviceId });
+        expect(effects.updatedTask.completedAt).toBeUndefined();
+        expect(effects.recurringFollowUpTask).toBeNull();
+        expect(effects.reactivatedProjectIds).toEqual([project.id]);
+        expect(effects.tasks.map((task) => task.id)).toEqual([source.id, sibling.id, unrelated.id]);
+        expect(effects.tasks[0]).toBe(effects.updatedTask);
+        expect(effects.tasks[1]).toMatchObject({ id: sibling.id, status: 'done', rev: 2, revBy: deviceId });
+        expect(effects.tasks[1].projectArchivedAt).toBeUndefined();
+        expect(effects.tasks[1].statusBeforeProjectArchive).toBeUndefined();
+        expect(effects.tasks[2]).toBe(unrelated);
+        expect(effects.projects[0]).toMatchObject({ id: project.id, status: 'active', rev: 2, revBy: deviceId });
+        expect(effects.projects[1]).toBe(otherProject);
+        expect(effects.sections[0]).toMatchObject({ id: section.id, rev: 3, revBy: deviceId });
+        expect(effects.sections[0].deletedAt).toBeUndefined();
+        expect(effects.sections[0].projectArchivedAt).toBeUndefined();
+        expect(effects.sections[1]).toBe(otherSection);
+        expect({ allTasks, allProjects, allSections }).toEqual(originals);
+    });
+});
+
+describe('TaskStore', () => {
+    let mockStorage: StorageAdapter;
+
+    beforeEach(() => {
+
+        mockStorage = {
+            getData: vi.fn().mockResolvedValue({ tasks: [], projects: [], sections: [], areas: [], settings: {} }),
+            saveData: vi.fn().mockResolvedValue(undefined),
+        };
+        setStorageAdapter(mockStorage);
+        useTaskStore.setState({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+            isLoading: false,
+            error: null,
+            persistenceFailure: null,
+            _allTasks: [],
+            _allProjects: [],
+            _allSections: [],
+            _allAreas: [],
+            _tasksById: new Map(),
+            _projectsById: new Map(),
+            _sectionsById: new Map(),
+            _areasById: new Map(),
+            lastDataChangeAt: 0,
+        });
+        vi.useFakeTimers();
+    });
+
+    afterEach(async () => {
+        await flushPendingSave();
+        resetForTests();
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('observes queued and in-flight saves without flushing them', async () => {
+        let finish!: () => void;
+        const pending = new Promise<void>(resolve => { finish = resolve; });
+        vi.mocked(mockStorage.saveData).mockReturnValue(pending);
+        try {
+            useTaskStore.getState().addTask('Queue observation');
+            expect(getPersistenceStatus().queued).toBe(1);
+            expect(mockStorage.saveData).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(120);
+            expect(getPersistenceStatus()).toMatchObject({ queued: 0, inFlight: true, failed: false });
+        } finally {
+            finish();
+        }
+        await flushPendingSave();
+        expect(getPersistenceStatus()).toMatchObject({ queued: 0, inFlight: false, immediate: 0 });
+        useTaskStore.setState({ persistenceFailure: { message: 'Failed', failedAt: '2026-09-09', retrying: false } });
+        expect(getPersistenceStatus().failed).toBe(true);
+    });
+
+    it('should add a task', () => {
+        const { addTask } = useTaskStore.getState();
+        addTask('New Task');
+
+        const { tasks } = useTaskStore.getState();
+        expect(tasks).toHaveLength(1);
+        expect(tasks[0].title).toBe('New Task');
+        expect(tasks[0].status).toBe('inbox');
+    });
+
+    it('adds multiple tasks in one store update and one save', async () => {
+        const project = createStoreProject('project-1');
+        useTaskStore.setState({
+            projects: [project],
+            _allProjects: [project],
+            _projectsById: buildEntityMap([project]),
+        });
+        const listener = vi.fn();
+        const unsubscribe = useTaskStore.subscribe(listener);
+        try {
+            const result = await (useTaskStore.getState() as any).addTasks([
+                { title: 'One', initialProps: { status: 'next', projectId: project.id } },
+                { title: 'Two', initialProps: { status: 'next', projectId: project.id } },
+            ]);
+
+            expect(result.success).toBe(true);
+            expect(result.ids).toHaveLength(2);
+            const { tasks } = useTaskStore.getState();
+            expect(tasks.map((task) => task.title)).toEqual(['One', 'Two']);
+            expect(tasks.map((task) => task.projectId)).toEqual([project.id, project.id]);
+            expect(tasks.map((task) => task.order)).toEqual([0, 1]);
+            expect(listener).toHaveBeenCalledTimes(1);
+            await flushPendingSave();
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('should ignore reserved task fields when adding a task', async () => {
+        const { addTask } = useTaskStore.getState();
+        const result = await addTask('Safe Task', {
+            id: 'custom-id',
+            rev: 99,
+            revBy: 'other-device',
+            createdAt: '2000-01-01T00:00:00.000Z',
+            updatedAt: '2000-01-01T00:00:00.000Z',
+            deletedAt: '2000-01-02T00:00:00.000Z',
+            purgedAt: '2000-01-03T00:00:00.000Z',
+        });
+
+        const task = useTaskStore.getState().tasks[0];
+        expect(result.success).toBe(true);
+        expect(result.id).toBe(task.id);
+        expect(task.id).not.toBe('custom-id');
+        expect(task.rev).toBe(1);
+        expect(task.revBy).toBeTruthy();
+        expect(task.revBy).not.toBe('other-device');
+        expect(task.createdAt).not.toBe('2000-01-01T00:00:00.000Z');
+        expect(task.updatedAt).not.toBe('2000-01-01T00:00:00.000Z');
+        expect(task.deletedAt).toBeUndefined();
+        expect(task.purgedAt).toBeUndefined();
+    });
+
+    it('coerces repeatReminderMinutes to an allowed preset or undefined when adding a task', async () => {
+        const { addTask } = useTaskStore.getState();
+        await addTask('Repeat preset', { repeatReminderMinutes: 15 });
+        await addTask('Repeat junk', { repeatReminderMinutes: 7 });
+
+        const tasks = useTaskStore.getState().tasks;
+        const preset = tasks.find((t) => t.title === 'Repeat preset');
+        const junk = tasks.find((t) => t.title === 'Repeat junk');
+        expect(preset?.repeatReminderMinutes).toBe(15);
+        expect(junk?.repeatReminderMinutes).toBeUndefined();
+    });
+
+
+    it('keeps a newly visible task in _allTasks order rather than appending it', async () => {
+        const first = createStoreTask('task-a', { status: 'next' });
+        const middle = createStoreTask('task-b', { status: 'archived' });
+        const last = createStoreTask('task-c', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [first, last],
+            _allTasks: [first, middle, last],
+            _tasksById: buildEntityMap([first, middle, last]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        await useTaskStore.getState().updateTask('task-b', { status: 'next' });
+
+        expect(useTaskStore.getState().tasks.map((task) => task.id)).toEqual(['task-a', 'task-b', 'task-c']);
+    });
+
+    it('should update a task', () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        addTask('Task to Update');
+
+        const task = useTaskStore.getState().tasks[0];
+        updateTask(task.id, { title: 'Updated Task', status: 'next' });
+
+        const updatedTask = useTaskStore.getState().tasks[0];
+        expect(updatedTask.title).toBe('Updated Task');
+        expect(updatedTask.status).toBe('next');
+    });
+
+
+    it('keeps a Someday edit on a dated task through the next load (#1248)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        vi.mocked(mockStorage.getData).mockResolvedValue({
+            tasks: [createStoreTask('task-1', { status: 'next', dueDate: '2026-04-09' })],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: { deviceId: 'device-a', analyticsProfileId: 'profile-a' },
+        });
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        await useTaskStore.getState().updateTask('task-1', { status: 'someday' });
+        await flushPendingSave();
+        const saved = vi.mocked(mockStorage.saveData).mock.calls.at(-1)?.[0] as AppData;
+        expect(saved.tasks[0].status).toBe('someday');
+
+
+        vi.setSystemTime(new Date('2026-04-10T12:00:05.000Z'));
+        vi.mocked(mockStorage.getData).mockResolvedValue(saved);
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(useTaskStore.getState()._allTasks[0].status).toBe('someday');
+    });
+
+    it('persists simple task updates through incremental task storage when available', async () => {
+        const saveTask = vi.fn().mockResolvedValue(undefined);
+        mockStorage.saveTask = saveTask;
+        const task = createStoreTask('task-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+
+
+            settings: { deviceId: 'device-a' },
+        });
+
+        const result = await useTaskStore.getState().updateTask('task-1', { title: 'Updated Task' });
+
+        expect(result).toEqual({ success: true });
+        await waitForExpectation(() => {
+            expect(saveTask).toHaveBeenCalledTimes(1);
+        });
+        expect(saveTask.mock.calls[0]?.[0]).toMatchObject({
+            id: 'task-1',
+            title: 'Updated Task',
+        });
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+        await flushPendingSave();
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+    });
+
+
+    it('takes the snapshot path when the update mints a device id', async () => {
+        const saveTask = vi.fn().mockResolvedValue(undefined);
+        mockStorage.saveTask = saveTask;
+        const task = createStoreTask('task-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: {},
+        });
+
+        const result = await useTaskStore.getState().updateTask('task-1', { title: 'Renamed' });
+
+        expect(result).toEqual({ success: true });
+        expect(saveTask).not.toHaveBeenCalled();
+        await flushPendingSave();
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        const savedData = vi.mocked(mockStorage.saveData).mock.calls[0]?.[0] as AppData;
+        expect(savedData.settings.deviceId).toBe(useTaskStore.getState().settings.deviceId);
+        expect(savedData.settings.deviceId).toBeTruthy();
+    });
+
+    it('skips incremental task storage while a queued snapshot save holds a new referenced project (#1024)', async () => {
+        const saveTask = vi.fn().mockResolvedValue(undefined);
+        mockStorage.saveTask = saveTask;
+        const task = createStoreTask('task-1', { status: 'inbox' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+        });
+
+
+        const project = await useTaskStore.getState().addProject('New Project', '#2563EB');
+        expect(project).not.toBeNull();
+        const result = await useTaskStore.getState().updateTask('task-1', { projectId: project!.id, status: 'next' });
+
+        expect(result).toEqual({ success: true });
+        expect(saveTask).not.toHaveBeenCalled();
+        await flushPendingSave();
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        const savedData = vi.mocked(mockStorage.saveData).mock.calls[0]?.[0] as AppData;
+        expect(savedData.projects.some((item) => item.id === project!.id)).toBe(true);
+        expect(savedData.tasks.find((item) => item.id === 'task-1')?.projectId).toBe(project!.id);
+    });
+
+    it('waits for incremental task storage during flushPendingSave', async () => {
+        let resolveSaveTask: (() => void) | null = null;
+        const saveTask = vi.fn(() => new Promise<void>((resolve) => {
+            resolveSaveTask = resolve;
+        }));
+        mockStorage.saveTask = saveTask;
+        const task = createStoreTask('task-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        const result = await useTaskStore.getState().updateTask('task-1', { title: 'Updated Task' });
+        expect(result).toEqual({ success: true });
+        expect(saveTask).toHaveBeenCalledTimes(1);
+
+        expect(getPersistenceStatus().immediate).toBe(1);
+        let flushed = false;
+        const flushPromise = flushPendingSave().then(() => {
+            flushed = true;
+        });
+        await Promise.resolve();
+        expect(flushed).toBe(false);
+
+        resolveSaveTask?.();
+        await flushPromise;
+        expect(flushed).toBe(true);
+        expect(getPersistenceStatus().immediate).toBe(0);
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+    });
+
+    it('queues task, project, and settings writes until a data transfer refreshes', async () => {
+        const task = createStoreTask('task-1', { status: 'next' });
+        const project = createStoreProject('project-1');
+        let persisted: AppData = {
+            tasks: [task],
+            projects: [project],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: {},
+        };
+        let releaseTransferPersist: (() => void) | null = null;
+        let transferPersistStarted: (() => void) | null = null;
+        const transferPersistGate = new Promise<void>((resolve) => {
+            releaseTransferPersist = resolve;
+        });
+        const transferPersistStartedGate = new Promise<void>((resolve) => {
+            transferPersistStarted = resolve;
+        });
+        mockStorage = {
+            getData: async () => structuredClone(persisted),
+            saveData: async (data) => {
+                persisted = structuredClone(data);
+            },
+            saveTask: async (savedTask) => {
+                persisted = {
+                    ...persisted,
+                    tasks: persisted.tasks.map((item) => item.id === savedTask.id ? structuredClone(savedTask) : item),
+                };
+            },
+        };
+        setStorageAdapter(mockStorage);
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        const transfer = runDataTransferTransaction({
+            operation: 'importTodoist',
+            flushPendingSave,
+            getCurrentChangeAt: () => useTaskStore.getState().lastDataChangeAt,
+            readCurrentData: () => mockStorage.getData(),
+            createRecoverySnapshot: async () => 'data.snapshot.json',
+            apply: (currentData) => ({
+                data: {
+                    ...currentData,
+                    tasks: [
+                        ...currentData.tasks,
+                        createStoreTask('imported-task', { title: 'Imported task' }),
+                    ],
+                },
+                result: undefined,
+            }),
+            persistData: async (data) => {
+                transferPersistStarted?.();
+                await transferPersistGate;
+                await mockStorage.saveData(data);
+            },
+            refreshData: () => useTaskStore.getState().fetchData({ silent: true }),
+        });
+        await transferPersistStartedGate;
+
+        const taskWrite = useTaskStore.getState().updateTask(task.id, { title: 'Edited during import' });
+        const projectWrite = useTaskStore.getState().updateProject(project.id, { title: 'Edited project' });
+        const settingsWrite = useTaskStore.getState().updateSettings({ language: 'de' });
+        expect(useTaskStore.getState()._tasksById.get(task.id)?.title).toBe(task.title);
+        expect(useTaskStore.getState()._projectsById.get(project.id)?.title).toBe(project.title);
+        expect(useTaskStore.getState().settings.language).toBeUndefined();
+
+        releaseTransferPersist?.();
+        await transfer;
+        await Promise.all([taskWrite, projectWrite, settingsWrite]);
+        await flushPendingSave();
+
+        expect(persisted.tasks.map((item) => item.id).sort()).toEqual(['imported-task', 'task-1']);
+        expect(persisted.tasks.find((item) => item.id === task.id)?.title).toBe('Edited during import');
+        expect(persisted.projects[0]?.title).toBe('Edited project');
+        expect(persisted.settings.language).toBe('de');
+        expect(useTaskStore.getState()._tasksById.get('imported-task')?.title).toBe('Imported task');
+        expect(useTaskStore.getState()._tasksById.get(task.id)?.title).toBe('Edited during import');
+        expect(useTaskStore.getState()._projectsById.get(project.id)?.title).toBe('Edited project');
+        expect(useTaskStore.getState().settings.language).toBe('de');
+    });
+
+    it('confirms incremental task storage for a scoped operation', async () => {
+        const saveTask = vi.fn().mockResolvedValue(undefined);
+        mockStorage.saveTask = saveTask;
+        const task = createStoreTask('task-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        const tracked = await runWithImmediateSaveTracking(() =>
+            useTaskStore.getState().updateTask('task-1', { title: 'Updated Task' })
+        );
+
+        expect(tracked.result).toEqual({ success: true });
+        expect(tracked.saveCount).toBe(1);
+        expect(saveTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to full snapshot storage when incremental task storage is unavailable', async () => {
+        const task = createStoreTask('task-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+        });
+
+        const result = await useTaskStore.getState().updateTask('task-1', { title: 'Updated Task' });
+
+        expect(result).toEqual({ success: true });
+        await flushPendingSave();
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects adding a task with a missing projectId', async () => {
+        const result = await useTaskStore.getState().addTask('Broken Task', {
+            projectId: 'missing-project',
+        });
+
+        expect(result).toEqual({ success: false, error: 'Project not found' });
+        expect(useTaskStore.getState().tasks).toHaveLength(0);
+    });
+
+    it('rejects adding a task with a missing areaId', async () => {
+        const result = await useTaskStore.getState().addTask('Broken Area Task', {
+            areaId: 'missing-area',
+        });
+
+        expect(result).toEqual({ success: false, error: 'Area not found' });
+        expect(useTaskStore.getState().tasks).toHaveLength(0);
+    });
+
+    it('applies the configured default area to new inbox tasks', async () => {
+        const { addArea, addTask, updateSettings } = useTaskStore.getState();
+        const area = await addArea('Work');
+        expect(area).not.toBeNull();
+        if (!area) return;
+        await updateSettings({ gtd: { defaultAreaId: area.id } });
+
+        const result = await addTask('Captured Task');
+
+        expect(result.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(result.id ?? '')?.areaId).toBe(area.id);
+    });
+
+    it('lets explicit task area choices override the configured default area', async () => {
+        const { addArea, addTask, updateSettings } = useTaskStore.getState();
+        const work = await addArea('Work');
+        const home = await addArea('Home');
+        expect(work).not.toBeNull();
+        expect(home).not.toBeNull();
+        if (!work || !home) return;
+        await updateSettings({ gtd: { defaultAreaId: work.id } });
+
+        const explicitArea = await addTask('Explicit Home', { areaId: home.id });
+        const explicitNone = await addTask('Explicit None', { areaId: undefined });
+
+        expect(explicitArea.success).toBe(true);
+        expect(explicitNone.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(explicitArea.id ?? '')?.areaId).toBe(home.id);
+        expect(useTaskStore.getState()._tasksById.get(explicitNone.id ?? '')?.areaId).toBeUndefined();
+    });
+
+    it('does not apply a fixed default area while the default area mode is active or none', async () => {
+        const { addArea, addTask, updateSettings } = useTaskStore.getState();
+        const work = await addArea('Work');
+        expect(work).not.toBeNull();
+        if (!work) return;
+
+        await updateSettings({ gtd: { defaultAreaMode: 'active', defaultAreaId: work.id } });
+        const activeModeResult = await addTask('Active Mode Capture');
+        expect(activeModeResult.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(activeModeResult.id ?? '')?.areaId).toBeUndefined();
+
+        await updateSettings({ gtd: { defaultAreaMode: 'none', defaultAreaId: work.id } });
+        const noneModeResult = await addTask('No Area Mode Capture');
+        expect(noneModeResult.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(noneModeResult.id ?? '')?.areaId).toBeUndefined();
+    });
+
+    it('ignores a stale configured default area when adding a task', async () => {
+        const { addTask, updateSettings } = useTaskStore.getState();
+        await updateSettings({ gtd: { defaultAreaId: 'missing-area' } });
+
+        const result = await addTask('Stale Default Area Task');
+
+        expect(result.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(result.id ?? '')?.areaId).toBeUndefined();
+    });
+
+    it('infers projectId from a valid section when adding a task', async () => {
+        const { addProject, addSection, addTask } = useTaskStore.getState();
+        const project = await addProject('Section Project', '#123456');
+        expect(project).not.toBeNull();
+        if (!project) return;
+        const section = await addSection(project.id, 'Phase 1');
+        expect(section).not.toBeNull();
+        if (!section) return;
+
+        const result = await addTask('Section Scoped Task', {
+            sectionId: section.id,
+            status: 'next',
+        });
+
+        expect(result.success).toBe(true);
+        const task = useTaskStore.getState()._allTasks.find((item) => item.id === result.id)!;
+        expect(task.projectId).toBe(project.id);
+        expect(task.sectionId).toBe(section.id);
+    });
+
+    it('rejects updating a task to a missing projectId', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        await addTask('Task to Reassign');
+        const taskId = useTaskStore.getState().tasks[0].id;
+
+        const result = await updateTask(taskId, { projectId: 'missing-project' });
+
+        expect(result).toEqual({ success: false, error: 'Project not found' });
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === taskId)?.projectId).toBeUndefined();
+    });
+
+    it('rejects assigning a task to a section from another project', async () => {
+        const { addProject, addSection, addTask, updateTask } = useTaskStore.getState();
+        const projectA = await addProject('Project A', '#111111');
+        const projectB = await addProject('Project B', '#222222');
+        expect(projectA).not.toBeNull();
+        expect(projectB).not.toBeNull();
+        if (!projectA || !projectB) return;
+        const sectionA = await addSection(projectA.id, 'Section A');
+        expect(sectionA).not.toBeNull();
+        if (!sectionA) return;
+
+        const addResult = await addTask('Cross Project Task', { projectId: projectB.id, status: 'next' });
+        expect(addResult.success).toBe(true);
+        if (!addResult.id) return;
+
+        const result = await updateTask(addResult.id, {
+            projectId: projectB.id,
+            sectionId: sectionA.id,
+        });
+
+        expect(result).toEqual({ success: false, error: 'Section does not belong to project' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.id === addResult.id)!;
+        expect(task.projectId).toBe(projectB.id);
+        expect(task.sectionId).toBeUndefined();
+    });
+
+    it('should clear action fields and preserve checklist data when a task becomes reference', () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        addTask('Reference Task', {
+            status: 'next',
+            startTime: '2025-01-01T08:00:00.000Z',
+            dueDate: '2025-01-01T09:00:00.000Z',
+            reviewAt: '2025-01-02T09:00:00.000Z',
+            recurrence: 'daily',
+            priority: 'high',
+            timeEstimate: '30min',
+            checklist: [{ id: 'c1', title: 'Subtask', isCompleted: false }],
+            isFocusedToday: true,
+            pushCount: 2,
+        });
+
+        const task = useTaskStore.getState().tasks[0];
+        updateTask(task.id, { status: 'reference' });
+
+        const updatedTask = useTaskStore.getState()._allTasks.find(t => t.id === task.id)!;
+        expect(updatedTask.status).toBe('reference');
+        expect(updatedTask.startTime).toBeUndefined();
+        expect(updatedTask.dueDate).toBeUndefined();
+        expect(updatedTask.reviewAt).toBeUndefined();
+        expect(updatedTask.recurrence).toBeUndefined();
+        expect(updatedTask.priority).toBeUndefined();
+        expect(updatedTask.timeEstimate).toBeUndefined();
+        expect(updatedTask.checklist).toEqual([{ id: 'c1', title: 'Subtask', isCompleted: false }]);
+        expect(updatedTask.isFocusedToday).toBe(false);
+        expect(updatedTask.pushCount).toBe(0);
+    });
+
+    it('duplicates tasks as true copies with fresh child ids', async () => {
+        const { addArea, addProject, addSection, addTask, duplicateTask } = useTaskStore.getState();
+        const area = await addArea('Work');
+        expect(area).toBeTruthy();
+        const project = await addProject('Launch', '#123456', { areaId: area!.id });
+        expect(project).toBeTruthy();
+        const section = await addSection(project!.id, 'Prep');
+        expect(section).toBeTruthy();
+        const addResult = await addTask('Launch Checklist', {
+            status: 'waiting',
+            projectId: project!.id,
+            sectionId: section!.id,
+            startTime: '2026-02-01',
+            dueDate: '2026-02-10',
+            reviewAt: '2026-02-05',
+            checklist: [
+                { id: 'c1', title: 'Pack charger', isCompleted: true },
+                { id: 'c2', title: 'Print agenda', isCompleted: false },
+            ],
+            attachments: [
+                {
+                    id: 'a1',
+                    kind: 'file',
+                    title: 'Agenda',
+                    uri: '/tmp/agenda.pdf',
+                    cloudKey: 'attachments/a1.pdf',
+                    fileHash: 'hash-a1',
+                    localStatus: 'available',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+                {
+                    id: 'a2',
+                    kind: 'link',
+                    title: 'Spec',
+                    uri: 'https://example.com/spec',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+            ],
+        });
+        expect(addResult.success).toBe(true);
+
+        const duplicateResult = await duplicateTask(addResult.id!, false);
+        expect(duplicateResult.success).toBe(true);
+        expect(duplicateResult.id).toBeTruthy();
+
+        const duplicatedTask = useTaskStore.getState()._allTasks.find((task) => (
+            task.id !== addResult.id && task.title === 'Launch Checklist'
+        ));
+        expect(duplicatedTask?.id).toBe(duplicateResult.id);
+        expect(duplicatedTask?.title).toBe('Launch Checklist');
+        expect(duplicatedTask?.status).toBe('waiting');
+        expect(duplicatedTask?.completedAt).toBeUndefined();
+        expect(duplicatedTask?.projectId).toBe(project!.id);
+        expect(duplicatedTask?.sectionId).toBe(section!.id);
+        expect(duplicatedTask?.areaId).toBeUndefined();
+        expect(duplicatedTask?.startTime).toBe('2026-02-01');
+        expect(duplicatedTask?.dueDate).toBe('2026-02-10');
+        expect(duplicatedTask?.reviewAt).toBe('2026-02-05');
+        expect(duplicatedTask?.checklist?.map((item) => ({
+            title: item.title,
+            isCompleted: item.isCompleted,
+        }))).toEqual([
+            { title: 'Pack charger', isCompleted: true },
+            { title: 'Print agenda', isCompleted: false },
+        ]);
+        expect(duplicatedTask?.checklist?.map((item) => item.id)).not.toEqual(['c1', 'c2']);
+        expect(duplicatedTask?.attachments?.map((attachment) => ({
+            id: attachment.id,
+            title: attachment.title,
+            uri: attachment.uri,
+            cloudKey: attachment.cloudKey,
+            fileHash: attachment.fileHash,
+            localStatus: attachment.localStatus,
+        }))).toEqual([
+            {
+                id: expect.not.stringMatching(/^a2$/),
+                title: 'Spec',
+                uri: 'https://example.com/spec',
+                cloudKey: undefined,
+                fileHash: undefined,
+                localStatus: undefined,
+            },
+        ]);
+    });
+
+    it.each([
+        { status: 'next', asNextAction: false },
+        { status: 'reference', asNextAction: false },
+        { status: 'next', asNextAction: true },
+        { status: 'reference', asNextAction: true },
+    ] satisfies { status: Task['status']; asNextAction: boolean }[])(
+        'preserves mixed checklist progress when duplicating $status with asNextAction=$asNextAction',
+        async ({ status, asNextAction }) => {
+            const { addTask, duplicateTask, updateTask } = useTaskStore.getState();
+            const added = await addTask('Reusable checklist', { status, checklist: [
+                { id: 'checked', title: 'Finished step', isCompleted: true },
+                { id: 'unchecked', title: 'Remaining step', isCompleted: false },
+            ] });
+            const source = structuredClone(useTaskStore.getState()._tasksById.get(added.id!)!);
+            const copyId = generateUUID();
+            expect(await duplicateTask(source.id, asNextAction, copyId)).toMatchObject({ success: true, id: copyId });
+            const copy = useTaskStore.getState()._tasksById.get(copyId)!;
+            expect(copy.id).not.toBe(source.id);
+            expect(copy.status).toBe(asNextAction ? 'next' : status);
+            expect(copy.checklist?.map(({ title, isCompleted }) => ({ title, isCompleted })))
+                .toEqual(source.checklist?.map(({ title, isCompleted }) => ({ title, isCompleted })));
+            const sourceIds = new Set([source.id, ...source.checklist!.map((item) => item.id)]);
+            const copyIds = [copy.id, ...copy.checklist!.map((item) => item.id)];
+            expect(copyIds.every((id) => !sourceIds.has(id))).toBe(true);
+            expect(new Set(copyIds).size).toBe(copyIds.length);
+            const beforeReplay = structuredClone(useTaskStore.getState()._allTasks);
+            expect(await duplicateTask(source.id, asNextAction, copyId)).toMatchObject({ success: true, id: copyId });
+            expect(useTaskStore.getState()._allTasks).toEqual(beforeReplay);
+            expect(useTaskStore.getState()._tasksById.get(source.id)).toEqual(source);
+
+            await updateTask(copyId, { checklist: copy.checklist!.map((item, index) => index === 0
+                ? { ...item, title: 'Edited copy step', isCompleted: false } : item) });
+            expect(useTaskStore.getState()._tasksById.get(source.id)).toEqual(source);
+            expect(useTaskStore.getState()._tasksById.get(copyId)?.checklist?.[0])
+                .toMatchObject({ title: 'Edited copy step', isCompleted: false });
+            const beforeRefusedReplay = structuredClone(useTaskStore.getState()._allTasks);
+            expect(await duplicateTask(source.id, asNextAction, copyId)).toMatchObject({ success: false });
+            expect(useTaskStore.getState()._allTasks).toEqual(beforeRefusedReplay);
+        },
+    );
+
+    it('shows the duplicated task in the visible list immediately', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const addResult = await addTask('Context Bank', { status: 'reference' });
+        expect(addResult.success).toBe(true);
+
+        const visibleBefore = useTaskStore.getState().tasks.filter((task) => task.title === 'Context Bank');
+        expect(visibleBefore).toHaveLength(1);
+
+        const duplicateResult = await duplicateTask(addResult.id!, false);
+        expect(duplicateResult.success).toBe(true);
+
+
+        const visibleAfter = useTaskStore.getState().tasks.filter((task) => task.title === 'Context Bank');
+        expect(visibleAfter).toHaveLength(2);
+        expect(useTaskStore.getState()._tasksById.get(duplicateResult.id!)?.title).toBe('Context Bank');
+    });
+
+    it('places a Board copy immediately after its source with its own board order', async () => {
+        const { addTask, duplicateTask, updateTask } = useTaskStore.getState();
+        const a = (await addTask('A', { status: 'next' })).id!;
+        const b = (await addTask('B', { status: 'next' })).id!;
+        const c = (await addTask('C', { status: 'next' })).id!;
+        await updateTask(a, { boardOrder: 0 });
+        await updateTask(b, { boardOrder: 1024 });
+        await updateTask(c, { boardOrder: 2048 });
+        const copy = await duplicateTask(b, false);
+        const tasks = useTaskStore.getState().tasks.filter((task) => [a, b, c, copy.id].includes(task.id));
+        expect(sortTasksByBoardOrder(tasks).map((task) => task.id)).toEqual([a, b, copy.id, c]);
+        expect(tasks.find((task) => task.id === copy.id)?.boardOrder).not.toBe(1024);
+    });
+
+    it('duplicates an unordered task without changing other rows or losing a concurrent completion', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        vi.setSystemTime(new Date('2026-09-24T12:00:00.000Z'));
+        const ids = await Promise.all(Array.from({ length: 31 }, (_, index) => addTask(`Task ${index}`, { status: 'next' })));
+        const before = useTaskStore.getState()._allTasks.map((task) => ({ ...task }));
+        const completed = { ...before[5], status: 'done' as const, completedAt: '2026-09-24T12:00:30.000Z', updatedAt: '2026-09-24T12:00:30.000Z', rev: before[5].rev + 1, revBy: 'device-b' };
+        vi.setSystemTime(new Date('2026-09-24T12:01:00.000Z'));
+        const copy = await duplicateTask(ids[0].id!, false);
+        const after = useTaskStore.getState()._allTasks;
+        expect(after).toHaveLength(32);
+        expect(after.filter((task) => !before.some((old) => old.id === task.id))).toHaveLength(1);
+        expect(after.find((task) => task.id === copy.id)).toMatchObject({ boardOrder: undefined, rev: 1 });
+        expect(after.filter((task) => before.some((old) => old.id === task.id))).toEqual(before);
+        const merged = mergeAppData(mockAppData(after), mockAppData(before.map((task, index) => index === 5 ? completed : task)), { nowIso: '2026-09-24T12:01:00.000Z' });
+        expect(merged.tasks.find((task) => task.id === completed.id)?.status).toBe('done');
+    });
+
+    it('leaves a copy unordered when no whole-number Board slot is free', async () => {
+        const { addTask, duplicateTask, updateTask } = useTaskStore.getState();
+        const source = (await addTask('Source', { status: 'next' })).id!;
+        const next = (await addTask('Next', { status: 'next' })).id!;
+        await updateTask(source, { boardOrder: 1024 });
+        await updateTask(next, { boardOrder: 1025 });
+        const before = useTaskStore.getState()._allTasks.map((task) => ({ ...task }));
+        const copy = await duplicateTask(source, false);
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === copy.id)?.boardOrder).toBeUndefined();
+        expect(useTaskStore.getState()._allTasks.slice(0, 2)).toEqual(before);
+    });
+
+    it('reuses a Board copy id for the same source and refuses another source', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const a = (await addTask('A', { status: 'next' })).id!;
+        const b = (await addTask('B', { status: 'next' })).id!;
+        const copyId = generateUUID();
+        expect(await duplicateTask(a, false, copyId)).toMatchObject({ success: true, id: copyId });
+        const before = useTaskStore.getState()._allTasks.map((task) => [task.id, task.rev]);
+        expect(await duplicateTask(a, false, copyId)).toMatchObject({ success: true, id: copyId });
+        expect(await duplicateTask(b, false, copyId)).toMatchObject({ success: false });
+        expect(useTaskStore.getState()._allTasks.map((task) => [task.id, task.rev])).toEqual(before);
+    });
+
+    it('reuses the requested copy even when an earlier duplicate has identical fields', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const a = (await addTask('Same', { status: 'next' })).id!;
+        expect((await duplicateTask(a, false)).success).toBe(true);
+        const copyId = generateUUID();
+        expect(await duplicateTask(a, false, copyId)).toMatchObject({ success: true, id: copyId });
+        const before = useTaskStore.getState()._allTasks.map((task) => [task.id, task.rev]);
+        expect(await duplicateTask(a, false, copyId)).toMatchObject({ success: true, id: copyId });
+        expect(useTaskStore.getState()._allTasks.map((task) => [task.id, task.rev])).toEqual(before);
+    });
+
+    it('sends a duplicated done task back to the Inbox to be re-clarified', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const addResult = await addTask('Weekly review', {
+            status: 'done',
+            completedAt: '2026-02-01T00:00:00.000Z',
+            checklist: [
+                { id: 'd1', title: 'Clear inbox', isCompleted: true },
+                { id: 'd2', title: 'Review projects', isCompleted: true },
+            ],
+        });
+        expect(addResult.success).toBe(true);
+
+        const duplicateResult = await duplicateTask(addResult.id!, false);
+        expect(duplicateResult.success).toBe(true);
+
+        const copy = useTaskStore.getState()._allTasks.find((task) => task.id === duplicateResult.id);
+        expect(copy?.status).toBe('inbox');
+        expect(copy?.completedAt).toBeUndefined();
+        expect(copy?.checklist?.every((item) => item.isCompleted === true)).toBe(true);
+    });
+
+
+    it('drops focus position and project-archive metadata from the copy', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const source = await addTask('Ship release', {
+            status: 'next',
+            isFocusedToday: true,
+            focusOrder: 3,
+            statusBeforeProjectArchive: 'next',
+            completedAtBeforeProjectArchive: null,
+            isFocusedTodayBeforeProjectArchive: true,
+            projectArchivedAt: '2026-02-01T00:00:00.000Z',
+        });
+        const copy = await duplicateTask(source.id!, false);
+
+        const copied = useTaskStore.getState()._tasksById.get(copy.id!);
+        expect(copied?.isFocusedToday).toBe(false);
+        expect(copied?.focusOrder).toBeUndefined();
+        expect(copied?.statusBeforeProjectArchive).toBeUndefined();
+        expect(copied?.completedAtBeforeProjectArchive).toBeUndefined();
+        expect(copied?.isFocusedTodayBeforeProjectArchive).toBeUndefined();
+        expect(copied?.projectArchivedAt).toBeUndefined();
+    });
+
+    it('keeps the source status when duplicating a task that is not done', async () => {
+        const { addTask, duplicateTask } = useTaskStore.getState();
+        const someday = await addTask('Packing list template', { status: 'someday' });
+        const copy = await duplicateTask(someday.id!, false);
+
+        expect(useTaskStore.getState()._tasksById.get(copy.id!)?.status).toBe('someday');
+    });
+
+    it('converts a task with a checklist into a section of its project', async () => {
+        const { addProject, addTask, convertTaskToSection } = useTaskStore.getState();
+        const project = await addProject('Move house', '#123456');
+        expect(project).toBeTruthy();
+        const addResult = await addTask('Pack the kitchen', {
+            status: 'next',
+            projectId: project!.id,
+            description: 'Boxes are in the garage.',
+            checklist: [
+                { id: 'c1', title: 'Wrap the glasses', isCompleted: true },
+                { id: 'c2', title: 'Empty the fridge', isCompleted: false },
+                { id: 'c3', title: '   ', isCompleted: false },
+            ],
+        });
+        expect(addResult.success).toBe(true);
+        await flushPendingSave();
+        vi.mocked(mockStorage.saveData).mockClear();
+        const listener = vi.fn();
+        const unsubscribe = useTaskStore.subscribe(listener);
+        try {
+            const result = await convertTaskToSection(addResult.id!);
+            expect(result.success).toBe(true);
+            expect(listener).toHaveBeenCalledTimes(1);
+            const state = useTaskStore.getState();
+            const section = state._allSections.find((candidate) => candidate.id === result.id);
+            expect(section).toMatchObject({
+                projectId: project!.id,
+                title: 'Pack the kitchen',
+                description: 'Boxes are in the garage.',
+            });
+
+            const sectionTasks = state._allTasks
+                .filter((candidate) => candidate.sectionId === section!.id && !candidate.deletedAt)
+                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+            expect(sectionTasks.map((candidate) => [candidate.title, candidate.status])).toEqual([
+                ['Wrap the glasses', 'done'],
+                ['Empty the fridge', 'next'],
+            ]);
+            expect(sectionTasks[0].completedAt).toBeTruthy();
+            expect(sectionTasks.every((candidate) => candidate.projectId === project!.id)).toBe(true);
+            expect(sectionTasks.every((candidate) => candidate.isFocusedToday === false)).toBe(true);
+            expect(sectionTasks.every((candidate) => candidate.suppressStrideReminders === false)).toBe(true);
+
+            const convertedData: AppData = {
+                tasks: state._allTasks,
+                projects: state._allProjects,
+                sections: state._allSections,
+                areas: state._allAreas,
+                people: state._allPeople,
+                settings: state.settings,
+            };
+            const alignedMerge = mergeAppData(convertedData, convertedData, { nowIso: section!.updatedAt });
+            expect(computeSyncPayloadFingerprint(convertedData)).toBe(computeSyncPayloadFingerprint(alignedMerge));
+
+            const source = state._allTasks.find((candidate) => candidate.id === addResult.id);
+            expect(source?.deletedAt).toBeTruthy();
+            expect(source?.purgedAt).toBeUndefined();
+
+            await flushPendingSave();
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+            const persisted = vi.mocked(mockStorage.saveData).mock.calls[0]?.[0] as AppData;
+            expect(persisted.sections.some((candidate) => candidate.id === section!.id)).toBe(true);
+            expect(persisted.tasks.filter((candidate) => candidate.sectionId === section!.id)).toHaveLength(2);
+            expect(persisted.tasks.find((candidate) => candidate.id === addResult.id)?.deletedAt).toBeTruthy();
+
+            const collectionsBeforeRetry = structuredClone({
+                tasks: state._allTasks,
+                sections: state._allSections,
+            });
+            const retry = await convertTaskToSection(addResult.id!);
+            expect(retry).toEqual({ success: false, error: 'Task not found' });
+            expect(useTaskStore.getState()._allTasks).toEqual(collectionsBeforeRetry.tasks);
+            expect(useTaskStore.getState()._allSections).toEqual(collectionsBeforeRetry.sections);
+            expect(listener).toHaveBeenCalledTimes(1);
+            await flushPendingSave();
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('refuses to convert a task that is not in a project', async () => {
+        const { addTask, convertTaskToSection } = useTaskStore.getState();
+        const addResult = await addTask('Loose task', { status: 'next' });
+        expect(addResult.success).toBe(true);
+        await flushPendingSave();
+        vi.mocked(mockStorage.saveData).mockClear();
+        const collectionsBefore = structuredClone({
+            tasks: useTaskStore.getState()._allTasks,
+            sections: useTaskStore.getState()._allSections,
+        });
+
+        const result = await convertTaskToSection(addResult.id!);
+        expect(result.success).toBe(false);
+        expect(useTaskStore.getState()._allTasks).toEqual(collectionsBefore.tasks);
+        expect(useTaskStore.getState()._allSections).toEqual(collectionsBefore.sections);
+        await flushPendingSave();
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+    });
+
+    it('creates a project from a task without replacing the task', async () => {
+        const { addArea, addTask, promoteTaskToProject } = useTaskStore.getState();
+        const area = await addArea('Work');
+        expect(area).toBeTruthy();
+        const addResult = await addTask('Plan launch', {
+            status: 'next',
+            areaId: area!.id,
+            description: 'Coordinate launch work with the team.',
+            contexts: ['@desk'],
+            tags: ['#launch'],
+        });
+        expect(addResult.success).toBe(true);
+
+        const promoteResult = await promoteTaskToProject(addResult.id!);
+        expect(promoteResult.success).toBe(true);
+        expect(promoteResult.id).toBeTruthy();
+        expect(promoteResult.reused).toBe(false);
+
+        const project = useTaskStore.getState()._allProjects.find((candidate) => candidate.id === promoteResult.id);
+        expect(project).toMatchObject({
+            title: 'Plan launch',
+            areaId: area!.id,
+            status: 'active',
+            supportNotes: 'Coordinate launch work with the team.',
+            tagIds: ['#launch'],
+        });
+
+        const promotedTask = useTaskStore.getState()._tasksById.get(addResult.id!);
+        expect(promotedTask).toMatchObject({
+            id: addResult.id,
+            title: 'Plan launch',
+            status: 'next',
+            description: 'Coordinate launch work with the team.',
+            projectId: project!.id,
+            contexts: ['@desk'],
+            tags: ['#launch'],
+        });
+        expect(promotedTask?.areaId).toBeUndefined();
+    });
+
+    it('reuses an existing same-named project when promoting', async () => {
+        const { addProject, addTask, promoteTaskToProject } = useTaskStore.getState();
+        const existing = await addProject('Plan launch', '#123456');
+        expect(existing).toBeTruthy();
+        const projectCountBefore = useTaskStore.getState()._allProjects.length;
+
+        const addResult = await addTask('plan launch', { status: 'next' });
+        expect(addResult.success).toBe(true);
+
+        const promoteResult = await promoteTaskToProject(addResult.id!);
+        expect(promoteResult.success).toBe(true);
+        expect(promoteResult.reused).toBe(true);
+        expect(promoteResult.id).toBe(existing!.id);
+        expect(useTaskStore.getState()._allProjects.length).toBe(projectCountBefore);
+        expect(useTaskStore.getState()._tasksById.get(addResult.id!)?.projectId).toBe(existing!.id);
+    });
+
+    it('reuses a same-named project in the task area when promoting', async () => {
+        const { addTask, promoteTaskToProject } = useTaskStore.getState();
+        const homeArea = createStoreArea('area-home', { name: 'Home' });
+        const workArea = createStoreArea('area-work', { name: 'Work' });
+        const homeProject = createStoreProject('project-home', { title: 'Plan launch', areaId: homeArea.id, order: 0 });
+        const workProject = createStoreProject('project-work', { title: 'Plan launch', areaId: workArea.id, order: 0 });
+        useTaskStore.setState({
+            areas: [homeArea, workArea],
+            projects: [homeProject, workProject],
+            _allAreas: [homeArea, workArea],
+            _allProjects: [homeProject, workProject],
+            _areasById: buildEntityMap([homeArea, workArea]),
+            _projectsById: buildEntityMap([homeProject, workProject]),
+        });
+
+        const addResult = await addTask('plan launch', { status: 'next', areaId: workArea.id });
+        expect(addResult.success).toBe(true);
+
+        const promoteResult = await promoteTaskToProject(addResult.id!);
+        expect(promoteResult.success).toBe(true);
+        expect(promoteResult.reused).toBe(true);
+        expect(promoteResult.id).toBe(workProject.id);
+        expect(useTaskStore.getState()._allProjects).toHaveLength(2);
+        expect(useTaskStore.getState()._tasksById.get(addResult.id!)?.projectId).toBe(workProject.id);
+    });
+
+    it('creates a project in the task area instead of reusing another area match', async () => {
+        const { addTask, promoteTaskToProject } = useTaskStore.getState();
+        const homeArea = createStoreArea('area-home', { name: 'Home' });
+        const workArea = createStoreArea('area-work', { name: 'Work' });
+        const homeProject = createStoreProject('project-home', { title: 'Plan launch', areaId: homeArea.id, order: 0 });
+        useTaskStore.setState({
+            areas: [homeArea, workArea],
+            projects: [homeProject],
+            _allAreas: [homeArea, workArea],
+            _allProjects: [homeProject],
+            _areasById: buildEntityMap([homeArea, workArea]),
+            _projectsById: buildEntityMap([homeProject]),
+        });
+
+        const addResult = await addTask('plan launch', { status: 'next', areaId: workArea.id });
+        expect(addResult.success).toBe(true);
+
+        const promoteResult = await promoteTaskToProject(addResult.id!);
+        expect(promoteResult.success).toBe(true);
+        expect(promoteResult.reused).toBe(false);
+        expect(promoteResult.id).toBeTruthy();
+        expect(promoteResult.id).not.toBe(homeProject.id);
+
+        const created = useTaskStore.getState()._allProjects.find((project) => project.id === promoteResult.id);
+        expect(created).toMatchObject({
+            title: 'plan launch',
+            areaId: workArea.id,
+            status: 'active',
+        });
+        expect(useTaskStore.getState()._tasksById.get(addResult.id!)?.projectId).toBe(promoteResult.id);
+    });
+
+    it('does not reuse an archived same-named project when promoting', async () => {
+        const { addProject, addTask, promoteTaskToProject } = useTaskStore.getState();
+        const archived = await addProject('Plan launch', '#123456', { status: 'archived' });
+        expect(archived).toBeTruthy();
+
+        const addResult = await addTask('plan launch', { status: 'next' });
+        expect(addResult.success).toBe(true);
+
+        const promoteResult = await promoteTaskToProject(addResult.id!);
+        expect(promoteResult.success).toBe(true);
+        expect(promoteResult.reused).toBe(false);
+        expect(promoteResult.id).toBeTruthy();
+        expect(promoteResult.id).not.toBe(archived!.id);
+
+        const project = useTaskStore.getState()._allProjects.find((candidate) => candidate.id === promoteResult.id);
+        expect(project).toMatchObject({
+            title: 'plan launch',
+            status: 'active',
+        });
+        expect(useTaskStore.getState()._tasksById.get(addResult.id!)?.projectId).toBe(promoteResult.id);
+    });
+
+    it('rejects promoting a fourth task into today focus', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+
+        const taskIds: string[] = [];
+        for (const title of ['Focused 1', 'Focused 2', 'Focused 3', 'Focused 4']) {
+            const result = await addTask(title, { status: 'next' });
+            expect(result.success).toBe(true);
+            expect(result.id).toBeTruthy();
+            if (result.id) taskIds.push(result.id);
+        }
+
+        for (const taskId of taskIds.slice(0, 3)) {
+            const result = await updateTask(taskId, { isFocusedToday: true });
+            expect(result).toEqual({ success: true });
+        }
+        await flushPendingSave();
+        (mockStorage.saveData as ReturnType<typeof vi.fn>).mockClear();
+
+        const fourthResult = await updateTask(taskIds[3], { isFocusedToday: true });
+
+        expect(fourthResult).toEqual({ success: false, error: 'Focus limit of 3 reached' });
+        const focusedTasks = useTaskStore.getState()._allTasks.filter((task) => task.isFocusedToday === true && !task.deletedAt);
+        expect(focusedTasks).toHaveLength(3);
+        expect(focusedTasks.map((task) => task.id)).toEqual(taskIds.slice(0, 3));
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === taskIds[3])?.isFocusedToday).not.toBe(true);
+        expect(useTaskStore.getState().error).toBe('Focus limit of 3 reached');
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+    });
+
+    it('rejects moving a queued Focus star into a full current Focus', async () => {
+        const { addTask, updateSettings, updateTask } = useTaskStore.getState();
+        await updateSettings({ gtd: { focusTaskLimit: 1 } });
+        const queued = await addTask('Queued focus', {
+            status: 'next', startTime: '2099-01-01', isFocusedToday: true,
+        });
+        const current = await addTask('Current focus', { status: 'next', isFocusedToday: true });
+        expect(queued.success && current.success).toBe(true);
+        expect(useTaskStore.getState().getFocusedCount()).toBe(1);
+        const result = await updateTask(queued.id!, { startTime: undefined });
+        expect(result).toEqual({ success: false, error: 'Focus limit of 1 reached' });
+        expect(useTaskStore.getState()._tasksById.get(queued.id!)).toMatchObject({
+            isFocusedToday: true, startTime: '2099-01-01',
+        });
+        expect(useTaskStore.getState().getFocusedCount()).toBe(1);
+    });
+
+    it('keeps the star and status invariant on task updates', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+
+        const created = await addTask('Unclarified capture', {});
+        expect(created.success).toBe(true);
+        const id = created.id!;
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('inbox');
+
+
+        const starResult = await updateTask(id, { isFocusedToday: true });
+        expect(starResult).toEqual({ success: true });
+        let task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('next');
+        expect(task?.isFocusedToday).toBe(true);
+
+
+        const demoteResult = await updateTask(id, { status: 'inbox', isFocusedToday: true });
+        expect(demoteResult).toEqual({ success: true });
+        task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('inbox');
+        expect(task?.isFocusedToday).toBe(false);
+
+
+        await updateTask(id, { status: 'waiting', isFocusedToday: false });
+        const starWaiting = await updateTask(id, { isFocusedToday: true });
+        expect(starWaiting).toEqual({ success: true });
+        task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('waiting');
+        expect(task?.isFocusedToday).toBe(true);
+    });
+
+    it('resolves the focus star action from store state', async () => {
+        const { addTask, getFocusStarAction } = useTaskStore.getState();
+        const created = await addTask('Starrable', { status: 'next' });
+        const task = useTaskStore.getState()._tasksById.get(created.id!)!;
+
+        expect(getFocusStarAction(task)).toMatchObject({
+            isFocused: false,
+            canToggle: true,
+            blockedReason: null,
+        });
+
+        const inbox = await addTask('Unclarified', {});
+        const inboxTask = useTaskStore.getState()._tasksById.get(inbox.id!)!;
+        expect(useTaskStore.getState().getFocusStarAction(inboxTask).blockedReason).toBe('clarify');
+        expect(useTaskStore.getState().getFocusStarAction(inboxTask, { allowUnclarified: true }).canToggle).toBe(true);
+
+        const rowAction = useTaskStore.getState().getFocusStarAction(inboxTask, { promoteInbox: true });
+        expect(rowAction).toMatchObject({ canToggle: true, patch: { isFocusedToday: true, status: 'next' } });
+        await useTaskStore.getState().updateTask(inboxTask.id, rowAction.patch);
+        expect(useTaskStore.getState()._tasksById.get(inboxTask.id)).toMatchObject({ status: 'next', isFocusedToday: true });
+    });
+
+    it('uses the configured today focus limit when promoting tasks', async () => {
+        const { addTask, updateSettings, updateTask } = useTaskStore.getState();
+        await updateSettings({ gtd: { focusTaskLimit: 5 } });
+
+        const taskIds: string[] = [];
+        for (const title of ['Focused 1', 'Focused 2', 'Focused 3', 'Focused 4', 'Focused 5', 'Focused 6']) {
+            const result = await addTask(title, { status: 'next' });
+            expect(result.success).toBe(true);
+            if (result.id) taskIds.push(result.id);
+        }
+
+        for (const taskId of taskIds.slice(0, 5)) {
+            const result = await updateTask(taskId, { isFocusedToday: true });
+            expect(result).toEqual({ success: true });
+        }
+        const sixthResult = await updateTask(taskIds[5], { isFocusedToday: true });
+
+        expect(sixthResult).toEqual({ success: false, error: 'Focus limit of 5 reached' });
+        expect(useTaskStore.getState().getDerivedState().focusedCount).toBe(5);
+    });
+
+    it('applies focus eligibility and limit when adding focused tasks', async () => {
+        const { addTask } = useTaskStore.getState();
+
+        const focusedIds: string[] = [];
+        for (const title of ['Focused 1', 'Focused 2', 'Focused 3']) {
+            const result = await addTask(title, { status: 'next', isFocusedToday: true });
+            expect(result.success).toBe(true);
+            if (result.id) focusedIds.push(result.id);
+        }
+
+        const overLimit = await addTask('Over limit', { status: 'next', isFocusedToday: true });
+        const unclarified = await addTask('Inbox focus request', { isFocusedToday: true });
+
+        expect(overLimit.success).toBe(true);
+        expect(unclarified.success).toBe(true);
+        const state = useTaskStore.getState();
+        expect(state.getDerivedState().focusedCount).toBe(3);
+        expect(focusedIds.every((id) => state._tasksById.get(id)?.isFocusedToday === true)).toBe(true);
+        expect(state._tasksById.get(overLimit.id ?? '')?.isFocusedToday).toBe(false);
+        expect(state._tasksById.get(unclarified.id ?? '')?.isFocusedToday).toBe(false);
+    });
+
+    it('applies the focus cap sequentially within one addTasks batch', async () => {
+        const { addTasks, updateSettings } = useTaskStore.getState();
+        await updateSettings({ gtd: { focusTaskLimit: 1 } });
+
+        const result = await addTasks([
+            { title: 'First focus capture', initialProps: { isFocusedToday: true } },
+            { title: 'Second focus capture', initialProps: { isFocusedToday: true } },
+        ]);
+
+        expect(result.success).toBe(true);
+        const [firstId, secondId] = result.ids ?? [];
+        const state = useTaskStore.getState();
+        expect(state._tasksById.get(firstId)).toMatchObject({ status: 'next', isFocusedToday: true });
+        expect(state._tasksById.get(secondId)).toMatchObject({ status: 'inbox', isFocusedToday: false });
+        expect(state.getDerivedState().focusedCount).toBe(1);
+    });
+
+    it('promotes a starred inbox capture to next so the star takes effect', async () => {
+        const { addTask } = useTaskStore.getState();
+
+
+        const result = await addTask('Capture into focus', { isFocusedToday: true });
+        expect(result.success).toBe(true);
+
+        const state = useTaskStore.getState();
+        const task = state._tasksById.get(result.id ?? '');
+        expect(task?.status).toBe('next');
+        expect(task?.isFocusedToday).toBe(true);
+        expect(state.getDerivedState().focusedCount).toBe(1);
+    });
+
+    it('leaves a starred inbox capture in inbox when the focus cap is full', async () => {
+        const { addTask } = useTaskStore.getState();
+
+        for (const title of ['Focused 1', 'Focused 2', 'Focused 3']) {
+            const seeded = await addTask(title, { status: 'next', isFocusedToday: true });
+            expect(seeded.success).toBe(true);
+        }
+
+
+        const blocked = await addTask('Capture into full focus', { isFocusedToday: true });
+        expect(blocked.success).toBe(true);
+
+        const state = useTaskStore.getState();
+        const task = state._tasksById.get(blocked.id ?? '');
+        expect(task?.isFocusedToday).toBe(false);
+        expect(task?.status).toBe('inbox');
+        expect(state.getDerivedState().focusedCount).toBe(3);
+    });
+
+    it('does not focus newly added sequential tasks blocked by an earlier action', async () => {
+        const { addProject, addTask } = useTaskStore.getState();
+
+        const projectResult = await addProject('Sequential project', '#2563EB', { isSequential: true });
+        expect(projectResult).not.toBeNull();
+        const projectId = projectResult!.id;
+        const first = await addTask('First action', { status: 'next', projectId });
+        const second = await addTask('Second action', { status: 'next', projectId, isFocusedToday: true });
+
+        expect(first.success).toBe(true);
+        expect(second.success).toBe(true);
+        const state = useTaskStore.getState();
+        expect(state._tasksById.get(second.id ?? '')?.isFocusedToday).toBe(false);
+        expect(state.getDerivedState().focusedCount).toBe(0);
+    });
+
+    it('allows new focus promotion after focused tasks are completed or moved to reference', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+
+        const taskIds: string[] = [];
+        for (const title of ['Focused 1', 'Focused 2', 'Focused 3', 'Next active']) {
+            const result = await addTask(title, { status: 'next' });
+            expect(result.success).toBe(true);
+            if (result.id) taskIds.push(result.id);
+        }
+
+        for (const taskId of taskIds.slice(0, 3)) {
+            await expect(updateTask(taskId, { isFocusedToday: true })).resolves.toEqual({ success: true });
+        }
+        await expect(updateTask(taskIds[0], { status: 'done' })).resolves.toEqual({ success: true });
+        await expect(updateTask(taskIds[1], { status: 'reference' })).resolves.toEqual({ success: true });
+
+        const result = await updateTask(taskIds[3], { isFocusedToday: true });
+
+        expect(result).toEqual({ success: true });
+        expect(useTaskStore.getState().getDerivedState().focusedCount).toBe(2);
+        expect(useTaskStore.getState()._tasksById.get(taskIds[3])?.isFocusedToday).toBe(true);
+    });
+
+    it('queues focus when a focused Next action is deferred to a future start date', async () => {
+        vi.setSystemTime(new Date('2026-05-02T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const result = await addTask('Focused later', { status: 'next', isFocusedToday: true });
+        expect(result.success).toBe(true);
+        const taskId = result.id;
+        expect(taskId).toBeTruthy();
+
+        await expect(updateTask(taskId!, { startTime: '2026-05-03' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(taskId!);
+        expect(task?.startTime).toBe('2026-05-03');
+        expect(task?.isFocusedToday).toBe(true);
+        expect(useTaskStore.getState().getDerivedState().focusedCount).toBe(0);
+    });
+
+    it('clears today focus when a schedule edit defers a starred recurring task on its due date', async () => {
+        vi.setSystemTime(new Date('2026-05-02T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const result = await addTask('Weekly chore', {
+            status: 'next',
+            isFocusedToday: true,
+            startTime: '2026-05-02',
+            dueDate: '2026-05-09',
+            recurrence: { rule: 'weekly' },
+        });
+        expect(result.success).toBe(true);
+        const taskId = result.id;
+        expect(taskId).toBeTruthy();
+
+
+        await expect(updateTask(taskId!, { startTime: undefined })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(taskId!);
+        expect(task?.startTime).toBeUndefined();
+        expect(task?.isFocusedToday).toBe(false);
+        expect(useTaskStore.getState().getDerivedState().focusedCount).toBe(0);
+    });
+
+    it('promotes an inbox task to next when a start date is set', async () => {
+        vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Unclarified capture', {});
+        expect(created.success).toBe(true);
+        const id = created.id!;
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('inbox');
+
+        await expect(updateTask(id, { startTime: '2026-07-15' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('next');
+        expect(task?.startTime).toBe('2026-07-15');
+    });
+
+    it('promotes an inbox task with a FUTURE start date but keeps it hidden until then', async () => {
+        vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Deferred clarify', {});
+        const id = created.id!;
+
+        await expect(updateTask(id, { startTime: '2026-08-01' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id)!;
+        expect(task.status).toBe('next');
+
+
+        expect(shouldShowTaskForStart(task, { showFutureStarts: false })).toBe(false);
+    });
+
+    it('does not promote someday or waiting tasks when a start date is set', async () => {
+        vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const someday = await addTask('Tickler', { status: 'someday' });
+        const waiting = await addTask('Follow-up', { status: 'waiting' });
+
+        await expect(updateTask(someday.id!, { startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+        await expect(updateTask(waiting.id!, { startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+
+        expect(useTaskStore.getState()._tasksById.get(someday.id!)?.status).toBe('someday');
+        expect(useTaskStore.getState()._tasksById.get(waiting.id!)?.status).toBe('waiting');
+    });
+
+    it('does not promote when a start date is cleared (undefined or null)', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const undefinedClear = await addTask('Clear undefined', {});
+        const nullClear = await addTask('Clear null', {});
+
+        await expect(updateTask(undefinedClear.id!, { startTime: undefined })).resolves.toEqual({ success: true });
+        await expect(updateTask(nullClear.id!, { startTime: null as unknown as undefined })).resolves.toEqual({ success: true });
+
+        expect(useTaskStore.getState()._tasksById.get(undefinedClear.id!)?.status).toBe('inbox');
+        expect(useTaskStore.getState()._tasksById.get(nullClear.id!)?.status).toBe('inbox');
+    });
+
+    it('does not promote when an unchanged start date is re-sent', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Dated inbox', { startTime: '2026-07-20' });
+        const id = created.id!;
+
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('next');
+
+        await updateTask(id, { status: 'inbox' });
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('inbox');
+
+        await expect(updateTask(id, { startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('inbox');
+    });
+
+    it('demotes a dated next task to inbox without re-promoting', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Dated next', { status: 'next', startTime: '2026-07-20' });
+        const id = created.id!;
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('next');
+
+        await expect(updateTask(id, { status: 'inbox' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('inbox');
+        expect(task?.startTime).toBe('2026-07-20');
+    });
+
+    it('lets an explicit status in the same patch win over start-date promotion', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const someday = await addTask('To someday', {});
+        const stayInbox = await addTask('Stay inbox', {});
+
+        await expect(updateTask(someday.id!, { status: 'someday', startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+        await expect(updateTask(stayInbox.id!, { status: 'inbox', startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+
+        expect(useTaskStore.getState()._tasksById.get(someday.id!)?.status).toBe('someday');
+        expect(useTaskStore.getState()._tasksById.get(stayInbox.id!)?.status).toBe('inbox');
+    });
+
+    it('promotes via start date while starring in the same patch', async () => {
+        vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Star and date', {});
+        const id = created.id!;
+
+        await expect(updateTask(id, { isFocusedToday: true, startTime: '2026-07-15' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('next');
+        expect(task?.isFocusedToday).toBe(true);
+    });
+
+    it('resets boardOrder when a start date promotes an inbox task', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Board inbox', {});
+        const id = created.id!;
+        await updateTask(id, { boardOrder: 42 });
+        expect(useTaskStore.getState()._tasksById.get(id)?.boardOrder).toBe(42);
+
+        await expect(updateTask(id, { startTime: '2026-07-20' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.status).toBe('next');
+        expect(task?.boardOrder).toBeUndefined();
+    });
+
+    it('clears focusOrder when a task leaves Focus', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Focused task', { status: 'next', isFocusedToday: true });
+        const id = created.id!;
+        await updateTask(id, { focusOrder: 3 });
+        expect(useTaskStore.getState()._tasksById.get(id)?.focusOrder).toBe(3);
+
+        await expect(updateTask(id, { isFocusedToday: false })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.isFocusedToday).toBe(false);
+        expect(task?.focusOrder).toBeUndefined();
+    });
+
+    it('preserves focusOrder when the same patch explicitly supplies it while leaving Focus', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const created = await addTask('Focused task', { status: 'next', isFocusedToday: true });
+        const id = created.id!;
+        await updateTask(id, { focusOrder: 3 });
+
+        await expect(updateTask(id, { isFocusedToday: false, focusOrder: 3 })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(id);
+        expect(task?.isFocusedToday).toBe(false);
+        expect(task?.focusOrder).toBe(3);
+    });
+
+    it('creates a task with a start date and no explicit status as next', async () => {
+        const { addTask } = useTaskStore.getState();
+        const created = await addTask('Dated capture', { startTime: '2026-07-20' });
+        expect(created.success).toBe(true);
+        expect(useTaskStore.getState()._tasksById.get(created.id!)?.status).toBe('next');
+    });
+
+    it('honours an explicit inbox status at creation even with a start date', async () => {
+        const { addTask } = useTaskStore.getState();
+        const created = await addTask('Explicit inbox', { status: 'inbox', startTime: '2026-07-20' });
+        expect(useTaskStore.getState()._tasksById.get(created.id!)?.status).toBe('inbox');
+    });
+
+    it('honours an explicit someday status at creation even with a start date', async () => {
+        const { addTask } = useTaskStore.getState();
+        const created = await addTask('Explicit someday', { status: 'someday', startTime: '2026-07-20' });
+        expect(useTaskStore.getState()._tasksById.get(created.id!)?.status).toBe('someday');
+    });
+
+    it('promotes an inbox task to next via batchUpdateTasks start-date patch', async () => {
+        const { addTask, batchUpdateTasks } = useTaskStore.getState();
+        const created = await addTask('Batch inbox', {});
+        const id = created.id!;
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('inbox');
+
+        await expect(batchUpdateTasks([{ id, updates: { startTime: '2026-07-20' } }])).resolves.toEqual({ success: true });
+
+        expect(useTaskStore.getState()._tasksById.get(id)?.status).toBe('next');
+    });
+
+    it('derives date-coherence issues from updateTask without auto-mutating dates', async () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        const result = await addTask('Conflicting dates', { status: 'next', dueDate: '2026-04-24' });
+        expect(result.success).toBe(true);
+        const taskId = result.id;
+        expect(taskId).toBeTruthy();
+
+        await expect(updateTask(taskId!, { startTime: '2026-04-25' })).resolves.toEqual({ success: true });
+
+        const task = useTaskStore.getState()._tasksById.get(taskId!);
+        expect(task?.startTime).toBe('2026-04-25');
+        expect(task?.dueDate).toBe('2026-04-24');
+        expect(useTaskStore.getState().getDerivedState().dateCoherenceIssuesByTaskId.get(taskId!)).toEqual([{
+            code: 'start_after_due',
+            field: 'startTime',
+            relatedField: 'dueDate',
+        }]);
+    });
+
+    it('stamps the GTD sync time when the focus limit changes', async () => {
+        vi.setSystemTime(new Date('2026-03-21T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({ gtd: { focusTaskLimit: 5 } });
+
+        expect(useTaskStore.getState().settings.syncPreferencesUpdatedAt?.gtd).toBe('2026-03-21T12:00:00.000Z');
+    });
+
+    it('stamps the GTD sync time when the Focus grouping changes', async () => {
+        vi.setSystemTime(new Date('2026-03-21T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({ gtd: { focusGroupBy: 'project' } });
+
+        expect(useTaskStore.getState().settings.syncPreferencesUpdatedAt?.gtd).toBe('2026-03-21T12:00:00.000Z');
+    });
+
+    it('stamps the GTD sync time when naturalLanguageDates changes (#742)', async () => {
+        vi.setSystemTime(new Date('2026-07-16T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({ gtd: { naturalLanguageDates: false } });
+
+        expect(useTaskStore.getState().settings.gtd?.naturalLanguageDates).toBe(false);
+        expect(useTaskStore.getState().settings.syncPreferencesUpdatedAt?.gtd).toBe('2026-07-16T12:00:00.000Z');
+    });
+
+    it('stamps the GTD sync time when expanded GTD and capture settings change', async () => {
+        vi.setSystemTime(new Date('2026-08-29T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({
+            gtd: {
+                defaultCaptureMethod: 'audio',
+                weeklyReview: { includeContextStep: false },
+            },
+            quickAddAutoClean: true,
+            markdownEditorAssist: false,
+            features: { pomodoro: true },
+        });
+
+        expect(useTaskStore.getState().settings.syncPreferencesUpdatedAt?.gtd).toBe('2026-08-29T12:00:00.000Z');
+    });
+
+    it('does not stamp the GTD sync time for the device-local inbox presentation mode alone', async () => {
+        vi.setSystemTime(new Date('2026-08-29T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({
+            gtd: { inboxProcessing: { defaultMode: 'quick' } },
+        });
+
+        expect(useTaskStore.getState().settings.syncPreferencesUpdatedAt?.gtd).toBeUndefined();
+    });
+
+    it('prefers the renamed tag when deduplicating normalized tag collisions', async () => {
+        const { addProject, addTask, renameTag } = useTaskStore.getState();
+
+        const project = await addProject('Tagged Project', '#123456', {
+            status: 'active',
+            tagIds: ['BAR', 'foo'],
+        });
+        expect(project).not.toBeNull();
+        if (!project) return;
+
+        const taskResult = await addTask('Tagged Task', {
+            status: 'next',
+            projectId: project.id,
+            tags: ['BAR', 'foo'],
+        });
+        expect(taskResult.success).toBe(true);
+        expect(taskResult.id).toBeTruthy();
+        if (!taskResult.id) return;
+
+        await renameTag('foo', 'bar');
+
+        const updatedTask = useTaskStore.getState()._allTasks.find((task) => task.id === taskResult.id);
+        const updatedProject = useTaskStore.getState()._allProjects.find((item) => item.id === project.id);
+        expect(updatedTask?.tags).toEqual(['#bar']);
+        expect(updatedProject?.tagIds).toEqual(['#bar']);
+    });
+
+    it('allows case-only tag renames', async () => {
+        const { addProject, addTask, renameTag } = useTaskStore.getState();
+
+        const project = await addProject('Tagged Project', '#123456', {
+            status: 'active',
+            tagIds: ['#help'],
+        });
+        expect(project).not.toBeNull();
+        if (!project) return;
+
+        const taskResult = await addTask('Tagged Task', {
+            status: 'next',
+            projectId: project.id,
+            tags: ['#help'],
+        });
+        expect(taskResult.success).toBe(true);
+        expect(taskResult.id).toBeTruthy();
+        if (!taskResult.id) return;
+
+        await renameTag('#help', '#Help');
+
+        const updatedTask = useTaskStore.getState()._allTasks.find((task) => task.id === taskResult.id);
+        const updatedProject = useTaskStore.getState()._allProjects.find((item) => item.id === project.id);
+        expect(updatedTask?.tags).toEqual(['#Help']);
+        expect(updatedProject?.tagIds).toEqual(['#Help']);
+    });
+
+    it('allows case-only context renames', async () => {
+        const { addTask, renameContext } = useTaskStore.getState();
+
+        const taskResult = await addTask('Context Task', {
+            status: 'next',
+            contexts: ['@help'],
+        });
+        expect(taskResult.success).toBe(true);
+        expect(taskResult.id).toBeTruthy();
+        if (!taskResult.id) return;
+
+        await renameContext('@help', '@Help');
+
+        const updatedTask = useTaskStore.getState()._allTasks.find((task) => task.id === taskResult.id);
+        expect(updatedTask?.contexts).toEqual(['@Help']);
+    });
+
+    it('filters soft-deleted attachments from visible tasks while preserving tombstones in _allTasks', async () => {
+        vi.setSystemTime(new Date('2026-03-02T10:00:00.000Z'));
+        const now = '2026-03-01T10:00:00.000Z';
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 'task-with-attachments',
+                    title: 'Task with attachments',
+                    status: 'next',
+                    attachments: [
+                        {
+                            id: 'keep',
+                            kind: 'file',
+                            title: 'Keep',
+                            uri: 'file:///keep.txt',
+                            createdAt: now,
+                            updatedAt: now,
+                        },
+                        {
+                            id: 'deleted',
+                            kind: 'file',
+                            title: 'Deleted',
+                            uri: 'file:///deleted.txt',
+                            createdAt: now,
+                            updatedAt: now,
+                            deletedAt: now,
+                        },
+                    ],
+                    createdAt: now,
+                    updatedAt: now,
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        expect(useTaskStore.getState().tasks[0]?.attachments?.map((attachment) => attachment.id)).toEqual(['keep']);
+        expect(useTaskStore.getState()._allTasks[0]?.attachments?.map((attachment) => attachment.id)).toEqual([
+            'keep',
+            'deleted',
+        ]);
+    });
+
+    it('migrates uncustomized task editor layouts to lean defaults', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                gtd: {
+                    taskEditor: {
+                        hidden: [],
+                        defaultsVersion: 4,
+                    },
+                },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const taskEditor = useTaskStore.getState().settings.gtd?.taskEditor;
+        expect(taskEditor?.defaultsVersion).toBe(5);
+        expect(taskEditor?.hidden).toEqual(expect.arrayContaining([
+            'section',
+            'priority',
+            'energyLevel',
+            'timeEstimate',
+            'assignedTo',
+            'location',
+        ]));
+        expect(taskEditor?.hidden).not.toEqual(expect.arrayContaining([
+            'status',
+            'project',
+            'area',
+            'contexts',
+            'dueDate',
+        ]));
+    });
+
+    it('migrates the legacy Focus context grouping default to no grouping', async () => {
+        const nowIso = '2026-06-21T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                gtd: {
+                    focusGroupBy: 'context',
+                },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const { settings } = useTaskStore.getState();
+        expect(settings.gtd?.focusGroupBy).toBe('none');
+        expect(settings.gtd?.focusGroupByDefaultsVersion).toBe(1);
+        expect(settings.syncPreferencesUpdatedAt?.gtd).toBe(nowIso);
+    });
+
+    it('preserves explicitly versioned Focus context grouping preferences', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                gtd: {
+                    focusGroupBy: 'context',
+                    focusGroupByDefaultsVersion: 1,
+                },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const { settings } = useTaskStore.getState();
+        expect(settings.gtd?.focusGroupBy).toBe('context');
+        expect(settings.gtd?.focusGroupByDefaultsVersion).toBe(1);
+    });
+
+    it('should delete a task', () => {
+        const { addTask, deleteTask } = useTaskStore.getState();
+        addTask('Task to Delete');
+
+        const task = useTaskStore.getState().tasks[0];
+        deleteTask(task.id);
+
+        const { tasks } = useTaskStore.getState();
+        expect(tasks).toHaveLength(0);
+    });
+
+    it('auto-clears stale errors after ten seconds', () => {
+        useTaskStore.getState().setError('Temporary failure');
+
+        vi.advanceTimersByTime(10_000);
+
+        expect(useTaskStore.getState().error).toBeNull();
+    });
+
+    it('keeps save queue overflow errors visible until dismissed', () => {
+        useTaskStore.getState().setError(
+            'Save queue overflow: dropped 1 queued save(s) (versions 1-1) while keeping versions 2-2.'
+        );
+
+        vi.advanceTimersByTime(10_000);
+
+        expect(useTaskStore.getState().error).toBe(
+            'Save queue overflow: dropped 1 queued save(s) (versions 1-1) while keeping versions 2-2.'
+        );
+    });
+
+    it('does not replace a visible save queue overflow error with a transient error', () => {
+        useTaskStore.getState().setError(
+            'Save queue overflow: dropped 1 queued save(s) (versions 1-1) while keeping versions 2-2.'
+        );
+
+        useTaskStore.getState().setError('Temporary failure');
+        vi.advanceTimersByTime(10_000);
+
+        expect(useTaskStore.getState().error).toBe(
+            'Save queue overflow: dropped 1 queued save(s) (versions 1-1) while keeping versions 2-2.'
+        );
+    });
+
+    it('tracks filter changes as local data mutations', async () => {
+        vi.setSystemTime(new Date('2026-03-21T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({
+            filters: { areaId: 'area-2' },
+        });
+
+        const state = useTaskStore.getState();
+        expect(state.settings.filters?.areaId).toBe('area-2');
+        expect(state.lastDataChangeAt).toBe(new Date('2026-03-21T12:00:00.000Z').getTime());
+    });
+
+    it('tracks proxy changes as local data mutations', async () => {
+        vi.setSystemTime(new Date('2026-03-21T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' }, lastDataChangeAt: 0 });
+
+        await useTaskStore.getState().updateSettings({
+            network: { proxyUrl: 'http://proxy.local:8080' },
+        });
+
+        const state = useTaskStore.getState();
+        expect(state.settings.network?.proxyUrl).toBe('http://proxy.local:8080');
+        expect(state.lastDataChangeAt).toBe(new Date('2026-03-21T12:00:00.000Z').getTime());
+    });
+
+    it('merges appearance updates so density changes keep text size and task age', async () => {
+        await useTaskStore.getState().updateSettings({
+            appearance: {
+                textSize: 'large',
+                showTaskAge: true,
+            },
+        });
+
+        await useTaskStore.getState().updateSettings({
+            appearance: {
+                density: 'compact',
+            },
+        });
+
+        expect(useTaskStore.getState().settings.appearance).toEqual({
+            textSize: 'large',
+            showTaskAge: true,
+            density: 'compact',
+        });
+    });
+
+    it('tracks saved filter changes as synced local data mutations', async () => {
+        vi.setSystemTime(new Date('2026-03-21T12:00:00.000Z'));
+        useTaskStore.setState({ settings: { deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({
+            savedFilters: [{
+                id: 'filter-1',
+                name: 'Desk',
+                view: 'focus',
+                criteria: { contexts: ['@desk'] },
+                createdAt: '2026-03-21T12:00:00.000Z',
+                updatedAt: '2026-03-21T12:00:00.000Z',
+            }],
+        });
+
+        const state = useTaskStore.getState();
+        expect(state.settings.savedFilters?.[0]?.name).toBe('Desk');
+        expect(state.settings.syncPreferencesUpdatedAt?.savedFilters).toBe('2026-03-21T12:00:00.000Z');
+        expect(state.lastDataChangeAt).toBe(new Date('2026-03-21T12:00:00.000Z').getTime());
+    });
+
+    it('keeps immediate edits and deletes newer than restored saved-filter clocks', async () => {
+        const restoredAt = '2026-09-28T12:00:00.000Z';
+        vi.setSystemTime(new Date(restoredAt));
+        const filter = {
+            id: 'filter-1',
+            name: 'Backup name',
+            view: 'focus' as const,
+            criteria: {},
+            createdAt: '2026-09-01T00:00:00.000Z',
+            updatedAt: '2026-09-01T00:00:00.000Z',
+        };
+        const backup: AppData = {
+            tasks: [], projects: [], sections: [], areas: [], people: [],
+            settings: {
+                theme: 'dark',
+                savedFilters: [filter],
+                syncPreferences: { appearance: true, savedFilters: true },
+            },
+        };
+        const previousData: AppData = {
+            ...backup,
+            settings: {
+                theme: 'light',
+                savedFilters: [{ ...filter, updatedAt: restoredAt, deletedAt: restoredAt }],
+                syncPreferences: { appearance: true, savedFilters: true },
+                syncPreferencesUpdatedAt: { appearance: restoredAt, savedFilters: restoredAt },
+            },
+        };
+        const restored = prepareRestoredBackupDataForSync(backup, { previousData, restoredAt });
+        useTaskStore.setState({ settings: { ...restored.settings, deviceId: 'device-a' } });
+
+        await useTaskStore.getState().updateSettings({
+            theme: 'light',
+            savedFilters: restored.settings.savedFilters?.map((saved) => (
+                saved.id === filter.id
+                    ? { ...saved, name: 'Edited immediately', updatedAt: restoredAt }
+                    : saved
+            )),
+        });
+
+        const editedSettings = useTaskStore.getState().settings;
+        const editedFilter = editedSettings.savedFilters?.[0];
+        expect(Date.parse(editedSettings.syncPreferencesUpdatedAt?.appearance ?? '')).toBeGreaterThan(
+            Date.parse(restored.settings.syncPreferencesUpdatedAt?.appearance ?? ''),
+        );
+        expect(Date.parse(editedSettings.syncPreferencesUpdatedAt?.savedFilters ?? '')).toBeGreaterThan(
+            Date.parse(restored.settings.syncPreferencesUpdatedAt?.savedFilters ?? ''),
+        );
+        expect(Date.parse(editedFilter?.updatedAt ?? '')).toBeGreaterThan(
+            Date.parse(restored.settings.savedFilters?.[0]?.updatedAt ?? ''),
+        );
+        const editedData = { ...backup, settings: editedSettings };
+        const mergedEdit = mergeAppData(editedData, toRemoteSyncDocument(restored), { nowIso: restoredAt });
+        expect(mergedEdit.settings.theme).toBe('light');
+        expect(mergedEdit.settings.savedFilters?.[0]?.name).toBe('Edited immediately');
+
+        await useTaskStore.getState().updateSettings({
+            savedFilters: markSavedFilterDeleted(editedSettings.savedFilters, filter.id, restoredAt),
+        });
+
+        const deletedSettings = useTaskStore.getState().settings;
+        const deletedFilter = deletedSettings.savedFilters?.[0];
+        expect(Date.parse(deletedFilter?.deletedAt ?? '')).toBeGreaterThan(Date.parse(editedFilter?.updatedAt ?? ''));
+        const deletedData = { ...backup, settings: deletedSettings };
+        const remoteEdited = toRemoteSyncDocument(editedData);
+        const mergedDelete = mergeAppData(deletedData, remoteEdited, { nowIso: restoredAt });
+        expect(mergedDelete.settings.savedFilters?.[0]?.deletedAt).toBe(deletedFilter?.deletedAt);
+        expect(toRemoteSyncDocument(mergeAppData(mergedDelete, remoteEdited, { nowIso: restoredAt })))
+            .toEqual(toRemoteSyncDocument(mergedDelete));
+    });
+
+    it('does not treat sync bookkeeping updates as local data mutations', async () => {
+        useTaskStore.setState({ lastDataChangeAt: 123 });
+
+        await useTaskStore.getState().updateSettings({
+            lastSyncAt: '2026-03-21T12:00:00.000Z',
+            lastSyncStatus: 'success',
+            lastSyncError: undefined,
+        });
+
+        const state = useTaskStore.getState();
+        expect(state.settings.lastSyncAt).toBe('2026-03-21T12:00:00.000Z');
+        expect(state.settings.lastSyncStatus).toBe('success');
+        expect(state.lastDataChangeAt).toBe(123);
+    });
+
+    it('keeps entity maps synchronized when a same-slot task update arrives via setState', () => {
+        const first = createStoreTask('task-1');
+        const second = createStoreTask('task-2');
+        useTaskStore.setState({
+            tasks: [first, second],
+            _allTasks: [first, second],
+        });
+
+        const previousMap = useTaskStore.getState()._tasksById;
+        const updatedFirst = createStoreTask('task-1', {
+            title: 'Task task-1 updated',
+            updatedAt: '2026-04-02T00:00:00.000Z',
+            rev: 2,
+        });
+        useTaskStore.setState({
+            tasks: [updatedFirst, second],
+            _allTasks: [updatedFirst, second],
+        });
+
+        const state = useTaskStore.getState();
+        expect(state._tasksById).not.toBe(previousMap);
+        expect(state._tasksById.get(updatedFirst.id)).toBe(updatedFirst);
+        expect(state._tasksById.get(second.id)).toBe(second);
+    });
+
+    it('removes deleted ids from entity maps when a collection shrinks via setState', () => {
+        const visibleTask = createStoreTask('task-visible');
+        const deletedTask = createStoreTask('task-deleted', {
+            deletedAt: '2026-04-02T00:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [visibleTask],
+            _allTasks: [visibleTask, deletedTask],
+        });
+
+        useTaskStore.setState({
+            tasks: [visibleTask],
+            _allTasks: [visibleTask],
+        });
+
+        const state = useTaskStore.getState();
+        expect(state._tasksById.has(deletedTask.id)).toBe(false);
+        expect(state._tasksById.get(visibleTask.id)).toBe(visibleTask);
+    });
+
+    it('preserves tombstones when production compat setState writes only visible tasks', () => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        const visibleTask = createStoreTask('task-visible');
+        const deletedTask = createStoreTask('task-deleted', {
+            deletedAt: '2026-04-02T00:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [visibleTask],
+            _allTasks: [visibleTask, deletedTask],
+        });
+
+        try {
+            process.env.NODE_ENV = 'production';
+            const updatedVisibleTask = createStoreTask('task-visible', {
+                title: 'Updated visible task',
+                updatedAt: '2026-04-03T00:00:00.000Z',
+            });
+            useTaskStore.setState({ tasks: [updatedVisibleTask] });
+
+            const state = useTaskStore.getState();
+            expect(state.tasks).toEqual([updatedVisibleTask]);
+            expect(state._allTasks.map((task) => task.id).sort()).toEqual(['task-deleted', 'task-visible']);
+            expect(state._tasksById.get('task-visible')).toBe(updatedVisibleTask);
+            expect(state._tasksById.get('task-deleted')).toBe(deletedTask);
+        } finally {
+            process.env.NODE_ENV = originalNodeEnv;
+        }
+    });
+
+    it('ignores visible-only production compat setState inserts when all tasks is empty', () => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        const visibleTask = createStoreTask('task-visible');
+
+        try {
+            process.env.NODE_ENV = 'production';
+            useTaskStore.setState({ tasks: [visibleTask] });
+
+            const state = useTaskStore.getState();
+            expect(state.tasks).toEqual([]);
+            expect(state._allTasks).toEqual([]);
+            expect(state._tasksById.has('task-visible')).toBe(false);
+        } finally {
+            process.env.NODE_ENV = originalNodeEnv;
+        }
+    });
+
+    it('drops stale live tasks when production compat setState replaces visible tasks', () => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        const previousVisibleTask = createStoreTask('task-previous');
+        const nextVisibleTask = createStoreTask('task-next');
+        const deletedTask = createStoreTask('task-deleted', {
+            deletedAt: '2026-04-02T00:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [previousVisibleTask],
+            _allTasks: [previousVisibleTask, deletedTask],
+        });
+
+        try {
+            process.env.NODE_ENV = 'production';
+            useTaskStore.setState({ tasks: [nextVisibleTask] });
+
+            const state = useTaskStore.getState();
+            expect(state.tasks).toEqual([nextVisibleTask]);
+            expect(state._allTasks.map((task) => task.id).sort()).toEqual(['task-deleted', 'task-next']);
+            expect(state._tasksById.has('task-previous')).toBe(false);
+            expect(state._tasksById.get('task-next')).toBe(nextVisibleTask);
+            expect(state._tasksById.get('task-deleted')).toBe(deletedTask);
+        } finally {
+            process.env.NODE_ENV = originalNodeEnv;
+        }
+    });
+
+    describe('store write contract guard (development)', () => {
+        beforeEach(() => {
+            vi.stubEnv('NODE_ENV', 'development');
+        });
+
+        afterEach(() => {
+            vi.unstubAllEnvs();
+        });
+
+        it('throws when an update writes only the visible collection', () => {
+            const visibleTask = createStoreTask('task-visible');
+            expect(() => {
+                useTaskStore.setState({ tasks: [visibleTask] });
+            }).toThrow('TaskStore invariant violated: write _allTasks instead of tasks/_tasksById');
+            expect(useTaskStore.getState().tasks).toEqual([]);
+        });
+
+        it('throws when an update writes a non-array all collection', () => {
+            expect(() => {
+                useTaskStore.setState({ _allTasks: undefined as unknown as Task[] });
+            }).toThrow('TaskStore invariant violated: _allTasks must be an array');
+        });
+    });
+
+    it('keeps derived context and tag lists scoped to used tokens', () => {
+        const { addTask } = useTaskStore.getState();
+        addTask('Token Task', {
+            contexts: ['@office'],
+            tags: ['#deep'],
+        });
+
+        const derived = useTaskStore.getState().getDerivedState();
+        expect(derived.allContexts).toEqual(['@office']);
+        expect(derived.allTags).toEqual(['#deep']);
+    });
+
+    it('keeps store state consistent under rapid add/delete interleaving', async () => {
+        const { addTask, deleteTask } = useTaskStore.getState();
+
+        await Promise.all(
+            Array.from({ length: 20 }, (_, index) => addTask(`Burst Task ${index}`))
+        );
+
+        const seededTaskIds = useTaskStore
+            .getState()
+            ._allTasks
+            .filter((task) => task.title.startsWith('Burst Task'))
+            .map((task) => task.id);
+
+        const deleteIds = seededTaskIds.filter((_, index) => index % 2 === 0);
+        await Promise.all([
+            ...deleteIds.map((id) => deleteTask(id)),
+            ...Array.from({ length: 10 }, (_, index) => addTask(`Late Task ${index}`)),
+        ]);
+        await flushPendingSave();
+
+        const state = useTaskStore.getState();
+        const allIds = state._allTasks.map((task) => task.id);
+        expect(new Set(allIds).size).toBe(allIds.length);
+
+        const expectedVisibleIds = state._allTasks
+            .filter((task) => !task.deletedAt && task.status !== 'archived')
+            .map((task) => task.id)
+            .sort();
+        const visibleIds = state.tasks.map((task) => task.id).sort();
+        expect(visibleIds).toEqual(expectedVisibleIds);
+    });
+
+    it('should compact content and increment revision metadata when purging a task', () => {
+        const { addTask, deleteTask, purgeTask } = useTaskStore.getState();
+        addTask('Task to Purge', { description: 'Private task notes' });
+
+        const task = useTaskStore.getState()._allTasks[0];
+        deleteTask(task.id);
+        const deleted = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        const deletedRev = deleted.rev ?? 0;
+
+        purgeTask(task.id);
+        const purged = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(purged.purgedAt).toBeTruthy();
+        expect((purged.rev ?? 0)).toBeGreaterThan(deletedRev);
+        expect(typeof purged.revBy).toBe('string');
+        expect((purged.revBy ?? '').length).toBeGreaterThan(0);
+        expect(purged.title).toBe('(deleted)');
+        expect(purged.description).toBeUndefined();
+    });
+
+    it('clears attachment remote metadata when purging tasks', () => {
+        const { addTask, deleteTask, purgeTask } = useTaskStore.getState();
+        addTask('Task with attachment', {
+            attachments: [
+                {
+                    id: 'a1',
+                    kind: 'file',
+                    title: 'doc.txt',
+                    uri: '/tmp/doc.txt',
+                    cloudKey: 'attachments/doc.txt',
+                    localStatus: 'available',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+            ],
+        });
+
+        const task = useTaskStore.getState()._allTasks[0];
+        deleteTask(task.id);
+        purgeTask(task.id);
+
+        const purged = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(purged.purgedAt).toBeTruthy();
+        expect(purged.attachments).toEqual([{
+            id: 'a1',
+            kind: 'file',
+            title: '',
+            uri: '/tmp/doc.txt',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }]);
+        expect(useTaskStore.getState().settings.attachments?.pendingRemoteDeletes).toEqual([
+            { cloudKey: 'attachments/doc.txt' },
+        ]);
+    });
+
+    it('does not queue remote attachment delete while another task still references the cloud key', () => {
+        const { addTask, deleteTask, purgeTask } = useTaskStore.getState();
+        const sharedAttachment = {
+            id: 'a-shared-1',
+            kind: 'file' as const,
+            title: 'shared.txt',
+            uri: '/tmp/shared.txt',
+            cloudKey: 'attachments/shared.txt',
+            localStatus: 'available' as const,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+        addTask('First shared attachment', { attachments: [sharedAttachment] });
+        addTask('Second shared attachment', {
+            attachments: [{ ...sharedAttachment, id: 'a-shared-2' }],
+        });
+
+        const [firstTask, secondTask] = useTaskStore.getState()._allTasks;
+        deleteTask(firstTask.id);
+        purgeTask(firstTask.id);
+
+        const state = useTaskStore.getState();
+        expect(state.settings.attachments?.pendingRemoteDeletes).toBeUndefined();
+        expect(state._allTasks.find((task) => task.id === firstTask.id)?.attachments?.[0]?.cloudKey).toBeUndefined();
+        expect(state._allTasks.find((task) => task.id === secondTask.id)?.attachments?.[0]?.cloudKey).toBe('attachments/shared.txt');
+    });
+
+    it('does not queue remote attachment delete from purge-all while a live task still references the cloud key', () => {
+        const { addTask, deleteTask, purgeDeletedTasks } = useTaskStore.getState();
+        const sharedAttachment = {
+            id: 'a-shared-1',
+            kind: 'file' as const,
+            title: 'shared.txt',
+            uri: '/tmp/shared.txt',
+            cloudKey: 'attachments/shared.txt',
+            localStatus: 'available' as const,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+        addTask('Deleted shared attachment', { attachments: [sharedAttachment] });
+        addTask('Live shared attachment', {
+            attachments: [{ ...sharedAttachment, id: 'a-shared-2' }],
+        });
+
+        const [deletedTask, liveTask] = useTaskStore.getState()._allTasks;
+        deleteTask(deletedTask.id);
+        purgeDeletedTasks();
+
+        const state = useTaskStore.getState();
+        expect(state.settings.attachments?.pendingRemoteDeletes).toBeUndefined();
+        expect(state._allTasks.find((task) => task.id === deletedTask.id)?.purgedAt).toBeTruthy();
+        expect(state._allTasks.find((task) => task.id === liveTask.id)?.attachments?.[0]?.cloudKey).toBe('attachments/shared.txt');
+    });
+
+    it('queues remote attachment deletes when purging all deleted tasks', () => {
+        const { addTask, deleteTask, purgeDeletedTasks } = useTaskStore.getState();
+        addTask('First deleted attachment', {
+            attachments: [
+                {
+                    id: 'a1',
+                    kind: 'file',
+                    title: 'first.txt',
+                    uri: '/tmp/first.txt',
+                    cloudKey: 'attachments/first.txt',
+                    localStatus: 'available',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+            ],
+        });
+        addTask('Second deleted attachment', {
+            attachments: [
+                {
+                    id: 'a2',
+                    kind: 'file',
+                    title: 'second.txt',
+                    uri: '/tmp/second.txt',
+                    cloudKey: 'attachments/second.txt',
+                    localStatus: 'available',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+            ],
+        });
+
+        for (const task of useTaskStore.getState()._allTasks) {
+            deleteTask(task.id);
+        }
+        purgeDeletedTasks();
+
+        expect(useTaskStore.getState()._allTasks.every((task) => task.purgedAt)).toBe(true);
+        expect(useTaskStore.getState().settings.attachments?.pendingRemoteDeletes).toEqual([
+            { cloudKey: 'attachments/first.txt' },
+            { cloudKey: 'attachments/second.txt' },
+        ]);
+    });
+
+    it('restores and purges only the requested trashed tasks in one batch', async () => {
+        const { addTask, deleteTask, restoreTasks, purgeTasks } = useTaskStore.getState();
+        addTask('Keep in trash');
+        addTask('Restore me');
+        addTask('Purge me');
+        addTask('Still live');
+
+        const [keepTask, restoreMe, purgeMe, liveTask] = useTaskStore.getState()._allTasks;
+        deleteTask(keepTask.id);
+        deleteTask(restoreMe.id);
+        deleteTask(purgeMe.id);
+
+
+        await restoreTasks([restoreMe.id, liveTask.id]);
+        await purgeTasks([purgeMe.id, liveTask.id]);
+
+        const state = useTaskStore.getState();
+        expect(state._allTasks.find((task) => task.id === restoreMe.id)?.deletedAt).toBeUndefined();
+        expect(state._allTasks.find((task) => task.id === purgeMe.id)?.purgedAt).toBeTruthy();
+        expect(state._allTasks.find((task) => task.id === keepTask.id)?.deletedAt).toBeTruthy();
+        expect(state._allTasks.find((task) => task.id === keepTask.id)?.purgedAt).toBeUndefined();
+        const untouchedLiveTask = state._allTasks.find((task) => task.id === liveTask.id);
+        expect(untouchedLiveTask?.deletedAt).toBeUndefined();
+        expect(untouchedLiveTask?.purgedAt).toBeUndefined();
+        expect(state.tasks.some((task) => task.id === restoreMe.id)).toBe(true);
+    });
+
+    it('reorders focused tasks by assigning focusOrder 0..n-1 in one batch, skipping no-op tasks', async () => {
+        const { addTask, updateTask, reorderFocusedTasks } = useTaskStore.getState();
+        const a = await addTask('A', { status: 'next', isFocusedToday: true });
+        const b = await addTask('B', { status: 'next', isFocusedToday: true });
+        const c = await addTask('C', { status: 'next', isFocusedToday: true });
+
+
+        await updateTask(b.id!, { focusOrder: 1 });
+        const revBefore = useTaskStore.getState()._tasksById.get(b.id!)?.rev;
+
+        await reorderFocusedTasks([a.id!, b.id!, c.id!]);
+
+        const state = useTaskStore.getState();
+        expect(state._tasksById.get(a.id!)?.focusOrder).toBe(0);
+        expect(state._tasksById.get(b.id!)?.focusOrder).toBe(1);
+        expect(state._tasksById.get(c.id!)?.focusOrder).toBe(2);
+        expect(state._tasksById.get(b.id!)?.rev).toBe(revBefore);
+    });
+
+    it('skips fetch while edits are in progress', async () => {
+        const { lockEditing, unlockEditing, fetchData } = useTaskStore.getState();
+        lockEditing();
+        await fetchData({ silent: true });
+        expect(mockStorage.getData).not.toHaveBeenCalled();
+        unlockEditing();
+    });
+
+    it('keeps specific fetch failure details in store error state', async () => {
+        mockStorage.getData = vi.fn().mockRejectedValue(new Error('Database needs repair'));
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(useTaskStore.getState().error).toBe('Failed to fetch data: Database needs repair');
+    });
+
+    it('can surface a fetch failure to infrastructure callers after recording it', async () => {
+        const failure = new Error('database is locked');
+        mockStorage.getData = vi.fn().mockRejectedValue(failure);
+
+        await expect(useTaskStore.getState().fetchData({
+            silent: true,
+            throwOnError: true,
+        })).rejects.toBe(failure);
+
+        expect(useTaskStore.getState().error).toBe('Failed to fetch data: database is locked');
+    });
+
+    it('acknowledges only a storage snapshot that fetchData applied', async () => {
+        const nowIso = '2026-07-31T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const persistedData: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                deviceId: 'device-a',
+                analyticsProfileId: 'profile-a',
+                migrations: {
+                    version: 9999,
+                    lastAutoArchiveAt: nowIso,
+                    lastTombstoneCleanupAt: nowIso,
+                },
+                gtd: {
+                    taskEditor: { defaultsVersion: 9999 },
+                    focusGroupByDefaultsVersion: 1,
+                },
+            },
+        };
+        const acknowledgeDataLoad = vi.fn();
+        mockStorage.acknowledgeDataLoad = acknowledgeDataLoad;
+        mockStorage.getData = vi.fn().mockResolvedValue(persistedData);
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(acknowledgeDataLoad).toHaveBeenCalledOnce();
+        expect(acknowledgeDataLoad).toHaveBeenCalledWith(persistedData);
+
+        await useTaskStore.getState().fetchData({
+            silent: true,
+            preloadedData: persistedData,
+        });
+
+        expect(acknowledgeDataLoad).toHaveBeenCalledOnce();
+    });
+
+    it('does not apply or acknowledge a fetched snapshot after its caller invalidates the read', async () => {
+        const nowIso = '2026-08-09T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const persistedData: AppData = {
+            tasks: [
+                {
+                    id: 'invalidated-fetch',
+                    title: 'Stale watcher snapshot',
+                    status: 'inbox',
+                    tags: [],
+                    contexts: [],
+                    createdAt: nowIso,
+                    updatedAt: nowIso,
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: {
+                deviceId: 'device-a',
+                analyticsProfileId: 'profile-a',
+                migrations: {
+                    version: 9999,
+                    lastAutoArchiveAt: nowIso,
+                    lastTombstoneCleanupAt: nowIso,
+                },
+                gtd: {
+                    taskEditor: { defaultsVersion: 9999 },
+                    focusGroupByDefaultsVersion: 1,
+                },
+            },
+        };
+        let resolveFetch: ((data: AppData) => void) | undefined;
+        let isResultStillRelevant = true;
+        mockStorage.getData = vi.fn(
+            () =>
+                new Promise<AppData>((resolve) => {
+                    resolveFetch = resolve;
+                }),
+        );
+        mockStorage.acknowledgeDataLoad = vi.fn();
+
+        const fetchPromise = useTaskStore.getState().fetchData({
+            silent: true,
+            isResultStillRelevant: () => isResultStillRelevant,
+        });
+        await waitForExpectation(() => {
+            expect(mockStorage.getData).toHaveBeenCalledOnce();
+        });
+
+        isResultStillRelevant = false;
+        resolveFetch?.(persistedData);
+        await fetchPromise;
+
+        expect(useTaskStore.getState()._allTasks).toEqual([]);
+        expect(mockStorage.acknowledgeDataLoad).not.toHaveBeenCalled();
+    });
+
+    it('does not acknowledge a fetched snapshot when sync bookkeeping queued a save during the read', async () => {
+        const nowIso = '2026-07-31T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const settledSettings: AppData['settings'] = {
+            deviceId: 'device-a',
+            lastSyncStatus: 'idle',
+            migrations: {
+                version: 9999,
+                lastAutoArchiveAt: nowIso,
+                lastTombstoneCleanupAt: nowIso,
+            },
+            gtd: {
+                taskEditor: { defaultsVersion: 9999 },
+                focusGroupByDefaultsVersion: 1,
+            },
+        };
+        const persistedData: AppData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: settledSettings,
+        };
+        let resolveFetch: ((data: AppData) => void) | undefined;
+        mockStorage.getData = vi.fn(() => new Promise<AppData>((resolve) => {
+            resolveFetch = resolve;
+        }));
+        mockStorage.acknowledgeDataLoad = vi.fn();
+        useTaskStore.setState({ settings: settledSettings, lastDataChangeAt: 123 });
+
+        const fetchPromise = useTaskStore.getState().fetchData({ silent: true });
+        await waitForExpectation(() => {
+            expect(mockStorage.getData).toHaveBeenCalledOnce();
+        });
+
+        await useTaskStore.getState().updateSettings({ lastSyncStatus: 'success' });
+        expect(useTaskStore.getState().lastDataChangeAt).toBe(123);
+        resolveFetch?.(persistedData);
+        await fetchPromise;
+
+        expect(mockStorage.acknowledgeDataLoad).not.toHaveBeenCalled();
+    });
+
+    it('tombstones duplicate active area names in current-version data during fetch', async () => {
+        const nowIso = '2026-06-12T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const areaA = createStoreArea('area-a', { name: 'Work', order: 0 });
+        const areaB = createStoreArea('area-b', {
+            name: 'Work',
+            order: 1,
+            createdAt: '2026-04-02T00:00:00.000Z',
+            updatedAt: '2026-04-02T00:00:00.000Z',
+        });
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [createStoreTask('task-a', { areaId: 'area-b', status: 'next' })],
+            projects: [createStoreProject('project-a', { areaId: 'area-b', areaTitle: 'Work' })],
+            sections: [],
+            areas: [areaA, areaB],
+            people: [],
+            settings: {
+                deviceId: 'device-a',
+                analyticsProfileId: 'profile-a',
+                migrations: {
+                    version: 9999,
+                    lastAutoArchiveAt: nowIso,
+                    lastTombstoneCleanupAt: nowIso,
+                },
+                gtd: {
+                    defaultAreaId: 'area-b',
+                    taskEditor: {
+                        defaultsVersion: 9999,
+                    },
+                },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const state = useTaskStore.getState();
+        expect(state.areas.map((area) => area.id)).toEqual(['area-a']);
+        expect(state._allAreas.find((area) => area.id === 'area-b')).toMatchObject({
+            deletedAt: nowIso,
+            updatedAt: nowIso,
+            revBy: 'device-a',
+        });
+        expect(state._allProjects.find((project) => project.id === 'project-a')?.areaId).toBe('area-a');
+        expect(state._allTasks.find((task) => task.id === 'task-a')?.areaId).toBe('area-a');
+        expect(state.settings.gtd?.defaultAreaId).toBe('area-a');
+        expect(state.settings.syncPreferencesUpdatedAt?.gtd).toBe(nowIso);
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('refreshes repeated raw recovery at a capped revision while ordinary loads reuse task identity', async () => {
+        const at = '2026-10-10T00:00:00.000Z';
+        const source = { tasks: [{ id: 'capped', title: 'Task', status: 'next' as const, contexts: [], tags: [],
+            createdAt: at, updatedAt: at, rev: 2_147_483_647, revBy: 'device-a', timeSpentMinutes: 4 }],
+            projects: [], sections: [], areas: [], people: [], settings: { deviceId: 'device-a', analyticsProfileId: 'profile-a',
+                migrations: { version: 9999, lastAutoArchiveAt: at, lastTombstoneCleanupAt: at },
+                gtd: { taskEditor: { defaultsVersion: 9999 }, focusGroupByDefaultsVersion: 1 } } };
+        mockStorage.getData = vi.fn().mockImplementation(async () => structuredClone(source));
+        await useTaskStore.getState().fetchData({ silent: true, recoveryLoad: true });
+        const old = useTaskStore.getState()._tasksById.get('capped');
+        source.tasks[0].timeSpentMinutes = 29;
+        await useTaskStore.getState().fetchData({ silent: true, recoveryLoad: true });
+        expect(useTaskStore.getState()._tasksById.get('capped')).not.toBe(old);
+        expect(useTaskStore.getState()._tasksById.get('capped')!.timeSpentMinutes).toBe(29);
+        await useTaskStore.getState().fetchData({ silent: true });
+        const ordinary = useTaskStore.getState()._tasksById.get('capped');
+        await useTaskStore.getState().fetchData({ silent: true });
+        expect(useTaskStore.getState()._tasksById.get('capped')).toBe(ordinary);
+    });
+
+    it('does not overwrite local task edits made during an in-flight fetch', async () => {
+        const nowIso = '2026-07-31T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const acknowledgeDataLoad = vi.fn();
+        mockStorage.acknowledgeDataLoad = acknowledgeDataLoad;
+        const persistedData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Original title',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-03-22T10:00:00.000Z',
+                    updatedAt: '2026-03-22T10:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                deviceId: 'device-a',
+                analyticsProfileId: 'profile-a',
+                migrations: {
+                    version: 9999,
+                    lastAutoArchiveAt: nowIso,
+                    lastTombstoneCleanupAt: nowIso,
+                },
+                gtd: {
+                    taskEditor: { defaultsVersion: 9999 },
+                    focusGroupByDefaultsVersion: 1,
+                },
+            },
+        };
+        let resolveFetch: ((value: typeof persistedData) => void) | null = null;
+        mockStorage.getData = vi.fn()
+            .mockResolvedValue(persistedData)
+            .mockResolvedValueOnce(persistedData)
+            .mockImplementationOnce(
+                () =>
+                    new Promise<typeof persistedData>((resolve) => {
+                        resolveFetch = resolve;
+                    })
+            );
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        const slowFetch = useTaskStore.getState().fetchData({ silent: true });
+        await waitForExpectation(() => {
+            expect(mockStorage.getData).toHaveBeenCalledTimes(2);
+        });
+
+        await useTaskStore.getState().updateTask('task-1', { title: 'Edited during sync' });
+        resolveFetch?.(persistedData);
+        await slowFetch;
+        await flushPendingSave();
+
+        const currentTask = useTaskStore.getState()._allTasks.find((task) => task.id === 'task-1');
+        expect(currentTask?.title).toBe('Edited during sync');
+        expect(acknowledgeDataLoad).toHaveBeenCalledOnce();
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const lastSaved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(lastSaved?.tasks?.[0]?.title).toBe('Edited during sync');
+    });
+
+    it('applies preloaded data through the load pipeline without reading storage', async () => {
+        mockStorage.getData = vi.fn();
+        const preloadedData = {
+            tasks: [
+                {
+                    id: 'task-live',
+                    title: 'Live task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-03-22T10:00:00.000Z',
+                    updatedAt: '2026-03-22T10:00:00.000Z',
+                },
+                {
+                    id: 'task-deleted',
+                    title: 'Deleted task',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-03-22T10:00:00.000Z',
+                    updatedAt: new Date().toISOString(),
+                    deletedAt: new Date().toISOString(),
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        } as unknown as AppData;
+
+        await useTaskStore.getState().fetchData({ silent: true, preloadedData });
+
+        expect(mockStorage.getData).not.toHaveBeenCalled();
+        const state = useTaskStore.getState();
+        expect(state.tasks.map((task) => task.id)).toEqual(['task-live']);
+        expect(state._allTasks.map((task) => task.id).sort()).toEqual(['task-deleted', 'task-live']);
+    });
+
+    it('does not notify subscribers when a silent preloaded refresh is unchanged', async () => {
+        const nowIso = '2026-07-21T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [createStoreTask('task-1', { status: 'next' })],
+            projects: [createStoreProject('project-1')],
+            sections: [],
+            areas: [createStoreArea('area-1')],
+            people: [],
+            settings: {
+                deviceId: 'device-a',
+                analyticsProfileId: 'profile-a',
+                migrations: {
+                    version: 9999,
+                    lastAutoArchiveAt: nowIso,
+                    lastTombstoneCleanupAt: nowIso,
+                },
+                gtd: {
+                    taskEditor: { defaultsVersion: 9999 },
+                    focusGroupByDefaultsVersion: 1,
+                },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        const loaded = useTaskStore.getState();
+        const listener = vi.fn();
+        const unsubscribe = useTaskStore.subscribe(listener);
+        try {
+            await loaded.fetchData({
+                silent: true,
+                preloadedData: {
+                    tasks: loaded._allTasks,
+                    projects: loaded._allProjects,
+                    sections: loaded._allSections,
+                    areas: loaded._allAreas,
+                    people: loaded._allPeople,
+                    settings: loaded.settings,
+                },
+            });
+
+            expect(listener).not.toHaveBeenCalled();
+            expect(useTaskStore.getState()).toBe(loaded);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('refreshes normalized focus after the local day changes without replacing unchanged tasks', async () => {
+        const currentDay = new Date(2026, 8, 27, 12);
+        const nowIso = currentDay.toISOString();
+        vi.setSystemTime(currentDay);
+        let stored: AppData = {
+            tasks: [
+                createStoreTask('waiting-focus', {
+                    status: 'waiting', startTime: '2026-09-27', reviewAt: '2026-09-27',
+                    isFocusedToday: true, focusOrder: 0,
+                }),
+                createStoreTask('next-focus', {
+                    status: 'next', startTime: '2026-09-27', isFocusedToday: true, focusOrder: 1,
+                }),
+                createStoreTask('unchanged', { status: 'next' }),
+            ],
+            projects: [createStoreProject('project-1')],
+            sections: [], areas: [], people: [],
+            settings: {
+                deviceId: 'device-a', analyticsProfileId: 'profile-a',
+                migrations: { version: 9999, lastAutoArchiveAt: nowIso, lastTombstoneCleanupAt: nowIso },
+                gtd: { taskEditor: { defaultsVersion: 9999 }, focusGroupByDefaultsVersion: 1 },
+            },
+        };
+        mockStorage.getData = vi.fn(async () => structuredClone(stored));
+        mockStorage.saveData = vi.fn(async (data) => { stored = structuredClone(data); });
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+        vi.mocked(mockStorage.saveData).mockClear();
+        const loaded = useTaskStore.getState();
+        const originalWaiting = loaded._tasksById.get('waiting-focus');
+        expect(originalWaiting?.isFocusedToday).toBe(true);
+        expect(originalWaiting?.focusOrder).toBe(0);
+        const unchangedTask = loaded._tasksById.get('unchanged');
+        const unchangedProject = loaded._projectsById.get('project-1');
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+
+        vi.setSystemTime(new Date(2026, 8, 26, 12));
+        await loaded.fetchData({ silent: true });
+        await flushPendingSave();
+        const normalized = useTaskStore.getState();
+        expect(normalized._tasksById.get('waiting-focus')).toMatchObject({
+            isFocusedToday: false, focusOrder: undefined, rev: originalWaiting?.rev,
+            updatedAt: originalWaiting?.updatedAt,
+        });
+        expect(normalized._tasksById.get('next-focus')).toMatchObject({ isFocusedToday: true, focusOrder: undefined });
+        expect(normalized._tasksById.get('unchanged')).toBe(unchangedTask);
+        expect(normalized._projectsById.get('project-1')).toBe(unchangedProject);
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+        expect(stored.tasks[0]).toMatchObject({ isFocusedToday: true, focusOrder: 0 });
+        const diagnostic = infoSpy.mock.calls.find(([message]) => message === 'Reload refreshed normalized task focus');
+        expect(parseLoggedContext(diagnostic?.[1]?.context)).toEqual({
+            releaseCheck: 'v1.3.3/reload-focus-normalization', count: 2,
+        });
+
+        const listener = vi.fn();
+        const unsubscribe = useTaskStore.subscribe(listener);
+        try {
+            await normalized.fetchData({ silent: true });
+            expect(useTaskStore.getState()).toBe(normalized);
+            expect(listener).not.toHaveBeenCalled();
+            expect(infoSpy).toHaveBeenCalledTimes(1);
+        } finally {
+            unsubscribe();
+        }
+
+        vi.setSystemTime(currentDay);
+        await normalized.fetchData({ silent: true });
+        await flushPendingSave();
+        const restored = useTaskStore.getState();
+        expect(restored._tasksById.get('waiting-focus')).toMatchObject({ isFocusedToday: true, focusOrder: 0 });
+        expect(restored._tasksById.get('next-focus')).toMatchObject({ isFocusedToday: true, focusOrder: 1 });
+        expect(restored._tasksById.get('unchanged')).toBe(unchangedTask);
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+    });
+
+    it('advances lastDataChangeAt when a load migration mutates synced entities', async () => {
+
+
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [{
+                id: 'p1', title: 'P', status: 'active', color: '#000', order: 0, tagIds: [],
+                areaId: 'area-b', createdAt: '2026-02-01T00:00:00.000Z', updatedAt: '2026-02-01T00:00:00.000Z',
+            }],
+            sections: [],
+            areas: [
+                { id: 'area-a', name: 'Work', order: 0, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+                { id: 'area-b', name: 'Work', order: 1, createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' },
+            ],
+            settings: {},
+        });
+
+        const before = useTaskStore.getState().lastDataChangeAt;
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        const loaded = useTaskStore.getState();
+        expect(loaded._allAreas.find((area) => area.id === 'area-b')?.deletedAt).toBeTruthy();
+        expect(loaded.lastDataChangeAt).toBeGreaterThan(before);
+    });
+
+    it('does not enqueue a second save when reloading data a prior fetch already migrated', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-legacy',
+                    title: 'Legacy task',
+                    status: 'inbox',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+        const firstSaveCount = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls.length;
+        expect(firstSaveCount).toBeGreaterThan(0);
+
+        const loaded = useTaskStore.getState();
+        await loaded.fetchData({
+            silent: true,
+            preloadedData: {
+                tasks: loaded._allTasks,
+                projects: loaded._allProjects,
+                sections: loaded._allSections,
+                areas: loaded._allAreas,
+                people: loaded._allPeople,
+                settings: loaded.settings,
+            },
+        });
+        await flushPendingSave();
+
+        expect((mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls.length).toBe(firstSaveCount);
+    });
+
+
+    it('fails a load whose storage read drops live tasks instead of silently saving the gap', async () => {
+        const nowIso = '2026-07-21T12:00:00.000Z';
+        vi.setSystemTime(new Date(nowIso));
+        const settledSettings = {
+            deviceId: 'device-a',
+            analyticsProfileId: 'profile-a',
+            migrations: {
+                version: 9999,
+                lastAutoArchiveAt: nowIso,
+                lastTombstoneCleanupAt: nowIso,
+            },
+            gtd: {
+                taskEditor: { defaultsVersion: 9999 },
+                focusGroupByDefaultsVersion: 1,
+            },
+        };
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [createStoreTask('task-victim-1'), createStoreTask('task-victim-2')],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: settledSettings,
+        });
+        await useTaskStore.getState().fetchData({ silent: true });
+        expect(useTaskStore.getState()._allTasks.map((task) => task.id).sort()).toEqual(['task-victim-1', 'task-victim-2']);
+        const saveCallsAfterFirstLoad = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls.length;
+
+
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [createStoreTask('task-trigger', { dueDate: '2020-01-01', createdAt: '2019-12-01T00:00:00.000Z', updatedAt: '2019-12-01T00:00:00.000Z' })],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: settledSettings,
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        const state = useTaskStore.getState();
+        expect(state.error).toMatch(/Refusing to save a partial task snapshot/);
+
+
+        expect(state._allTasks.map((task) => task.id).sort()).toEqual(['task-victim-1', 'task-victim-2']);
+        await flushPendingSave();
+        expect((mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls.length).toBe(saveCallsAfterFirstLoad);
+    });
+
+    it('does not overwrite same-millisecond task completions made during an in-flight fetch', async () => {
+        const fixedNow = new Date('2026-03-22T10:00:00.000Z').getTime();
+        vi.setSystemTime(fixedNow);
+        const persistedData = {
+            tasks: [
+                {
+                    id: 'task-1',
+                    title: 'Complete during sync',
+                    status: 'next',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-03-22T09:00:00.000Z',
+                    updatedAt: '2026-03-22T09:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        let resolveFetch: ((value: typeof persistedData) => void) | null = null;
+        mockStorage.getData = vi.fn()
+            .mockResolvedValueOnce(persistedData)
+            .mockImplementationOnce(
+                () =>
+                    new Promise<typeof persistedData>((resolve) => {
+                        resolveFetch = resolve;
+                    })
+            );
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        useTaskStore.setState({ lastDataChangeAt: fixedNow });
+
+        const slowFetch = useTaskStore.getState().fetchData({ silent: true });
+        await waitForExpectation(() => {
+            expect(mockStorage.getData).toHaveBeenCalledTimes(2);
+        });
+
+        await useTaskStore.getState().updateTask('task-1', { status: 'done' });
+        expect(useTaskStore.getState().lastDataChangeAt).toBeGreaterThan(fixedNow);
+        resolveFetch?.(persistedData);
+        await slowFetch;
+        await flushPendingSave();
+
+        const currentTask = useTaskStore.getState()._allTasks.find((task) => task.id === 'task-1');
+        expect(currentTask?.status).toBe('done');
+        expect(currentTask?.completedAt).toBe('2026-03-22T10:00:00.000Z');
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const lastSaved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(lastSaved?.tasks?.[0]?.status).toBe('done');
+    });
+
+    it('purges expired tombstones during fetch even without sync', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-old',
+                    title: 'Old tombstone',
+                    status: 'done',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2000-01-01T00:00:00.000Z',
+                    updatedAt: '2000-06-01T00:00:00.000Z',
+                    deletedAt: '2000-06-01T00:00:00.000Z',
+                    purgedAt: '2000-06-01T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        expect(useTaskStore.getState()._allTasks).toHaveLength(0);
+        expect((mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls.length).toBeGreaterThan(0);
+    });
+
+
+    it('accepts a full-replace load whose document shares no ids with the in-memory store', async () => {
+        const stale = createStoreTask('stale-1', { status: 'next' });
+        useTaskStore.setState({
+            tasks: [stale],
+            _allTasks: [stale],
+            _tasksById: buildEntityMap([stale]),
+            settings: { deviceId: 'device-a' },
+        });
+        const restored = createStoreTask('restored-1', { status: 'next' });
+
+
+        const restoredDocument: AppData = {
+            tasks: [restored],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: {},
+        };
+        let persisted: AppData | null = null;
+        mockStorage.getData = vi.fn().mockImplementation(async () => structuredClone(persisted ?? restoredDocument));
+
+        await runDataTransferTransaction({
+            operation: 'restoreBackup',
+            flushPendingSave,
+            getCurrentChangeAt: () => useTaskStore.getState().lastDataChangeAt,
+            readCurrentData: () => mockStorage.getData(),
+            createRecoverySnapshot: async () => 'data.snapshot.json',
+            apply: () => ({ data: restoredDocument, result: undefined }),
+            persistData: async (data) => {
+                persisted = data;
+                await mockStorage.saveData(data);
+            },
+            refreshData: () => useTaskStore.getState().fetchData({ silent: true }),
+        });
+        await flushPendingSave();
+
+        expect(useTaskStore.getState().error).toBeNull();
+        expect(useTaskStore.getState()._allTasks.map((task) => task.id)).toEqual(['restored-1']);
+        const saved = vi.mocked(mockStorage.saveData).mock.calls.at(-1)?.[0] as AppData;
+        expect(saved.tasks.map((task) => task.id)).toEqual(['restored-1']);
+    });
+
+    it('clears project archive metadata from deleted task tombstones during fetch', async () => {
+
+
+        const dayMs = 24 * 60 * 60 * 1000;
+        const archivedAt = new Date(Date.now() - 3 * dayMs).toISOString();
+        const deletedAt = new Date(Date.now() - 2 * dayMs).toISOString();
+        const createdAt = new Date(Date.now() - 10 * dayMs).toISOString();
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-deleted-archive',
+                    title: 'Deleted archive tombstone',
+                    status: 'done',
+                    tags: [],
+                    contexts: [],
+                    createdAt,
+                    updatedAt: archivedAt,
+                    deletedAt,
+                    completedAt: archivedAt,
+                    statusBeforeProjectArchive: 'next',
+                    completedAtBeforeProjectArchive: null,
+                    isFocusedTodayBeforeProjectArchive: false,
+                    projectArchivedAt: archivedAt,
+                    rev: 4,
+                    revBy: 'device-a',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const task = useTaskStore.getState()._allTasks[0];
+        expect(task.statusBeforeProjectArchive).toBeUndefined();
+        expect(task.completedAtBeforeProjectArchive).toBeUndefined();
+        expect(task.isFocusedTodayBeforeProjectArchive).toBeUndefined();
+        expect(task.projectArchivedAt).toBeUndefined();
+        expect(task.rev).toBe(4);
+        expect(task.updatedAt).toBe(archivedAt);
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const lastSaved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(lastSaved?.tasks?.[0]?.projectArchivedAt).toBeUndefined();
+        expect(lastSaved?.tasks?.[0]?.statusBeforeProjectArchive).toBeUndefined();
+    });
+
+    it('promotes scheduled tasks to next when scheduled date is reached', async () => {
+        vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-02-14T10:00:00.000Z').getTime());
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-inbox',
+                    title: 'Inbox task due today',
+                    status: 'inbox',
+                    dueDate: '2026-02-14',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+                {
+                    id: 't-someday',
+                    title: 'Someday tickler whose start passed',
+                    status: 'someday',
+                    startTime: '2026-02-13T08:00:00.000Z',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+                {
+                    id: 't-waiting-future',
+                    title: 'Waiting task still future',
+                    status: 'waiting',
+                    startTime: '2026-02-15T08:00:00.000Z',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const byId = new Map(useTaskStore.getState()._allTasks.map((task) => [task.id, task]));
+        expect(byId.get('t-inbox')?.status).toBe('next');
+
+
+        expect(byId.get('t-someday')?.status).toBe('someday');
+        expect(byId.get('t-waiting-future')?.status).toBe('waiting');
+        expect(byId.get('t-inbox')?.rev).toBe(1);
+        expect(typeof byId.get('t-inbox')?.revBy).toBe('string');
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('auto-archives stale completed tasks during fetch', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const staleTask = createStoreTask('task-stale', {
+            status: 'done',
+            completedAt: '2026-03-01T12:00:00.000Z',
+            updatedAt: '2026-03-01T12:00:00.000Z',
+        });
+        const recentTask = createStoreTask('task-recent', {
+            status: 'done',
+            completedAt: '2026-04-09T12:00:00.000Z',
+            updatedAt: '2026-04-09T12:00:00.000Z',
+        });
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [staleTask, recentTask],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {
+                deviceId: 'device-a',
+                gtd: { autoArchiveDays: 7 },
+                migrations: { lastAutoArchiveAt: '2026-03-01T00:00:00.000Z' },
+            },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const byId = new Map(useTaskStore.getState()._allTasks.map((task) => [task.id, task]));
+        expect(byId.get('task-stale')?.status).toBe('archived');
+        expect(byId.get('task-stale')?.rev).toBe(2);
+        expect(byId.get('task-stale')?.revBy).toBe('device-a');
+        expect(byId.get('task-recent')?.status).toBe('done');
+        expect(useTaskStore.getState().tasks.some((task) => task.id === 'task-stale')).toBe(false);
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('archives a done task when its completion time is corrected past the window (#959)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const doneTask = createStoreTask('task-done', {
+            status: 'done',
+            completedAt: '2026-04-09T12:00:00.000Z',
+            updatedAt: '2026-04-09T12:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [doneTask],
+            _allTasks: [doneTask],
+            _tasksById: new Map([[doneTask.id, doneTask]]),
+            settings: { deviceId: 'device-a', gtd: { autoArchiveDays: 7 } },
+            lastDataChangeAt: 0,
+        });
+
+
+        await useTaskStore.getState().updateTask('task-done', { completedAt: '2025-06-01T17:45:00.000Z' });
+
+        expect(useTaskStore.getState()._tasksById.get('task-done')?.status).toBe('archived');
+    });
+
+    it('keeps a task in Done when the same patch sets the status (#959)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const archivedTask = createStoreTask('task-archived', {
+            status: 'archived',
+            completedAt: '2025-06-01T17:45:00.000Z',
+            updatedAt: '2025-06-01T17:45:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [],
+            _allTasks: [archivedTask],
+            _tasksById: new Map([[archivedTask.id, archivedTask]]),
+            settings: { deviceId: 'device-a', gtd: { autoArchiveDays: 7 } },
+            lastDataChangeAt: 0,
+        });
+
+
+        await useTaskStore.getState().updateTask('task-archived', {
+            status: 'done',
+            completedAt: '2025-06-01T17:45:00.000Z',
+        });
+
+        expect(useTaskStore.getState()._tasksById.get('task-archived')?.status).toBe('done');
+    });
+
+    it('archives a done task when the full editor resends the unchanged status (#959)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const doneTask = createStoreTask('task-done-editor', {
+            status: 'done',
+            completedAt: '2026-04-09T12:00:00.000Z',
+            updatedAt: '2026-04-09T12:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [doneTask],
+            _allTasks: [doneTask],
+            _tasksById: new Map([[doneTask.id, doneTask]]),
+            settings: { deviceId: 'device-a', gtd: { autoArchiveDays: 7 } },
+            lastDataChangeAt: 0,
+        });
+
+
+        await useTaskStore.getState().updateTask('task-done-editor', {
+            status: 'done',
+            completedAt: '2025-06-01T17:45:00.000Z',
+        });
+
+        const updated = useTaskStore.getState()._tasksById.get('task-done-editor');
+        expect(updated?.status).toBe('archived');
+        expect(updated?.isFocusedToday).toBe(false);
+    });
+
+    it('does not archive a done task when a completion-time edit clears completedAt (#959)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const doneTask = createStoreTask('task-done-cleared', {
+            status: 'done',
+            completedAt: '2026-04-09T12:00:00.000Z',
+
+
+            updatedAt: '2025-06-01T17:45:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [doneTask],
+            _allTasks: [doneTask],
+            _tasksById: new Map([[doneTask.id, doneTask]]),
+            settings: { deviceId: 'device-a', gtd: { autoArchiveDays: 7 } },
+            lastDataChangeAt: 0,
+        });
+
+        await useTaskStore.getState().updateTask('task-done-cleared', { completedAt: undefined });
+
+        expect(useTaskStore.getState()._tasksById.get('task-done-cleared')?.status).toBe('done');
+    });
+
+    it('does not archive a backdated-complete task moving from Next to Done (#959)', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const nextTask = createStoreTask('task-next-backdated', {
+            status: 'next',
+            completedAt: undefined,
+            updatedAt: '2026-04-09T12:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [nextTask],
+            _allTasks: [nextTask],
+            _tasksById: new Map([[nextTask.id, nextTask]]),
+            settings: { deviceId: 'device-a', gtd: { autoArchiveDays: 7 } },
+            lastDataChangeAt: 0,
+        });
+
+        await useTaskStore.getState().updateTask('task-next-backdated', {
+            status: 'done',
+            completedAt: '2025-06-01T17:45:00.000Z',
+        });
+
+        expect(useTaskStore.getState()._tasksById.get('task-next-backdated')?.status).toBe('done');
+    });
+
+    it('auto-archives stale completed tasks when archive days change', async () => {
+        vi.setSystemTime(new Date('2026-04-10T12:00:00.000Z'));
+        const staleTask = createStoreTask('task-stale', {
+            status: 'done',
+            completedAt: '2026-03-01T12:00:00.000Z',
+            updatedAt: '2026-03-01T12:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [staleTask],
+            _allTasks: [staleTask],
+            settings: {
+                deviceId: 'device-a',
+                gtd: { autoArchiveDays: 30 },
+            },
+            lastDataChangeAt: 0,
+        });
+
+        await useTaskStore.getState().updateSettings({
+            gtd: { autoArchiveDays: 7 },
+        });
+        await flushPendingSave();
+
+        const archivedTask = useTaskStore.getState()._allTasks.find((task) => task.id === staleTask.id);
+        expect(archivedTask?.status).toBe('archived');
+        expect(archivedTask?.rev).toBe(2);
+        expect(archivedTask?.revBy).toBe('device-a');
+        expect(useTaskStore.getState().tasks.some((task) => task.id === staleTask.id)).toBe(false);
+        expect(useTaskStore.getState().lastDataChangeAt).toBe(new Date('2026-04-10T12:00:00.000Z').getTime());
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('marks active tasks that belong to archived projects as done during fetch', async () => {
+        vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-02-14T10:00:00.000Z').getTime());
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-linked',
+                    title: 'Should be completed',
+                    status: 'next',
+                    projectId: 'p-archived',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            projects: [
+                {
+                    id: 'p-archived',
+                    title: 'Archived project',
+                    status: 'archived',
+                    color: '#123456',
+                    order: 0,
+                    tagIds: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            sections: [
+                {
+                    id: 's-linked',
+                    projectId: 'p-archived',
+                    title: 'Section should be archived',
+                    order: 0,
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const linkedTask = useTaskStore.getState()._allTasks.find((task) => task.id === 't-linked');
+        const linkedSection = useTaskStore.getState()._allSections.find((section) => section.id === 's-linked');
+        expect(linkedTask?.status).toBe('done');
+        expect(linkedTask?.isFocusedToday).toBe(false);
+        expect(linkedTask?.completedAt).toBeTruthy();
+        expect(linkedSection?.deletedAt).toBeTruthy();
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('repairs invalid project, section, and area references during fetch', async () => {
+        vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-02-14T10:00:00.000Z').getTime());
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 't-invalid',
+                    title: 'Broken links',
+                    status: 'next',
+                    projectId: 'missing-project',
+                    sectionId: 'missing-section',
+                    areaId: 'missing-area',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            projects: [
+                {
+                    id: 'p-invalid',
+                    title: 'Broken area',
+                    status: 'active',
+                    color: '#123456',
+                    order: 0,
+                    tagIds: [],
+                    areaId: 'missing-area',
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            sections: [
+                {
+                    id: 's-invalid',
+                    projectId: 'missing-project',
+                    title: 'Orphan section',
+                    order: 0,
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const repairedTask = useTaskStore.getState()._allTasks.find((task) => task.id === 't-invalid');
+        const repairedProject = useTaskStore.getState()._allProjects.find((project) => project.id === 'p-invalid');
+        const orphanedSection = useTaskStore.getState()._allSections.find((section) => section.id === 's-invalid');
+        expect(repairedTask?.projectId).toBeUndefined();
+        expect(repairedTask?.sectionId).toBeUndefined();
+        expect(repairedTask?.areaId).toBeUndefined();
+        expect(repairedProject?.areaId).toBeUndefined();
+        expect(orphanedSection?.deletedAt).toBeTruthy();
+        expect(mockStorage.saveData).toHaveBeenCalled();
+    });
+
+    it('defaults notifications to off on first install', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(useTaskStore.getState().settings.notificationsEnabled).toBe(false);
+    });
+
+    it('leaves first install data empty until the user starts fresh', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+        await flushPendingSave();
+
+        const state = useTaskStore.getState();
+        expect(state.projects).toHaveLength(0);
+        expect(state.tasks).toHaveLength(0);
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const saved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(saved?.projects).toHaveLength(0);
+        expect(saved?.tasks).toHaveLength(0);
+    });
+
+    it('does not force notifications off for existing data with legacy settings', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [
+                {
+                    id: 'legacy-task',
+                    title: 'Legacy task',
+                    status: 'inbox',
+                    tags: [],
+                    contexts: [],
+                    createdAt: '2026-02-01T00:00:00.000Z',
+                    updatedAt: '2026-02-01T00:00:00.000Z',
+                },
+            ],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(useTaskStore.getState().settings.notificationsEnabled).toBeUndefined();
+        expect(useTaskStore.getState().projects).toHaveLength(0);
+    });
+
+    it('does not seed getting started data when existing settings are present', async () => {
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: { theme: 'dark' },
+        });
+
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        expect(useTaskStore.getState().tasks).toHaveLength(0);
+        expect(useTaskStore.getState().projects).toHaveLength(0);
+    });
+
+    it('can seed getting started data on demand without duplicating it', async () => {
+        const firstResult = await useTaskStore.getState().seedGettingStarted();
+        await flushPendingSave();
+
+        expect(firstResult.success).toBe(true);
+        expect(firstResult.id).toBeTruthy();
+        expect(useTaskStore.getState().projects.map((project) => project.title)).toEqual(['Getting Started']);
+        expect(useTaskStore.getState().tasks).toHaveLength(9);
+        const state = useTaskStore.getState();
+        const starterTasks = state.tasks
+            .filter((task) => task.projectId === firstResult.id)
+            .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+        expect(starterTasks.map((task) => task.title)).toEqual([
+            'Start here: process your first inbox item',
+            'Capture a task in one line',
+            "Star up to 3 tasks for Today's Focus",
+            "Make Stride yours: hide what you don't use",
+            'Set up sync across your devices',
+            'Import tasks from another app',
+            'Run your first weekly review',
+        ]);
+        expect(starterTasks.every((task) => task.status === 'next')).toBe(true);
+        expect(starterTasks.every((task) => task.taskMode === 'list')).toBe(true);
+        expect(starterTasks.every((task) => task.checklist?.length === 3)).toBe(true);
+        expect(starterTasks[0].checklist?.map((item) => item.title)).toEqual([
+            'Open Inbox',
+            'Tap Process Inbox',
+            'Decide the next step for one sample item, or park it for later',
+        ]);
+        expect(starterTasks[4].checklist?.map((item) => item.title)).toContain('Open Settings -> Sync');
+        expect(starterTasks[2].isFocusedToday).toBe(true);
+        const sampleInboxTasks = state.tasks
+            .filter((task) => task.status === 'inbox')
+            .map((task) => task.title)
+            .sort();
+        expect(sampleInboxTasks).toEqual(['Buy milk', 'Reply to Sam']);
+
+        const secondResult = await useTaskStore.getState().seedGettingStarted();
+        await flushPendingSave();
+
+        expect(secondResult).toEqual(firstResult);
+        expect(useTaskStore.getState().projects.map((project) => project.title)).toEqual(['Getting Started']);
+        expect(useTaskStore.getState().tasks).toHaveLength(9);
+    });
+
+    it('reports getting started success only after the seeded snapshot is durable', async () => {
+        let resolveSave: (() => void) | null = null;
+        mockStorage.saveData = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+            resolveSave = resolve;
+        }));
+        setStorageAdapter(mockStorage);
+
+        let settled = false;
+        const seedPromise = useTaskStore.getState().seedGettingStarted();
+        void seedPromise.finally(() => {
+            settled = true;
+        });
+
+        try {
+            await vi.advanceTimersByTimeAsync(250);
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+            expect(settled).toBe(false);
+        } finally {
+            resolveSave?.();
+        }
+        await expect(seedPromise).resolves.toMatchObject({ success: true });
+        expect(settled).toBe(true);
+    });
+
+    it('rejects getting started seeding when the snapshot cannot be saved', async () => {
+        mockStorage.saveData = vi.fn().mockRejectedValue(new Error('seed write failed'));
+        setStorageAdapter(mockStorage);
+
+        const seedPromise = useTaskStore.getState().seedGettingStarted();
+        const rejection = expect(seedPromise).rejects.toThrow('seed write failed');
+        await vi.advanceTimersByTimeAsync(4_000);
+        await rejection;
+
+        expect(useTaskStore.getState().persistenceFailure).toMatchObject({
+            message: expect.stringContaining('seed write failed'),
+        });
+    });
+
+    it('backfills missing getting started tasks into an existing empty project', async () => {
+        const existingProject = createStoreProject('starter-project', {
+            title: 'Getting Started',
+        });
+        useTaskStore.setState({
+            projects: [existingProject],
+            _allProjects: [existingProject],
+        });
+
+        const result = await useTaskStore.getState().seedGettingStarted();
+        await flushPendingSave();
+
+        expect(result).toEqual({ success: true, id: existingProject.id });
+        expect(useTaskStore.getState().projects.map((project) => project.title)).toEqual(['Getting Started']);
+        expect(useTaskStore.getState().tasks).toHaveLength(9);
+        expect(
+            useTaskStore.getState().tasks
+                .filter((task) => task.projectId === existingProject.id)
+                .map((task) => task.title)
+        ).toEqual([
+            'Start here: process your first inbox item',
+            'Capture a task in one line',
+            "Star up to 3 tasks for Today's Focus",
+            "Make Stride yours: hide what you don't use",
+            'Set up sync across your devices',
+            'Import tasks from another app',
+            'Run your first weekly review',
+        ]);
+    });
+
+    it('repairs duplicated getting started lessons from older seed copy', async () => {
+        const existingProject = createStoreProject('starter-project', {
+            title: 'Getting Started',
+        });
+        const legacyProcessTask = createStoreTask('legacy-process', {
+            title: 'Process your first inbox item',
+            status: 'next',
+            projectId: existingProject.id,
+            order: 0,
+            orderNum: 0,
+        });
+        const currentProcessTask = createStoreTask('current-process', {
+            title: 'Start here: process your first inbox item',
+            status: 'next',
+            taskMode: 'list',
+            projectId: existingProject.id,
+            order: 1,
+            orderNum: 1,
+            checklist: [
+                { id: 'check-1', title: 'Open Inbox', isCompleted: true },
+            ],
+        });
+        const legacyQuickCaptureTask = createStoreTask('legacy-quick-capture', {
+            title: 'Try quick capture with a context and date',
+            status: 'next',
+            taskMode: 'list',
+            projectId: existingProject.id,
+            order: 2,
+            orderNum: 2,
+        });
+        useTaskStore.setState({
+            tasks: [legacyProcessTask, currentProcessTask, legacyQuickCaptureTask],
+            projects: [existingProject],
+            _allTasks: [legacyProcessTask, currentProcessTask, legacyQuickCaptureTask],
+            _allProjects: [existingProject],
+        });
+
+        const result = await useTaskStore.getState().seedGettingStarted();
+        await flushPendingSave();
+
+        expect(result).toEqual({ success: true, id: existingProject.id });
+        const visibleStarterTasks = useTaskStore.getState().tasks
+            .filter((task) => task.projectId === existingProject.id)
+            .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+        expect(visibleStarterTasks.map((task) => task.title)).toEqual([
+            'Start here: process your first inbox item',
+            'Capture a task in one line',
+            "Star up to 3 tasks for Today's Focus",
+            "Make Stride yours: hide what you don't use",
+            'Set up sync across your devices',
+            'Import tasks from another app',
+            'Run your first weekly review',
+        ]);
+        expect(visibleStarterTasks.filter((task) => task.title === 'Start here: process your first inbox item')).toHaveLength(1);
+        expect(visibleStarterTasks[0].checklist?.[0]?.isCompleted).toBe(true);
+        expect(visibleStarterTasks.every((task) => task.checklist?.length === 3)).toBe(true);
+
+        expect(visibleStarterTasks.find((task) => task.title === 'Capture a task in one line')?.id).toBe(legacyQuickCaptureTask.id);
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === legacyProcessTask.id)?.deletedAt).toBeTruthy();
+    });
+
+    it('repairs korean lessons seeded under the pre-rewrite titles', async () => {
+        const existingProject = createStoreProject('starter-project', { title: '시작하기' });
+        const legacyKoreanTasks = [
+            '여기서 시작: 첫 수집함 항목 처리하기',
+            '한 줄로 작업 기록하기',
+            '오늘의 포커스에 작업을 최대 3개 별표하기',
+            'Stride를 내 것으로: 안 쓰는 것 숨기기',
+            '다른 앱에서 작업 가져오기',
+        ].map((title, index) => createStoreTask(`legacy-ko-${index}`, {
+            title,
+            status: 'next',
+            projectId: existingProject.id,
+            order: index,
+            orderNum: index,
+        }));
+        useTaskStore.setState({
+            tasks: legacyKoreanTasks,
+            projects: [existingProject],
+            _allTasks: legacyKoreanTasks,
+            _allProjects: [existingProject],
+        });
+
+        const result = await useTaskStore.getState().seedGettingStarted({ language: 'ko' });
+        await flushPendingSave();
+
+        expect(result).toEqual({ success: true, id: existingProject.id });
+        const starterTasks = useTaskStore.getState().tasks
+            .filter((task) => task.projectId === existingProject.id);
+
+        expect(starterTasks).toHaveLength(7);
+        expect(starterTasks.map((task) => task.id)).toEqual(
+            expect.arrayContaining(legacyKoreanTasks.map((task) => task.id))
+        );
+    });
+
+    it('seeds getting started content in the app language and repairs across language switches', async () => {
+        const german = await useTaskStore.getState().seedGettingStarted({ language: 'de' });
+        await flushPendingSave();
+
+        expect(german.success).toBe(true);
+        const germanState = useTaskStore.getState();
+        expect(germanState.projects).toHaveLength(1);
+        expect(germanState.projects[0].title).not.toBe('Getting Started');
+        expect(germanState.tasks).toHaveLength(9);
+        const germanTitles = germanState.tasks
+            .filter((task) => task.projectId === german.id)
+            .map((task) => task.title);
+        expect(germanTitles).toHaveLength(7);
+        expect(germanTitles).not.toContain('Start here: process your first inbox item');
+
+        const english = await useTaskStore.getState().seedGettingStarted({ language: 'en' });
+        await flushPendingSave();
+
+        expect(english).toEqual(german);
+        const englishState = useTaskStore.getState();
+        expect(englishState.projects.map((project) => project.title)).toEqual(['Getting Started']);
+
+        expect(englishState.tasks).toHaveLength(9);
+        expect(
+            englishState.tasks
+                .filter((task) => task.projectId === german.id)
+                .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+                .map((task) => task.title)
+        ).toEqual([
+            'Start here: process your first inbox item',
+            'Capture a task in one line',
+            "Star up to 3 tasks for Today's Focus",
+            "Make Stride yours: hide what you don't use",
+            'Set up sync across your devices',
+            'Import tasks from another app',
+            'Run your first weekly review',
+        ]);
+    });
+
+    it('supports a basic task lifecycle', async () => {
+        const { addTask, updateTask, moveTask } = useTaskStore.getState();
+        addTask('Lifecycle Task');
+        const taskId = useTaskStore.getState().tasks[0].id;
+
+        updateTask(taskId, { title: 'Lifecycle Task Updated', status: 'next' });
+        await moveTask(taskId, 'done');
+        await moveTask(taskId, 'archived');
+
+        const archived = useTaskStore.getState()._allTasks.find((task) => task.id === taskId);
+        expect(archived?.status).toBe('archived');
+        expect(archived?.title).toBe('Lifecycle Task Updated');
+    });
+
+    it('keeps explicit waiting status after a refresh even when dated tasks are due', async () => {
+        let persistedData = {
+            tasks: [],
+            projects: [],
+            sections: [],
+            areas: [],
+            settings: {},
+        };
+        mockStorage.getData = vi.fn().mockImplementation(async () => persistedData);
+        mockStorage.saveData = vi.fn().mockImplementation(async (data) => {
+            persistedData = JSON.parse(JSON.stringify(data));
+        });
+
+        const { addTask, moveTask } = useTaskStore.getState();
+        await addTask('Waiting handoff', {
+            status: 'next',
+            dueDate: '2026-02-14T08:00:00.000Z',
+            startTime: '2026-02-14T07:30:00.000Z',
+        });
+
+        const taskId = useTaskStore.getState()._allTasks[0]?.id;
+        if (!taskId) throw new Error('Failed to seed waiting task');
+
+        await moveTask(taskId, 'waiting');
+        await flushPendingSave();
+        await useTaskStore.getState().fetchData({ silent: true });
+
+        const refreshed = useTaskStore.getState()._allTasks.find((task) => task.id === taskId);
+        expect(refreshed?.status).toBe('waiting');
+        expect(refreshed?.dueDate).toBe('2026-02-14T08:00:00.000Z');
+        expect(refreshed?.startTime).toBe('2026-02-14T07:30:00.000Z');
+    });
+
+    it('queryTasks defaults to visible tasks and can include archived/deleted when requested', async () => {
+        const { addTask, moveTask, deleteTask, queryTasks } = useTaskStore.getState();
+        addTask('Visible task');
+        addTask('Archived task');
+        addTask('Deleted task');
+        const allTasks = useTaskStore.getState()._allTasks;
+        const archivedId = allTasks.find((task) => task.title === 'Archived task')?.id;
+        const deletedId = allTasks.find((task) => task.title === 'Deleted task')?.id;
+
+        if (!archivedId || !deletedId) throw new Error('Failed to seed tasks for query test');
+
+        await moveTask(archivedId, 'archived');
+        await deleteTask(deletedId);
+
+        const visibleOnly = await queryTasks({});
+        expect(visibleOnly.map((task) => task.title)).toContain('Visible task');
+        expect(visibleOnly.map((task) => task.title)).not.toContain('Archived task');
+        expect(visibleOnly.map((task) => task.title)).not.toContain('Deleted task');
+
+        const withArchived = await queryTasks({ includeArchived: true });
+        expect(withArchived.map((task) => task.title)).toContain('Archived task');
+
+        const withDeleted = await queryTasks({ includeDeleted: true });
+        expect(withDeleted.map((task) => task.title)).toContain('Deleted task');
+    });
+
+    it('restores deleted tasks without forcing status changes', async () => {
+        const { addTask, deleteTask, restoreTask } = useTaskStore.getState();
+        addTask('Keep Archived', { status: 'archived' });
+        const taskId = useTaskStore.getState()._allTasks[0].id;
+
+        await deleteTask(taskId);
+        await restoreTask(taskId);
+
+        const restored = useTaskStore.getState()._allTasks.find((task) => task.id === taskId);
+        expect(restored?.deletedAt).toBeUndefined();
+        expect(restored?.status).toBe('archived');
+    });
+
+    it('clears dead project and section refs when restoring a deleted task', async () => {
+        const { addProject, addSection, addTask, deleteTask, deleteProject, purgeProject, restoreTask } = useTaskStore.getState();
+        const project = await addProject('Dead Project', '#444444');
+        expect(project).not.toBeNull();
+        if (!project) return;
+        const section = await addSection(project.id, 'Dead Section');
+        expect(section).not.toBeNull();
+        if (!section) return;
+
+        await addTask('Restore without project', { projectId: project.id, sectionId: section.id, status: 'next' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Restore without project');
+        expect(task).toBeTruthy();
+        if (!task) return;
+
+        await deleteTask(task.id);
+        await deleteProject(project.id);
+        await purgeProject(project.id);
+        await restoreTask(task.id);
+
+        const restored = useTaskStore.getState()._allTasks.find((item) => item.id === task.id);
+        expect(restored?.deletedAt).toBeUndefined();
+        expect(restored?.projectId).toBeUndefined();
+        expect(restored?.sectionId).toBeUndefined();
+    });
+
+    it('clears dead area refs when restoring a deleted task', async () => {
+        const { addArea, addTask, deleteTask, deleteArea, restoreTask } = useTaskStore.getState();
+        const area = await addArea('Dead Area');
+        expect(area).not.toBeNull();
+        if (!area) return;
+
+        await addTask('Restore without area', { areaId: area.id, status: 'next' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Restore without area');
+        expect(task).toBeTruthy();
+        if (!task) return;
+
+        await deleteTask(task.id);
+        await deleteArea(area.id);
+        await restoreTask(task.id);
+
+        const restored = useTaskStore.getState()._allTasks.find((item) => item.id === task.id);
+        expect(restored?.deletedAt).toBeUndefined();
+        expect(restored?.areaId).toBeUndefined();
+    });
+
+    it('refuses to restore a purged task and leaves the tombstone untouched', async () => {
+        const { addTask, deleteTask, purgeTask, restoreTask } = useTaskStore.getState();
+        await addTask('Gone for good', { status: 'next' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Gone for good');
+        expect(task).toBeTruthy();
+        if (!task) return;
+
+        await deleteTask(task.id);
+        await purgeTask(task.id);
+        const purged = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(purged.purgedAt).toBeTruthy();
+
+        const result = await restoreTask(task.id);
+
+        expect(result).toEqual({ success: false, error: 'Task not found' });
+        const after = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(after.purgedAt).toBe(purged.purgedAt);
+        expect(after.deletedAt).toBe(purged.deletedAt);
+        expect(after.rev).toBe(purged.rev);
+    });
+
+    it('refuses to purge a task that is no longer in Trash', async () => {
+        const { addTask, deleteTask, restoreTask, purgeTask } = useTaskStore.getState();
+        await addTask('Restored by sync', { status: 'next' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Restored by sync');
+        expect(task).toBeTruthy();
+        if (!task) return;
+
+        await deleteTask(task.id);
+
+        await restoreTask(task.id);
+        const live = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+
+        const result = await purgeTask(task.id);
+
+        expect(result).toEqual({ success: false, error: 'Task is not in Trash' });
+        const after = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(after.deletedAt).toBeUndefined();
+        expect(after.purgedAt).toBeUndefined();
+        expect(after.rev).toBe(live.rev);
+    });
+
+    it('refuses a purge that waited behind a document restore which made the task live', async () => {
+        const { addTask, deleteTask } = useTaskStore.getState();
+        await addTask('Restored by a document restore', { status: 'next' });
+        const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Restored by a document restore')!;
+        await deleteTask(task.id);
+        let release: (() => void) | undefined;
+
+        const restore = runSerializedSyncDocumentWriteOperation(async () => {
+            await new Promise<void>((resolve) => { release = resolve; });
+            useTaskStore.setState((state) => ({
+                _allTasks: state._allTasks.map((item) => (item.id === task.id ? { ...item, deletedAt: undefined } : item)),
+            }));
+        });
+        await vi.waitFor(() => expect(release).toBeDefined());
+
+        const purging = useTaskStore.getState().purgeTask(task.id);
+        release!();
+        await restore;
+
+        expect(await purging).toEqual({ success: false, error: 'Task is not in Trash' });
+        const after = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+        expect(after.deletedAt).toBeUndefined();
+        expect(after.purgedAt).toBeUndefined();
+    });
+
+    it('purges deleted tasks while deriving the visible task slice from all tasks', async () => {
+        const archivedTask = {
+            id: 'archived-visible',
+            title: 'Archived Visible Task',
+            status: 'archived' as const,
+            tags: [],
+            contexts: [],
+            createdAt: '2026-04-01T00:00:00.000Z',
+            updatedAt: '2026-04-01T00:00:00.000Z',
+        };
+        const deletedTask = {
+            id: 'deleted-task',
+            title: 'Deleted Task',
+            status: 'inbox' as const,
+            tags: [],
+            contexts: [],
+            createdAt: '2026-04-01T00:00:00.000Z',
+            updatedAt: '2026-04-01T00:00:00.000Z',
+            deletedAt: '2026-04-01T00:00:00.000Z',
+        };
+
+        useTaskStore.setState({
+            tasks: [archivedTask],
+            _allTasks: [archivedTask, deletedTask],
+        });
+
+        await useTaskStore.getState().purgeDeletedTasks();
+
+        expect(useTaskStore.getState().tasks).toEqual([]);
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === archivedTask.id)).toEqual(archivedTask);
+        expect(useTaskStore.getState()._allTasks.find((task) => task.id === deletedTask.id)?.purgedAt).toBeTruthy();
+    });
+
+    it('does not re-purge tasks that already have a tombstone purge marker', async () => {
+        const alreadyPurgedTask = createStoreTask('purged-task', {
+            deletedAt: '2026-04-01T00:00:00.000Z',
+            purgedAt: '2026-04-02T00:00:00.000Z',
+            updatedAt: '2026-04-03T00:00:00.000Z',
+            rev: 7,
+        });
+
+        useTaskStore.setState({
+            tasks: [],
+            _allTasks: [alreadyPurgedTask],
+        });
+
+        await useTaskStore.getState().purgeDeletedTasks();
+
+        expect(useTaskStore.getState()._allTasks).toEqual([alreadyPurgedTask]);
+    });
+
+    it('keeps the task lookup aligned when purging deleted tasks', async () => {
+        const visibleTask = createStoreTask('visible-task');
+        const deletedTask = createStoreTask('deleted-task', {
+            deletedAt: '2026-04-01T00:00:00.000Z',
+        });
+
+        useTaskStore.setState({
+            tasks: [visibleTask],
+            _allTasks: [visibleTask, deletedTask],
+            _tasksById: buildEntityMap([visibleTask, deletedTask]),
+        });
+        const previousMap = useTaskStore.getState()._tasksById;
+
+        await useTaskStore.getState().purgeDeletedTasks();
+
+        const state = useTaskStore.getState();
+        const purgedTask = state._allTasks.find((task) => task.id === deletedTask.id);
+        expect(purgedTask?.purgedAt).toBeTruthy();
+        expect(state._tasksById).not.toBe(previousMap);
+        expect(state._tasksById.get(deletedTask.id)).toBe(purgedTask);
+    });
+
+    it('should coalesce saves and allow immediate flush', async () => {
+        const { addTask } = useTaskStore.getState();
+
+
+        addTask('Test Save');
+
+
+        await flushPendingSave();
+
+
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+    });
+
+    it('defers automatic persistence so UI updates can paint first', async () => {
+        const { addTask } = useTaskStore.getState();
+
+        addTask('Deferred Save');
+        await Promise.resolve();
+
+        expect(mockStorage.saveData).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(120);
+        await waitForExpectation(() => {
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('should persist the latest snapshot after rapid edits', async () => {
+        const { addTask, addProject, updateTask } = useTaskStore.getState();
+
+        addTask('Alpha');
+        const taskId = useTaskStore.getState().tasks[0].id;
+        const project = await addProject('Project Alpha', '#123456');
+        expect(project).not.toBeNull();
+        if (!project) return;
+
+        updateTask(taskId, { title: 'Alpha Updated', projectId: project.id });
+        await flushPendingSave();
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const saved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(saved.projects).toHaveLength(1);
+        expect(saved.tasks).toHaveLength(1);
+        expect(saved.tasks[0].title).toBe('Alpha Updated');
+        expect(saved.tasks[0].projectId).toBe(project.id);
+    });
+
+    it('logs dropped save versions when the pending queue overflows', async () => {
+        let resolveFirstSave: (() => void) | null = null;
+        mockStorage.saveData = vi.fn().mockImplementation(() => {
+            if (!resolveFirstSave) {
+                return new Promise<void>((resolve) => {
+                    resolveFirstSave = resolve;
+                });
+            }
+            return Promise.resolve();
+        });
+        setStorageAdapter(mockStorage);
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        const { addTask, updateTask } = useTaskStore.getState();
+        await addTask('Overflow Task');
+        await Promise.resolve();
+
+        const taskId = useTaskStore.getState()._allTasks[0].id;
+        for (let index = 0; index < 110; index += 1) {
+            await updateTask(taskId, { title: `Overflow Task ${index}` });
+        }
+
+        expect(useTaskStore.getState().error).toContain('Save queue overflow');
+        expect(useTaskStore.getState().error).toContain('versions');
+        const overflowCall = warnSpy.mock.calls.find(([message]) => message === 'Save queue overflow');
+        expect(overflowCall).toBeTruthy();
+        const [, overflowMeta] = overflowCall ?? [];
+        expect(overflowMeta).toEqual(
+            expect.objectContaining({
+                scope: 'store',
+                category: 'storage',
+                context: expect.any(String),
+            })
+        );
+        expect(parseLoggedContext(overflowMeta?.context)).toEqual(
+            expect.objectContaining({
+                droppedCount: expect.any(Number),
+                droppedFromVersion: expect.any(Number),
+                droppedToVersion: expect.any(Number),
+            })
+        );
+
+        const flushPromise = flushPendingSave();
+        await waitForExpectation(() => {
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        });
+        resolveFirstSave?.();
+        await flushPromise;
+    });
+
+    it('retries failed saves with the latest queued snapshot', async () => {
+        let rejectFirstSave: ((reason?: unknown) => void) | null = null;
+        mockStorage.saveData = vi.fn().mockImplementation(() => {
+            if (!rejectFirstSave) {
+                return new Promise<void>((_, reject) => {
+                    rejectFirstSave = reject;
+                });
+            }
+            return Promise.resolve();
+        });
+        setStorageAdapter(mockStorage);
+
+        const { addTask, updateTask } = useTaskStore.getState();
+        addTask('Alpha');
+        await Promise.resolve();
+
+        const taskId = useTaskStore.getState().tasks[0].id;
+        updateTask(taskId, { title: 'Alpha Updated' });
+
+        const flushPromise = flushPendingSave();
+        await waitForExpectation(() => {
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        });
+        rejectFirstSave?.(new Error('disk full'));
+        await vi.advanceTimersByTimeAsync(250);
+        await flushPromise;
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        expect(saveCalls.length).toBeGreaterThanOrEqual(2);
+        const lastSaved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(lastSaved.tasks).toHaveLength(1);
+        expect(lastSaved.tasks[0].title).toBe('Alpha Updated');
+    });
+
+    it('keeps flushing newer queued saves after a failed in-flight write', async () => {
+        let rejectFirstSave: ((reason?: unknown) => void) | null = null;
+        let callCount = 0;
+        mockStorage.saveData = vi.fn().mockImplementation(() => {
+            callCount += 1;
+            if (callCount === 1) {
+                return new Promise<void>((_, reject) => {
+                    rejectFirstSave = reject;
+                });
+            }
+            return Promise.resolve();
+        });
+        setStorageAdapter(mockStorage);
+
+        const { addTask, updateTask } = useTaskStore.getState();
+        addTask('Alpha');
+        const flushPromise = flushPendingSave();
+        await waitForExpectation(() => {
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        });
+
+        const taskId = useTaskStore.getState().tasks[0].id;
+        updateTask(taskId, { title: 'Alpha Updated' });
+
+        rejectFirstSave?.(new Error('disk full'));
+        await flushPromise;
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(2);
+
+        const saveCalls = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls;
+        const lastSaved = saveCalls[saveCalls.length - 1]?.[0];
+        expect(lastSaved.tasks).toHaveLength(1);
+        expect(lastSaved.tasks[0].title).toBe('Alpha Updated');
+    });
+
+    it('waits the real retry schedule between failed saves (250, 500, 1000, 2000 ms)', async () => {
+
+
+        const flags = globalThis as { __strideSkipSaveRetryWait?: unknown };
+        const skipped = flags.__strideSkipSaveRetryWait;
+        flags.__strideSkipSaveRetryWait = 'yes';
+        try {
+            const attemptsAt: number[] = [];
+            mockStorage.saveData = vi.fn(async () => { attemptsAt.push(Date.now()); throw new Error('disk full'); });
+            setStorageAdapter(mockStorage);
+            useTaskStore.getState().addTask('Unsaveable task');
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect(attemptsAt.slice(1).map((at, index) => at - attemptsAt[index])).toEqual([250, 500, 1000, 2000]);
+        } finally {
+            flags.__strideSkipSaveRetryWait = skipped;
+        }
+    });
+
+    it('stops retrying after repeated terminal save failures', async () => {
+        mockStorage.saveData = vi.fn().mockRejectedValue(new Error('disk full'));
+        setStorageAdapter(mockStorage);
+
+        const { addTask } = useTaskStore.getState();
+        addTask('Unsaveable task');
+
+        await vi.advanceTimersByTimeAsync(4_000);
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(5);
+        expect(useTaskStore.getState().error).toContain('disk full');
+        expect(useTaskStore.getState().persistenceFailure).toMatchObject({
+            message: expect.stringContaining('disk full'),
+            retrying: false,
+        });
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(useTaskStore.getState().error).toBeNull();
+        expect(useTaskStore.getState().persistenceFailure).toMatchObject({
+            message: expect.stringContaining('disk full'),
+            retrying: false,
+        });
+    });
+
+    it('coalesces persistence retries and clears the failure after a durable save', async () => {
+        mockStorage.saveData = vi.fn().mockRejectedValue(new Error('disk full'));
+        setStorageAdapter(mockStorage);
+
+        useTaskStore.getState().addTask('Retryable task');
+        await vi.advanceTimersByTimeAsync(4_000);
+        expect(useTaskStore.getState().persistenceFailure).not.toBeNull();
+
+        mockStorage.saveData = vi.fn().mockResolvedValue(undefined);
+        const retryOne = useTaskStore.getState().retryPersistence();
+        const retryTwo = useTaskStore.getState().retryPersistence();
+
+        await Promise.all([retryOne, retryTwo]);
+
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        expect(useTaskStore.getState().persistenceFailure).toBeNull();
+    });
+
+    it('keeps an incremental task save failure visible until the latest snapshot is durably retried', async () => {
+        const task = createStoreTask('incremental-failure');
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: { deviceId: 'device-a' },
+        });
+        mockStorage.saveTask = vi.fn().mockRejectedValue(new Error('secret adapter detail'));
+        setStorageAdapter(mockStorage);
+
+        await expect(runWithImmediateSaveTracking(
+            () => useTaskStore.getState().updateTask(task.id, { title: 'First edit' })
+        )).rejects.toThrow('secret adapter detail');
+
+        expect(useTaskStore.getState().persistenceFailure).toMatchObject({
+            message: expect.stringContaining('secret adapter detail'),
+            retrying: false,
+        });
+
+
+        const laterSaveTask = vi.fn().mockResolvedValue(undefined);
+        mockStorage.saveTask = laterSaveTask;
+        vi.mocked(mockStorage.saveData).mockRejectedValue(new Error('secret adapter detail'));
+        await runWithImmediateSaveTracking(
+            () => useTaskStore.getState().updateTask(task.id, { title: 'Latest edit' })
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(laterSaveTask).not.toHaveBeenCalled();
+        expect(useTaskStore.getState().error).toBeNull();
+        expect(useTaskStore.getState().persistenceFailure).not.toBeNull();
+
+        let resolveRetry: (() => void) | null = null;
+        mockStorage.saveData = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+            resolveRetry = resolve;
+        }));
+        const retryOne = useTaskStore.getState().retryPersistence();
+        const retryTwo = useTaskStore.getState().retryPersistence();
+
+        await waitForExpectation(() => {
+            expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        });
+        expect(useTaskStore.getState().persistenceFailure?.retrying).toBe(true);
+        const retriedSnapshot = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls[0]?.[0];
+        expect(retriedSnapshot.tasks).toHaveLength(1);
+        expect(retriedSnapshot.tasks[0].title).toBe('Latest edit');
+
+        resolveRetry?.();
+        await Promise.all([retryOne, retryTwo]);
+
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        expect(useTaskStore.getState().persistenceFailure).toBeNull();
+    });
+
+    it('does not let a stale incremental retry snapshot outrank a newer pending snapshot at flush', async () => {
+        const task = createStoreTask('stale-retry-race');
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        let rejectSaveTask: ((reason?: unknown) => void) | null = null;
+        mockStorage.saveTask = vi.fn(() => new Promise<void>((_, reject) => {
+            rejectSaveTask = reject;
+        }));
+        setStorageAdapter(mockStorage);
+
+
+        void useTaskStore.getState().updateTask(task.id, { title: 'First edit' });
+
+
+        await useTaskStore.getState().addTask('Newer task');
+
+
+        rejectSaveTask?.(new Error('incremental write failed'));
+        await waitForExpectation(() => {
+            expect(useTaskStore.getState().persistenceFailure).toMatchObject({
+                message: expect.stringContaining('incremental write failed'),
+            });
+        });
+
+        await flushPendingSave();
+
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        const savedData = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls[0][0] as AppData;
+        expect(savedData.tasks.map((t) => t.title)).toContain('Newer task');
+        expect(savedData.tasks).toHaveLength(2);
+    });
+
+    it('keeps both edits when two concurrent incremental saves fail in dispatch order (C1)', async () => {
+        const task1 = createStoreTask('concurrent-a');
+        const task2 = createStoreTask('concurrent-b');
+        useTaskStore.setState({
+            tasks: [task1, task2],
+            _allTasks: [task1, task2],
+            _tasksById: buildEntityMap([task1, task2]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        const rejectors: Array<(reason?: unknown) => void> = [];
+        mockStorage.saveTask = vi.fn(() => new Promise<void>((_, reject) => {
+            rejectors.push(reject);
+        }));
+        setStorageAdapter(mockStorage);
+
+
+        void useTaskStore.getState().updateTask(task1.id, { title: 'A edit' });
+        void useTaskStore.getState().updateTask(task2.id, { title: 'B edit' });
+        expect(rejectors).toHaveLength(2);
+
+
+        rejectors[0]?.(new Error('A write failed'));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        rejectors[1]?.(new Error('B write failed'));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        await flushPendingSave();
+
+        expect(mockStorage.saveData).toHaveBeenCalledTimes(1);
+        const savedData = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls[0][0] as AppData;
+        const savedTask1 = savedData.tasks.find((t) => t.id === task1.id);
+        const savedTask2 = savedData.tasks.find((t) => t.id === task2.id);
+        expect(savedTask1?.title).toBe('A edit');
+        expect(savedTask2?.title).toBe('B edit');
+    });
+
+    it('keeps a failed incremental snapshot pending so fetch cannot replace it with stale storage', async () => {
+        const task = createStoreTask('incremental-fetch-race');
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: buildEntityMap([task]),
+            settings: { deviceId: 'device-a' },
+        });
+        mockStorage.saveTask = vi.fn().mockRejectedValue(new Error('incremental write failed'));
+        mockStorage.getData = vi.fn().mockResolvedValue({
+            tasks: [task],
+            projects: [],
+            sections: [],
+            areas: [],
+            people: [],
+            settings: {},
+        });
+        mockStorage.saveData = vi.fn().mockRejectedValue(new Error('snapshot write failed'));
+        setStorageAdapter(mockStorage);
+
+        await expect(runWithImmediateSaveTracking(
+            () => useTaskStore.getState().updateTask(task.id, { title: 'Unsaved edit' })
+        )).rejects.toThrow('incremental write failed');
+
+        const fetchPromise = useTaskStore.getState().fetchData({ silent: true });
+        const fetchRejection = expect(fetchPromise).rejects.toThrow('snapshot write failed');
+        await vi.advanceTimersByTimeAsync(4_000);
+        await fetchRejection;
+        expect(mockStorage.getData).not.toHaveBeenCalled();
+        expect(useTaskStore.getState()._tasksById.get(task.id)?.title).toBe('Unsaved edit');
+
+        mockStorage.saveData = vi.fn().mockResolvedValue(undefined);
+        await useTaskStore.getState().retryPersistence();
+
+        const retriedSnapshot = (mockStorage.saveData as unknown as { mock: { calls: any[][] } }).mock.calls[0]?.[0];
+        expect(retriedSnapshot.tasks).toHaveLength(1);
+        expect(retriedSnapshot.tasks[0].title).toBe('Unsaved edit');
+        expect(useTaskStore.getState().persistenceFailure).toBeNull();
+    });
+
+    it('should add a project', () => {
+        const { addProject } = useTaskStore.getState();
+        addProject('New Project', '#ff0000');
+
+        const { projects } = useTaskStore.getState();
+        expect(projects).toHaveLength(1);
+        expect(projects[0].title).toBe('New Project');
+        expect(projects[0].color).toBe('#ff0000');
+    });
+
+    it('uses the configured default project flow mode for new projects', async () => {
+        const { addProject, updateSettings } = useTaskStore.getState();
+        await updateSettings({ gtd: { defaultProjectFlowMode: 'sequential' } });
+
+        const defaultedProject = await addProject('Sequential Project', '#ff0000');
+        const explicitParallelProject = await addProject('Parallel Project', '#00ff00', { isSequential: false });
+
+        expect(defaultedProject?.isSequential).toBe(true);
+        expect(explicitParallelProject?.isSequential).toBe(false);
+    });
+
+    it('should soft-delete areas and unassign linked projects/tasks', async () => {
+        const { addArea, addProject, addSection, addTask, deleteArea } = useTaskStore.getState();
+        const area = await addArea('Work');
+        expect(area).not.toBeNull();
+        if (!area) return;
+
+        const project = await addProject('Area Project', '#123456', { areaId: area.id, areaTitle: 'Work' });
+        expect(project).not.toBeNull();
+        if (!project) return;
+        const section = await addSection(project.id, 'Planning');
+        expect(section).not.toBeNull();
+        if (!section) return;
+        await addTask('Area Task', { areaId: area.id, status: 'next' });
+        await addTask('Project Task', { projectId: project.id, sectionId: section.id, status: 'next' });
+
+        await deleteArea(area.id);
+
+        const state = useTaskStore.getState();
+        expect(state.areas).toHaveLength(0);
+        expect(state.projects).toHaveLength(1);
+        expect(state.sections).toHaveLength(1);
+        expect(state.tasks).toHaveLength(2);
+        const tombstone = state._allAreas.find((item) => item.id === area.id);
+        expect(tombstone?.deletedAt).toBeTruthy();
+
+        const updatedProject = state._allProjects.find((item) => item.id === project.id)!;
+        expect(updatedProject.deletedAt).toBeUndefined();
+        expect(updatedProject.areaId).toBeUndefined();
+        expect(updatedProject.areaTitle).toBeUndefined();
+        const updatedSection = state._allSections.find((item) => item.id === section.id)!;
+        expect(updatedSection.deletedAt).toBeUndefined();
+        const updatedTask = state._allTasks.find((item) => item.title === 'Area Task')!;
+        expect(updatedTask.deletedAt).toBeUndefined();
+        expect(updatedTask.areaId).toBeUndefined();
+        const updatedProjectTask = state._allTasks.find((item) => item.title === 'Project Task')!;
+        expect(updatedProjectTask.deletedAt).toBeUndefined();
+        expect(updatedProjectTask.projectId).toBe(project.id);
+    });
+
+    it('restores a deleted area without reassigning unassigned children', async () => {
+        const { addArea, addProject, addSection, addTask, deleteArea, restoreArea } = useTaskStore.getState();
+        const area = await addArea('Work');
+        expect(area).not.toBeNull();
+        if (!area) return;
+        const project = await addProject('Area Project', '#123456', { areaId: area.id });
+        expect(project).not.toBeNull();
+        if (!project) return;
+        const section = await addSection(project.id, 'Planning');
+        expect(section).not.toBeNull();
+        if (!section) return;
+        await addTask('Area Task', { areaId: area.id, status: 'next' });
+        await addTask('Project Task', { projectId: project.id, sectionId: section.id, status: 'next' });
+
+        await deleteArea(area.id);
+
+        const result = await restoreArea(area.id);
+        expect(result).toEqual({ success: true });
+
+        const state = useTaskStore.getState();
+        const restored = state.areas.find((item) => item.id === area.id);
+        expect(restored?.deletedAt).toBeUndefined();
+        const restoredProject = state.projects.find((item) => item.id === project.id);
+        expect(restoredProject?.areaId).toBeUndefined();
+        expect(restoredProject?.deletedAt).toBeUndefined();
+        expect(state.sections.find((item) => item.id === section.id)?.deletedAt).toBeUndefined();
+        expect(state.tasks.find((item) => item.title === 'Area Task')?.areaId).toBeUndefined();
+        const projectTask = state.tasks.find((item) => item.title === 'Project Task');
+        expect(projectTask?.projectId).toBe(project.id);
+        expect(projectTask?.sectionId).toBe(section.id);
+    });
+
+    it('propagates area color updates to linked projects', async () => {
+        const { addArea, addProject, updateArea } = useTaskStore.getState();
+        const area = await addArea('Work', { color: '#3b82f6' });
+        expect(area).not.toBeNull();
+        if (!area) return;
+
+        const project = await addProject('Area Project', '#3b82f6', { areaId: area.id });
+        expect(project).not.toBeNull();
+        if (!project) return;
+
+        await updateArea(area.id, { color: '#ef4444' });
+
+        const updatedProject = useTaskStore.getState()._allProjects.find((item) => item.id === project.id);
+        expect(updatedProject?.color).toBe('#ef4444');
+    });
+
+    it('publishes tombstone restoration and legacy descendants in one Area addition', async () => {
+        const deletedAt = '2026-04-01T12:10:00.000Z';
+        const area = createStoreArea('restore-area', { name: 'Work', color: '#3b82f6', deletedAt, rev: 2 });
+        const unrelatedArea = createStoreArea('other-area', { name: 'Home', order: 1 });
+        const project = createStoreProject('restore-project', {
+            areaId: area.id, areaTitle: 'Work', color: '#3b82f6', deletedAt, rev: 2,
+        });
+        const unrelatedProject = createStoreProject('other-project', { areaId: unrelatedArea.id });
+        const section: Section = {
+            id: 'restore-section', projectId: project.id, title: 'Planning', order: 0,
+            createdAt: '2026-04-01T00:00:00.000Z', updatedAt: deletedAt,
+            deletedAt, rev: 2, revBy: 'device-a',
+        };
+        const directTask = createStoreTask('direct-task', { areaId: area.id, deletedAt, rev: 2 });
+        const projectTask = createStoreTask('project-task', {
+            projectId: project.id, sectionId: section.id, deletedAt, rev: 2,
+        });
+        const unrelatedTask = createStoreTask('other-task', { projectId: unrelatedProject.id });
+        useTaskStore.setState({
+            settings: { deviceId: 'device-a' },
+            _allAreas: [area, unrelatedArea],
+            _allProjects: [project, unrelatedProject],
+            _allSections: [section],
+            _allTasks: [directTask, projectTask, unrelatedTask],
+        });
+
+        const published: Array<{ areas: Area[]; projects: Project[]; sections: Section[]; tasks: Task[] }> = [];
+        const unsubscribe = useTaskStore.subscribe((state) => published.push({
+            areas: state._allAreas, projects: state._allProjects,
+            sections: state._allSections, tasks: state._allTasks,
+        }));
+        try {
+            const restored = await useTaskStore.getState().addArea(' work ', { color: '#ef4444' });
+            expect(restored).toMatchObject({ id: area.id, name: 'work', color: '#ef4444', rev: 4 });
+        } finally {
+            unsubscribe();
+        }
+
+        expect(published).toHaveLength(1);
+        const state = published[0];
+        expect(state.areas.find((row) => row.id === area.id)?.deletedAt).toBeUndefined();
+        expect(state.projects.find((row) => row.id === project.id)).toMatchObject({
+            deletedAt: undefined, areaId: area.id, areaTitle: 'work', color: '#ef4444', rev: 4,
+        });
+        expect(state.sections.find((row) => row.id === section.id)).toMatchObject({ deletedAt: undefined, rev: 3 });
+        expect(state.tasks.find((row) => row.id === directTask.id)).toMatchObject({ deletedAt: undefined, rev: 3 });
+        expect(state.tasks.find((row) => row.id === projectTask.id)).toMatchObject({
+            deletedAt: undefined, sectionId: section.id, rev: 3,
+        });
+        expect(state.areas.find((row) => row.id === unrelatedArea.id)).toBe(unrelatedArea);
+        expect(state.projects.find((row) => row.id === unrelatedProject.id)).toBe(unrelatedProject);
+        expect(state.tasks.find((row) => row.id === unrelatedTask.id)).toBe(unrelatedTask);
+        await flushPendingSave();
+        const saved = vi.mocked(mockStorage.saveData).mock.calls.at(-1)?.[0] as AppData;
+        expect(saved.areas.find((row) => row.id === area.id)).toEqual(state.areas.find((row) => row.id === area.id));
+        expect(saved.projects.find((row) => row.id === project.id)).toEqual(state.projects.find((row) => row.id === project.id));
+        expect(saved.sections.find((row) => row.id === section.id)).toEqual(state.sections.find((row) => row.id === section.id));
+        expect(saved.tasks.find((row) => row.id === projectTask.id)).toEqual(state.tasks.find((row) => row.id === projectTask.id));
+    });
+
+    it('returns action failure when updateArea targets a missing area', async () => {
+        const result = await useTaskStore.getState().updateArea('missing-area', { color: '#ef4444' });
+
+        expect(result).toEqual({ success: false, error: 'Area not found' });
+        expect(useTaskStore.getState().error).toBe('Area not found');
+    });
+
+    it('returns action failure when updateArea receives a blank name', async () => {
+        const area = await useTaskStore.getState().addArea('Work');
+
+        expect(area).not.toBeNull();
+
+        const result = await useTaskStore.getState().updateArea(area!.id, { name: '   ' });
+
+        expect(result).toEqual({ success: false, error: 'Area name is required' });
+        expect(useTaskStore.getState().error).toBe('Area name is required');
+        expect(useTaskStore.getState()._allAreas.find((item) => item.id === area!.id)?.name).toBe('Work');
+    });
+
+    it('returns action failure when deleteArea targets a missing area', async () => {
+        const result = await useTaskStore.getState().deleteArea('missing-area');
+
+        expect(result).toEqual({ success: false, error: 'Area not found' });
+        expect(useTaskStore.getState().error).toBe('Area not found');
+    });
+
+    it('should move a project to someday without altering task status', () => {
+        const { addProject, addTask, updateProject } = useTaskStore.getState();
+        addProject('My Project', '#00ff00');
+
+        const project = useTaskStore.getState().projects[0];
+        addTask('Task 1', { status: 'next', projectId: project.id });
+        addTask('Task 2', { status: 'waiting', projectId: project.id });
+
+        updateProject(project.id, { status: 'someday' });
+
+        const projectTasks = useTaskStore.getState()._allTasks.filter(t => t.projectId === project.id && !t.deletedAt);
+        expect(projectTasks).toHaveLength(2);
+        expect(projectTasks.map(t => t.status)).toEqual(['next', 'waiting']);
+    });
+
+    it('duplicates projects as fresh active work with reset checklists', async () => {
+        const { addProject, addSection, addTask, duplicateProject } = useTaskStore.getState();
+        const project = await addProject('Launch Template', '#00ff00');
+        expect(project).not.toBeNull();
+        if (!project) return;
+        const section = await addSection(project.id, 'Preparation');
+        expect(section).not.toBeNull();
+        if (!section) return;
+        await addTask('Reference checklist', {
+            projectId: project.id,
+            sectionId: section.id,
+            status: 'reference',
+            checklist: [
+                { id: 'c1', title: 'Confirm venue', isCompleted: true },
+                { id: 'c2', title: 'Send agenda', isCompleted: false },
+            ],
+        });
+
+        const duplicated = await duplicateProject(project.id);
+
+        expect(duplicated?.title).toBe('Launch Template (Copy)');
+        const duplicatedSection = useTaskStore.getState()._allSections.find((item) => (
+            item.projectId === duplicated?.id && item.title === 'Preparation'
+        ));
+        expect(duplicatedSection).toBeTruthy();
+        const duplicatedTask = useTaskStore.getState()._allTasks.find((task) => (
+            task.projectId === duplicated?.id && task.title === 'Reference checklist'
+        ));
+        expect(duplicatedTask?.status).toBe('reference');
+        expect(duplicatedTask?.sectionId).toBe(duplicatedSection?.id);
+        expect(duplicatedTask?.checklist?.map((item) => ({
+            title: item.title,
+            isCompleted: item.isCompleted,
+        }))).toEqual([
+            { title: 'Confirm venue', isCompleted: false },
+            { title: 'Send agenda', isCompleted: false },
+        ]);
+        expect(duplicatedTask?.checklist?.map((item) => item.id)).not.toEqual(['c1', 'c2']);
+    });
+
+    it('should archive a project, mark incomplete tasks done, and archive its sections', async () => {
+        const { addProject, addTask, addSection, updateProject } = useTaskStore.getState();
+        addProject('Archived Project', '#123456');
+
+        const project = useTaskStore.getState().projects[0];
+        addTask('Task 1', { status: 'next', projectId: project.id });
+        addTask('Task 2', { status: 'waiting', projectId: project.id });
+        addTask('Already Done', {
+            status: 'done',
+            completedAt: '2026-03-20T10:00:00.000Z',
+            updatedAt: '2026-03-20T10:00:00.000Z',
+            projectId: project.id,
+        });
+        addTask('Already Archived', {
+            status: 'archived',
+            completedAt: '2026-03-19T10:00:00.000Z',
+            updatedAt: '2026-03-19T10:00:00.000Z',
+            projectId: project.id,
+        });
+        const section = await addSection(project.id, 'Section 1');
+        expect(section).not.toBeNull();
+
+        await updateProject(project.id, { status: 'archived' });
+
+        const projectTasks = useTaskStore.getState()._allTasks.filter(t => t.projectId === project.id && !t.deletedAt);
+        const projectSections = useTaskStore.getState()._allSections.filter((item) => item.projectId === project.id);
+        expect(projectTasks).toHaveLength(4);
+        expect(projectTasks.filter((task) => task.status === 'done')).toHaveLength(3);
+        expect(projectTasks.find((task) => task.title === 'Task 1')?.statusBeforeProjectArchive).toBe('next');
+        expect(projectTasks.find((task) => task.title === 'Task 2')?.statusBeforeProjectArchive).toBe('waiting');
+        expect(projectTasks.find((task) => task.title === 'Already Done')?.completedAt).toBe('2026-03-20T10:00:00.000Z');
+        expect(projectTasks.find((task) => task.title === 'Already Done')?.statusBeforeProjectArchive).toBeUndefined();
+        expect(projectTasks.find((task) => task.title === 'Already Archived')?.status).toBe('archived');
+        expect(projectSections).toHaveLength(1);
+        expect(projectSections[0].deletedAt).toBeTruthy();
+        expect(projectSections[0].deletedAtBeforeProjectArchive).toBeUndefined();
+    });
+
+    it('should restore project-archived task and section state when unarchiving', async () => {
+        const { addProject, addTask, addSection, updateProject } = useTaskStore.getState();
+        addProject('Reversible Archive Project', '#123456');
+
+        const project = useTaskStore.getState().projects[0];
+        addTask('Next Task', {
+            status: 'next',
+            projectId: project.id,
+            completedAt: '2026-03-18T10:00:00.000Z',
+            isFocusedToday: true,
+        });
+        addTask('Waiting Task', { status: 'waiting', projectId: project.id });
+        addTask('Already Done', {
+            status: 'done',
+            completedAt: '2026-03-20T10:00:00.000Z',
+            projectId: project.id,
+        });
+        const section = await addSection(project.id, 'Section 1');
+        expect(section).not.toBeNull();
+
+        await updateProject(project.id, { status: 'archived' });
+        await updateProject(project.id, { status: 'active' });
+
+        const projectTasks = useTaskStore.getState()._allTasks.filter(t => t.projectId === project.id && !t.deletedAt);
+        const nextTask = projectTasks.find((task) => task.title === 'Next Task');
+        const waitingTask = projectTasks.find((task) => task.title === 'Waiting Task');
+        const doneTask = projectTasks.find((task) => task.title === 'Already Done');
+        const projectSections = useTaskStore.getState()._allSections.filter((item) => item.projectId === project.id);
+
+        expect(nextTask?.status).toBe('next');
+        expect(nextTask?.completedAt).toBeUndefined();
+        expect(nextTask?.isFocusedToday).toBe(true);
+        expect(nextTask?.statusBeforeProjectArchive).toBeUndefined();
+        expect(nextTask?.projectArchivedAt).toBeUndefined();
+        expect(waitingTask?.status).toBe('waiting');
+        expect(waitingTask?.completedAt).toBeUndefined();
+        expect(doneTask?.status).toBe('done');
+        expect(doneTask?.completedAt).toBe('2026-03-20T10:00:00.000Z');
+        expect(projectSections[0].deletedAt).toBeUndefined();
+        expect(projectSections[0].deletedAtBeforeProjectArchive).toBeUndefined();
+        expect(projectSections[0].projectArchivedAt).toBeUndefined();
+    });
+    it('reactivates an archived project when moving a project task back to next', async () => {
+        const { addProject, addTask, updateProject, moveTask } = useTaskStore.getState();
+        const project = await addProject('Reopen on Task Move', '#123456');
+        expect(project).not.toBeNull();
+        if (!project) return;
+
+        const first = await addTask('Task to Reopen', {
+            status: 'next',
+            projectId: project.id,
+        });
+        const second = await addTask('Task to Keep Done', {
+            status: 'next',
+            projectId: project.id,
+        });
+
+        expect(first.success).toBe(true);
+        expect(second.success).toBe(true);
+        if (!first.id || !second.id) return;
+
+        await updateProject(project.id, { status: 'archived' });
+
+        expect(useTaskStore.getState()._projectsById.get(project.id)?.status).toBe('archived');
+        expect(useTaskStore.getState()._tasksById.get(first.id)?.status).toBe('done');
+        expect(useTaskStore.getState()._tasksById.get(second.id)?.status).toBe('done');
+
+        await moveTask(first.id, 'next');
+
+        const state = useTaskStore.getState();
+        expect(state._projectsById.get(project.id)?.status).toBe('active');
+        expect(state._tasksById.get(first.id)?.status).toBe('next');
+        expect(state._tasksById.get(second.id)?.status).toBe('done');
+    });
+    it('does not rewrite a project-archived task that moved before unarchive', async () => {
+        const { addProject, addTask, updateProject, updateTask } = useTaskStore.getState();
+        const sourceProject = await addProject('Source Project', '#123456');
+        const targetProject = await addProject('Target Project', '#654321');
+        expect(sourceProject).not.toBeNull();
+        expect(targetProject).not.toBeNull();
+        if (!sourceProject || !targetProject) return;
+
+        await addTask('Moved Task', { status: 'next', projectId: sourceProject.id });
+        const taskId = useTaskStore.getState()._allTasks[0].id;
+
+        await updateProject(sourceProject.id, { status: 'archived' });
+        const archivedTask = useTaskStore.getState()._tasksById.get(taskId);
+        expect(archivedTask?.projectArchivedAt).toBeTruthy();
+
+        await updateTask(taskId, { projectId: targetProject.id });
+        const movedTask = useTaskStore.getState()._tasksById.get(taskId);
+        expect(movedTask?.projectId).toBe(targetProject.id);
+
+        await updateProject(sourceProject.id, { status: 'active' });
+        const afterUnarchive = useTaskStore.getState()._tasksById.get(taskId);
+
+        expect(afterUnarchive).toBe(movedTask);
+        expect(afterUnarchive?.projectId).toBe(targetProject.id);
+        expect(afterUnarchive?.projectArchivedAt).toBe(movedTask?.projectArchivedAt);
+        expect(afterUnarchive?.rev).toBe(movedTask?.rev);
+        expect(afterUnarchive?.updatedAt).toBe(movedTask?.updatedAt);
+    });
+
+    it('sets error when updateProject targets a missing project', async () => {
+        const { updateProject } = useTaskStore.getState();
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        const result = await updateProject('missing-project-id', { status: 'active' });
+
+        expect(result).toEqual({ success: false, error: 'Project not found' });
+        expect(useTaskStore.getState().error).toBe('Project not found');
+        const missingProjectCall = warnSpy.mock.calls.find(
+            ([message]) => message === 'updateProject skipped: project not found'
+        );
+        expect(missingProjectCall).toBeTruthy();
+        const [, missingProjectMeta] = missingProjectCall ?? [];
+        expect(missingProjectMeta).toEqual(
+            expect.objectContaining({
+                scope: 'store',
+                category: 'validation',
+                context: expect.any(String),
+            })
+        );
+        expect(parseLoggedContext(missingProjectMeta?.context)).toEqual({ id: 'missing-project-id' });
+        warnSpy.mockRestore();
+    });
+
+    it('returns action failure when deleteProject targets a missing project', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        const result = await useTaskStore.getState().deleteProject('missing-project-id');
+
+        expect(result).toEqual({ success: false, error: 'Project not found' });
+        expect(useTaskStore.getState().error).toBe('Project not found');
+        expect(warnSpy).toHaveBeenCalledWith(
+            'deleteProject skipped: project not found',
+            expect.objectContaining({ scope: 'store', category: 'validation' }),
+        );
+        warnSpy.mockRestore();
+    });
+
+    it('should roll a recurring task when completed', () => {
+        const { addTask, moveTask } = useTaskStore.getState();
+        addTask('Daily Task', {
+            status: 'next',
+            recurrence: 'daily',
+            dueDate: '2023-01-01T09:00',
+        });
+
+        const original = useTaskStore.getState().tasks[0];
+        moveTask(original.id, 'done');
+
+        const state = useTaskStore.getState();
+        expect(state._allTasks).toHaveLength(2);
+
+        const completed = state._allTasks.find(t => t.id === original.id)!;
+        expect(completed.status).toBe('done');
+        expect(completed.completedAt).toBeTruthy();
+
+        const nextInstance = state._allTasks.find(t => t.id !== original.id)!;
+        expect(nextInstance.status).toBe('next');
+        expect(nextInstance.recurrence).toEqual({
+            rule: 'daily',
+            seriesId: original.id,
+            rrule: `FREQ=DAILY;X-MINDWTR-SERIES-ID=${original.id}`,
+        });
+        expect(nextInstance.dueDate).toBe('2023-01-02T09:00');
+    });
+
+    it('stamps a recurring follow-up task with revision metadata', async () => {
+        vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z'));
+        const { addTask, moveTask } = useTaskStore.getState();
+        await addTask('Daily stamped task', {
+            status: 'next',
+            recurrence: 'daily',
+            dueDate: '2026-07-01T09:00:00.000Z',
+        });
+
+        const original = useTaskStore.getState().tasks[0];
+        await moveTask(original.id, 'done');
+
+        const state = useTaskStore.getState();
+        const nextInstance = state._allTasks.find((task) => task.id !== original.id);
+
+        expect(nextInstance?.rev).toBe(1);
+        expect(nextInstance?.revBy).toBe(state.settings.deviceId);
+        expect(nextInstance?.revBy).toBeTruthy();
+    });
+
+
+    it('gives a recurring follow-up the completed task place in the project', async () => {
+        vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z'));
+        const { addProject, addTask, moveTask } = useTaskStore.getState();
+        const project = await addProject('Ops', '#123456');
+        const recurring = await addTask('Daily standup', {
+            status: 'next',
+            projectId: project!.id,
+            recurrence: 'daily',
+            dueDate: '2026-07-01T09:00:00.000Z',
+        });
+        await addTask('Second action', { status: 'next', projectId: project!.id });
+        const originalOrder = useTaskStore.getState()._tasksById.get(recurring.id!)?.order;
+        expect(originalOrder).toBe(0);
+
+        await moveTask(recurring.id!, 'done');
+
+        const followUp = useTaskStore.getState()._allTasks
+            .find((task) => task.id !== recurring.id && task.title === 'Daily standup');
+        expect(followUp).toBeTruthy();
+        expect(followUp?.order).toBe(originalOrder);
+        expect(followUp?.orderNum).toBe(originalOrder);
+        expect(followUp?.pushCount).toBe(0);
+    });
+
+    it('keeps the completed task place for a follow-up created in a batch update', async () => {
+        vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z'));
+        const { addProject, addTask, batchMoveTasks } = useTaskStore.getState();
+        const project = await addProject('Ops batch', '#123456');
+        const recurring = await addTask('Daily batch standup', {
+            status: 'next',
+            projectId: project!.id,
+            recurrence: 'daily',
+            dueDate: '2026-07-01T09:00:00.000Z',
+        });
+        await addTask('Second batch action', { status: 'next', projectId: project!.id });
+
+        await batchMoveTasks([recurring.id!], 'done');
+
+        const followUp = useTaskStore.getState()._allTasks
+            .find((task) => task.id !== recurring.id && task.title === 'Daily batch standup');
+        expect(followUp?.order).toBe(0);
+        expect(followUp?.orderNum).toBe(0);
+    });
+
+    it('reserves an order for a follow-up whose completed task had none', async () => {
+        vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z'));
+        const project = createStoreProject('project-legacy');
+        const sibling = createStoreTask('sibling', { status: 'next', projectId: project.id, order: 0, orderNum: 0 });
+
+        const recurring = createStoreTask('legacy-recurring', {
+            status: 'next',
+            projectId: project.id,
+            recurrence: 'daily',
+            dueDate: '2026-07-01T09:00:00.000Z',
+        });
+        useTaskStore.setState({
+            tasks: [sibling, recurring],
+            _allTasks: [sibling, recurring],
+            _tasksById: buildEntityMap([sibling, recurring]),
+            projects: [project],
+            _allProjects: [project],
+            _projectsById: buildEntityMap([project]),
+            settings: { deviceId: 'device-a' },
+        });
+
+        await useTaskStore.getState().moveTask('legacy-recurring', 'done');
+
+        const followUp = useTaskStore.getState()._allTasks
+            .find((task) => task.id !== 'legacy-recurring' && task.title === recurring.title);
+        expect(followUp?.order).toBe(1);
+        expect(followUp?.orderNum).toBe(1);
+    });
+
+    it('does not append a duplicate recurring follow-up when one already exists', async () => {
+        vi.setSystemTime(new Date('2026-06-09T00:00:00.000Z'));
+
+        const current: Task = {
+            id: 'weekly-current',
+            title: 'Timeblock',
+            status: 'next',
+            recurrence: { rule: 'weekly', strategy: 'strict', seriesId: 'weekly-series' },
+            startTime: '2026-06-08T08:00:00.000Z',
+            dueDate: '2026-06-08T17:00:00.000Z',
+            createdAt: '2026-06-01T00:00:00.000Z',
+            updatedAt: '2026-06-01T00:00:00.000Z',
+        };
+        const existingFollowUp: Task = {
+            ...current,
+            id: 'weekly-follow-up',
+            startTime: '2026-06-15T08:00:00.000Z',
+            dueDate: '2026-06-15T17:00:00.000Z',
+        };
+
+        useTaskStore.setState({
+            tasks: [current, existingFollowUp],
+            _allTasks: [current, existingFollowUp],
+        });
+
+        await useTaskStore.getState().updateTask(current.id, { status: 'done' });
+
+        const state = useTaskStore.getState();
+        expect(state._allTasks).toHaveLength(2);
+        expect(state._allTasks.find((task) => task.id === current.id)?.status).toBe('done');
+        const openTimeblocks = state._allTasks.filter((task) => task.title === 'Timeblock' && task.status === 'next');
+        expect(openTimeblocks).toHaveLength(1);
+        expect(openTimeblocks[0]?.id).toBe(existingFollowUp.id);
+    });
+
+    it('does not merge independent recurring series with the same title and schedule', async () => {
+        vi.setSystemTime(new Date('2026-06-09T00:00:00.000Z'));
+
+        const current: Task = {
+            id: 'home-timeblock',
+            title: 'Timeblock',
+            status: 'next',
+            recurrence: { rule: 'weekly', strategy: 'strict' },
+            contexts: ['@home'],
+            startTime: '2026-06-08T08:00:00.000Z',
+            dueDate: '2026-06-08T17:00:00.000Z',
+            createdAt: '2026-06-01T00:00:00.000Z',
+            updatedAt: '2026-06-01T00:00:00.000Z',
+        };
+        const independent: Task = {
+            ...current,
+            id: 'work-timeblock',
+            contexts: ['@work'],
+            startTime: '2026-06-15T08:00:00.000Z',
+            dueDate: '2026-06-15T17:00:00.000Z',
+        };
+
+        useTaskStore.setState({
+            tasks: [current, independent],
+            _allTasks: [current, independent],
+        });
+
+        await useTaskStore.getState().updateTask(current.id, { status: 'done' });
+
+        const live = useTaskStore.getState()._allTasks.filter((task) => task.status === 'next');
+        expect(live).toHaveLength(2);
+        expect(live.find((task) => task.id === independent.id)?.contexts).toEqual(['@work']);
+        expect(live.find((task) => task.id !== independent.id)?.contexts).toEqual(['@home']);
+    });
+
+    it('preserves recurring series identity when recurrence settings are edited', async () => {
+        const occurrence: Task = {
+            id: 'weekly-occurrence',
+            title: 'Timeblock',
+            status: 'next',
+            recurrence: { rule: 'weekly', strategy: 'strict', seriesId: 'weekly-series' },
+            createdAt: '2026-06-01T00:00:00.000Z',
+            updatedAt: '2026-06-01T00:00:00.000Z',
+        };
+        useTaskStore.setState({ tasks: [occurrence], _allTasks: [occurrence] });
+
+        await useTaskStore.getState().updateTask(occurrence.id, {
+            recurrence: { rule: 'weekly', strategy: 'fluid' },
+        });
+
+        expect(useTaskStore.getState()._tasksById.get(occurrence.id)?.recurrence).toEqual({
+            rule: 'weekly',
+            strategy: 'fluid',
+            seriesId: 'weekly-series',
+            rrule: 'FREQ=WEEKLY;X-MINDWTR-SERIES-ID=weekly-series',
+        });
+    });
+
+    it('keeps duplicated recurring tasks as independent series', async () => {
+        vi.setSystemTime(new Date('2026-06-09T00:00:00.000Z'));
+        const { addTask, duplicateTask, updateTask } = useTaskStore.getState();
+        const originalResult = await addTask('Timeblock', {
+            status: 'next',
+            recurrence: { rule: 'weekly', strategy: 'strict' },
+            dueDate: '2026-06-08T17:00:00.000Z',
+        });
+        const duplicateResult = await duplicateTask(originalResult.id!);
+        const originalId = originalResult.id!;
+        const duplicateId = duplicateResult.id!;
+
+        expect(useTaskStore.getState()._tasksById.get(duplicateId)?.recurrence).toEqual({
+            rule: 'weekly',
+            strategy: 'strict',
+            seriesId: duplicateId,
+            rrule: `FREQ=WEEKLY;X-MINDWTR-SERIES-ID=${duplicateId}`,
+        });
+
+        await updateTask(originalId, { status: 'done' });
+        await updateTask(duplicateId, { status: 'done' });
+
+        const liveSeriesIds = useTaskStore.getState().tasks
+            .filter((task) => task.status === 'next')
+            .map((task) => typeof task.recurrence === 'object' ? task.recurrence.seriesId : undefined);
+        expect(new Set(liveSeriesIds)).toEqual(new Set([originalId, duplicateId]));
+    });
+
+
+    it('keeps spawning when a fluid occurrence and its follow-up are completed the same day', async () => {
+        vi.setSystemTime(new Date('2026-07-22T09:30:00.000Z'));
+
+        const chore: Task = {
+            id: 'chore',
+            title: 'Biweekly chore',
+            status: 'next',
+            recurrence: { rule: 'weekly', strategy: 'fluid', rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=SA' },
+            dueDate: '2026-07-25',
+            createdAt: '2026-07-11T09:00:00.000Z',
+            updatedAt: '2026-07-11T09:00:00.000Z',
+        };
+
+        useTaskStore.setState({ tasks: [chore], _allTasks: [chore] });
+
+        await useTaskStore.getState().updateTask(chore.id, { status: 'done' });
+        const spawned = useTaskStore.getState()._allTasks.find((task) => task.id !== chore.id);
+        expect(spawned).toBeTruthy();
+
+        await useTaskStore.getState().updateTask(spawned!.id, { status: 'done' });
+
+        const live = useTaskStore.getState()._allTasks.filter((task) => task.status !== 'done');
+        expect(live).toHaveLength(1);
+        expect(live[0]?.id).not.toBe(chore.id);
+        expect(live[0]?.id).not.toBe(spawned!.id);
+        expect(live[0]?.recurrence).toBeTruthy();
+    });
+
+    it('should roll a fluid recurring task from completion date', () => {
+        const { addTask, updateTask, moveTask } = useTaskStore.getState();
+        addTask('Fluid Task', {
+            status: 'next',
+            recurrence: { rule: 'daily', strategy: 'fluid' },
+            dueDate: '2023-01-01T09:00',
+        });
+
+        const original = useTaskStore.getState().tasks[0];
+        updateTask(original.id, { dueDate: '2023-01-05T09:00' });
+        moveTask(original.id, 'done');
+
+        const state = useTaskStore.getState();
+        const completed = state._allTasks.find(t => t.id === original.id)!;
+        const nextInstance = state._allTasks.find(t => t.id !== original.id)!;
+
+        expect(completed.completedAt).toBeTruthy();
+        const completedAt = completed.completedAt!;
+        const base = safeParseDate(completedAt) ?? new Date(completedAt);
+        const expectedNext = addDays(base, 1).toISOString();
+        expect(nextInstance.dueDate).toBe(expectedNext);
+    });
+
+    it('should increment pushCount when dueDate is pushed later', () => {
+        const { addTask, updateTask } = useTaskStore.getState();
+        addTask('Push Count', {
+            status: 'next',
+            dueDate: '2025-01-01T09:00:00.000Z',
+        });
+
+        const task = useTaskStore.getState().tasks[0];
+        updateTask(task.id, { dueDate: '2025-01-02T09:00:00.000Z' });
+
+        const updated = useTaskStore.getState()._allTasks.find(t => t.id === task.id)!;
+        expect(updated.pushCount).toBe(1);
+
+        updateTask(task.id, { dueDate: '2024-12-31T09:00:00.000Z' });
+        const updatedEarlier = useTaskStore.getState()._allTasks.find(t => t.id === task.id)!;
+        expect(updatedEarlier.pushCount).toBe(1);
+    });
+
+    describe('Sections', () => {
+        it('should create, update, and delete sections with auto-ordering', async () => {
+            const { addProject, addSection, updateSection, deleteSection, addTask } = useTaskStore.getState();
+            const project = await addProject('Section Project', '#123456');
+            expect(project).not.toBeNull();
+            if (!project) return;
+
+            const first = await addSection(project.id, 'Phase 1');
+            const second = await addSection(project.id, 'Phase 2');
+
+            expect(first).not.toBeNull();
+            expect(second).not.toBeNull();
+            expect(first?.order).toBe(0);
+            expect(second?.order).toBe(1);
+
+            if (!first) return;
+            await updateSection(first.id, { title: 'Updated Phase' });
+            const updated = useTaskStore.getState().sections.find((section) => section.id === first.id);
+            expect(updated?.title).toBe('Updated Phase');
+
+            await addTask('Section Task', { projectId: project.id, sectionId: first.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Section Task')!;
+            expect(task.sectionId).toBe(first.id);
+
+            await deleteSection(first.id);
+            const clearedTask = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            expect(clearedTask.sectionId).toBeUndefined();
+            expect(useTaskStore.getState().sections.find((section) => section.id === first.id)).toBeUndefined();
+        });
+
+        it('returns action failure when updateSection targets a missing section', async () => {
+            const result = await useTaskStore.getState().updateSection('missing-section', { title: 'Updated Phase' });
+
+            expect(result).toEqual({ success: false, error: 'Section not found' });
+            expect(useTaskStore.getState().error).toBe('Section not found');
+        });
+
+        it('returns action failure when deleteSection targets a missing section', async () => {
+            const result = await useTaskStore.getState().deleteSection('missing-section');
+
+            expect(result).toEqual({ success: false, error: 'Section not found' });
+            expect(useTaskStore.getState().error).toBe('Section not found');
+        });
+
+        it('treats repeated deleteSection calls as a successful no-op', async () => {
+            const { addProject, addSection, deleteSection } = useTaskStore.getState();
+            const project = await addProject('Replay-safe sections', '#123456');
+            expect(project).not.toBeNull();
+            if (!project) return;
+
+            const section = await addSection(project.id, 'Delete once');
+            expect(section).not.toBeNull();
+            if (!section) return;
+
+            await deleteSection(section.id);
+            const tombstoneAfterFirstDelete = useTaskStore.getState()._allSections.find((item) => item.id === section.id);
+            const changeAtAfterFirstDelete = useTaskStore.getState().lastDataChangeAt;
+
+            const replayResult = await deleteSection(section.id);
+
+            expect(replayResult).toEqual({ success: true });
+            expect(useTaskStore.getState()._allSections.find((item) => item.id === section.id))
+                .toEqual(tombstoneAfterFirstDelete);
+            expect(useTaskStore.getState().lastDataChangeAt).toBe(changeAtAfterFirstDelete);
+        });
+
+        it('reorders sections within one project without changing other projects', async () => {
+            const { addProject, addSection, reorderSections } = useTaskStore.getState();
+            const project = await addProject('Section Order Project', '#123456');
+            const otherProject = await addProject('Other Project', '#654321');
+            expect(project).not.toBeNull();
+            expect(otherProject).not.toBeNull();
+            if (!project || !otherProject) return;
+
+            const first = await addSection(project.id, 'First');
+            const second = await addSection(project.id, 'Second');
+            const third = await addSection(project.id, 'Third');
+            const other = await addSection(otherProject.id, 'Other');
+            expect(first && second && third && other).toBeTruthy();
+            if (!first || !second || !third || !other) return;
+
+            await reorderSections(project.id, [third.id, first.id, second.id]);
+
+            const ordered = useTaskStore.getState().sections
+                .filter((section) => section.projectId === project.id)
+                .sort((a, b) => a.order - b.order);
+            expect(ordered.map((section) => section.id)).toEqual([third.id, first.id, second.id]);
+            expect(ordered[0]?.order).toBeLessThan(ordered[1]?.order ?? Number.POSITIVE_INFINITY);
+            expect(ordered[1]?.order).toBeLessThan(ordered[2]?.order ?? Number.POSITIVE_INFINITY);
+            expect(useTaskStore.getState().sections.find((section) => section.id === other.id)?.order).toBe(0);
+        });
+
+        it('should not create sections without a valid project or title', async () => {
+            const { addProject, addSection } = useTaskStore.getState();
+            const invalid = await addSection('missing-project', 'Section');
+            expect(invalid).toBeNull();
+
+            const project = await addProject('Valid Project', '#abcdef');
+            expect(project).not.toBeNull();
+            if (!project) return;
+            const blank = await addSection(project.id, '   ');
+            expect(blank).toBeNull();
+            expect(useTaskStore.getState().sections).toHaveLength(0);
+        });
+
+        it('should clear sectionId when task moves to another project', async () => {
+            const { addProject, addSection, addTask, updateTask } = useTaskStore.getState();
+            const projectA = await addProject('Project A', '#111111');
+            const projectB = await addProject('Project B', '#222222');
+            expect(projectA).not.toBeNull();
+            expect(projectB).not.toBeNull();
+            if (!projectA || !projectB) return;
+            const sectionA = await addSection(projectA.id, 'Section A');
+            if (!sectionA) return;
+
+            await addTask('Movable Task', { projectId: projectA.id, sectionId: sectionA.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Movable Task')!;
+            expect(task.sectionId).toBe(sectionA.id);
+
+            await updateTask(task.id, { projectId: projectB.id });
+            const updated = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            expect(updated.projectId).toBe(projectB.id);
+            expect(updated.sectionId).toBeUndefined();
+        });
+
+        it('should normalize project changes in batch updates', async () => {
+            const { addProject, addSection, addTask, batchUpdateTasks, addArea } = useTaskStore.getState();
+            const projectA = await addProject('Project A', '#111111');
+            const projectB = await addProject('Project B', '#222222');
+            expect(projectA).not.toBeNull();
+            expect(projectB).not.toBeNull();
+            if (!projectA || !projectB) return;
+            const area = await addArea('Area 1');
+            expect(area).not.toBeNull();
+            if (!area) return;
+
+            const sectionA = await addSection(projectA.id, 'Section A');
+            if (!sectionA) return;
+
+            await addTask('Batch movable', {
+                projectId: projectA.id,
+                sectionId: sectionA.id,
+                status: 'next',
+            });
+            await addTask('Area scoped', {
+                areaId: area.id,
+                status: 'next',
+            });
+
+            const movableTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Batch movable')!;
+            const areaTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Area scoped')!;
+
+            await batchUpdateTasks([
+                { id: movableTask.id, updates: { projectId: projectB.id } },
+                { id: areaTask.id, updates: { projectId: projectB.id } },
+            ]);
+
+            const updatedMovable = useTaskStore.getState()._allTasks.find((item) => item.id === movableTask.id)!;
+            const updatedAreaTask = useTaskStore.getState()._allTasks.find((item) => item.id === areaTask.id)!;
+            expect(updatedMovable.projectId).toBe(projectB.id);
+            expect(updatedMovable.sectionId).toBeUndefined();
+            expect(updatedMovable.order).toBe(0);
+            expect(updatedMovable.orderNum).toBe(0);
+            expect(updatedAreaTask.projectId).toBe(projectB.id);
+            expect(updatedAreaTask.areaId).toBeUndefined();
+            expect(updatedAreaTask.order).toBe(1);
+            expect(updatedAreaTask.orderNum).toBe(1);
+        });
+
+        it('fails batch updates when any task id is missing', async () => {
+            const { addTask, batchUpdateTasks } = useTaskStore.getState();
+            await addTask('Existing Task', { status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Existing Task')!;
+
+            const result = await batchUpdateTasks([
+                { id: task.id, updates: { title: 'Should not apply' } },
+                { id: 'missing-task', updates: { title: 'Missing' } },
+            ]);
+
+            expect(result).toEqual({ success: false, error: 'Tasks not found: missing-task' });
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === task.id)?.title).toBe('Existing Task');
+        });
+
+        it('fails batch updates when task ids are duplicated', async () => {
+            const { addTask, batchUpdateTasks } = useTaskStore.getState();
+            await addTask('Existing Task', { status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Existing Task')!;
+
+            const result = await batchUpdateTasks([
+                { id: task.id, updates: { title: 'First change' } },
+                { id: task.id, updates: { title: 'Second change' } },
+            ]);
+
+            expect(result).toEqual({ success: false, error: `Duplicate task ids in batch update: ${task.id}` });
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === task.id)?.title).toBe('Existing Task');
+        });
+
+        it('fails batch updates when the target project is missing', async () => {
+            const { addTask, batchUpdateTasks } = useTaskStore.getState();
+            await addTask('Existing Task', { status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Existing Task')!;
+
+            const result = await batchUpdateTasks([
+                { id: task.id, updates: { projectId: 'missing-project' } },
+            ]);
+
+            expect(result).toEqual({ success: false, error: 'Project not found' });
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === task.id)?.projectId).toBeUndefined();
+        });
+
+        it('fails batch deletes when any task id is missing', async () => {
+            const { addTask, batchDeleteTasks } = useTaskStore.getState();
+            await addTask('Existing Task', { status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Existing Task')!;
+
+            const result = await batchDeleteTasks([task.id, 'missing-task']);
+
+            expect(result).toEqual({ success: false, error: 'Tasks not found: missing-task' });
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === task.id)?.deletedAt).toBeUndefined();
+        });
+
+        it('fails batch deletes when any task id is already tombstoned', async () => {
+            const { addTask, batchDeleteTasks, deleteTask } = useTaskStore.getState();
+            await addTask('Active Task', { status: 'next' });
+            await addTask('Deleted Task', { status: 'next' });
+            const activeTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Active Task')!;
+            const deletedTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Deleted Task')!;
+
+            await deleteTask(deletedTask.id);
+            const deletedTaskBeforeBatch = useTaskStore.getState()._allTasks.find((item) => item.id === deletedTask.id)!;
+
+            const result = await batchDeleteTasks([activeTask.id, deletedTask.id]);
+
+            expect(result).toEqual({ success: false, error: `Tasks not found: ${deletedTask.id}` });
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === activeTask.id)?.deletedAt).toBeUndefined();
+            expect(useTaskStore.getState()._allTasks.find((item) => item.id === deletedTask.id)).toEqual(deletedTaskBeforeBatch);
+        });
+
+        it('keeps the task lookup aligned after batch updates and deletes', async () => {
+            const { addTask, batchDeleteTasks, batchUpdateTasks } = useTaskStore.getState();
+            await addTask('First Task', { status: 'next' });
+            await addTask('Second Task', { status: 'next' });
+            const firstTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'First Task')!;
+            const secondTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Second Task')!;
+
+            await batchUpdateTasks([
+                { id: firstTask.id, updates: { title: 'Updated First Task' } },
+            ]);
+            let state = useTaskStore.getState();
+            const updatedFirstTask = state._allTasks.find((item) => item.id === firstTask.id)!;
+            expect(state._tasksById.get(firstTask.id)).toBe(updatedFirstTask);
+            expect(state._tasksById.get(firstTask.id)?.title).toBe('Updated First Task');
+
+            await batchDeleteTasks([firstTask.id, secondTask.id]);
+
+            state = useTaskStore.getState();
+            const deletedFirstTask = state._allTasks.find((item) => item.id === firstTask.id)!;
+            const deletedSecondTask = state._allTasks.find((item) => item.id === secondTask.id)!;
+            expect(deletedFirstTask.deletedAt).toBeTruthy();
+            expect(deletedSecondTask.deletedAt).toBeTruthy();
+            expect(state._tasksById.get(firstTask.id)).toBe(deletedFirstTask);
+            expect(state._tasksById.get(secondTask.id)).toBe(deletedSecondTask);
+        });
+
+        it('detaches live project task section ids when deleting a project', async () => {
+            const { addProject, addSection, addTask, deleteProject, restoreProject } = useTaskStore.getState();
+            const project = await addProject('Delete Project', '#333333');
+            expect(project).not.toBeNull();
+            if (!project) return;
+            const section = await addSection(project.id, 'Cleanup');
+            if (!section) return;
+
+            await addTask('Project Task', { projectId: project.id, sectionId: section.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Project Task')!;
+            expect(task.sectionId).toBe(section.id);
+
+            await deleteProject(project.id);
+            const deletedTask = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            const deletedSection = useTaskStore.getState()._allSections.find((item) => item.id === section.id)!;
+            expect(deletedTask.deletedAt).toBeUndefined();
+            expect(deletedTask.projectId).toBeUndefined();
+            expect(deletedTask.sectionId).toBeUndefined();
+            expect(deletedSection.deletedAt).toBeTruthy();
+            expect(useTaskStore.getState().tasks.find((item) => item.id === task.id)).toMatchObject({
+                projectId: undefined,
+                sectionId: undefined,
+            });
+            expect(useTaskStore.getState().sections.find((item) => item.id === section.id)).toBeUndefined();
+
+            const restoreResult = await restoreProject(project.id);
+            expect(restoreResult).toEqual({ success: true });
+
+            const restoredTask = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            const restoredSection = useTaskStore.getState()._allSections.find((item) => item.id === section.id)!;
+            expect(restoredTask.deletedAt).toBeUndefined();
+            expect(restoredTask.projectId).toBeUndefined();
+            expect(restoredTask.sectionId).toBeUndefined();
+            expect(restoredSection.deletedAt).toBeUndefined();
+        });
+
+
+        it('undoing a project delete re-attaches its tasks and sections', async () => {
+            const { addProject, addSection, addTask, deleteProject } = useTaskStore.getState();
+            const project = await addProject('Undo Project', '#333333');
+            if (!project) return;
+            const section = await addSection(project.id, 'Cleanup');
+            if (!section) return;
+
+            await addTask('Undo Project Task', { projectId: project.id, sectionId: section.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Undo Project Task')!;
+
+            const links = collectProjectTaskLinks(project.id);
+            expect(links).toEqual([{ id: task.id, sectionId: section.id }]);
+
+            await deleteProject(project.id);
+            const detachedTask = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            expect(detachedTask.projectId).toBeUndefined();
+
+            await undoProjectDelete(project.id, links);
+
+            const restoredTask = useTaskStore.getState()._allTasks.find((item) => item.id === task.id)!;
+            expect(restoredTask.projectId).toBe(project.id);
+            expect(restoredTask.sectionId).toBe(section.id);
+            expect(useTaskStore.getState()._allProjects.find((item) => item.id === project.id)!.deletedAt).toBeUndefined();
+            expect(restoredTask.rev ?? 0).toBeGreaterThan(detachedTask.rev ?? 0);
+        });
+
+        it('undoing a project delete skips tasks that were filed elsewhere or deleted meanwhile', async () => {
+            const { addProject, addTask, deleteProject, deleteTask, updateTask } = useTaskStore.getState();
+            const project = await addProject('Undo Skip Project', '#333333');
+            if (!project) return;
+            const other = await addProject('Other Project', '#444444');
+            if (!other) return;
+
+            await addTask('Refiled Task', { projectId: project.id, status: 'next' });
+            await addTask('Deleted Task', { projectId: project.id, status: 'next' });
+            const refiled = useTaskStore.getState()._allTasks.find((item) => item.title === 'Refiled Task')!;
+            const deleted = useTaskStore.getState()._allTasks.find((item) => item.title === 'Deleted Task')!;
+
+            const links = collectProjectTaskLinks(project.id);
+            expect(links.map((link) => link.id).sort()).toEqual([refiled.id, deleted.id].sort());
+
+            await deleteProject(project.id);
+            await updateTask(refiled.id, { projectId: other.id });
+            await deleteTask(deleted.id);
+
+            await undoProjectDelete(project.id, links);
+
+            const refiledAfter = useTaskStore.getState()._allTasks.find((item) => item.id === refiled.id)!;
+            const deletedAfter = useTaskStore.getState()._allTasks.find((item) => item.id === deleted.id)!;
+            expect(refiledAfter.projectId).toBe(other.id);
+            expect(deletedAfter.deletedAt).toBeTruthy();
+            expect(deletedAfter.projectId).toBeUndefined();
+        });
+
+
+        it('refuses to purge a project that is not in the trash', async () => {
+            const { addProject, addTask, purgeProject } = useTaskStore.getState();
+            const project = await addProject('Live Project', '#555555');
+            if (!project) return;
+            await addTask('Live Task', { projectId: project.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Live Task')!;
+
+            const result = await purgeProject(project.id);
+
+            expect(result).toEqual({ success: false, error: 'Project not found' });
+            const state = useTaskStore.getState();
+            const liveProject = state._allProjects.find((item) => item.id === project.id)!;
+            expect(liveProject.purgedAt).toBeUndefined();
+            expect(liveProject.deletedAt).toBeUndefined();
+            expect(state._allTasks.find((item) => item.id === task.id)!.projectId).toBe(project.id);
+        });
+
+        it('purges deleted projects while keeping detached tasks live', async () => {
+            const { addProject, addSection, addTask, deleteProject, purgeProject } = useTaskStore.getState();
+            const project = await addProject('Purge Project', '#444444', {
+                supportNotes: 'Private project notes',
+                attachments: [{
+                    id: 'project-file-1',
+                    kind: 'file',
+                    title: 'Project plan',
+                    uri: '/tmp/project-plan.pdf',
+                    cloudKey: 'attachments/project-plan.pdf',
+                    createdAt: '2026-06-29T00:00:00.000Z',
+                    updatedAt: '2026-06-29T00:00:00.000Z',
+                }],
+            });
+            expect(project).not.toBeNull();
+            if (!project) return;
+            const section = await addSection(project.id, 'Section');
+            expect(section).not.toBeNull();
+            if (!section) return;
+
+            await addTask('Keep Task', { projectId: project.id, sectionId: section.id, status: 'next' });
+            const task = useTaskStore.getState()._allTasks.find((item) => item.title === 'Keep Task')!;
+
+            await deleteProject(project.id);
+            await purgeProject(project.id);
+
+            const state = useTaskStore.getState();
+            const purgedProject = state._allProjects.find((item) => item.id === project.id)!;
+            const purgedSection = state._allSections.find((item) => item.id === section.id)!;
+            const detachedTask = state._allTasks.find((item) => item.id === task.id)!;
+
+            expect(purgedProject.deletedAt).toBeTruthy();
+            expect(purgedProject.purgedAt).toBeTruthy();
+            expect(purgedProject.title).toBe('(deleted)');
+            expect(purgedProject.supportNotes).toBeUndefined();
+            expect(purgedProject.attachments).toEqual([{
+                id: 'project-file-1',
+                kind: 'file',
+                title: '',
+                uri: '/tmp/project-plan.pdf',
+                createdAt: '2026-06-29T00:00:00.000Z',
+                updatedAt: '2026-06-29T00:00:00.000Z',
+            }]);
+            expect(purgedSection.deletedAt).toBeTruthy();
+            expect(purgedSection.title).toBe('');
+            expect(purgedSection.description).toBeUndefined();
+            expect(detachedTask.deletedAt).toBeUndefined();
+            expect(detachedTask.projectId).toBeUndefined();
+            expect(detachedTask.sectionId).toBeUndefined();
+            expect(state.projects.find((item) => item.id === project.id)).toBeUndefined();
+            expect(state.settings.attachments?.pendingRemoteDeletes).toEqual([{
+                cloudKey: 'attachments/project-plan.pdf',
+            }]);
+        });
+
+        it('purges all deleted projects from Trash', async () => {
+            const { addProject, deleteProject, purgeDeletedProjects } = useTaskStore.getState();
+            const first = await addProject('First Deleted Project', '#444444');
+            const second = await addProject('Second Deleted Project', '#555555');
+            expect(first).not.toBeNull();
+            expect(second).not.toBeNull();
+            if (!first || !second) return;
+
+            await deleteProject(first.id);
+            await deleteProject(second.id);
+            await purgeDeletedProjects();
+
+            const state = useTaskStore.getState();
+            expect(state._allProjects.filter((project) => project.deletedAt && !project.purgedAt)).toHaveLength(0);
+            expect(state._allProjects.find((project) => project.id === first.id)?.purgedAt).toBeTruthy();
+            expect(state._allProjects.find((project) => project.id === second.id)?.purgedAt).toBeTruthy();
+        });
+
+        it('restores only project children deleted by the project cascade', async () => {
+            const { addProject, addSection, addTask, deleteTask, deleteProject, restoreProject } = useTaskStore.getState();
+            const project = await addProject('Cascade Restore', '#444444');
+            expect(project).not.toBeNull();
+            if (!project) return;
+            const section = await addSection(project.id, 'Section');
+            expect(section).not.toBeNull();
+            if (!section) return;
+
+            await addTask('Keep Deleted', { projectId: project.id, sectionId: section.id, status: 'next' });
+            await addTask('Restore Me', { projectId: project.id, sectionId: section.id, status: 'next' });
+            const deletedTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Keep Deleted')!;
+            const restoredTask = useTaskStore.getState()._allTasks.find((item) => item.title === 'Restore Me')!;
+
+            vi.useFakeTimers();
+            try {
+                await deleteTask(deletedTask.id);
+                vi.setSystemTime(new Date('2026-04-01T12:00:01.000Z'));
+                await deleteProject(project.id);
+                await restoreProject(project.id);
+            } finally {
+                vi.useRealTimers();
+            }
+
+            const finalDeletedTask = useTaskStore.getState()._allTasks.find((item) => item.id === deletedTask.id)!;
+            const finalRestoredTask = useTaskStore.getState()._allTasks.find((item) => item.id === restoredTask.id)!;
+            expect(finalDeletedTask.deletedAt).toBeTruthy();
+            expect(finalRestoredTask.deletedAt).toBeUndefined();
+        });
+
+        it('refuses to restore a purged project and leaves the tombstone untouched', async () => {
+            const { addProject, deleteProject, purgeProject, restoreProject } = useTaskStore.getState();
+            const project = await addProject('Gone for good', '#444444');
+            expect(project).not.toBeNull();
+            if (!project) return;
+
+            await deleteProject(project.id);
+            await purgeProject(project.id);
+            const purged = useTaskStore.getState()._allProjects.find((item) => item.id === project.id)!;
+            expect(purged.purgedAt).toBeTruthy();
+
+            const result = await restoreProject(project.id);
+
+            expect(result).toEqual({ success: false, error: 'Project not found' });
+            const after = useTaskStore.getState()._allProjects.find((item) => item.id === project.id)!;
+            expect(after.purgedAt).toBe(purged.purgedAt);
+            expect(after.deletedAt).toBe(purged.deletedAt);
+            expect(after.rev).toBe(purged.rev);
+            expect(useTaskStore.getState().projects.find((item) => item.id === project.id)).toBeUndefined();
+        });
+
+
+        it('leaves a purged task out of the project restore cascade', async () => {
+            const cascadeDeletedAt = '2026-04-02T00:00:00.000Z';
+
+            vi.setSystemTime(new Date('2026-04-03T00:00:00.000Z'));
+            mockStorage.getData = vi.fn().mockResolvedValue({
+                tasks: [
+                    createStoreTask('task-live', { projectId: 'project-1', sectionId: 'section-live', deletedAt: cascadeDeletedAt }),
+                    createStoreTask('task-purged', {
+                        projectId: 'project-1',
+                        deletedAt: cascadeDeletedAt,
+                        purgedAt: cascadeDeletedAt,
+                    }),
+                ],
+                projects: [createStoreProject('project-1', { deletedAt: cascadeDeletedAt })],
+                sections: [
+                    { id: 'section-live', projectId: 'project-1', title: 'Live', order: 0, deletedAt: cascadeDeletedAt, createdAt: '2026-04-01T00:00:00.000Z', updatedAt: '2026-04-01T00:00:00.000Z', rev: 1, revBy: 'device-a' },
+                ],
+                areas: [],
+                settings: { deviceId: 'device-a' },
+            });
+            await useTaskStore.getState().fetchData({ silent: true });
+
+            const result = await useTaskStore.getState().restoreProject('project-1');
+            expect(result).toEqual({ success: true });
+
+            const state = useTaskStore.getState();
+            expect(state._allTasks.find((item) => item.id === 'task-live')!.deletedAt).toBeUndefined();
+            const purgedTask = state._allTasks.find((item) => item.id === 'task-purged')!;
+            expect(purgedTask.purgedAt).toBe(cascadeDeletedAt);
+            expect(purgedTask.deletedAt).toBe(cascadeDeletedAt);
+            expect(purgedTask.rev).toBe(1);
+            expect(state._allSections.find((item) => item.id === 'section-live')!.deletedAt).toBeUndefined();
+        });
+    });
+
+    describe('pre-hydration settings persistence guard (#852)', () => {
+        it('applies settings in memory but does not persist before initial data load', async () => {
+            const { updateSettings } = useTaskStore.getState();
+            await updateSettings({ globalQuickAddShortcut: 'disabled' });
+
+            const state = useTaskStore.getState();
+            expect(state.settings.globalQuickAddShortcut).toBe('disabled');
+            expect(state.settings.deviceId).toBeUndefined();
+            expect(state.lastDataChangeAt).toBe(0);
+
+            await flushPendingSave();
+            expect(mockStorage.saveData).not.toHaveBeenCalled();
+        });
+
+        it('does not discard the initial load when settings change while the fetch is in flight', async () => {
+            vi.mocked(mockStorage.getData).mockResolvedValue({
+                tasks: [createStoreTask('task-1', { status: 'next' })],
+                projects: [],
+                sections: [],
+                areas: [],
+                settings: { deviceId: 'device-a' },
+            });
+
+            const fetchPromise = useTaskStore.getState().fetchData();
+            await useTaskStore.getState().updateSettings({ globalQuickAddShortcut: 'disabled' });
+            await fetchPromise;
+
+            const state = useTaskStore.getState();
+            expect(state._allTasks.map((task) => task.id)).toEqual(['task-1']);
+            expect(state.settings.deviceId).toBe('device-a');
+        });
+
+        it('persists settings updates again once the store has loaded', async () => {
+            await useTaskStore.getState().fetchData();
+            expect(useTaskStore.getState().settings.deviceId).toBeTruthy();
+            await flushPendingSave();
+            vi.mocked(mockStorage.saveData).mockClear();
+
+            await useTaskStore.getState().updateSettings({ globalQuickAddShortcut: 'disabled' });
+            await flushPendingSave();
+
+            expect(mockStorage.saveData).toHaveBeenCalled();
+            const saved = vi.mocked(mockStorage.saveData).mock.calls.at(-1)?.[0] as AppData;
+            expect(saved.settings.globalQuickAddShortcut).toBe('disabled');
+        });
+    });
+});

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleSpokenName</key>
+    <string>$(STRIDE_SPOKEN_NAME)</string>
+    <key>INAlternativeAppNames</key>
+    <array>
+      <dict>
+        <key>INAlternativeAppName</key>
+        <string>$(STRIDE_SPOKEN_NAME)</string>
+        <key>INAlternativeAppNamePronunciationHint</key>
+        <string>$(STRIDE_SPOKEN_NAME)</string>
+      </dict>
+    </array>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleDisplayName</key>
+    <string>Stride</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleURLName</key>
+        <string>stride-watch</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+          <string>stride-watch</string>
+        </array>
+      </dict>
+    </array>
+    <key>StrideWatchAppGroup</key>
+    <string>$(STRIDE_WATCH_APP_GROUP)</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Stride records a short voice capture that your iPhone transcribes into an Inbox task.</string>
+    <key>WKApplication</key>
+    <true/>
+    <key>WKCompanionAppBundleIdentifier</key>
+    <string>$(STRIDE_HOST_BUNDLE_IDENTIFIER)</string>
+  </dict>
+</plist>

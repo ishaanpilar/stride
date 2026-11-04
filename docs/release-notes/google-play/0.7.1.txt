@@ -1,0 +1,18 @@
+<en-US>
+- Improved Android sync reliability and reduced false conflict prompts during frequent sync cycles.
+- Added safer cleanup handling for stale attachment/orphan sync metadata.
+- Improved mobile performance by virtualizing large project/context picker lists.
+- Updated Android widget theme updates to better follow native color-scheme changes.
+</en-US>
+<zh-CN>
+- 提升 Android 同步稳定性，并减少频繁同步时的误报冲突提示。
+- 增强陈旧附件/孤儿同步元数据的清理安全性。
+- 通过虚拟化大型项目/情境选择列表，提升移动端性能。
+- 优化 Android 小组件主题更新，更好跟随系统配色变化。
+</zh-CN>
+<es-ES>
+- Mejoramos la fiabilidad de sincronizacion en Android y reducimos avisos de conflictos falsos en ciclos frecuentes.
+- Añadimos una limpieza mas segura para metadatos antiguos de adjuntos/huerfanos.
+- Mejoramos el rendimiento movil con listas virtualizadas en selectores grandes de proyectos/contextos.
+- Ajustamos la actualizacion de tema del widget Android para seguir mejor el esquema nativo.
+</es-ES>

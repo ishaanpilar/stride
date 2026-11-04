@@ -1,0 +1,87 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Stride",
+  "version": "1.3.7",
+  "identifier": "com.ishaanpilar.stride",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "bun run dev:vite",
+    "beforeBuildCommand": "bun run build:vite"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Stride",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "zoomHotkeysEnabled": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: file:; media-src 'self' asset: http://asset.localhost data: blob: file:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:* ws://localhost:* https:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "homepage": "https://github.com/ishaanpilar/stride",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "./linux/stride.desktop.template",
+        "files": {
+          "/usr/share/applications/stride.desktop": "./linux/stride-window-matcher.desktop"
+        }
+      },
+      "rpm": {
+        "desktopTemplate": "./linux/stride.desktop.template",
+        "files": {
+          "/usr/share/applications/stride.desktop": "./linux/stride-window-matcher.desktop"
+        }
+      }
+    },
+    "targets": [
+      "nsis",
+      "appimage",
+      "deb",
+      "rpm",
+      "dmg",
+      "app"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "Developer ID Application",
+      "entitlements": "./Entitlements.mac.plist",
+      "infoPlist": "./Info.plist"
+    },
+    "icon": [
+      "icons/icon.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "stride"
+        ]
+      }
+    },
+    "fs": {
+      "requireLiteralLeadingDot": false
+    },
+    "shell": {
+      "open": "^(mailto:[^\\s]+|tel:[^\\s]+|mid:[^\\s]+|https?://[^\\s]+|[uU][pP][nN][oO][tT][eE]://[^\\s]+|obsidian://[^\\s]+|ms-windows-store://[^\\s]+)$"
+    }
+  }
+}

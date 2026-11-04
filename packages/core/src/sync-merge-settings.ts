@@ -1,0 +1,1206 @@
+import type { AiSettings, AppData, GtdSettings, SavedFilter, SettingsSyncGroup, SettingsSyncPreferences, SupportPromptSettings } from './types';
+import { mergeTaxonomyCatalog } from './taxonomy-catalog';
+import {
+    AI_PROVIDER_VALUE_SET,
+    AI_REASONING_EFFORT_VALUE_SET,
+    GTD_SYNCED_APP_SETTINGS_FIELD_KEYS,
+    GTD_SYNCED_FEATURE_FIELD_KEYS,
+    GTD_SYNCED_FIELD_KEYS,
+    GTD_SYNCED_INBOX_PROCESSING_FIELD_KEYS,
+    SETTINGS_DEFAULT_PROJECT_FLOW_MODE_VALUE_SET,
+    SETTINGS_DEFAULT_TASK_AREA_MODE_VALUE_SET,
+    SETTINGS_DENSITY_VALUE_SET,
+    SETTINGS_FOCUS_GROUP_BY_VALUE_SET,
+    SETTINGS_KEYBINDING_STYLE_VALUE_SET,
+    SETTINGS_LANGUAGE_VALUE_SET,
+    SETTINGS_MOBILE_QUICK_ACCESS_VIEW_VALUE_SET,
+    SETTINGS_TEXT_SIZE_VALUE_SET,
+    SETTINGS_THEME_VALUE_SET,
+    SETTINGS_TIME_FORMAT_VALUE_SET,
+    SETTINGS_WEEK_START_VALUE_SET,
+    STT_FIELD_STRATEGY_VALUE_SET,
+    STT_MODE_VALUE_SET,
+    STT_PROVIDER_VALUE_SET,
+    getGtdSyncSnapshot,
+    type GtdSyncSnapshot,
+} from './settings-options';
+import { isNonEmptyString, isObjectRecord, isValidTimestamp } from './sync-normalization';
+import { isDeepJsonEqual } from './sync-helpers';
+import { MAX_FOCUS_TASK_LIMIT, MIN_FOCUS_TASK_LIMIT, normalizeFocusTaskLimit } from './focus-utils';
+import { keepSavedFilters, normalizeSavedFilter, normalizeSavedFilters } from './saved-filters';
+import { chooseDeterministicWinner } from './sync-signatures';
+import { DELETE_VS_LIVE_AMBIGUOUS_WINDOW_MS } from './sync-types';
+import { normalizeExternalCalendarColor } from './external-calendar-colors';
+import { AI_REQUEST_TIMEOUT_OPTIONS } from './ai-config';
+import { DEFAULT_TASK_EDITOR_HIDDEN } from './task-editor-layout';
+import { logInfo } from './logger';
+
+const parseSyncTimestamp = (value?: string): number => {
+    if (!value) return NaN;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : NaN;
+};
+
+const isIncomingNewer = (localAt?: string, incomingAt?: string): boolean => {
+    const localTime = parseSyncTimestamp(localAt);
+    const incomingTime = parseSyncTimestamp(incomingAt);
+    if (!Number.isFinite(incomingTime)) return false;
+    if (!Number.isFinite(localTime)) return true;
+    return incomingTime > localTime;
+};
+
+
+const isMigrationTaskEditorDefault = (value: Record<string, unknown>): boolean => {
+    const hidden = value.hidden;
+    return typeof value.defaultsVersion === 'number'
+        && value.defaultsVersion > 0
+        && Object.keys(value).every((field) => field === 'hidden' || field === 'defaultsVersion')
+        && Array.isArray(hidden)
+        && hidden.length === DEFAULT_TASK_EDITOR_HIDDEN.length
+        && DEFAULT_TASK_EDITOR_HIDDEN.every((field) => hidden.includes(field));
+};
+
+const getSavedFilterOperationTime = (filter: SavedFilter): number => {
+    const updatedAt = parseSyncTimestamp(filter.updatedAt);
+    const deletedAt = parseSyncTimestamp(filter.deletedAt);
+    if (!Number.isFinite(deletedAt)) return updatedAt;
+    if (!Number.isFinite(updatedAt)) return deletedAt;
+    return Math.max(updatedAt, deletedAt);
+};
+
+const chooseDeletedSavedFilter = (localFilter: SavedFilter, incomingFilter: SavedFilter): SavedFilter => {
+    if (localFilter.deletedAt && !incomingFilter.deletedAt) return localFilter;
+    if (incomingFilter.deletedAt && !localFilter.deletedAt) return incomingFilter;
+    return chooseDeterministicWinner(localFilter, incomingFilter);
+};
+
+
+const legacySavedFilterProjection = (filter: SavedFilter, inventedAt: string | undefined): SavedFilter | null => {
+    const value = filter as unknown as Record<string, unknown>;
+    const criteria = isObjectRecord(value.criteria) ? { ...value.criteria } : {};
+
+    delete criteria.anyDateRange;
+    delete criteria.excludedProjects;
+    for (const field of ['dueDateRange', 'startDateRange']) {
+        const range = criteria[field];
+        if (isObjectRecord(range) && typeof range.preset === 'string'
+            && !['today', 'this_week', 'this_month', 'overdue', 'no_date'].includes(range.preset)) {
+            const { preset: _preset, ...bounds } = range;
+            criteria[field] = bounds;
+        }
+    }
+    const legacy = {
+        ...value,
+        criteria,
+        id: typeof value.id === 'string' ? value.id.trim() : value.id,
+        createdAt: typeof value.createdAt === 'string' && value.createdAt.trim() ? value.createdAt : inventedAt,
+    };
+    return normalizeSavedFilter(legacy) ?? normalizeSavedFilter({ ...legacy, view: 'focus' });
+};
+
+
+const chooseTiedSavedFilter = (localFilter: SavedFilter, incomingFilter: SavedFilter): SavedFilter => {
+    const incomingIsLegacy = isDeepJsonEqual(legacySavedFilterProjection(localFilter, incomingFilter.createdAt), incomingFilter);
+    const localIsLegacy = isDeepJsonEqual(legacySavedFilterProjection(incomingFilter, localFilter.createdAt), localFilter);
+    if (incomingIsLegacy !== localIsLegacy) {
+        logInfo('Saved filter retained over legacy rewrite', {
+            scope: 'saved-filters', category: 'sync', force: true,
+            context: { releaseCheck: 'v1.3.8/saved-filter-date-preserved', count: 1, outcome: 'kept-full' },
+        });
+        return incomingIsLegacy ? localFilter : incomingFilter;
+    }
+    return chooseDeterministicWinner(localFilter, incomingFilter);
+};
+
+const chooseSavedFilter = (
+    localFilter: SavedFilter,
+    incomingFilter: SavedFilter,
+    incomingWins: boolean,
+    localNewer: boolean,
+): SavedFilter => {
+    const localDeleted = !!localFilter.deletedAt;
+    const incomingDeleted = !!incomingFilter.deletedAt;
+    if (localDeleted !== incomingDeleted) {
+        const localOperationTime = getSavedFilterOperationTime(localFilter);
+        const incomingOperationTime = getSavedFilterOperationTime(incomingFilter);
+        if (Number.isFinite(localOperationTime) && Number.isFinite(incomingOperationTime)) {
+            const operationDiff = incomingOperationTime - localOperationTime;
+            if (Math.abs(operationDiff) <= DELETE_VS_LIVE_AMBIGUOUS_WINDOW_MS) {
+                return chooseDeletedSavedFilter(localFilter, incomingFilter);
+            }
+            return operationDiff > 0 ? incomingFilter : localFilter;
+        }
+        return chooseDeletedSavedFilter(localFilter, incomingFilter);
+    }
+
+    const localUpdatedAt = parseSyncTimestamp(localFilter.updatedAt);
+    const incomingUpdatedAt = parseSyncTimestamp(incomingFilter.updatedAt);
+    if (Number.isFinite(incomingUpdatedAt) && !Number.isFinite(localUpdatedAt)) return incomingFilter;
+    if (!Number.isFinite(incomingUpdatedAt) && Number.isFinite(localUpdatedAt)) return localFilter;
+    if (Number.isFinite(incomingUpdatedAt) && Number.isFinite(localUpdatedAt)) {
+        const updatedAtDiff = incomingUpdatedAt - localUpdatedAt;
+        if (updatedAtDiff > 0) return incomingFilter;
+        if (updatedAtDiff < 0) return localFilter;
+        return chooseTiedSavedFilter(localFilter, incomingFilter);
+    }
+
+
+    if (incomingWins) return incomingFilter;
+    if (localNewer) return localFilter;
+    return chooseTiedSavedFilter(localFilter, incomingFilter);
+};
+
+
+const mergeSavedFiltersById = (
+    localValue: AppData['settings']['savedFilters'],
+    incomingValue: AppData['settings']['savedFilters'],
+    incomingWins: boolean,
+    localNewer: boolean
+): AppData['settings']['savedFilters'] => {
+    const localFilters = keepSavedFilters(localValue);
+    const incomingFilters = keepSavedFilters(incomingValue);
+    const localById = new Map(localFilters.map((filter) => [filter.id, filter]));
+    const incomingById = new Map(incomingFilters.map((filter) => [filter.id, filter]));
+    const mergedById = new Map<string, SavedFilter>();
+
+    for (const { id } of localNewer ? [...localFilters, ...incomingFilters] : [...incomingFilters, ...localFilters]) {
+        if (mergedById.has(id)) continue;
+        const localFilter = localById.get(id);
+        const incomingFilter = incomingById.get(id);
+        mergedById.set(id, localFilter && incomingFilter
+            ? chooseSavedFilter(localFilter, incomingFilter, incomingWins, localNewer)
+            : (localFilter ?? incomingFilter) as SavedFilter);
+    }
+
+    const merged = Array.from(mergedById.values());
+    if (localFilters.length > 0 && incomingFilters.length > 0 && localValue !== incomingValue) {
+        logInfo('Saved filters merged as stored', {
+            scope: 'saved-filters',
+            category: 'sync',
+            context: {
+                releaseCheck: 'v1.3.3/saved-filters-kept-as-stored',
+                count: merged.length,
+                hiddenCount: merged.length - normalizeSavedFilters(merged).length,
+                order: localNewer ? 'local' : 'remote',
+            },
+        });
+    }
+    return merged;
+};
+
+const sanitizeAiForSync = (
+    ai: AiSettings | undefined,
+    localAi?: AiSettings
+): AiSettings | undefined => {
+    if (!ai) return ai;
+    const sanitized: AiSettings = {
+        ...ai,
+        apiKey: undefined,
+
+
+        baseUrl: localAi?.baseUrl,
+        openAIExtraBodyParams: localAi?.openAIExtraBodyParams
+            ? cloneSettingValue(localAi.openAIExtraBodyParams)
+            : undefined,
+    };
+    const localSpeechBaseUrl = localAi?.speechToText?.baseUrl;
+    if (sanitized.speechToText || localSpeechBaseUrl) {
+        const incomingSpeechToText = sanitized.speechToText ?? {};
+        const localSpeechToText = localAi?.speechToText;
+        const keepLocalOfflineModelPath = Boolean(localSpeechToText?.offlineModelPath)
+            && incomingSpeechToText.provider === localSpeechToText?.provider
+            && incomingSpeechToText.model === localSpeechToText?.model;
+        sanitized.speechToText = {
+            ...incomingSpeechToText,
+            offlineModelPath: keepLocalOfflineModelPath ? localSpeechToText?.offlineModelPath : undefined,
+            baseUrl: localSpeechBaseUrl,
+        };
+    }
+    return sanitized;
+};
+
+
+export const restoreDeviceLocalAiSettings = (merged: AppData, deviceLocal: AppData): AppData => {
+    const source = deviceLocal.settings.ai;
+    const mergedAi = merged.settings.ai;
+    if (!source || !mergedAi) return merged;
+    const mergedSpeech = mergedAi.speechToText;
+    const sourceSpeech = source.speechToText;
+    const sameExtraBody = JSON.stringify(mergedAi.openAIExtraBodyParams ?? null)
+        === JSON.stringify(source.openAIExtraBodyParams ?? null);
+    if (mergedAi.baseUrl === source.baseUrl
+        && sameExtraBody
+        && mergedSpeech?.baseUrl === sourceSpeech?.baseUrl
+        && mergedSpeech?.offlineModelPath === sourceSpeech?.offlineModelPath) {
+        return merged;
+    }
+    const ai: AiSettings = {
+        ...mergedAi,
+        baseUrl: source.baseUrl,
+        openAIExtraBodyParams: source.openAIExtraBodyParams
+            ? cloneSettingValue(source.openAIExtraBodyParams)
+            : undefined,
+    };
+    if (mergedSpeech || sourceSpeech?.baseUrl || sourceSpeech?.offlineModelPath) {
+        ai.speechToText = {
+            ...mergedSpeech,
+            baseUrl: sourceSpeech?.baseUrl,
+            offlineModelPath: sourceSpeech?.offlineModelPath,
+        };
+    }
+    return { ...merged, settings: { ...merged.settings, ai } };
+};
+
+const SETTINGS_SYNC_GROUP_KEYS: SettingsSyncGroup[] = ['appearance', 'language', 'gtd', 'externalCalendars', 'ai', 'savedFilters'];
+const SETTINGS_SYNC_UPDATED_AT_KEYS: Array<SettingsSyncGroup | 'preferences'> = ['preferences', ...SETTINGS_SYNC_GROUP_KEYS];
+
+const cloneSettingValue = <T>(value: T): T => {
+    if (typeof globalThis.structuredClone === 'function') {
+        try {
+            return globalThis.structuredClone(value);
+        } catch {
+
+        }
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => cloneSettingValue(item)) as unknown as T;
+    }
+    if (value && typeof value === 'object') {
+        const cloned: Record<string, unknown> = {};
+        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+            cloned[key] = cloneSettingValue(item);
+        }
+        return cloned as T;
+    }
+    return value;
+};
+
+const setContainsValue = <T extends string>(set: ReadonlySet<T>, value: unknown): value is T => (
+    typeof value === 'string' && set.has(value as T)
+);
+
+const sanitizeSyncPreferences = (
+    value: SettingsSyncPreferences | undefined,
+    fallback: SettingsSyncPreferences | undefined
+): SettingsSyncPreferences | undefined => {
+    if (value === undefined) return fallback ? cloneSettingValue(fallback) : undefined;
+    if (!isObjectRecord(value)) return fallback ? cloneSettingValue(fallback) : undefined;
+    const next: SettingsSyncPreferences = {};
+    for (const key of SETTINGS_SYNC_GROUP_KEYS) {
+        const candidate = (value as Record<string, unknown>)[key];
+        if (typeof candidate === 'boolean') {
+            next[key] = candidate;
+        }
+    }
+    return Object.keys(next).length > 0 ? next : (fallback ? cloneSettingValue(fallback) : undefined);
+};
+
+const sanitizeSyncPreferencesUpdatedAt = (
+    value: AppData['settings']['syncPreferencesUpdatedAt'] | undefined,
+    fallback: AppData['settings']['syncPreferencesUpdatedAt'] | undefined
+): AppData['settings']['syncPreferencesUpdatedAt'] | undefined => {
+    if (value === undefined) return fallback ? cloneSettingValue(fallback) : undefined;
+    if (!isObjectRecord(value)) return fallback ? cloneSettingValue(fallback) : undefined;
+    const next: NonNullable<AppData['settings']['syncPreferencesUpdatedAt']> = {};
+    for (const key of SETTINGS_SYNC_UPDATED_AT_KEYS) {
+        const candidate = (value as Record<string, unknown>)[key];
+        if (isValidTimestamp(candidate)) {
+            next[key] = candidate;
+        }
+    }
+    return Object.keys(next).length > 0 ? next : (fallback ? cloneSettingValue(fallback) : undefined);
+};
+
+const sanitizeExternalCalendars = (
+    value: AppData['settings']['externalCalendars'] | undefined,
+    fallback: AppData['settings']['externalCalendars'] | undefined
+): AppData['settings']['externalCalendars'] | undefined => {
+    if (value === undefined) return fallback ? cloneSettingValue(fallback) : undefined;
+    if (!Array.isArray(value)) return fallback ? cloneSettingValue(fallback) : undefined;
+    const isValidCalendar = (item: unknown): item is { color?: unknown; areaIds?: unknown; id: string; name: string; url: string; enabled: boolean } =>
+        isObjectRecord(item)
+        && isNonEmptyString(item.id)
+        && isNonEmptyString(item.name)
+        && isNonEmptyString(item.url)
+        && typeof item.enabled === 'boolean';
+    const isLocalCalendarSource = (item: { url: string }): boolean => {
+        const url = item.url.trim().toLowerCase();
+        return url.startsWith('file://') || url.startsWith('content://');
+    };
+    const sanitizeCalendar = (item: { color?: unknown; areaIds?: unknown; id: string; name: string; url: string; enabled: boolean }) => {
+        const color = normalizeExternalCalendarColor(item.color);
+        return {
+            id: item.id.trim(),
+            name: item.name.trim(),
+            url: item.url.trim(),
+            enabled: item.enabled,
+            ...(color ? { color } : {}),
+            ...(Array.isArray(item.areaIds) ? { areaIds: [...new Set(item.areaIds.slice(0, 200).filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200))] } : {}),
+        };
+    };
+    const next = value
+        .filter(isValidCalendar)
+        .filter((item) => !isLocalCalendarSource(item))
+        .map(sanitizeCalendar);
+    const deduped = new Map<string, (typeof next)[number]>();
+    for (const item of next) {
+        deduped.set(item.id, item);
+    }
+    for (const item of fallback ?? []) {
+        if (!isValidCalendar(item) || !isLocalCalendarSource(item)) continue;
+        const localSource = sanitizeCalendar(item);
+        if (!deduped.has(localSource.id)) {
+            deduped.set(localSource.id, localSource);
+        }
+    }
+    if (value.length > 0 && deduped.size === 0 && fallback) {
+        return cloneSettingValue(fallback);
+    }
+    return Array.from(deduped.values());
+};
+
+const sanitizeAiSettings = (
+    value: AiSettings | undefined,
+    fallback: AiSettings | undefined
+): AiSettings | undefined => {
+    if (value === undefined) return fallback ? sanitizeAiForSync(cloneSettingValue(fallback), fallback) : undefined;
+    if (!isObjectRecord(value)) return fallback ? sanitizeAiForSync(cloneSettingValue(fallback), fallback) : undefined;
+    const next: AiSettings = cloneSettingValue(value as AiSettings);
+    if (next.enabled !== undefined && typeof next.enabled !== 'boolean') {
+        next.enabled = fallback?.enabled;
+    }
+    if (next.provider !== undefined && !AI_PROVIDER_VALUE_SET.has(next.provider)) {
+        next.provider = fallback?.provider;
+    }
+    if (next.baseUrl !== undefined && !isNonEmptyString(next.baseUrl)) {
+        next.baseUrl = fallback?.baseUrl;
+    }
+    if (next.model !== undefined && !isNonEmptyString(next.model)) {
+        next.model = fallback?.model;
+    }
+    if (next.openAIExtraBodyParams !== undefined && !isObjectRecord(next.openAIExtraBodyParams)) {
+        next.openAIExtraBodyParams = fallback?.openAIExtraBodyParams;
+    }
+    if (next.reasoningEffort !== undefined && !AI_REASONING_EFFORT_VALUE_SET.has(next.reasoningEffort)) {
+        next.reasoningEffort = fallback?.reasoningEffort;
+    }
+    if (next.thinkingBudget !== undefined && (!Number.isFinite(next.thinkingBudget) || next.thinkingBudget < 0)) {
+        next.thinkingBudget = fallback?.thinkingBudget;
+    }
+    if (next.copilotModel !== undefined && !isNonEmptyString(next.copilotModel)) {
+        next.copilotModel = fallback?.copilotModel;
+    }
+    const isSupportedRequestTimeout = (candidate: unknown): candidate is number => (
+        AI_REQUEST_TIMEOUT_OPTIONS.some((seconds) => seconds === candidate)
+    );
+    const fallbackRequestTimeout = isSupportedRequestTimeout(fallback?.requestTimeoutSeconds)
+        ? fallback.requestTimeoutSeconds
+        : undefined;
+    if (next.requestTimeoutSeconds === undefined) {
+        if (fallbackRequestTimeout !== undefined) {
+            next.requestTimeoutSeconds = fallbackRequestTimeout;
+        }
+    } else if (!isSupportedRequestTimeout(next.requestTimeoutSeconds)) {
+        if (fallbackRequestTimeout !== undefined) {
+            next.requestTimeoutSeconds = fallbackRequestTimeout;
+        } else {
+            delete next.requestTimeoutSeconds;
+        }
+    }
+    if (next.speechToText !== undefined && !isObjectRecord(next.speechToText)) {
+        next.speechToText = fallback?.speechToText ? cloneSettingValue(fallback.speechToText) : undefined;
+    } else if (next.speechToText) {
+        const speechFallback = fallback?.speechToText;
+        if (next.speechToText.enabled !== undefined && typeof next.speechToText.enabled !== 'boolean') {
+            next.speechToText.enabled = speechFallback?.enabled;
+        }
+        if (next.speechToText.provider !== undefined && !setContainsValue(STT_PROVIDER_VALUE_SET, next.speechToText.provider)) {
+            next.speechToText.provider = speechFallback?.provider;
+        }
+        if (next.speechToText.model !== undefined && !isNonEmptyString(next.speechToText.model)) {
+            next.speechToText.model = speechFallback?.model;
+        }
+        if (next.speechToText.language !== undefined && !isNonEmptyString(next.speechToText.language)) {
+            next.speechToText.language = speechFallback?.language;
+        }
+        if (next.speechToText.mode !== undefined && !setContainsValue(STT_MODE_VALUE_SET, next.speechToText.mode)) {
+            next.speechToText.mode = speechFallback?.mode;
+        }
+        if (
+            next.speechToText.fieldStrategy !== undefined
+            && !setContainsValue(STT_FIELD_STRATEGY_VALUE_SET, next.speechToText.fieldStrategy)
+        ) {
+            next.speechToText.fieldStrategy = speechFallback?.fieldStrategy;
+        }
+    }
+    return sanitizeAiForSync(next, fallback);
+};
+
+const sanitizeBooleanRecord = (
+    value: unknown,
+    fallback: unknown,
+    booleanKeys: readonly string[],
+): Record<string, unknown> | undefined => {
+    if (value === undefined) return undefined;
+    if (!isObjectRecord(value)) {
+        return isObjectRecord(fallback) ? cloneSettingValue(fallback) : undefined;
+    }
+    const next = { ...value };
+    const fallbackRecord = isObjectRecord(fallback) ? fallback : {};
+    for (const key of booleanKeys) {
+        if (!(key in next) || typeof next[key] === 'boolean') continue;
+        const fallbackValue = fallbackRecord[key];
+        if (typeof fallbackValue === 'boolean') {
+            next[key] = fallbackValue;
+        } else {
+            delete next[key];
+        }
+    }
+    return next;
+};
+
+export const sanitizeMergedSettingsForSync = (
+    merged: AppData['settings'],
+    localSettings: AppData['settings']
+): AppData['settings'] => {
+    const next: AppData['settings'] = cloneSettingValue(merged);
+
+    if (next.theme !== undefined && !SETTINGS_THEME_VALUE_SET.has(next.theme)) {
+        next.theme = localSettings.theme;
+    }
+    if (next.language !== undefined && !SETTINGS_LANGUAGE_VALUE_SET.has(next.language)) {
+        next.language = localSettings.language;
+    }
+    if (next.weekStart !== undefined && !SETTINGS_WEEK_START_VALUE_SET.has(next.weekStart)) {
+        next.weekStart = localSettings.weekStart;
+    }
+    if (next.timeFormat !== undefined && !SETTINGS_TIME_FORMAT_VALUE_SET.has(next.timeFormat)) {
+        next.timeFormat = localSettings.timeFormat;
+    }
+    if (next.keybindingStyle !== undefined && !SETTINGS_KEYBINDING_STYLE_VALUE_SET.has(next.keybindingStyle)) {
+        next.keybindingStyle = localSettings.keybindingStyle;
+    }
+    if (next.dateFormat !== undefined && typeof next.dateFormat !== 'string') {
+        next.dateFormat = localSettings.dateFormat;
+    }
+    if (next.appearance !== undefined && !isObjectRecord(next.appearance)) {
+        next.appearance = localSettings.appearance ? cloneSettingValue(localSettings.appearance) : undefined;
+    } else if (next.appearance) {
+        const fallbackAppearance = localSettings.appearance ? cloneSettingValue(localSettings.appearance) : {};
+        let didSanitizeAppearance = false;
+
+        if (next.appearance.density !== undefined && !setContainsValue(SETTINGS_DENSITY_VALUE_SET, next.appearance.density)) {
+            next.appearance = {
+                ...fallbackAppearance,
+                ...next.appearance,
+                density: localSettings.appearance?.density,
+            };
+            didSanitizeAppearance = true;
+        }
+        const sanitizedAppearance = next.appearance;
+        if (
+            sanitizedAppearance
+            && sanitizedAppearance.textSize !== undefined
+            && !setContainsValue(SETTINGS_TEXT_SIZE_VALUE_SET, sanitizedAppearance.textSize)
+        ) {
+            next.appearance = {
+                ...fallbackAppearance,
+                ...sanitizedAppearance,
+                textSize: localSettings.appearance?.textSize,
+            };
+            didSanitizeAppearance = true;
+        }
+        const appearanceWithFont = next.appearance;
+        if (
+            appearanceWithFont
+            && appearanceWithFont.fontFamily !== undefined
+            && (typeof appearanceWithFont.fontFamily !== 'string' || appearanceWithFont.fontFamily.length > 120)
+        ) {
+            next.appearance = {
+                ...fallbackAppearance,
+                ...appearanceWithFont,
+                fontFamily: localSettings.appearance?.fontFamily,
+            };
+            didSanitizeAppearance = true;
+        }
+        const appearanceWithTextSize = next.appearance;
+        if (
+            appearanceWithTextSize
+            && appearanceWithTextSize.showFutureStarts !== undefined
+            && typeof appearanceWithTextSize.showFutureStarts !== 'boolean'
+        ) {
+            next.appearance = {
+                ...fallbackAppearance,
+                ...appearanceWithTextSize,
+                showFutureStarts: localSettings.appearance?.showFutureStarts,
+            };
+            if (next.appearance.showFutureStarts === undefined) {
+                delete next.appearance.showFutureStarts;
+            }
+            didSanitizeAppearance = true;
+        }
+        const appearanceWithFutureStarts = next.appearance;
+        if (
+            appearanceWithFutureStarts
+            && appearanceWithFutureStarts.mobileQuickAccessView !== undefined
+            && !setContainsValue(SETTINGS_MOBILE_QUICK_ACCESS_VIEW_VALUE_SET, appearanceWithFutureStarts.mobileQuickAccessView)
+        ) {
+            next.appearance = {
+                ...fallbackAppearance,
+                ...appearanceWithFutureStarts,
+                mobileQuickAccessView: localSettings.appearance?.mobileQuickAccessView,
+            };
+            if (next.appearance.mobileQuickAccessView === undefined) {
+                delete next.appearance.mobileQuickAccessView;
+            }
+            didSanitizeAppearance = true;
+        }
+
+        const finalAppearance = next.appearance;
+        if (
+            didSanitizeAppearance
+            && finalAppearance
+            && Object.values(finalAppearance).every((value) => value === undefined)
+        ) {
+            next.appearance = Object.keys(fallbackAppearance).length > 0 ? next.appearance : undefined;
+        }
+    }
+
+    if (next.gtd !== undefined && !isObjectRecord(next.gtd)) {
+        next.gtd = localSettings.gtd ? cloneSettingValue(localSettings.gtd) : undefined;
+    } else if (next.gtd) {
+        const restoreGtdField = (key: keyof GtdSettings) => {
+            const fallbackValue = localSettings.gtd?.[key];
+            const nextGtd = next.gtd as Record<string, unknown>;
+            if (fallbackValue === undefined) {
+                delete nextGtd[key];
+            } else {
+                nextGtd[key] = cloneSettingValue(fallbackValue);
+            }
+        };
+
+        if (next.gtd.timeEstimatePresets !== undefined) {
+            const rawPresets = next.gtd.timeEstimatePresets as unknown;
+            if (!Array.isArray(rawPresets)) {
+                restoreGtdField('timeEstimatePresets');
+            } else {
+                const stringPresets = rawPresets.filter(
+                    (value): value is string => typeof value === 'string' && value.length > 0,
+                );
+                if (stringPresets.length === 0 && rawPresets.length > 0) {
+                    restoreGtdField('timeEstimatePresets');
+                } else {
+                    next.gtd = {
+                        ...next.gtd,
+                        timeEstimatePresets: stringPresets as GtdSettings['timeEstimatePresets'],
+                    };
+                }
+            }
+        }
+
+        if (
+            next.gtd.autoArchiveDays !== undefined
+            && (
+                typeof next.gtd.autoArchiveDays !== 'number'
+                || !Number.isFinite(next.gtd.autoArchiveDays)
+                || next.gtd.autoArchiveDays < 0
+            )
+        ) {
+            restoreGtdField('autoArchiveDays');
+        }
+        if (next.gtd.archiveRetentionDays !== undefined
+            && (typeof next.gtd.archiveRetentionDays !== 'number'
+                || !Number.isInteger(next.gtd.archiveRetentionDays)
+                || next.gtd.archiveRetentionDays < 0
+                || next.gtd.archiveRetentionDays > 36500)) {
+            restoreGtdField('archiveRetentionDays');
+        }
+
+        if (
+            next.gtd.defaultCaptureMethod !== undefined
+            && next.gtd.defaultCaptureMethod !== 'text'
+            && next.gtd.defaultCaptureMethod !== 'audio'
+        ) {
+            restoreGtdField('defaultCaptureMethod');
+        }
+
+        for (const key of ['saveAudioAttachments', 'naturalLanguageDates', 'focusIncludeStartDates'] as const) {
+            if (next.gtd[key] !== undefined && typeof next.gtd[key] !== 'boolean') {
+                restoreGtdField(key);
+            }
+        }
+
+        if (next.gtd.inboxProcessing !== undefined) {
+            const sanitizedInboxProcessing = sanitizeBooleanRecord(
+                next.gtd.inboxProcessing,
+                localSettings.gtd?.inboxProcessing,
+                GTD_SYNCED_INBOX_PROCESSING_FIELD_KEYS,
+            );
+            if (sanitizedInboxProcessing) {
+                const mode = sanitizedInboxProcessing.defaultMode;
+                if (mode !== undefined && mode !== 'guided' && mode !== 'quick') {
+                    const fallbackMode = localSettings.gtd?.inboxProcessing?.defaultMode;
+                    if (fallbackMode) {
+                        sanitizedInboxProcessing.defaultMode = fallbackMode;
+                    } else {
+                        delete sanitizedInboxProcessing.defaultMode;
+                    }
+                }
+                next.gtd = {
+                    ...next.gtd,
+                    inboxProcessing: sanitizedInboxProcessing as GtdSettings['inboxProcessing'],
+                };
+            } else {
+                restoreGtdField('inboxProcessing');
+            }
+        }
+
+        if (next.gtd.weeklyReview !== undefined) {
+            const sanitizedWeeklyReview = sanitizeBooleanRecord(
+                next.gtd.weeklyReview,
+                localSettings.gtd?.weeklyReview,
+                ['includeContextStep'],
+            );
+            if (sanitizedWeeklyReview) {
+                next.gtd = {
+                    ...next.gtd,
+                    weeklyReview: sanitizedWeeklyReview as GtdSettings['weeklyReview'],
+                };
+            } else {
+                restoreGtdField('weeklyReview');
+            }
+        }
+
+        if (next.gtd.dailyReview !== undefined) {
+            const sanitizedDailyReview = sanitizeBooleanRecord(
+                next.gtd.dailyReview,
+                localSettings.gtd?.dailyReview,
+                ['includeFocusStep'],
+            );
+            if (sanitizedDailyReview) {
+                next.gtd = {
+                    ...next.gtd,
+                    dailyReview: sanitizedDailyReview as GtdSettings['dailyReview'],
+                };
+            } else {
+                restoreGtdField('dailyReview');
+            }
+        }
+
+        if (next.gtd.pomodoro !== undefined) {
+            const sanitizedPomodoro = sanitizeBooleanRecord(
+                next.gtd.pomodoro,
+                localSettings.gtd?.pomodoro,
+                ['linkTask', 'autoStartBreaks', 'autoStartFocus', 'completionAlert'],
+            );
+            if (!sanitizedPomodoro) {
+                restoreGtdField('pomodoro');
+            } else {
+                const rawDurations = sanitizedPomodoro.customDurations;
+                if (rawDurations !== undefined) {
+                    if (!isObjectRecord(rawDurations)) {
+                        const fallbackDurations = localSettings.gtd?.pomodoro?.customDurations;
+                        if (fallbackDurations) {
+                            sanitizedPomodoro.customDurations = cloneSettingValue(fallbackDurations);
+                        } else {
+                            delete sanitizedPomodoro.customDurations;
+                        }
+                    } else {
+                        const nextDurations = { ...rawDurations };
+                        const fallbackDurations = localSettings.gtd?.pomodoro?.customDurations;
+                        for (const key of ['focusMinutes', 'breakMinutes'] as const) {
+                            const duration = nextDurations[key];
+                            if (typeof duration === 'number' && Number.isFinite(duration)) {
+                                nextDurations[key] = Math.max(1, Math.min(180, Math.round(duration)));
+                            } else if (fallbackDurations?.[key] !== undefined) {
+                                nextDurations[key] = fallbackDurations[key];
+                            } else {
+                                delete nextDurations[key];
+                            }
+                        }
+                        sanitizedPomodoro.customDurations = nextDurations;
+                    }
+                }
+                next.gtd = {
+                    ...next.gtd,
+                    pomodoro: sanitizedPomodoro as GtdSettings['pomodoro'],
+                };
+            }
+        }
+
+        if (next.gtd.focusTaskLimit !== undefined) {
+            const rawLimit = next.gtd.focusTaskLimit;
+            if (typeof rawLimit !== 'number' || !Number.isFinite(rawLimit) || rawLimit < MIN_FOCUS_TASK_LIMIT || rawLimit > MAX_FOCUS_TASK_LIMIT) {
+                next.gtd = {
+                    ...next.gtd,
+                    focusTaskLimit: localSettings.gtd?.focusTaskLimit,
+                };
+                if (next.gtd.focusTaskLimit === undefined) {
+                    delete next.gtd.focusTaskLimit;
+                }
+            } else {
+                next.gtd = {
+                    ...next.gtd,
+                    focusTaskLimit: normalizeFocusTaskLimit(rawLimit),
+                };
+            }
+        }
+
+        if (next.gtd.focusGroupBy !== undefined && !setContainsValue(SETTINGS_FOCUS_GROUP_BY_VALUE_SET, next.gtd.focusGroupBy)) {
+            next.gtd = {
+                ...next.gtd,
+                focusGroupBy: localSettings.gtd?.focusGroupBy,
+            };
+            if (next.gtd.focusGroupBy === undefined) {
+                delete next.gtd.focusGroupBy;
+            }
+        }
+
+        if (
+            next.gtd.defaultAreaMode !== undefined
+            && !setContainsValue(SETTINGS_DEFAULT_TASK_AREA_MODE_VALUE_SET, next.gtd.defaultAreaMode)
+        ) {
+            next.gtd = {
+                ...next.gtd,
+                defaultAreaMode: localSettings.gtd?.defaultAreaMode,
+            };
+            if (next.gtd.defaultAreaMode === undefined) {
+                delete next.gtd.defaultAreaMode;
+            }
+        }
+
+        if (
+            next.gtd.defaultAreaId !== undefined
+            && next.gtd.defaultAreaId !== null
+            && !isNonEmptyString(next.gtd.defaultAreaId)
+        ) {
+            next.gtd = {
+                ...next.gtd,
+                defaultAreaId: localSettings.gtd?.defaultAreaId,
+            };
+            if (next.gtd.defaultAreaId === undefined) {
+                delete next.gtd.defaultAreaId;
+            }
+        }
+
+        if (next.gtd.taskEditor !== undefined) {
+
+
+            const rawTaskEditor = next.gtd.taskEditor;
+            if (!isObjectRecord(rawTaskEditor)) {
+                next.gtd = { ...next.gtd, taskEditor: localSettings.gtd?.taskEditor };
+                if (next.gtd.taskEditor === undefined) {
+                    delete next.gtd.taskEditor;
+                }
+            } else {
+                const sanitizedTaskEditor: Record<string, unknown> = { ...rawTaskEditor };
+                for (const key of ['order', 'hidden'] as const) {
+                    if (key in sanitizedTaskEditor && !Array.isArray(sanitizedTaskEditor[key])) {
+                        delete sanitizedTaskEditor[key];
+                    }
+                }
+                for (const key of ['sections', 'sectionOpen'] as const) {
+                    if (key in sanitizedTaskEditor && !isObjectRecord(sanitizedTaskEditor[key])) {
+                        delete sanitizedTaskEditor[key];
+                    }
+                }
+                if ('presentation' in sanitizedTaskEditor && typeof sanitizedTaskEditor.presentation !== 'string') {
+                    delete sanitizedTaskEditor.presentation;
+                }
+                if ('defaultsVersion' in sanitizedTaskEditor && typeof sanitizedTaskEditor.defaultsVersion !== 'number') {
+                    delete sanitizedTaskEditor.defaultsVersion;
+                }
+                next.gtd = { ...next.gtd, taskEditor: sanitizedTaskEditor as GtdSettings['taskEditor'] };
+            }
+        }
+
+        if (
+            next.gtd.defaultProjectFlowMode !== undefined
+            && !setContainsValue(SETTINGS_DEFAULT_PROJECT_FLOW_MODE_VALUE_SET, next.gtd.defaultProjectFlowMode)
+        ) {
+            next.gtd = {
+                ...next.gtd,
+                defaultProjectFlowMode: localSettings.gtd?.defaultProjectFlowMode,
+            };
+            if (next.gtd.defaultProjectFlowMode === undefined) {
+                delete next.gtd.defaultProjectFlowMode;
+            }
+        }
+    }
+
+    for (const key of GTD_SYNCED_APP_SETTINGS_FIELD_KEYS) {
+        const value = next[key];
+        const valid = (candidate: unknown) => key === 'taskReminderDefault'
+            ? candidate === 'send' || candidate === 'skip' : typeof candidate === 'boolean';
+        if (value === undefined || valid(value)) continue;
+        const fallbackValue = localSettings[key];
+        if (valid(fallbackValue)) {
+            (next as Record<string, unknown>)[key] = fallbackValue;
+        } else {
+            delete (next as Record<string, unknown>)[key];
+        }
+    }
+
+    if (next.features !== undefined && !isObjectRecord(next.features)) {
+        next.features = localSettings.features ? cloneSettingValue(localSettings.features) : undefined;
+    } else if (next.features) {
+        const nextFeatures = { ...next.features } as Record<string, unknown>;
+        for (const key of GTD_SYNCED_FEATURE_FIELD_KEYS) {
+            const value = nextFeatures[key];
+            if (value === undefined || typeof value === 'boolean') continue;
+            const fallbackValue = localSettings.features?.[key];
+            if (typeof fallbackValue === 'boolean') {
+                nextFeatures[key] = fallbackValue;
+            } else {
+                delete nextFeatures[key];
+            }
+        }
+        next.features = nextFeatures;
+    }
+
+    next.syncPreferences = sanitizeSyncPreferences(next.syncPreferences, localSettings.syncPreferences);
+    next.syncPreferencesUpdatedAt = sanitizeSyncPreferencesUpdatedAt(
+        next.syncPreferencesUpdatedAt,
+        localSettings.syncPreferencesUpdatedAt
+    );
+    next.externalCalendars = sanitizeExternalCalendars(next.externalCalendars, localSettings.externalCalendars);
+    next.ai = sanitizeAiSettings(next.ai, localSettings.ai);
+    if (next.savedFilters !== undefined) {
+        next.savedFilters = keepSavedFilters(next.savedFilters);
+    }
+
+    return next;
+};
+
+const latestTimestamp = (left?: string, right?: string): string | undefined => {
+    const leftValid = isNonEmptyString(left) && isValidTimestamp(left);
+    const rightValid = isNonEmptyString(right) && isValidTimestamp(right);
+    if (leftValid && rightValid) return isIncomingNewer(left, right) ? right : left;
+    return leftValid ? left : rightValid ? right : undefined;
+};
+
+
+export const mergeSupportPromptSettings = (
+    local: SupportPromptSettings | undefined,
+    incoming: SupportPromptSettings | undefined,
+): SupportPromptSettings | undefined => {
+    const shownAt = (value: SupportPromptSettings | undefined): string | undefined => (
+        isObjectRecord(value) && typeof value.lastShownAt === 'string' ? value.lastShownAt : undefined
+    );
+    const lastShownAt = latestTimestamp(shownAt(local), shownAt(incoming));
+    return lastShownAt ? { lastShownAt } : undefined;
+};
+
+export const mergeSettingsForSync = (
+    localSettings: AppData['settings'],
+    incomingSettings: AppData['settings']
+): AppData['settings'] => {
+    const merged: AppData['settings'] = { ...localSettings };
+    const taxonomy = mergeTaxonomyCatalog(localSettings.taxonomy, incomingSettings.taxonomy);
+    if (taxonomy !== undefined) merged.taxonomy = taxonomy;
+    const nextSyncUpdatedAt: NonNullable<AppData['settings']['syncPreferencesUpdatedAt']> = {};
+
+
+    if (isNonEmptyString(incomingSettings.analyticsProfileId)) {
+        merged.analyticsProfileId = incomingSettings.analyticsProfileId;
+    }
+    const mergedSupportPrompt = mergeSupportPromptSettings(localSettings.supportPrompt, incomingSettings.supportPrompt);
+    if (mergedSupportPrompt) {
+        merged.supportPrompt = mergedSupportPrompt;
+    }
+
+    const localPrefs = localSettings.syncPreferences ?? {};
+    const incomingPrefs = incomingSettings.syncPreferences ?? {};
+    const localPrefsAt = localSettings.syncPreferencesUpdatedAt?.preferences;
+    const incomingPrefsAt = incomingSettings.syncPreferencesUpdatedAt?.preferences;
+    const incomingPrefsWins = isIncomingNewer(localPrefsAt, incomingPrefsAt);
+    const mergedPrefs = incomingPrefsWins ? incomingPrefs : localPrefs;
+
+    merged.syncPreferences = cloneSettingValue(mergedPrefs);
+    if (incomingPrefsWins) {
+        if (incomingPrefsAt) nextSyncUpdatedAt.preferences = incomingPrefsAt;
+    } else if (localPrefsAt) {
+        nextSyncUpdatedAt.preferences = localPrefsAt;
+    }
+
+    const isSameValue = (left: unknown, right: unknown): boolean => {
+        if (left === right) return true;
+        return JSON.stringify(left) === JSON.stringify(right);
+    };
+    const chooseGroupFieldValue = <T>(localValue: T, incomingValue: T, incomingWins: boolean): T => {
+        if (incomingValue === undefined) return cloneSettingValue(localValue);
+        if (localValue === undefined) return cloneSettingValue(incomingValue);
+        if (isSameValue(localValue, incomingValue)) return cloneSettingValue(localValue);
+        return cloneSettingValue(incomingWins ? incomingValue : localValue);
+    };
+    const mergeRecordFields = <T extends Record<string, unknown>>(localValue: T, incomingValue: T, incomingWins: boolean): T => {
+        const mergedValue: Record<string, unknown> = {};
+        const localRecord = (localValue ?? {}) as Record<string, unknown>;
+        const incomingRecord = (incomingValue ?? {}) as Record<string, unknown>;
+        const keys = new Set([...Object.keys(localRecord), ...Object.keys(incomingRecord)]);
+        for (const fieldKey of keys) {
+            mergedValue[fieldKey] = chooseGroupFieldValue(localRecord[fieldKey], incomingRecord[fieldKey], incomingWins);
+        }
+        return mergedValue as T;
+    };
+    const mergeGtdSyncGroupValue = (
+        localValue: GtdSyncSnapshot,
+        incomingValue: GtdSyncSnapshot,
+        incomingWins: boolean,
+    ): GtdSyncSnapshot => {
+        const mergedGtd = mergeRecordFields(
+            (localValue.gtd ?? {}) as Record<string, unknown>,
+            (incomingValue.gtd ?? {}) as Record<string, unknown>,
+            incomingWins,
+        );
+        const localLayout = localValue.gtd?.taskEditor;
+        const incomingLayout = incomingValue.gtd?.taskEditor;
+        if (localSettings.syncPreferences?.gtd !== false
+            && isObjectRecord(localLayout) && isObjectRecord(incomingLayout)
+            && !isSameValue(localLayout, incomingLayout)) {
+            const localDefault = isMigrationTaskEditorDefault(localLayout);
+            const incomingDefault = isMigrationTaskEditorDefault(incomingLayout);
+            const localAt = localSettings.syncPreferencesUpdatedAt?.gtd;
+            const incomingAt = incomingSettings.syncPreferencesUpdatedAt?.gtd;
+            let resolvedLayout = mergedGtd.taskEditor;
+            let reason: string | undefined;
+            if (localDefault !== incomingDefault) {
+                resolvedLayout = localDefault ? incomingLayout : localLayout;
+                reason = 'explicit-layout';
+            } else if (!isIncomingNewer(localAt, incomingAt) && !isIncomingNewer(incomingAt, localAt)) {
+
+
+                resolvedLayout = chooseDeterministicWinner(localLayout, incomingLayout);
+                reason = 'tied-clock';
+            }
+            mergedGtd.taskEditor = cloneSettingValue(resolvedLayout);
+            if (reason && !isSameValue(localLayout, resolvedLayout)) {
+                logInfo('Task editor layout sync conflict resolved', {
+                    scope: 'sync',
+                    context: { releaseCheck: 'v1.3.0/task-editor-upgrade-sync', reason },
+                });
+            }
+        }
+        const mergedInboxProcessing = mergeRecordFields(
+            (localValue.gtd?.inboxProcessing ?? {}) as Record<string, unknown>,
+            (incomingValue.gtd?.inboxProcessing ?? {}) as Record<string, unknown>,
+            incomingWins,
+        );
+        if (Object.keys(mergedInboxProcessing).length > 0) {
+            mergedGtd.inboxProcessing = mergedInboxProcessing;
+        } else {
+            delete mergedGtd.inboxProcessing;
+        }
+
+        const mergedFeatures = mergeRecordFields(
+            (localValue.features ?? {}) as Record<string, unknown>,
+            (incomingValue.features ?? {}) as Record<string, unknown>,
+            incomingWins,
+        );
+        const value: GtdSyncSnapshot = {
+            taskReminderDefault: chooseGroupFieldValue(
+                localValue.taskReminderDefault, incomingValue.taskReminderDefault, incomingWins,
+            ),
+            quickAddAutoClean: chooseGroupFieldValue(
+                localValue.quickAddAutoClean,
+                incomingValue.quickAddAutoClean,
+                incomingWins,
+            ),
+            markdownEditorAssist: chooseGroupFieldValue(
+                localValue.markdownEditorAssist,
+                incomingValue.markdownEditorAssist,
+                incomingWins,
+            ),
+        };
+        if (Object.keys(mergedGtd).length > 0) {
+            value.gtd = mergedGtd as NonNullable<GtdSyncSnapshot['gtd']>;
+        }
+        if (Object.keys(mergedFeatures).length > 0) {
+            value.features = mergedFeatures as NonNullable<GtdSyncSnapshot['features']>;
+        }
+        return value;
+    };
+    type AppearanceSyncValue = {
+        theme: AppData['settings']['theme'];
+        appearance: AppData['settings']['appearance'];
+        keybindingStyle: AppData['settings']['keybindingStyle'];
+    };
+    const mergeAppearanceGroupValue = (
+        localValue: AppearanceSyncValue,
+        incomingValue: AppearanceSyncValue,
+        incomingWins: boolean
+    ): AppearanceSyncValue => {
+        const mergedValue = mergeRecordFields(localValue, incomingValue, incomingWins);
+        const mergedAppearance = mergeRecordFields(
+            (localValue.appearance ?? {}) as Record<string, unknown>,
+            (incomingValue.appearance ?? {}) as Record<string, unknown>,
+            incomingWins
+        ) as AppData['settings']['appearance'];
+        mergedValue.appearance = mergedAppearance && Object.keys(mergedAppearance).length > 0
+            ? mergedAppearance
+            : undefined;
+        return mergedValue;
+    };
+    const mergeGroup = <T>(
+        key: SettingsSyncGroup,
+        localValue: T,
+        incomingValue: T,
+        apply: (value: T, incomingWins: boolean) => void,
+        mergeValues?: (localValue: T, incomingValue: T, incomingWins: boolean, localNewer: boolean) => T
+    ) => {
+        const localAt = localSettings.syncPreferencesUpdatedAt?.[key];
+        const incomingAt = incomingSettings.syncPreferencesUpdatedAt?.[key];
+        const localOptedOut = localSettings.syncPreferences?.[key] === false;
+        const incomingWins = localOptedOut ? false : isIncomingNewer(localAt, incomingAt);
+        const effectiveIncomingValue = localOptedOut ? localValue : incomingValue;
+        const resolvedValue = mergeValues
+            ? mergeValues(localValue, effectiveIncomingValue, incomingWins, isIncomingNewer(incomingAt, localAt))
+            : (incomingWins ? effectiveIncomingValue : localValue);
+        apply(cloneSettingValue(resolvedValue), incomingWins);
+        const winnerAt = incomingWins ? incomingAt : localAt;
+        if (winnerAt) nextSyncUpdatedAt[key] = winnerAt;
+    };
+
+    mergeGroup(
+        'appearance',
+        {
+            theme: localSettings.theme,
+            appearance: localSettings.appearance,
+            keybindingStyle: localSettings.keybindingStyle,
+        },
+        {
+            theme: incomingSettings.theme,
+            appearance: incomingSettings.appearance,
+            keybindingStyle: incomingSettings.keybindingStyle,
+        },
+        (value) => {
+            merged.theme = value.theme;
+            merged.appearance = value.appearance;
+            merged.keybindingStyle = value.keybindingStyle;
+        },
+        (localValue, incomingValue, incomingWins) => mergeAppearanceGroupValue(localValue, incomingValue, incomingWins)
+    );
+
+    mergeGroup(
+        'language',
+        {
+            language: localSettings.language,
+            weekStart: localSettings.weekStart,
+            dateFormat: localSettings.dateFormat,
+            timeFormat: localSettings.timeFormat,
+        },
+        {
+            language: incomingSettings.language,
+            weekStart: incomingSettings.weekStart,
+            dateFormat: incomingSettings.dateFormat,
+            timeFormat: incomingSettings.timeFormat,
+        },
+        (value) => {
+            merged.language = value.language;
+            merged.weekStart = value.weekStart;
+            merged.dateFormat = value.dateFormat;
+            merged.timeFormat = value.timeFormat;
+        },
+        (localValue, incomingValue, incomingWins) => mergeRecordFields(localValue, incomingValue, incomingWins)
+    );
+
+    mergeGroup(
+        'gtd',
+        getGtdSyncSnapshot(localSettings),
+        getGtdSyncSnapshot(incomingSettings),
+        (value) => {
+            const nextGtd = { ...(merged.gtd ?? {}) } as Record<string, unknown>;
+            for (const key of GTD_SYNCED_FIELD_KEYS) {
+                const fieldValue = value.gtd?.[key];
+                if (fieldValue === undefined) {
+                    delete nextGtd[key];
+                } else {
+                    nextGtd[key] = fieldValue;
+                }
+            }
+
+            const nextInboxProcessing = isObjectRecord(nextGtd.inboxProcessing)
+                ? { ...nextGtd.inboxProcessing }
+                : {};
+            for (const key of GTD_SYNCED_INBOX_PROCESSING_FIELD_KEYS) {
+                const fieldValue = value.gtd?.inboxProcessing?.[key];
+                if (fieldValue === undefined) {
+                    delete nextInboxProcessing[key];
+                } else {
+                    nextInboxProcessing[key] = fieldValue;
+                }
+            }
+            if (Object.keys(nextInboxProcessing).length > 0) {
+                nextGtd.inboxProcessing = nextInboxProcessing;
+            } else {
+                delete nextGtd.inboxProcessing;
+            }
+
+            if (Object.keys(nextGtd).length === 0) {
+                if (merged.gtd) {
+                    delete merged.gtd;
+                }
+            } else {
+                merged.gtd = nextGtd as GtdSettings;
+            }
+
+            const mergedRecord = merged as Record<string, unknown>;
+            for (const key of GTD_SYNCED_APP_SETTINGS_FIELD_KEYS) {
+                const fieldValue = value[key];
+                if (fieldValue === undefined) {
+                    delete mergedRecord[key];
+                } else {
+                    mergedRecord[key] = fieldValue;
+                }
+            }
+
+            const nextFeatures = isObjectRecord(merged.features) ? { ...merged.features } : {};
+            for (const key of GTD_SYNCED_FEATURE_FIELD_KEYS) {
+                const fieldValue = value.features?.[key];
+                if (fieldValue === undefined) {
+                    delete nextFeatures[key];
+                } else {
+                    nextFeatures[key] = fieldValue;
+                }
+            }
+            if (Object.keys(nextFeatures).length > 0) {
+                merged.features = nextFeatures;
+            } else if (merged.features) {
+                delete merged.features;
+            }
+        },
+        mergeGtdSyncGroupValue,
+    );
+
+    mergeGroup(
+        'externalCalendars',
+        localSettings.externalCalendars,
+        incomingSettings.externalCalendars,
+        (value) => {
+            merged.externalCalendars = value;
+        }
+    );
+
+    mergeGroup(
+        'savedFilters',
+        localSettings.savedFilters,
+        incomingSettings.savedFilters,
+        (value) => {
+            merged.savedFilters = keepSavedFilters(value);
+        },
+        mergeSavedFiltersById
+    );
+
+    mergeGroup(
+        'ai',
+        localSettings.ai,
+        incomingSettings.ai,
+        (value) => {
+            merged.ai = sanitizeAiForSync(value, localSettings.ai);
+        },
+        (localValue, incomingValue, incomingWins) => chooseGroupFieldValue(localValue, incomingValue, incomingWins)
+    );
+
+    merged.syncPreferencesUpdatedAt = Object.keys(nextSyncUpdatedAt).length > 0 ? nextSyncUpdatedAt : merged.syncPreferencesUpdatedAt;
+    return sanitizeMergedSettingsForSync(merged, localSettings);
+};

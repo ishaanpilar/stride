@@ -1,0 +1,4 @@
+- Wiederholende Aufgaben erscheinen im gesamten sichtbaren Kalenderbereich.
+- Fokus und Nächste blenden Aufgaben bis zur genauen Startzeit aus.
+- Schnellere Listen, stabiles Ziehen, klarere Bedienungshilfen und bessere Projektnavigation.
+- Sync-Ziele werden vor dem Wechsel samt Anhängen geprüft.

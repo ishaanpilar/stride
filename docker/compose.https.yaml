@@ -1,0 +1,50 @@
+services:
+  stride-cloud:
+    image: ghcr.io/ishaanpilar/stride-cloud:latest
+    build:
+      context: ..
+      dockerfile: docker/cloud/Dockerfile
+    container_name: stride-cloud
+    hostname: stride-cloud
+    restart: always
+    cpus: "1.0"
+    mem_limit: 512m
+    expose:
+      - "8787"
+    environment:
+
+
+      - STRIDE_CLOUD_AUTH_TOKENS=${STRIDE_CLOUD_AUTH_TOKENS:-}
+      - STRIDE_CLOUD_CORS_ORIGIN=${STRIDE_CLOUD_CORS_ORIGIN:?STRIDE_CLOUD_CORS_ORIGIN must be set}
+      - STRIDE_CLOUD_MAX_BODY_BYTES=${STRIDE_CLOUD_MAX_BODY_BYTES:-2000000}
+
+
+      - STRIDE_CLOUD_MAX_DATA_BODY_BYTES
+      - STRIDE_CLOUD_MAX_ATTACHMENT_BYTES=${STRIDE_CLOUD_MAX_ATTACHMENT_BYTES:-50000000}
+    volumes:
+      - ./data:/app/cloud_data
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: stride-caddy
+    hostname: stride-caddy
+    restart: always
+    cpus: "0.5"
+    mem_limit: 256m
+    depends_on:
+      stride-cloud:
+        condition: service_healthy
+    ports:
+      - "${STRIDE_HTTP_PORT:-80}:80"
+      - "${STRIDE_HTTPS_PORT:-443}:443"
+      - "${STRIDE_HTTPS_PORT:-443}:443/udp"
+    environment:
+      - STRIDE_CLOUD_DOMAIN=${STRIDE_CLOUD_DOMAIN:?STRIDE_CLOUD_DOMAIN must be set}
+    volumes:
+      - ./${STRIDE_CADDYFILE:-Caddyfile.https}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,216 @@
+import { describe, expect, it } from 'vitest';
+import {
+    AI_REQUEST_TIMEOUT_OPTIONS,
+    buildAIConfig,
+    buildCopilotConfig,
+    formatOpenAIExtraBodyParams,
+    isAIKeyRequired,
+    openAITranscribeLanguageFieldName,
+    parseOpenAIExtraBodyParamsInput,
+    resolveAIRequestTimeoutSeconds,
+    resolveOpenAITranscribeEndpoint,
+} from './ai-config';
+import { isDeepSeekUrl } from './ai/catalog';
+import type { AiSettings, AppSettings } from './types';
+
+const createSettings = (ai: AiSettings): AppSettings => ({
+    ai,
+});
+
+describe('AI request timeout configuration', () => {
+    it('exposes the supported choices and applies a saved timeout to both request paths', () => {
+        expect(AI_REQUEST_TIMEOUT_OPTIONS).toEqual([30, 60, 120, 300]);
+        expect(resolveAIRequestTimeoutSeconds(120)).toBe(120);
+        expect(resolveAIRequestTimeoutSeconds(31)).toBe(30);
+        expect(buildAIConfig(createSettings({ requestTimeoutSeconds: 120 }), 'test-key').timeoutMs).toBe(120_000);
+        expect(buildCopilotConfig(createSettings({ requestTimeoutSeconds: 120 }), 'test-key').timeoutMs).toBe(120_000);
+    });
+
+    it('keeps the 30 second default for missing and invalid saved values', () => {
+        expect(buildAIConfig(createSettings({ provider: 'gemini' }), 'test-key').timeoutMs).toBe(30_000);
+        expect(buildCopilotConfig(createSettings({ provider: 'anthropic' }), 'test-key').timeoutMs).toBe(30_000);
+        expect(buildAIConfig(createSettings({ requestTimeoutSeconds: 0 }), 'test-key').timeoutMs).toBe(30_000);
+        expect(buildCopilotConfig(createSettings({ requestTimeoutSeconds: 31 }), 'test-key').timeoutMs).toBe(30_000);
+    });
+});
+
+describe('ai-config endpoint mapping', () => {
+    it('maps OpenAI base URL to chat completions endpoint', () => {
+        const config = buildAIConfig(
+            createSettings({
+                provider: 'openai',
+                model: 'gpt-4o-mini',
+                baseUrl: 'http://localhost:11434/v1',
+            }),
+            'test-key',
+        );
+        expect(config.endpoint).toBe('http://localhost:11434/v1/chat/completions');
+    });
+
+    it('maps llama.cpp OpenAI-compatible base URL to chat completions endpoint', () => {
+        const config = buildAIConfig(
+            createSettings({
+                provider: 'openai',
+                model: 'llama-3.2',
+                baseUrl: 'http://localhost:8080/v1',
+            }),
+            '',
+        );
+        expect(config.endpoint).toBe('http://localhost:8080/v1/chat/completions');
+    });
+
+    it('keeps chat completions endpoint unchanged', () => {
+        const config = buildAIConfig(
+            createSettings({
+                provider: 'openai',
+                model: 'gpt-4o-mini',
+                baseUrl: 'http://localhost:11434/v1/chat/completions/',
+            }),
+            'test-key',
+        );
+        expect(config.endpoint).toBe('http://localhost:11434/v1/chat/completions');
+    });
+
+    it('does not set endpoint for non-openai providers', () => {
+        const config = buildAIConfig(
+            createSettings({
+                provider: 'gemini',
+                model: 'gemini-2.5-flash',
+                baseUrl: 'http://localhost:11434/v1',
+            }),
+            'test-key',
+        );
+        expect(config.endpoint).toBeUndefined();
+    });
+
+    it('applies OpenAI endpoint mapping to copilot config', () => {
+        const config = buildCopilotConfig(
+            createSettings({
+                provider: 'openai',
+                copilotModel: 'gpt-4o-mini',
+                baseUrl: 'http://localhost:1234/v1',
+                openAIExtraBodyParams: {
+                    thinking: { type: 'disabled' },
+                },
+            }),
+            'test-key',
+        );
+        expect(config.endpoint).toBe('http://localhost:1234/v1/chat/completions');
+        expect(config.extraBodyParams).toEqual({
+            thinking: { type: 'disabled' },
+        });
+    });
+
+    it('runs the copilot at portable low reasoning effort to protect type-ahead latency', () => {
+        const config = buildCopilotConfig(
+            createSettings({ provider: 'openai', copilotModel: 'gpt-5.4-nano' }),
+            'test-key',
+        );
+        expect(config.reasoningEffort).toBe('low');
+    });
+
+    it('passes OpenAI-compatible extra body params only for OpenAI provider configs', () => {
+        const openAIConfig = buildAIConfig(
+            createSettings({
+                provider: 'openai',
+                model: 'glm-4.5-flash',
+                openAIExtraBodyParams: {
+                    thinking: { type: 'disabled' },
+                },
+            }),
+            '',
+        );
+        expect(openAIConfig.extraBodyParams).toEqual({
+            thinking: { type: 'disabled' },
+        });
+
+        const geminiConfig = buildAIConfig(
+            createSettings({
+                provider: 'gemini',
+                model: 'gemini-2.5-flash',
+                openAIExtraBodyParams: {
+                    thinking: { type: 'disabled' },
+                },
+            }),
+            'test-key',
+        );
+        expect(geminiConfig.extraBodyParams).toBeUndefined();
+    });
+
+    it('parses OpenAI-compatible extra body params from JSON object input', () => {
+        const result = parseOpenAIExtraBodyParamsInput('{ "thinking": { "type": "disabled" } }');
+
+        expect(result).toEqual({
+            ok: true,
+            value: {
+                thinking: { type: 'disabled' },
+            },
+        });
+    });
+
+    it('rejects non-object OpenAI-compatible extra body params input', () => {
+        expect(parseOpenAIExtraBodyParamsInput('[]')).toMatchObject({ ok: false });
+        expect(parseOpenAIExtraBodyParamsInput('not json')).toMatchObject({ ok: false });
+    });
+
+    it('formats OpenAI-compatible extra body params for settings editing', () => {
+        expect(formatOpenAIExtraBodyParams({
+            thinking: { type: 'disabled' },
+        })).toBe('{\n  "thinking": {\n    "type": "disabled"\n  }\n}');
+        expect(formatOpenAIExtraBodyParams({})).toBe('');
+    });
+});
+
+describe('resolveOpenAITranscribeEndpoint', () => {
+    it('defaults to the official OpenAI transcription endpoint when no base URL is set', () => {
+        expect(resolveOpenAITranscribeEndpoint(undefined)).toBe('https://api.openai.com/v1/audio/transcriptions');
+        expect(resolveOpenAITranscribeEndpoint('')).toBe('https://api.openai.com/v1/audio/transcriptions');
+    });
+
+    it('appends the transcription path to a self-hosted base URL', () => {
+        expect(resolveOpenAITranscribeEndpoint('http://localhost:8000/v1'))
+            .toBe('http://localhost:8000/v1/audio/transcriptions');
+    });
+
+    it('does not double-append when the base URL already ends in the transcription path', () => {
+        expect(resolveOpenAITranscribeEndpoint('http://localhost:8000/v1/audio/transcriptions/'))
+            .toBe('http://localhost:8000/v1/audio/transcriptions');
+    });
+});
+
+describe('openAITranscribeLanguageFieldName', () => {
+    it('uses the languages array field for gpt-transcribe-generation models', () => {
+        expect(openAITranscribeLanguageFieldName('gpt-transcribe')).toBe('languages[]');
+    });
+
+    it('keeps the singular language field for earlier models', () => {
+        expect(openAITranscribeLanguageFieldName('whisper-1')).toBe('language');
+        expect(openAITranscribeLanguageFieldName('gpt-4o-transcribe')).toBe('language');
+        expect(openAITranscribeLanguageFieldName('gpt-4o-mini-transcribe')).toBe('language');
+    });
+});
+
+describe('DeepSeek preset (OpenAI-compatible)', () => {
+    const settings = createSettings({ enabled: true, provider: 'openai', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' });
+
+    it('resolves the chat completions endpoint and requires an API key', () => {
+        const config = buildAIConfig(settings, 'sk-test');
+        expect(config.endpoint).toBe('https://api.deepseek.com/chat/completions');
+        expect(config.model).toBe('deepseek-flash');
+        expect(isAIKeyRequired(settings)).toBe(true);
+    });
+
+    it('keeps API key optional for other custom endpoints', () => {
+        expect(isAIKeyRequired(createSettings({ provider: 'openai', baseUrl: 'http://localhost:11434/v1' }))).toBe(false);
+    });
+
+    it('defaults the copilot model to deepseek-flash instead of a GPT model', () => {
+        expect(buildCopilotConfig(settings, 'sk-test').model).toBe('deepseek-flash');
+    });
+
+    it('detects DeepSeek URLs', () => {
+        expect(isDeepSeekUrl('https://api.deepseek.com/v1')).toBe(true);
+        expect(isDeepSeekUrl('https://example.com/deepseek')).toBe(false);
+        expect(isDeepSeekUrl('')).toBe(false);
+    });
+});

@@ -1,0 +1,769 @@
+import { isUpNoteHref, showExternalLinkFailure } from '../../lib/external-link';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Attachment, DEFAULT_PROJECT_COLOR, areDraftAttachmentsDirty, buildTaskUpdatesFromSpeechResult, findSelectableProjectByTitleAndArea, generateUUID, isSandboxMode, normalizeLinkAttachmentInput, parseAttachmentLinkBatch, planAttachmentDraftSettlement, translateWithFallback, updateTaskFromLatest, useTaskStore, type Task } from '@stride/core';
+import { dataDir } from '@tauri-apps/api/path';
+import { BaseDirectory, readFile, readTextFile } from '@tauri-apps/plugin-fs';
+import { importDroppedFileAttachment, importPickedFileAttachment, pickFolderLinkAttachment } from '../../lib/attachment-import';
+import { normalizeAttachmentPathForUrl, resolveAttachmentReadPath } from '../../lib/attachment-paths';
+import { normalizeAttachmentInput } from '../../lib/attachment-utils';
+import { openAttachmentTarget } from '../../lib/open-attachment-target';
+import { isTauriRuntime } from '../../lib/runtime';
+import {
+    fetchWebCloudAttachmentBlob,
+    fetchWebCloudAttachmentText,
+    retainOpenedWebAttachmentUrl,
+} from '../../lib/web-attachment-source';
+import { logInfo, logWarn } from '../../lib/app-log';
+import { createWebAttachmentDraft, getWebAttachmentUploadTarget, pickBrowserAttachmentFiles, webAttachmentUploadMessage } from '../../lib/web-attachment-upload';
+import { getManagedDataDir, getManagedPath } from '../../lib/managed-paths';
+import { ATTACHMENTS_DIR_NAME } from '../../lib/sync-service-utils';
+import { processAudioCapture, resolveSpeechCapture } from '../../lib/speech-to-text';
+import {
+    isAudioAttachment,
+    isImageAttachment,
+    isTextAttachment,
+    resolveAttachmentSource,
+} from './task-item-attachment-utils';
+
+type LinkPromptVariant = 'link' | 'obsidian';
+
+type UseTaskItemAttachmentsProps = {
+    task: Task;
+    t: (key: string) => string;
+};
+
+
+const deleteOrphanedAttachmentFiles = async (orphaned: Attachment[]): Promise<void> => {
+    if (isSandboxMode()) return;
+    if (!isTauriRuntime()) return;
+    const fileOrphans = orphaned.filter((a) => a.kind === 'file');
+    if (fileOrphans.length === 0) return;
+    try {
+        const managedDir = normalizeAttachmentPathForUrl(await getManagedPath(ATTACHMENTS_DIR_NAME));
+        const managedDirPrefix = `${managedDir}/`;
+        const { remove } = await import('@tauri-apps/plugin-fs');
+        for (const attachment of fileOrphans) {
+
+
+            const normalizedUri = normalizeAttachmentPathForUrl(attachment.uri);
+            if (!normalizedUri.startsWith(managedDirPrefix)) continue;
+            const fileName = normalizedUri.slice(managedDirPrefix.length).split(/[?#]/, 1)[0];
+            if (!fileName || fileName.includes('/')) continue;
+            if (fileName !== attachment.id && !fileName.startsWith(`${attachment.id}.`)) continue;
+            try {
+                await remove(attachment.uri);
+            } catch (error) {
+                void logWarn('Failed to delete orphaned attachment file', {
+                    scope: 'attachment',
+                    extra: { error: error instanceof Error ? error.message : String(error) },
+                });
+            }
+        }
+    } catch (error) {
+        void logWarn('Failed to resolve managed attachments dir for cleanup', {
+            scope: 'attachment',
+            extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+    }
+};
+
+export function useTaskItemAttachments({ task, t }: UseTaskItemAttachmentsProps) {
+    const sandboxMode = isSandboxMode();
+    const webDraftRef = useRef(createWebAttachmentDraft());
+    const importGenerationRef = useRef(0);
+    const preparedGenerationRef = useRef<number | null>(null);
+    const [pendingFileImports, setPendingFileImports] = useState(0);
+    const [editAttachments, setEditAttachments] = useState<Attachment[]>(task.attachments || []);
+
+
+    const editAttachmentsRef = useRef(editAttachments);
+    editAttachmentsRef.current = editAttachments;
+    const baselineAttachmentsRef = useRef<Attachment[]>(task.attachments || []);
+    const observedStoreFileGenerationsRef = useRef(new Set<string>());
+
+
+    const attachmentSaveAwaitingDurabilityRef = useRef(false);
+    const [attachmentError, setAttachmentError] = useState<string | null>(null);
+    const [audioAttachment, setAudioAttachment] = useState<Attachment | null>(null);
+    const [audioSource, setAudioSource] = useState<string | null>(null);
+    const [audioError, setAudioError] = useState<string | null>(null);
+    const [audioTranscribing, setAudioTranscribing] = useState(false);
+    const [audioTranscriptionError, setAudioTranscriptionError] = useState<string | null>(null);
+    const [imageAttachment, setImageAttachment] = useState<Attachment | null>(null);
+    const [imageSource, setImageSource] = useState<string | null>(null);
+    const [textAttachment, setTextAttachment] = useState<Attachment | null>(null);
+    const [textContent, setTextContent] = useState('');
+    const [textError, setTextError] = useState<string | null>(null);
+    const [textLoading, setTextLoading] = useState(false);
+    const [showLinkPrompt, setShowLinkPrompt] = useState(false);
+    const [editingLinkAttachmentId, setEditingLinkAttachmentId] = useState<string | null>(null);
+    const [linkPromptDefaultValue, setLinkPromptDefaultValue] = useState('');
+    const [linkPromptVariant, setLinkPromptVariant] = useState<LinkPromptVariant>('link');
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const audioLoadRequestRef = useRef(0);
+    const audioObjectUrlRef = useRef<string | null>(null);
+
+    const resolveText = useCallback((key: string, fallback: string) => {
+        return translateWithFallback(t, key, fallback);
+    }, [t]);
+
+    const resolveAudioBlobSource = useCallback(async (attachment: Attachment) => {
+
+
+        if (!isTauriRuntime()) return fetchWebCloudAttachmentBlob(attachment);
+        const uri = await resolveAttachmentReadPath(attachment.uri, attachment.id);
+        try {
+
+
+            const managedDir = await getManagedDataDir();
+            const normalizedUri = normalizeAttachmentPathForUrl(uri);
+            const normalizedBaseDir = normalizeAttachmentPathForUrl(managedDir);
+            if (!normalizedUri.startsWith(normalizedBaseDir)) return null;
+            const bytes = await readFile(normalizedUri);
+            const buffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            const mimeType = attachment.mimeType || 'audio/wav';
+            const blob = new Blob([buffer], { type: mimeType });
+            return URL.createObjectURL(blob);
+        } catch (error) {
+            void logWarn('Failed to load audio bytes', {
+                scope: 'attachment',
+                extra: { error: error instanceof Error ? error.message : String(error) },
+            });
+            return null;
+        }
+    }, []);
+
+    const readAttachmentBytes = useCallback(async (attachment: Attachment) => {
+        if (!isTauriRuntime()) {
+            throw new Error(resolveText('attachments.fileNotSupported', 'File not supported.'));
+        }
+        const uri = await resolveAttachmentReadPath(attachment.uri, attachment.id);
+        if (/^https?:\/\//i.test(uri)) {
+            throw new Error(resolveText('attachments.fileNotSupported', 'File not supported.'));
+        }
+        const base = await dataDir();
+        const normalizedUri = normalizeAttachmentPathForUrl(uri);
+        const normalizedBase = normalizeAttachmentPathForUrl(base);
+        if (normalizedUri.startsWith(normalizedBase)) {
+            const relative = normalizedUri.slice(normalizedBase.length).replace(/^[\\/]/, '');
+            const bytes = await readFile(relative, { baseDir: BaseDirectory.Data });
+            return {
+                bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+                path: uri,
+            };
+        }
+        const bytes = await readFile(uri);
+        return {
+            bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+            path: uri,
+        };
+    }, [resolveText]);
+
+    const loadTextAttachment = useCallback(async (attachment: Attachment) => {
+        if (!isTauriRuntime()) {
+            const content = await fetchWebCloudAttachmentText(attachment);
+            if (content === null) throw new Error(t('attachments.fileNotSupported'));
+            return content;
+        }
+        const uri = await resolveAttachmentReadPath(attachment.uri, attachment.id);
+        if (/^https?:\/\//i.test(uri)) {
+            throw new Error(t('attachments.fileNotSupported'));
+        }
+        const base = await dataDir();
+        const normalizedUri = normalizeAttachmentPathForUrl(uri);
+        const normalizedBase = normalizeAttachmentPathForUrl(base);
+        if (normalizedUri.startsWith(normalizedBase)) {
+            const relative = normalizedUri.slice(normalizedBase.length).replace(/^[\\/]/, '');
+            return await readTextFile(relative, { baseDir: BaseDirectory.Data });
+        }
+        return await readTextFile(uri);
+    }, [t]);
+
+    const openExternal = useCallback(async (attachment: Attachment) => {
+        setAttachmentError(null);
+        try {
+            if (!isTauriRuntime() && !(attachment.uri || '').trim()) {
+                const blobUrl = await fetchWebCloudAttachmentBlob(attachment);
+                if (!blobUrl) throw new Error(t('attachments.fileNotSupported'));
+
+
+                retainOpenedWebAttachmentUrl(blobUrl);
+                window.open(blobUrl, '_blank');
+                return;
+            }
+
+
+            await openAttachmentTarget(attachment.uri, attachment.id);
+        } catch (error) {
+            if (isUpNoteHref(attachment.uri)) {
+                setAttachmentError(showExternalLinkFailure(attachment.uri, t));
+                return;
+            }
+            void logWarn('Failed to open attachment', {
+                scope: 'attachment',
+                extra: { error: error instanceof Error ? error.message : String(error) },
+            });
+            const message = error instanceof Error ? error.message : String(error);
+            setAttachmentError(message || t('attachments.fileNotSupported'));
+        }
+    }, [t]);
+
+    const closeAudio = useCallback(() => {
+        audioLoadRequestRef.current += 1;
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
+        }
+        setAudioAttachment(null);
+        setAudioSource(null);
+        setAudioError(null);
+        setAudioTranscribing(false);
+        setAudioTranscriptionError(null);
+        if (audioObjectUrlRef.current) {
+            URL.revokeObjectURL(audioObjectUrlRef.current);
+            audioObjectUrlRef.current = null;
+        }
+    }, []);
+
+    const closeImage = useCallback(() => {
+        setImageAttachment(null);
+        setImageSource(null);
+    }, []);
+
+    const closeText = useCallback(() => {
+        setTextAttachment(null);
+        setTextContent('');
+        setTextError(null);
+        setTextLoading(false);
+    }, []);
+
+    const openAudioExternally = useCallback(() => {
+        if (!audioAttachment) return;
+        void openExternal(audioAttachment);
+    }, [audioAttachment, openExternal]);
+
+    const handleAudioError = useCallback(() => {
+        const code = audioRef.current?.error?.code;
+        const message = code === 1
+            ? 'Audio playback aborted.'
+            : code === 2
+                ? 'Network error while loading audio.'
+                : code === 3
+                    ? 'Audio decoding failed.'
+                    : code === 4
+                        ? 'Audio format not supported.'
+                        : 'Audio playback failed.';
+        setAudioError(message);
+    }, []);
+
+    const retryAudioTranscription = useCallback(async () => {
+        const currentAttachment = audioAttachment;
+        if (!currentAttachment || audioTranscribing) return;
+
+        setAudioTranscribing(true);
+        setAudioTranscriptionError(null);
+        try {
+            const {
+                tasks: currentTasks,
+                projects: currentProjects,
+                addProject: addProjectNow,
+                settings: currentSettings,
+            } = useTaskStore.getState();
+            const existing = currentTasks.find((item) => item.id === task.id);
+            if (!existing) {
+                throw new Error(resolveText('attachments.transcriptionFailed', 'Transcription failed. Please try again.'));
+            }
+
+            const { ready: speechReady, config: speechConfig } = await resolveSpeechCapture(currentSettings.ai);
+            if (!speechReady) {
+                throw new Error(resolveText('attachments.transcriptionUnavailable', 'Speech-to-text is not ready. Check your AI settings and try again.'));
+            }
+
+            const { bytes, path } = await readAttachmentBytes(currentAttachment);
+            const timeZone = typeof Intl === 'object' && typeof Intl.DateTimeFormat === 'function'
+                ? Intl.DateTimeFormat().resolvedOptions().timeZone
+                : undefined;
+            const result = await processAudioCapture(
+                {
+                    bytes,
+                    mimeType: currentAttachment.mimeType || 'audio/wav',
+                    name: currentAttachment.title || 'audio.wav',
+                    path,
+                },
+                {
+                    ...speechConfig,
+                    now: new Date(),
+                    timeZone,
+                },
+            );
+
+            const { updates, suggestedProjectTitle } = buildTaskUpdatesFromSpeechResult(existing, result, currentSettings);
+            if (suggestedProjectTitle && !existing.projectId) {
+                const targetAreaId = updates.areaId ?? existing.areaId;
+                const match = findSelectableProjectByTitleAndArea(currentProjects, suggestedProjectTitle, targetAreaId);
+                if (match) {
+                    updates.projectId = match.id;
+                } else {
+                    const created = await addProjectNow(
+                        suggestedProjectTitle,
+                        DEFAULT_PROJECT_COLOR,
+                        targetAreaId ? { areaId: targetAreaId } : undefined
+                    );
+                    if (!created) {
+                        throw new Error(resolveText('attachments.transcriptionFailed', 'Transcription failed. Please try again.'));
+                    }
+                    updates.projectId = created.id;
+                }
+            }
+
+
+            const projectId = updates.projectId;
+            await updateTaskFromLatest(task.id, (latest) => {
+                const { updates: latestUpdates } = buildTaskUpdatesFromSpeechResult(latest, result, currentSettings);
+                if (projectId && !latest.projectId) latestUpdates.projectId = projectId;
+                return Object.keys(latestUpdates).length > 0 ? latestUpdates : null;
+            });
+            closeAudio();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            setAudioTranscriptionError(message || resolveText('attachments.transcriptionFailed', 'Transcription failed. Please try again.'));
+        } finally {
+            setAudioTranscribing(false);
+        }
+    }, [audioAttachment, audioTranscribing, closeAudio, readAttachmentBytes, resolveText, task.id]);
+
+    const openTextExternally = useCallback(() => {
+        if (!textAttachment) return;
+        void openExternal(textAttachment);
+    }, [textAttachment, openExternal]);
+
+    const openImageExternally = useCallback(() => {
+        if (!imageAttachment) return;
+        void openExternal(imageAttachment);
+    }, [imageAttachment, openExternal]);
+
+    useEffect(() => {
+        if (!audioAttachment && !imageAttachment && !textAttachment) return;
+        const handler = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            if (audioAttachment) closeAudio();
+            if (imageAttachment) closeImage();
+            if (textAttachment) closeText();
+        };
+        window.addEventListener('keydown', handler);
+        return () => {
+            window.removeEventListener('keydown', handler);
+        };
+    }, [audioAttachment, closeAudio, closeImage, closeText, imageAttachment, textAttachment]);
+
+    const openAttachment = useCallback((attachment: Attachment) => {
+        if (!isTauriRuntime() && !attachment.cloudKey && webDraftRef.current.has([attachment])) {
+            setAttachmentError(t('attachments.webUploadRetry'));
+            return;
+        }
+        if (sandboxMode) {
+            setAttachmentError(t('sandbox.unavailable'));
+            return;
+        }
+        if (attachment.kind === 'link') {
+            void openExternal(attachment);
+            return;
+        }
+        if (isAudioAttachment(attachment)) {
+            const requestId = audioLoadRequestRef.current + 1;
+            audioLoadRequestRef.current = requestId;
+            setAudioAttachment(attachment);
+            setAudioError(null);
+            setAudioTranscriptionError(null);
+            void resolveAudioBlobSource(attachment).then((blobUrl) => {
+                if (audioLoadRequestRef.current !== requestId) {
+                    if (blobUrl) URL.revokeObjectURL(blobUrl);
+                    return;
+                }
+                if (blobUrl) {
+                    if (audioObjectUrlRef.current) {
+                        URL.revokeObjectURL(audioObjectUrlRef.current);
+                    }
+                    audioObjectUrlRef.current = blobUrl;
+                    setAudioSource(blobUrl);
+                } else {
+                    if (audioObjectUrlRef.current) {
+                        URL.revokeObjectURL(audioObjectUrlRef.current);
+                        audioObjectUrlRef.current = null;
+                    }
+                    setAudioSource(resolveAttachmentSource(attachment.uri));
+                }
+            });
+            return;
+        }
+        if (isTextAttachment(attachment)) {
+            setTextAttachment(attachment);
+            setTextError(null);
+            setTextLoading(true);
+            void loadTextAttachment(attachment)
+                .then((content) => {
+                    setTextContent(content);
+                })
+                .catch((error) => {
+                    void logWarn('Failed to read text attachment', {
+                        scope: 'attachment',
+                        extra: { error: error instanceof Error ? error.message : String(error) },
+                    });
+                    const message = error instanceof Error ? error.message : String(error);
+                    setTextError(message || t('attachments.fileNotSupported'));
+                })
+                .finally(() => {
+                    setTextLoading(false);
+                });
+            return;
+        }
+        if (isImageAttachment(attachment)) {
+            setImageAttachment(attachment);
+            setImageSource(resolveAttachmentSource(attachment.uri));
+            return;
+        }
+        void openExternal(attachment);
+    }, [loadTextAttachment, openExternal, resolveAudioBlobSource, sandboxMode, t]);
+
+    useEffect(() => {
+        return () => {
+            audioLoadRequestRef.current += 1;
+            if (audioObjectUrlRef.current) {
+                URL.revokeObjectURL(audioObjectUrlRef.current);
+                audioObjectUrlRef.current = null;
+            }
+        };
+    }, []);
+
+    const addDroppedFileAttachments = useCallback(async (files: File[]): Promise<Attachment[] | null> => {
+        if (sandboxMode) {
+            setAttachmentError(t('sandbox.unavailable'));
+            return [];
+        }
+        const generation = importGenerationRef.current;
+        const webDraft = webDraftRef.current;
+        setAttachmentError(null);
+        if (!isTauriRuntime()) {
+            const imported = files.map((file) => webDraft.stage(file));
+            setEditAttachments((prev) => [...prev, ...imported]);
+            void getWebAttachmentUploadTarget().catch((error) => {
+                if (generation === importGenerationRef.current) setAttachmentError(webAttachmentUploadMessage(error, t));
+            });
+            return imported;
+        }
+        setPendingFileImports((count) => count + 1);
+        const imported: Attachment[] = [];
+        try {
+            for (const file of files) {
+                const result = await importDroppedFileAttachment(file);
+                if (generation !== importGenerationRef.current) {
+                    if ('attachment' in result) void deleteOrphanedAttachmentFiles([result.attachment]);
+                    return null;
+                }
+                if ('errorKey' in result) { setAttachmentError(t(result.errorKey)); continue; }
+                imported.push(result.attachment);
+                setEditAttachments((prev) => [...prev, result.attachment]);
+            }
+            return imported;
+        } finally {
+            if (generation === importGenerationRef.current) setPendingFileImports((count) => Math.max(0, count - 1));
+        }
+    }, [sandboxMode, t]);
+
+    const addFileAttachment = useCallback(async () => {
+        if (sandboxMode) { setAttachmentError(t('sandbox.unavailable')); return; }
+        if (!isTauriRuntime()) {
+            const generation = importGenerationRef.current;
+            pickBrowserAttachmentFiles((files) => {
+                if (generation === importGenerationRef.current) void addDroppedFileAttachments(files);
+            });
+            return;
+        }
+        setAttachmentError(null);
+        const generation = importGenerationRef.current;
+        const { open } = await import('../../lib/native-dialog');
+        const selected = await open({ multiple: false, directory: false, title: t('attachments.addFile') });
+        if (!selected || typeof selected !== 'string' || generation !== importGenerationRef.current) return;
+        setPendingFileImports((count) => count + 1);
+        try {
+            const result = await importPickedFileAttachment(selected);
+            if (generation !== importGenerationRef.current) {
+                if ('attachment' in result) void deleteOrphanedAttachmentFiles([result.attachment]);
+                return;
+            }
+            if ('errorKey' in result) { setAttachmentError(t(result.errorKey)); return; }
+            setEditAttachments((prev) => [...prev, result.attachment]);
+        } finally {
+            if (generation === importGenerationRef.current) setPendingFileImports((count) => Math.max(0, count - 1));
+        }
+    }, [addDroppedFileAttachments, sandboxMode, t]);
+
+    const prepareAttachmentsForSave = useCallback(async () => {
+        if (pendingFileImports > 0) throw new Error(t('common.loading'));
+        const generation = importGenerationRef.current;
+        const prepared = await webDraftRef.current.prepareSave(editAttachmentsRef.current, () => generation === importGenerationRef.current);
+        if (generation !== importGenerationRef.current) throw new Error(t('attachments.webUploadChanged'));
+        preparedGenerationRef.current = generation;
+        return prepared;
+    }, [pendingFileImports, t]);
+    const retainWebAttachmentsBeforeStore = useCallback((attachments: Attachment[]) => {
+        if (preparedGenerationRef.current !== importGenerationRef.current) throw new Error(t('attachments.webUploadChanged'));
+        webDraftRef.current.retainBeforeStore(attachments);
+    }, [t]);
+
+    const addLinkAttachment = useCallback(() => {
+        if (sandboxMode) {
+            setAttachmentError(t('sandbox.unavailable'));
+            return;
+        }
+        setAttachmentError(null);
+        setEditingLinkAttachmentId(null);
+        setLinkPromptDefaultValue('');
+        setLinkPromptVariant('link');
+        setShowLinkPrompt(true);
+    }, [sandboxMode, t]);
+
+    const addFolderLinkAttachment = useCallback(async () => {
+        if (sandboxMode) {
+            setAttachmentError(t('sandbox.unavailable'));
+            return;
+        }
+        if (!isTauriRuntime()) return;
+        setAttachmentError(null);
+        const attachment = await pickFolderLinkAttachment(t('attachments.linkFolder'));
+        if (!attachment) return;
+        setEditAttachments((prev) => [...prev, attachment]);
+    }, [sandboxMode, t]);
+
+    const addObsidianNoteAttachment = useCallback(() => {
+        if (sandboxMode) {
+            setAttachmentError(t('sandbox.unavailable'));
+            return;
+        }
+        setAttachmentError(null);
+        setEditingLinkAttachmentId(null);
+        setLinkPromptDefaultValue('');
+        setLinkPromptVariant('obsidian');
+        setShowLinkPrompt(true);
+    }, [sandboxMode, t]);
+
+    const handleAddLinkAttachment = useCallback((value: string) => {
+        const normalized = editingLinkAttachmentId
+            ? normalizeLinkAttachmentInput(value)
+            : normalizeAttachmentInput(value);
+        if (!normalized.uri) return false;
+        const now = new Date().toISOString();
+        if (editingLinkAttachmentId) {
+            setEditAttachments((prev) => prev.map((attachment) => (
+                attachment.id === editingLinkAttachmentId
+                    ? {
+                        ...attachment,
+                        kind: 'link',
+                        title: normalized.title,
+                        uri: normalized.uri,
+
+
+                        mimeType: undefined,
+                        size: undefined,
+                        cloudKey: undefined,
+                        fileHash: undefined,
+                        localStatus: undefined,
+                        updatedAt: now,
+                    }
+                    : attachment
+            )));
+            return true;
+        }
+        const batch = linkPromptVariant === 'link'
+            ? parseAttachmentLinkBatch(value, true)
+            : { entries: [normalized], invalidLine: null };
+        if (batch.invalidLine !== null || batch.entries.length === 0) return false;
+        setEditAttachments((prev) => [...prev, ...batch.entries.map((entry): Attachment => ({
+            id: generateUUID(),
+            kind: entry.kind,
+            title: entry.title,
+            uri: entry.uri,
+            createdAt: now,
+            updatedAt: now,
+        }))]);
+        return true;
+    }, [editingLinkAttachmentId, linkPromptVariant]);
+
+    const editLinkAttachment = useCallback((attachment: Attachment) => {
+
+
+        setAttachmentError(null);
+        setEditingLinkAttachmentId(attachment.id);
+        setLinkPromptVariant('link');
+        setLinkPromptDefaultValue(
+            attachment.title && attachment.title !== attachment.uri
+                ? `${attachment.title} | ${attachment.uri}`
+                : attachment.uri,
+        );
+        setShowLinkPrompt(true);
+    }, []);
+
+    const closeLinkPrompt = useCallback(() => {
+        setShowLinkPrompt(false);
+        setEditingLinkAttachmentId(null);
+        setLinkPromptDefaultValue('');
+    }, []);
+
+    const removeAttachment = useCallback((id: string) => {
+        webDraftRef.current.remove(id);
+        setAttachmentError(null);
+        const now = new Date().toISOString();
+        setEditAttachments((prev) =>
+            prev.map((a) => (a.id === id ? { ...a, deletedAt: now, updatedAt: now } : a))
+        );
+    }, []);
+
+    const appendRetainedAttachment = useCallback((
+        attachment: Attachment,
+        latestStoreAttachments: Attachment[],
+    ) => {
+        for (const stored of latestStoreAttachments) {
+            if (stored.kind !== 'file' || !stored.uri || stored.deletedAt) continue;
+            const generation = `${stored.id}\0${stored.uri}`;
+            const wasAlreadyBaseline = baselineAttachmentsRef.current.some(
+                (baseline) => baseline.kind === 'file'
+                    && baseline.id === stored.id
+                    && baseline.uri === stored.uri,
+            );
+            if (!wasAlreadyBaseline) observedStoreFileGenerationsRef.current.add(generation);
+        }
+        setEditAttachments((currentDraft) => {
+            const merged = new Map<string, Attachment>();
+            for (const stored of latestStoreAttachments) merged.set(stored.id, stored);
+
+
+            for (const drafted of currentDraft) merged.set(drafted.id, drafted);
+            merged.set(attachment.id, attachment);
+            return [...merged.values()];
+        });
+    }, []);
+
+    const settleAttachmentFiles = useCallback((
+        committedAttachments: Attachment[],
+        preserveObservedStoreFiles = false,
+    ) => {
+        const settlement = planAttachmentDraftSettlement({
+            baselineAttachments: baselineAttachmentsRef.current,
+            draftAttachments: editAttachmentsRef.current,
+            committedAttachments,
+        });
+        let protectedStoreFile = false;
+        const removable = settlement
+            .filter(({ attachment }) => {
+                const protectedGeneration = preserveObservedStoreFiles
+                    && observedStoreFileGenerationsRef.current.has(`${attachment.id}\0${attachment.uri}`);
+                protectedStoreFile ||= protectedGeneration;
+                return !protectedGeneration;
+            })
+            .map((candidate) => candidate.attachment);
+        if (protectedStoreFile) {
+            void logInfo('Store attachment files protected during draft settlement', {
+                scope: 'attachment',
+                extra: { releaseCheck: 'v1.3.2/dictation-store-files-protected' },
+                force: true,
+            });
+        }
+        if (removable.length > 0) void deleteOrphanedAttachmentFiles(removable);
+        baselineAttachmentsRef.current = committedAttachments;
+    }, []);
+
+    const beginAttachmentSave = useCallback(() => {
+        const attachmentsChanged = areDraftAttachmentsDirty(
+            editAttachmentsRef.current,
+            { ...task, attachments: baselineAttachmentsRef.current },
+        );
+        attachmentSaveAwaitingDurabilityRef.current = attachmentsChanged;
+        return attachmentsChanged;
+    }, [task]);
+
+    const cancelAttachmentSaveBeforeStoreUpdate = useCallback(() => {
+        attachmentSaveAwaitingDurabilityRef.current = false;
+    }, []);
+
+    const settlePersistedAttachmentSave = useCallback((committedAttachments: Attachment[]) => {
+        settleAttachmentFiles(committedAttachments);
+        observedStoreFileGenerationsRef.current.clear();
+        attachmentSaveAwaitingDurabilityRef.current = false;
+    }, [settleAttachmentFiles]);
+
+    useEffect(() => () => {
+        importGenerationRef.current += 1;
+        webDraftRef.current.discard();
+        if (attachmentSaveAwaitingDurabilityRef.current) return;
+        settleAttachmentFiles(baselineAttachmentsRef.current, true);
+    }, [settleAttachmentFiles]);
+
+    const resetAttachmentState = useCallback((attachments: Attachment[] | undefined) => {
+        importGenerationRef.current += 1;
+        webDraftRef.current.discard();
+        webDraftRef.current = createWebAttachmentDraft();
+        setPendingFileImports(0);
+        const nextList = attachments || [];
+        if (!attachmentSaveAwaitingDurabilityRef.current) {
+            settleAttachmentFiles(nextList, true);
+        }
+        setEditAttachments(nextList);
+        setAttachmentError(null);
+        closeLinkPrompt();
+        closeAudio();
+        closeImage();
+        closeText();
+    }, [closeAudio, closeImage, closeLinkPrompt, closeText, settleAttachmentFiles]);
+
+    return {
+        editAttachments,
+        isImportingFiles: pendingFileImports > 0,
+        prepareAttachmentsForSave,
+        getAttachmentDraftGeneration: () => importGenerationRef.current,
+        retainWebAttachmentsBeforeStore,
+        setEditAttachments,
+        attachmentError,
+        setAttachmentError,
+        showLinkPrompt,
+        setShowLinkPrompt,
+        editingLinkAttachmentId,
+        linkPromptDefaultValue,
+        linkPromptVariant,
+        closeLinkPrompt,
+        addFileAttachment,
+        addDroppedFileAttachments,
+        addLinkAttachment,
+        addFolderLinkAttachment,
+        addObsidianNoteAttachment,
+        editLinkAttachment,
+        handleAddLinkAttachment,
+        appendRetainedAttachment,
+        removeAttachment,
+        openAttachment,
+        beginAttachmentSave,
+        cancelAttachmentSaveBeforeStoreUpdate,
+        resetAttachmentState,
+        settlePersistedAttachmentSave,
+        audioAttachment,
+        audioSource,
+        audioError,
+        audioTranscribing,
+        audioTranscriptionError,
+        audioRef,
+        openAudioExternally,
+        handleAudioError,
+        retryAudioTranscription,
+        closeAudio,
+        imageAttachment,
+        imageSource,
+        closeImage,
+        textAttachment,
+        textContent,
+        textError,
+        textLoading,
+        openTextExternally,
+        openImageExternally,
+        closeText,
+    };
+}

@@ -1,0 +1,626 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, Calendar, Check, CheckSquare, ChevronLeft, X, type LucideIcon } from 'lucide-react';
+import {
+    buildReviewSteps,
+    getDailyReviewBuckets,
+    getUsedTaskTokens,
+    formatFocusTaskLimitText,
+    getFocusStarBlockedText,
+    hasTimeComponent,
+    isDueForReview,
+    normalizeFocusTaskLimit,
+    parseStoredReviewStepSession,
+    resolveReviewStepSession,
+    safeFormatDate,
+    safeParseDate,
+    tFallback,
+    type ExternalCalendarEvent,
+    type StoredReviewStepSession,
+    type Task,
+    shallow,
+    useTaskStore,
+    isTaskInActiveProject,
+    isSandboxMode,
+} from '@stride/core';
+import { cn } from '../../../lib/utils';
+import { isImeComposing } from '../../../lib/ime';
+import { useLanguage } from '../../../contexts/language-context';
+import { FocusStarIcon } from '../../FocusStarIcon';
+import { InboxProcessor } from '../InboxProcessor';
+import { Dialog, DialogHeader } from '../../ui/Dialog';
+import { TaskItem } from '../../TaskItem';
+import { getUrgencyColor } from '../../Task/TaskItemDisplay';
+import { useTaskDisplayClock } from '../../../hooks/useTaskDisplayClock';
+import { fetchExternalCalendarEvents, summarizeExternalCalendarWarnings } from '../../../lib/external-calendar-events';
+import { resolveNonDoneTaskSortBy } from '@stride/core';
+import { useLocalDayKey } from '../../../hooks/useLocalDayKey';
+import { getWorkspaceCache } from '../../../lib/workspace-cache';
+import { filterVisibleReviewCalendarEvents } from '../calendar/use-calendar-external-events';
+
+type DailyReviewStep = 'today' | 'focus' | 'inbox' | 'waiting' | 'completed';
+type DailyReviewStepDefinition = {
+    id: DailyReviewStep;
+    title: string;
+    description: string;
+    icon: LucideIcon;
+    hasWork: boolean;
+};
+const DAILY_REVIEW_STEP_STORAGE_KEY = 'stride:dailyReview:currentStep';
+const DAILY_REVIEW_STEPS = new Set<DailyReviewStep>(['today', 'focus', 'inbox', 'waiting', 'completed']);
+
+function loadStoredDailyReviewSession(): StoredReviewStepSession<DailyReviewStep> {
+    const now = new Date();
+    const stored = typeof window === 'undefined'
+        ? null
+        : getWorkspaceCache()?.getItem(DAILY_REVIEW_STEP_STORAGE_KEY) ?? null;
+    return parseStoredReviewStepSession(stored, DAILY_REVIEW_STEPS, { cadence: 'daily', now })
+        ?? { step: 'today', startedAt: now.toISOString() };
+}
+
+interface DailyReviewGuideModalProps {
+    onClose: () => void;
+}
+
+export function DailyReviewGuideModal({ onClose }: DailyReviewGuideModalProps) {
+    const sandboxMode = isSandboxMode();
+    const [reviewSession, setReviewSession] = useState<StoredReviewStepSession<DailyReviewStep>>(
+        () => loadStoredDailyReviewSession(),
+    );
+    const currentStep = reviewSession.step;
+    const setCurrentStep = useCallback((step: DailyReviewStep) => {
+        setReviewSession((session) => ({ ...session, step }));
+    }, []);
+    const { tasks, projects, sections, areas, settings, addTask, addProject, updateTask, deleteTask } = useTaskStore(
+        (state) => ({
+            tasks: state.tasks,
+            projects: state.projects,
+            sections: state.sections,
+            areas: state.areas,
+            settings: state.settings,
+            addTask: state.addTask,
+            addProject: state.addProject,
+            updateTask: state.updateTask,
+            deleteTask: state.deleteTask,
+        }),
+        shallow
+    );
+    const { t } = useLanguage();
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [externalCalendarEvents, setExternalCalendarEvents] = useState<ExternalCalendarEvent[]>([]);
+    const [externalCalendarLoading, setExternalCalendarLoading] = useState(false);
+    const [externalCalendarError, setExternalCalendarError] = useState<string | null>(null);
+
+    const localDayKey = useLocalDayKey();
+    const today = useMemo(() => new Date(), [localDayKey]);
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const followUpTodayReviewAt = startOfToday.toISOString();
+    const sortBy = resolveNonDoneTaskSortBy(settings?.taskSortBy, settings);
+    const focusTaskLimit = normalizeFocusTaskLimit(settings?.gtd?.focusTaskLimit);
+    const followUpTodayLabel = tFallback(t, 'dailyReview.followUpToday', 'Follow up today');
+    const reviewDueLabel = tFallback(t, 'agenda.reviewDue', 'Review Due');
+
+    const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+
+
+    const activeTasks = useMemo(
+        () => tasks.filter((task) => !task.deletedAt && task.status !== 'reference' && isTaskInActiveProject(task, projectMap)),
+        [projectMap, tasks],
+    );
+    const allContexts = getUsedTaskTokens(activeTasks, (task) => task.contexts, { prefix: '@' });
+    const allTags = getUsedTaskTokens(activeTasks, (task) => task.tags, { prefix: '#' });
+
+
+    const dailyBuckets = useMemo(
+        () => getDailyReviewBuckets(tasks, projects, { now: today, sortBy, sections }),
+        [tasks, projects, sections, today, sortBy],
+    );
+    const inboxTasks = dailyBuckets.inbox;
+    const focusedTasks = dailyBuckets.focused;
+    const waitingTasks = dailyBuckets.waiting;
+    const dueTodayTasks = dailyBuckets.dueToday;
+    const overdueTasks = dailyBuckets.overdue;
+    const focusCandidates = dailyBuckets.focusCandidates;
+    useTaskDisplayClock(currentStep === 'focus' && focusCandidates.some((task) => Boolean(task.dueDate)));
+
+    useEffect(() => {
+        if (currentStep !== 'inbox' && isProcessing) {
+            setIsProcessing(false);
+        }
+    }, [currentStep, isProcessing]);
+
+    useEffect(() => {
+        getWorkspaceCache()?.setItem(DAILY_REVIEW_STEP_STORAGE_KEY, JSON.stringify(reviewSession));
+    }, [reviewSession]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && !isImeComposing(event)) {
+                event.preventDefault();
+                onClose();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [onClose]);
+
+    useEffect(() => {
+        if (sandboxMode) return;
+        let cancelled = false;
+        const loadCalendar = async () => {
+            setExternalCalendarLoading(true);
+            setExternalCalendarError(null);
+            try {
+                const todayStart = new Date(today);
+                todayStart.setHours(0, 0, 0, 0);
+                const tomorrowEnd = new Date(todayStart);
+                tomorrowEnd.setDate(tomorrowEnd.getDate() + 2);
+                tomorrowEnd.setMilliseconds(-1);
+                const { calendars, events, warnings } = await fetchExternalCalendarEvents(todayStart, tomorrowEnd);
+                if (cancelled) return;
+                setExternalCalendarEvents(filterVisibleReviewCalendarEvents(events, calendars));
+                setExternalCalendarError(summarizeExternalCalendarWarnings(warnings));
+            } catch (error) {
+                if (cancelled) return;
+                setExternalCalendarError(error instanceof Error ? error.message : String(error));
+                setExternalCalendarEvents([]);
+            } finally {
+                if (!cancelled) setExternalCalendarLoading(false);
+            }
+        };
+        loadCalendar();
+        return () => {
+            cancelled = true;
+        };
+    }, [sandboxMode, today]);
+
+    const getEventsForDay = useCallback((date: Date) => {
+        const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        return externalCalendarEvents
+            .filter((event) => {
+                const start = safeParseDate(event.start);
+                const end = safeParseDate(event.end);
+                if (!start || !end) return false;
+                return start.getTime() < dayEnd.getTime() && end.getTime() > dayStart.getTime();
+            })
+            .sort((a, b) => {
+                const aStart = safeParseDate(a.start)?.getTime() ?? Number.POSITIVE_INFINITY;
+                const bStart = safeParseDate(b.start)?.getTime() ?? Number.POSITIVE_INFINITY;
+                return aStart - bStart;
+            });
+    }, [externalCalendarEvents]);
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const todayCalendarEvents = getEventsForDay(today);
+    const tomorrowCalendarEvents = getEventsForDay(tomorrow);
+
+    const includeFocusStep = settings?.gtd?.dailyReview?.includeFocusStep !== false;
+    const stepFlags = useMemo(() => buildReviewSteps(dailyBuckets, {
+        kind: 'daily',
+        includeFocusStep,
+        todayCalendarEventCount: todayCalendarEvents.length,
+        tomorrowCalendarEventCount: tomorrowCalendarEvents.length,
+        externalCalendarHasError: Boolean(externalCalendarError),
+    }), [dailyBuckets, externalCalendarError, includeFocusStep, todayCalendarEvents.length, tomorrowCalendarEvents.length]);
+    const stepHasWork = useMemo(() => new Map(stepFlags.map((flag) => [flag.id, flag.hasWork])), [stepFlags]);
+    const steps: DailyReviewStepDefinition[] = useMemo(() => {
+        const visibleSteps: DailyReviewStepDefinition[] = [
+            { id: 'today', title: t('dailyReview.todayStep'), description: t('dailyReview.todayDesc'), icon: Calendar, hasWork: stepHasWork.get('today') ?? false },
+        ];
+        visibleSteps.push({ id: 'inbox', title: t('dailyReview.inboxStep'), description: t('dailyReview.inboxDesc'), icon: CheckSquare, hasWork: stepHasWork.get('inbox') ?? false });
+
+
+        visibleSteps.push({ id: 'waiting', title: t('dailyReview.waitingStep'), description: t('dailyReview.waitingDesc'), icon: ArrowRight, hasWork: stepHasWork.get('waiting') ?? false });
+        if (includeFocusStep) {
+            visibleSteps.push({ id: 'focus', title: t('dailyReview.focusStep'), description: t('dailyReview.focusDesc'), icon: CheckSquare, hasWork: stepHasWork.get('focus') ?? false });
+        }
+        visibleSteps.push(
+            { id: 'completed', title: t('dailyReview.completeTitle'), description: t('dailyReview.completeDesc'), icon: Check, hasWork: true },
+        );
+        return visibleSteps;
+    }, [includeFocusStep, stepHasWork, t]);
+    const {
+        displayedStep: activeStep,
+        currentStepIndex,
+        progress,
+        nextStep: nextStepId,
+        previousStep: previousStepId,
+    } = useMemo(() => resolveReviewStepSession(steps, currentStep), [currentStep, steps]);
+
+    useEffect(() => {
+        if (currentStep !== activeStep) {
+            setCurrentStep(activeStep);
+        }
+    }, [activeStep, currentStep, setCurrentStep]);
+    const stepScrollRef = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+        if (stepScrollRef.current) stepScrollRef.current.scrollTop = 0;
+    }, [activeStep]);
+
+    const finishReview = () => {
+        getWorkspaceCache()?.removeItem(DAILY_REVIEW_STEP_STORAGE_KEY);
+        onClose();
+    };
+
+    const nextStep = () => {
+        if (nextStepId) setCurrentStep(nextStepId);
+    };
+
+    const prevStep = () => {
+        if (previousStepId) setCurrentStep(previousStepId);
+    };
+
+    const renderStepRail = () => (
+        <div className="mt-3 flex flex-wrap gap-2">
+            {steps.map((step, index) => {
+                const skipped = !step.hasWork && step.id !== 'completed';
+                const complete = skipped || index < currentStepIndex;
+                const current = step.id === activeStep;
+                return (
+                    <div
+                        key={step.id}
+                        className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px]",
+                            current
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : complete
+                                    ? "border-success/30 bg-success/10 text-muted-foreground"
+                                    : "border-border bg-muted/30 text-muted-foreground",
+                        )}
+                    >
+                        <span
+                            className={cn(
+                                "flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-semibold",
+                                current
+                                    ? "bg-primary text-primary-foreground"
+                                    : complete
+                                        ? "bg-success text-success-foreground"
+                                        : "bg-muted text-muted-foreground",
+                            )}
+                        >
+                            {complete ? <Check className="h-3 w-3" strokeWidth={3} /> : index + 1}
+                        </span>
+                        <span className="max-w-[9rem] truncate">{step.title}</span>
+                    </div>
+                );
+            })}
+        </div>
+    );
+
+    const handleFollowUpToday = (task: Task) => {
+        void updateTask(task.id, { reviewAt: followUpTodayReviewAt });
+    };
+
+    const renderTaskList = (list: Task[], emptyText: string, options?: { showFollowUpToday?: boolean }) => {
+        if (list.length === 0) {
+            return (
+                <div className="text-center py-12 text-muted-foreground">
+                    <p>{emptyText}</p>
+                </div>
+            );
+        }
+        return (
+            <div className="divide-y divide-border/30">
+                {list.map((task) => (
+                    <div key={task.id} className={cn(options?.showFollowUpToday && "py-2")}>
+                        <TaskItem task={task} showProjectBadgeInActions={false} />
+                        {options?.showFollowUpToday && (
+                            <div className="mt-2 flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={() => handleFollowUpToday(task)}
+                                    disabled={isDueForReview(task.reviewAt, today)}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                    aria-label={`${followUpTodayLabel}: ${task.title}`}
+                                >
+                                    <Calendar className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {isDueForReview(task.reviewAt, today) ? reviewDueLabel : followUpTodayLabel}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
+    const renderFocusList = () => {
+        if (focusCandidates.length === 0) {
+            return (
+                <div className="text-center py-12 text-muted-foreground">
+                    <p>{formatFocusTaskLimitText(t('agenda.focusHint'), focusTaskLimit)}</p>
+                </div>
+            );
+        }
+        return (
+            <div className="space-y-2">
+                {focusCandidates.map((task) => {
+                    const project = task.projectId ? projectMap.get(task.projectId) : null;
+
+
+                    const starAction = useTaskStore.getState().getFocusStarAction(task);
+                    const blockedText = getFocusStarBlockedText(t, starAction, focusTaskLimit);
+                    const canFocus = starAction.canToggle;
+                    return (
+                        <div
+                            key={task.id}
+                            className={cn(
+                                "bg-card border rounded-lg px-4 py-3 flex items-center gap-3",
+                                task.isFocusedToday && "border-warning/70 bg-warning/10"
+                            )}
+                        >
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                    {task.isFocusedToday && <FocusStarIcon className="w-4 h-4" filled />}
+                                    <span className={cn("font-medium truncate", task.status === 'done' && "line-through text-muted-foreground")}>
+                                        {task.title}
+                                    </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-muted-foreground">
+                                    {task.status && (
+                                        <span className="px-2 py-0.5 rounded-full bg-muted/60 text-foreground">
+                                            {t(`status.${task.status}`)}
+                                        </span>
+                                    )}
+                                    {project && (
+                                        <span className="px-2 py-0.5 rounded-full bg-muted/60 text-foreground">
+                                            {project.title}
+                                        </span>
+                                    )}
+                                    {task.contexts?.length ? (
+                                        <span className="truncate">
+                                            {task.contexts.slice(0, 2).join(', ')}
+                                        </span>
+                                    ) : null}
+                                    {task.startTime && (
+                                        <span className="inline-flex items-center gap-1">
+                                            <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                                            {t('taskEdit.startDateLabel')}: {safeFormatDate(task.startTime, hasTimeComponent(task.startTime) ? 'Pp' : 'P')}
+                                        </span>
+                                    )}
+                                    {task.dueDate && (
+                                        <span className={cn('inline-flex items-center gap-1', getUrgencyColor(task))}>
+                                            <Calendar className="h-3 w-3" aria-hidden="true" />
+                                            {t('taskEdit.dueDateLabel')}: {safeFormatDate(task.dueDate, hasTimeComponent(task.dueDate) ? 'Pp' : 'P')}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    if (!starAction.canToggle) return;
+                                    void updateTask(task.id, starAction.patch);
+                                }}
+                                disabled={!canFocus}
+                                className={cn(
+                                    "p-2 rounded-full border transition-colors",
+                                    task.isFocusedToday
+                                        ? "border-warning text-warning bg-warning/10"
+                                        : canFocus
+                                            ? "border-border text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                                            : "border-border text-muted-foreground/50 cursor-not-allowed"
+                                )}
+                                aria-label={task.isFocusedToday ? t('agenda.removeFromFocus') : t('agenda.addToFocus')}
+                                title={task.isFocusedToday
+                                    ? t('agenda.removeFromFocus')
+                                    : blockedText ?? t('agenda.addToFocus')}
+                            >
+                                <FocusStarIcon className="w-4 h-4" filled={task.isFocusedToday} />
+                            </button>
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
+
+    const renderCalendarEventList = (events: ExternalCalendarEvent[]) => {
+        if (externalCalendarLoading) {
+            return <p className="text-xs text-muted-foreground">{t('common.loading')}</p>;
+        }
+        if (externalCalendarError) {
+            return <p className="text-xs text-muted-foreground">{externalCalendarError}</p>;
+        }
+        if (events.length === 0) {
+            return <p className="text-xs text-muted-foreground">{t('calendar.noTasks')}</p>;
+        }
+        return (
+            <div className="space-y-1.5">
+                {events.map((event) => {
+                    const start = safeParseDate(event.start);
+                    const end = safeParseDate(event.end);
+                    const timeLabel = event.allDay || !start || !end
+                        ? t('calendar.allDay')
+                        : `${safeFormatDate(start, 'p')} - ${safeFormatDate(end, 'p')}`;
+                    return (
+                        <div key={event.id} className="text-xs text-muted-foreground">
+                            <span className="font-medium text-foreground mr-2">{event.title}</span>
+                            <span>{timeLabel}</span>
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
+
+    const renderStepContent = () => {
+        switch (activeStep) {
+            case 'today': {
+                const list = [...overdueTasks, ...dueTodayTasks];
+                return (
+                    <div className="space-y-4">
+                        <div className="bg-muted/30 p-4 rounded-lg border border-border">
+                            <h3 className="font-semibold mb-2">{t('dailyReview.todayStep')}</h3>
+                            <p className="text-sm text-muted-foreground">{t('dailyReview.todayDesc')}</p>
+                            <p className="text-sm text-muted-foreground mt-2">
+                                <span className="font-bold text-foreground">{list.length}</span> {t('common.tasks')}
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="bg-card border border-border rounded-lg p-3 space-y-2">
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    {safeFormatDate(today, 'P')} · {t('calendar.events')}
+                                </h4>
+                                {renderCalendarEventList(todayCalendarEvents)}
+                            </div>
+                            <div className="bg-card border border-border rounded-lg p-3 space-y-2">
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    {safeFormatDate(tomorrow, 'P')} · {t('calendar.events')}
+                                </h4>
+                                {renderCalendarEventList(tomorrowCalendarEvents)}
+                            </div>
+                        </div>
+                        {renderTaskList(list, t('agenda.noTasks'))}
+                    </div>
+                );
+            }
+
+            case 'focus':
+                return (
+                    <div className="space-y-4">
+                        <div className="bg-muted/30 p-4 rounded-lg border border-border">
+                            <h3 className="font-semibold mb-2">{t('dailyReview.focusStep')}</h3>
+                            <p className="text-sm text-muted-foreground">{t('dailyReview.focusDesc')}</p>
+                            <p className="text-sm text-muted-foreground mt-2">
+                                <span className="font-bold text-foreground">{focusedTasks.length}</span> / {focusTaskLimit}
+                            </p>
+                        </div>
+                        {renderFocusList()}
+                    </div>
+                );
+
+            case 'inbox':
+                return (
+                    <div className="space-y-4">
+                        <div className="bg-muted/30 p-4 rounded-lg border border-border">
+                            <h3 className="font-semibold mb-2">{t('dailyReview.inboxStep')}</h3>
+                            <p className="text-sm text-muted-foreground">{t('dailyReview.inboxDesc')}</p>
+                            <p className="text-sm text-muted-foreground mt-2">
+                                <span className="font-bold text-foreground">{inboxTasks.length}</span> {t('common.tasks')}
+                            </p>
+                        </div>
+                        <InboxProcessor
+                            t={t}
+                            isInbox
+                            tasks={tasks}
+                            projects={projects}
+                            areas={areas}
+                            settings={settings}
+                            addTask={addTask}
+                            addProject={addProject}
+                            updateTask={updateTask}
+                            deleteTask={deleteTask}
+                            allContexts={allContexts}
+                            allTags={allTags}
+                            isProcessing={isProcessing}
+                            setIsProcessing={setIsProcessing}
+                        />
+                        {renderTaskList(inboxTasks, t('review.inboxEmpty'))}
+                    </div>
+                );
+
+            case 'waiting':
+                return (
+                    <div className="space-y-4">
+                        <div className="bg-muted/30 p-4 rounded-lg border border-border">
+                            <h3 className="font-semibold mb-2">{t('dailyReview.waitingStep')}</h3>
+                            <p className="text-sm text-muted-foreground">{t('dailyReview.waitingDesc')}</p>
+                            <p className="text-sm text-muted-foreground mt-2">
+                                <span className="font-bold text-foreground">{waitingTasks.length}</span> {t('common.tasks')}
+                            </p>
+                        </div>
+                        {renderTaskList(waitingTasks, t('review.waitingEmpty'), { showFollowUpToday: true })}
+                    </div>
+                );
+
+            case 'completed':
+                return (
+                    <div className="text-center space-y-6 py-12">
+                        <div className="w-20 h-20 bg-success/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <Check className="w-10 h-10 text-success" />
+                        </div>
+                        <h2 className="text-3xl font-bold">{t('dailyReview.completeTitle')}</h2>
+                        <p className="text-muted-foreground text-lg max-w-md mx-auto">{t('dailyReview.completeDesc')}</p>
+                        <button
+                            onClick={finishReview}
+                            className="bg-primary text-primary-foreground px-8 py-3 rounded-lg text-lg font-medium hover:bg-primary/90 transition-colors"
+                        >
+                            {t('review.finish')}
+                        </button>
+                    </div>
+                );
+        }
+    };
+
+    return (
+        <Dialog
+            onClose={onClose}
+            label={t('dailyReview.title')}
+            panelClassName="max-w-4xl mx-4 max-h-[85vh] bg-card rounded-lg border-border shadow-xl"
+        >
+            <DialogHeader className="px-5 py-4 border-b border-border flex items-center justify-between">
+                <h3 className="text-[15px] font-semibold flex items-center gap-2.5">
+                    <Calendar className="w-4 h-4 text-primary" />
+                    {t('dailyReview.title')}
+                </h3>
+                <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-md hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label={t('common.close')}
+                >
+                    <X className="w-4 h-4" />
+                </button>
+            </DialogHeader>
+
+            <div className="p-5 flex flex-col flex-1 min-h-0">
+                <div className="mb-5">
+                    <div className="flex items-center justify-between mb-3">
+                        <h1 className="text-lg font-semibold flex items-center gap-2">
+                            {(() => {
+                                const Icon = steps[currentStepIndex].icon;
+                                return Icon && <Icon className="w-[18px] h-[18px] text-primary" />;
+                            })()}
+                            {steps[currentStepIndex].title}
+                        </h1>
+                        <span className="text-xs text-muted-foreground">
+                            {t('review.step')} {currentStepIndex + 1} {t('review.of')} {steps.length}
+                        </span>
+                    </div>
+                    <div className="h-1 bg-muted rounded-full overflow-hidden">
+                        <div
+                            className="h-full w-full origin-left rounded-full bg-primary transition-transform duration-300 ease-out motion-reduce:transition-none"
+                            style={{ transform: `scaleX(${progress / 100})` }}
+                        />
+                    </div>
+                    {renderStepRail()}
+                </div>
+
+                <div ref={stepScrollRef} className="flex-1 overflow-y-auto pr-2">
+                    {renderStepContent()}
+                </div>
+
+                {activeStep !== 'completed' && (
+                    <div className="flex justify-between items-center pt-3.5 border-t border-border mt-5">
+                        <button
+                            onClick={prevStep}
+                            disabled={!previousStepId}
+                            className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted-foreground"
+                        >
+                            <ChevronLeft className="w-3.5 h-3.5" /> {t('review.back')}
+                        </button>
+                        <button
+                            onClick={nextStep}
+                            className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
+                        >
+                            {t('review.nextStepBtn')} <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                    </div>
+                )}
+            </div>
+        </Dialog>
+    );
+}

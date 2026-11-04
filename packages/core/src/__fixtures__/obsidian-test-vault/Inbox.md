@@ -1,0 +1,3 @@
+- [ ] Buy groceries #errands
+- [x] Pay rent [[Bills]]
+- [ ] Review docs #writing/reference

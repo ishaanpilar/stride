@@ -1,0 +1,109 @@
+import ExpoModulesCore
+import Foundation
+import UIKit
+
+public final class StrideIosSceneLifecycleModule: Module {
+    private static let diagnosticsNotification = Notification.Name(
+        "com.ishaanpilar.stride.iosSceneLifecycleDiagnostics.changed"
+    )
+    private var diagnosticsObserver: NSObjectProtocol?
+
+
+    private let backgroundTaskLock = NSLock()
+    private var backgroundTasks = Set<Int>()
+
+    public func definition() -> ModuleDefinition {
+        Name("StrideIosSceneLifecycle")
+
+        Events("onDiagnosticsChanged", "onBackgroundTaskExpired")
+
+        OnCreate {
+            self.diagnosticsObserver = NotificationCenter.default.addObserver(
+                forName: Self.diagnosticsNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.sendEvent("onDiagnosticsChanged", [:])
+            }
+        }
+
+        OnDestroy {
+            if let observer = self.diagnosticsObserver {
+                NotificationCenter.default.removeObserver(observer)
+                self.diagnosticsObserver = nil
+            }
+            self.backgroundTaskLock.lock()
+            let open = self.backgroundTasks
+            self.backgroundTasks.removeAll()
+            self.backgroundTaskLock.unlock()
+            for id in open {
+                UIApplication.shared.endBackgroundTask(UIBackgroundTaskIdentifier(rawValue: id))
+            }
+        }
+
+
+        Function("beginBackgroundTask") { (name: String) -> Int in
+            let task = BackgroundTaskIdentifierBox()
+            let identifier = UIApplication.shared.beginBackgroundTask(withName: name) {
+
+
+                let id = task.identifier.rawValue
+                let wasOpen = self.removeBackgroundTask(id)
+                UIApplication.shared.endBackgroundTask(task.identifier)
+                if wasOpen { self.sendEvent("onBackgroundTaskExpired", ["id": id]) }
+            }
+            task.identifier = identifier
+            guard identifier != .invalid else { return 0 }
+            self.backgroundTaskLock.lock()
+            self.backgroundTasks.insert(identifier.rawValue)
+            self.backgroundTaskLock.unlock()
+            return identifier.rawValue
+        }
+
+
+        Function("endBackgroundTask") { (id: Int) in
+            guard self.removeBackgroundTask(id) else { return }
+            UIApplication.shared.endBackgroundTask(UIBackgroundTaskIdentifier(rawValue: id))
+        }
+
+        Function("drainDiagnostics") {
+            let records = self.drainDiagnosticsOnMainQueue()
+            NSLog(
+                "[StrideScene] stage=bridgeReady deliveryKind=none count=%d",
+                records.count
+            )
+            return records
+        }
+    }
+
+    private func removeBackgroundTask(_ id: Int) -> Bool {
+        backgroundTaskLock.lock()
+        defer { backgroundTaskLock.unlock() }
+        return backgroundTasks.remove(id) != nil
+    }
+
+    private func drainDiagnosticsOnMainQueue() -> [[String: Any]] {
+        if Thread.isMainThread {
+            return drainDiagnosticsFromAppDelegate()
+        }
+        return DispatchQueue.main.sync {
+            drainDiagnosticsFromAppDelegate()
+        }
+    }
+
+    private func drainDiagnosticsFromAppDelegate() -> [[String: Any]] {
+        let selector = NSSelectorFromString("drainStrideSceneDiagnostics")
+        guard let appDelegate = UIApplication.shared.delegate as? NSObject,
+              appDelegate.responds(to: selector),
+              let result = appDelegate.perform(selector)?.takeUnretainedValue(),
+              let records = result as? [[String: Any]] else {
+            return []
+        }
+        return records
+    }
+}
+
+
+private final class BackgroundTaskIdentifierBox: @unchecked Sendable {
+    var identifier = UIBackgroundTaskIdentifier.invalid
+}

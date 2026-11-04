@@ -1,0 +1,360 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useTaskStore, type CalendarSyncEntry, type Project, type Section, type Task } from '@stride/core';
+
+import {
+    __desktopCalendarPushSyncTestUtils,
+    enableDesktopCalendarPush,
+    runFullDesktopCalendarPushSync,
+} from './desktop-calendar-push-sync';
+import type { SystemCalendarEventDetails, SystemCalendarEventWriteResult, SystemCalendarPushTarget } from './system-calendar';
+
+const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: 'task-1',
+    title: 'Plan review',
+    status: 'next',
+    tags: [],
+    contexts: [],
+    createdAt: '2026-01-01T08:00:00.000Z',
+    updatedAt: '2026-01-01T08:00:00.000Z',
+    ...overrides,
+});
+
+const setStoreTasks = (tasks: Task[]) => {
+    useTaskStore.setState((state) => ({
+        ...state,
+        tasks,
+        _allTasks: tasks,
+        _tasksById: new Map(tasks.map((task) => [task.id, task])),
+    }));
+};
+
+const setStoreProjectsAndSections = (projects: Project[], sections: Section[]) => {
+
+
+    useTaskStore.setState({ _allProjects: projects, _allSections: sections });
+};
+
+const writeOk = (eventId: string | null): SystemCalendarEventWriteResult => ({
+    ok: true,
+    eventId,
+});
+
+const writeFailed = (error: string): SystemCalendarEventWriteResult => ({
+    ok: false,
+    eventId: null,
+    error,
+});
+
+describe('desktop calendar push sync', () => {
+    let createEvent: ReturnType<typeof vi.fn<(details: SystemCalendarEventDetails) => Promise<SystemCalendarEventWriteResult>>>;
+    let updateEvent: ReturnType<typeof vi.fn<(eventId: string, details: SystemCalendarEventDetails) => Promise<SystemCalendarEventWriteResult>>>;
+    let deleteEvent: ReturnType<typeof vi.fn<(eventId: string) => Promise<SystemCalendarEventWriteResult>>>;
+    let upsertSyncEntry: ReturnType<typeof vi.fn<(entry: CalendarSyncEntry) => Promise<void>>>;
+    let deleteSyncEntry: ReturnType<typeof vi.fn<(taskId: string, platform: string) => Promise<void>>>;
+    let getSyncEntry: ReturnType<typeof vi.fn<(taskId: string, platform: string) => Promise<CalendarSyncEntry | null>>>;
+    let getAllSyncEntries: ReturnType<typeof vi.fn<(platform: string) => Promise<CalendarSyncEntry[]>>>;
+    let getTargetCalendarId: ReturnType<typeof vi.fn<() => Promise<string | null>>>;
+    let getTargets: ReturnType<typeof vi.fn<() => Promise<SystemCalendarPushTarget[]>>>;
+    let ensureStrideCalendar: ReturnType<typeof vi.fn<() => Promise<SystemCalendarPushTarget | null>>>;
+    let syncEntries: Map<string, CalendarSyncEntry>;
+
+    const managedTarget: SystemCalendarPushTarget = {
+        id: 'cal-stride',
+        name: 'Stride',
+        isStrideDedicated: true,
+    };
+
+    beforeEach(() => {
+        (window as any).__TAURI_INTERNALS__ = {};
+        __desktopCalendarPushSyncTestUtils.resetForTests();
+        setStoreProjectsAndSections([], []);
+        setStoreTasks([]);
+
+        createEvent = vi.fn(async () => writeOk('event-new'));
+        updateEvent = vi.fn(async (_eventId) => writeOk(_eventId));
+        deleteEvent = vi.fn(async (_eventId) => writeOk(_eventId));
+        syncEntries = new Map();
+        upsertSyncEntry = vi.fn(async (entry) => {
+            syncEntries.set(entry.taskId, entry);
+        });
+        deleteSyncEntry = vi.fn(async (taskId, platform) => {
+            if (syncEntries.get(taskId)?.platform === platform) {
+                syncEntries.delete(taskId);
+            }
+        });
+        getSyncEntry = vi.fn(async (taskId, platform) => {
+            const entry = syncEntries.get(taskId);
+            return entry?.platform === platform ? entry : null;
+        });
+        getAllSyncEntries = vi.fn(async (platform) =>
+            Array.from(syncEntries.values()).filter((entry) => entry.platform === platform)
+        );
+        getTargetCalendarId = vi.fn(async () => null);
+        getTargets = vi.fn(async () => [managedTarget]);
+        ensureStrideCalendar = vi.fn(async () => managedTarget);
+
+        __desktopCalendarPushSyncTestUtils.setDependenciesForTests({
+            createEvent,
+            updateEvent,
+            deleteEvent,
+            upsertSyncEntry,
+            deleteSyncEntry,
+            getSyncEntry,
+            getAllSyncEntries,
+            getTargetCalendarId,
+            getTargets,
+            ensureStrideCalendar,
+            getManagedCalendarId: async () => null,
+            getPermissionStatus: async () => 'granted',
+            getPlatform: () => 'macos',
+            getPushEnabled: async () => true,
+            setManagedCalendarId: async () => undefined,
+            removeManagedCalendarId: async () => undefined,
+            setTargetCalendarId: async () => undefined,
+            nowIso: () => '2026-01-01T12:00:00.000Z',
+        });
+    });
+
+    it('creates all-day events for due-date tasks in the managed Stride calendar', async () => {
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(ensureStrideCalendar).toHaveBeenCalledTimes(1);
+        expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+            calendarId: 'cal-stride',
+            title: 'Plan review',
+            startDate: '2026-01-10',
+            endDate: '2026-01-11',
+            allDay: true,
+        }));
+
+
+        const details = createEvent.mock.calls[0][0];
+        const endInstant = new Date(details.end);
+        expect(endInstant.getFullYear()).toBe(2026);
+        expect(endInstant.getMonth()).toBe(0);
+        expect(endInstant.getDate()).toBe(10);
+        expect(new Date(details.start).getDate()).toBe(10);
+        expect(upsertSyncEntry).toHaveBeenCalledWith(expect.objectContaining({
+            taskId: 'task-1',
+            calendarEventId: 'event-new',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+        }));
+    });
+
+    it('stores calendar mappings under the active desktop platform', async () => {
+        __desktopCalendarPushSyncTestUtils.setDependenciesForTests({
+            getPlatform: () => 'linux',
+        });
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(upsertSyncEntry).toHaveBeenCalledWith(expect.objectContaining({
+            taskId: 'task-1',
+            platform: 'linux',
+        }));
+    });
+
+    it('enriches event notes with project, section, status, effort, and links via the core builder', async () => {
+        setStoreProjectsAndSections(
+            [{ id: 'proj-1', title: 'Launch' } as Project],
+            [{ id: 'sec-1', title: 'Phase 2' } as Section],
+        );
+        setStoreTasks([makeTask({
+            dueDate: '2026-01-10',
+            projectId: 'proj-1',
+            sectionId: 'sec-1',
+            timeEstimate: '1hr',
+            description: 'Discuss roadmap',
+            attachments: [{
+                id: 'att-1',
+                kind: 'link',
+                title: 'Doc',
+                uri: 'https://example.com/doc',
+                createdAt: '2026-01-01T08:00:00.000Z',
+                updatedAt: '2026-01-01T08:00:00.000Z',
+            }],
+        })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        const notes = createEvent.mock.calls[0]?.[0]?.notes ?? '';
+        expect(notes).toContain('Project: Launch › Phase 2');
+        expect(notes).toContain('Status: Next');
+        expect(notes).toContain('Effort: 1 h');
+        expect(notes).toContain('Discuss roadmap');
+        expect(notes).toContain('Link: https://example.com/doc');
+        expect(notes).toContain('[Stride Calendar Mirror]\nStride-Task-ID: task-1\n[/Stride Calendar Mirror]');
+    });
+
+    it('sizes the pushed event by the estimate only while Time estimates is on', async () => {
+        setStoreTasks([makeTask({ startTime: '2026-01-10T09:00:00', timeEstimate: '2hr' })]);
+        await runFullDesktopCalendarPushSync();
+        const enabledEnd = new Date(createEvent.mock.calls[0]?.[0]?.end as string);
+        expect(enabledEnd.getHours()).toBe(11);
+
+        createEvent.mockClear();
+
+
+        useTaskStore.setState((state) => ({ ...state, settings: { ...state.settings, features: { timeEstimates: false } } }));
+        setStoreTasks([makeTask({ id: 'task-2', startTime: '2026-01-10T09:00:00', timeEstimate: '2hr' })]);
+        await runFullDesktopCalendarPushSync();
+        const disabledEnd = new Date(createEvent.mock.calls[0]?.[0]?.end as string);
+        expect(disabledEnd.getHours()).toBe(9);
+        expect(disabledEnd.getMinutes()).toBe(30);
+    });
+
+    it('prefixes titles when pushing to a shared selected calendar', async () => {
+        getTargetCalendarId.mockResolvedValue('cal-shared');
+        getTargets.mockResolvedValue([{
+            id: 'cal-shared',
+            name: 'Work',
+            isStrideDedicated: false,
+        }]);
+        setStoreTasks([makeTask({ startTime: '2026-01-10T09:00:00' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+            calendarId: 'cal-shared',
+            title: 'Stride: Plan review',
+            allDay: false,
+        }));
+    });
+
+    it('includes the projected occurrence date in pushed recurring event details', async () => {
+        setStoreTasks([makeTask({
+            id: 'task-recurring',
+            title: 'Monthly bill',
+            dueDate: '2026-01-10',
+            recurrence: { rule: 'monthly', strategy: 'strict' },
+            showFutureRecurrence: true,
+        })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+            calendarId: 'cal-stride',
+            title: 'Monthly bill (Feb 10, 2026)',
+            notes: expect.stringContaining('Projected recurring occurrence for Feb 10, 2026'),
+        }));
+    });
+
+    it('removes pushed events when tasks are completed', async () => {
+        const entry: CalendarSyncEntry = {
+            taskId: 'task-1',
+            calendarEventId: 'event-old',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+            lastSyncedAt: '2026-01-01T00:00:00.000Z',
+        };
+        syncEntries.set(entry.taskId, entry);
+        setStoreTasks([makeTask({ dueDate: '2026-01-10', status: 'done' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(deleteEvent).toHaveBeenCalledWith('event-old');
+        expect(deleteSyncEntry).toHaveBeenCalledWith('task-1', 'macos');
+        expect(createEvent).not.toHaveBeenCalled();
+    });
+
+    it('keeps the sync mapping when deleting an event fails', async () => {
+        const entry: CalendarSyncEntry = {
+            taskId: 'task-1',
+            calendarEventId: 'event-old',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+            lastSyncedAt: '2026-01-01T00:00:00.000Z',
+        };
+        deleteEvent.mockResolvedValue(writeFailed('calendar-temporarily-unavailable'));
+        syncEntries.set(entry.taskId, entry);
+        setStoreTasks([makeTask({ dueDate: '2026-01-10', status: 'done' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(deleteEvent).toHaveBeenCalledWith('event-old');
+        expect(deleteSyncEntry).not.toHaveBeenCalled();
+        expect(createEvent).not.toHaveBeenCalled();
+    });
+
+    it('does not create a duplicate when updating an existing event fails', async () => {
+        const entry: CalendarSyncEntry = {
+            taskId: 'task-1',
+            calendarEventId: 'event-old',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+            lastSyncedAt: '2026-01-01T00:00:00.000Z',
+        };
+        updateEvent.mockResolvedValue(writeFailed('calendar-temporarily-unavailable'));
+        syncEntries.set(entry.taskId, entry);
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(updateEvent).toHaveBeenCalledWith('event-old', expect.objectContaining({
+            calendarId: 'cal-stride',
+            notes: expect.stringContaining('[Stride Calendar Mirror]\nStride-Task-ID: task-1\n[/Stride Calendar Mirror]'),
+        }));
+        expect(createEvent).not.toHaveBeenCalled();
+        expect(upsertSyncEntry).not.toHaveBeenCalled();
+        expect(deleteSyncEntry).not.toHaveBeenCalled();
+    });
+
+    it('recreates an event when the previous macOS event was deleted externally', async () => {
+        const entry: CalendarSyncEntry = {
+            taskId: 'task-1',
+            calendarEventId: 'event-old',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+            lastSyncedAt: '2026-01-01T00:00:00.000Z',
+        };
+        updateEvent.mockResolvedValue(writeFailed('event-not-found'));
+        syncEntries.set(entry.taskId, entry);
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(deleteSyncEntry).toHaveBeenCalledWith('task-1', 'macos');
+        expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+            calendarId: 'cal-stride',
+        }));
+        expect(upsertSyncEntry).toHaveBeenCalledWith(expect.objectContaining({
+            calendarEventId: 'event-new',
+        }));
+    });
+
+    it('reconciles stale calendar sync entries on full sync', async () => {
+        const entry: CalendarSyncEntry = {
+            taskId: 'ghost-task',
+            calendarEventId: 'event-ghost',
+            calendarId: 'cal-stride',
+            platform: 'macos',
+            lastSyncedAt: '2026-01-01T00:00:00.000Z',
+        };
+        syncEntries.set(entry.taskId, entry);
+        setStoreTasks([]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(deleteEvent).toHaveBeenCalledWith('event-ghost');
+        expect(deleteSyncEntry).toHaveBeenCalledWith('ghost-task', 'macos');
+    });
+
+    it('rolls back the enabled setting and subscription when initial sync fails', async () => {
+        const setPushEnabled = vi.fn(async () => undefined);
+        const unsubscribe = vi.fn();
+        getAllSyncEntries.mockRejectedValue(new Error('calendar database unavailable'));
+        __desktopCalendarPushSyncTestUtils.setDependenciesForTests({
+            setPushEnabled,
+            subscribe: vi.fn(() => unsubscribe) as unknown as typeof useTaskStore.subscribe,
+        });
+
+        await expect(enableDesktopCalendarPush()).rejects.toThrow('calendar database unavailable');
+
+        expect(setPushEnabled.mock.calls).toEqual([[true], [false]]);
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+});

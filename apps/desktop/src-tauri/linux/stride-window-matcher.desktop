@@ -1,0 +1,10 @@
+
+
+
+[Desktop Entry]
+Type=Application
+Name=Stride
+Exec=stride
+Icon=stride
+Terminal=false
+NoDisplay=true

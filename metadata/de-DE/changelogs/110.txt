@@ -1,0 +1,4 @@
+- Native SQLite hält große Bibliotheken reaktionsschnell und beschleunigt Speichern und Sync.
+- Projekte merken sich die Sortierung; Fokus-Reihenfolge, Filter und Abschlussgruppen sind erweitert.
+- Wiederholte Erinnerungen bleiben pünktlich; Widgets, große Schrift und Tastaturführung wurden verbessert.
+- Backups, Wiederherstellung, sichere Sync-Zugänge und Wiederholungen sind zuverlässiger.

@@ -1,0 +1,1144 @@
+import '../polyfills';
+import { StartupReadinessContext } from '../hooks/use-startup-screen-ready';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+import * as Application from 'expo-application';
+import Constants from 'expo-constants';
+import * as Linking from 'expo-linking';
+import { Stack, useGlobalSearchParams, useNavigationContainerRef, usePathname, useRouter } from 'expo-router';
+import 'react-native-reanimated';
+import * as SplashScreen from 'expo-splash-screen';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { enableFreeze } from 'react-native-screens';
+import { AppState, BackHandler, Platform, SafeAreaView, StatusBar, Text, View } from 'react-native';
+import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
+import { QuickCaptureProvider, type QuickCaptureOptions } from '../contexts/quick-capture-context';
+import { ToastProvider, useToast } from '../contexts/toast-context';
+
+import { ThemeProvider, useTheme } from '../contexts/theme-context';
+import { LanguageProvider, useLanguage } from '../contexts/language-context';
+import {
+  ACTIVE_APP_ANNOUNCEMENT,
+  APP_ANNOUNCEMENT_DISMISSED_VALUE,
+  addBreadcrumb,
+  buildCoreLogExtra,
+  consoleLogger,
+  configureDateFormatting,
+  getAnnouncementDismissalStorageKey,
+  isSupportedLanguage,
+  recordDonationPromptShown,
+  recordUpdateReminderDismissed,
+  setSha256HexProvider,
+  setLogger,
+  withSupportPromptShown,
+  translateWithFallback,
+  useStartupPromptQueue,
+  useTaskStore,
+  isSandboxMode,
+  resolveAndroidInstallerSource,
+  resolveMobileDonationPromptAllowed,
+  resolveMobileUpdateReminderAllowed,
+  fetchMobileUpdateReminderInfo,
+  buildUpdateReminderAnnouncement,
+  buildMobileStartupPromptDescriptors,
+  translateDonationPromptAnnouncement,
+  PROMPT_TEST_ANNOUNCEMENT,
+  UPDATE_REMINDER_RELEASES_URL,
+  UPDATE_NOW_ACTION_LABEL,
+  VIEW_RELEASE_ACTION_LABEL,
+  type AndroidInstallerSource,
+  type AppAnnouncement,
+  type AppAnnouncementAction,
+  type MobileUpdateReminderInfo,
+  type StartupPromptDescriptor,
+  type UserPromptState,
+} from '@stride/core';
+import { mobileSha256Hex } from '../lib/sync-crypto-native';
+import { getSystemDateFormat } from '../modules/system-date-format';
+import { keepPersistentCaptureNotificationArmed } from '../lib/persistent-capture-notification';
+import { markStartupPhase } from '../lib/startup-profiler';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { logError, logInfo, logWarn } from '../lib/app-log';
+import { useThemeColors } from '../hooks/use-theme-colors';
+import { AdaptiveWindowProvider } from '@/hooks/use-adaptive-window';
+import { useRootLayoutContextAutomation } from '@/hooks/root-layout/use-root-layout-context-automation';
+import { useRootLayoutExternalCapture } from '@/hooks/root-layout/use-root-layout-external-capture';
+import { useRootLayoutAppleRemindersAutoImport } from '@/hooks/root-layout/use-root-layout-apple-reminders';
+import { useRootLayoutPendingCaptures } from '@/hooks/root-layout/use-root-layout-pending-captures';
+import { useRootLayoutGmailCapture } from '@/hooks/root-layout/use-root-layout-gmail-capture';
+import { useRootLayoutPomodoro } from '@/hooks/root-layout/use-root-layout-pomodoro';
+import { useRootLayoutWatch } from '@/hooks/root-layout/use-root-layout-watch';
+import { useRootLayoutNotificationOpenHandler } from '@/hooks/root-layout/use-root-layout-notification-open-handler';
+import { useRootLayoutStartup } from '@/hooks/root-layout/use-root-layout-startup';
+import { useRootLayoutArchiveRetention } from '@/hooks/root-layout/use-root-layout-archive-retention';
+import { useRootLayoutAppBadge } from '@/hooks/root-layout/use-root-layout-app-badge';
+import { resolveMobileAnalyticsVersion } from '@/lib/analytics-heartbeat';
+import { getInstallerPackageName } from '@/lib/play-store-updates';
+import { useRootLayoutSyncEffects } from '@/hooks/root-layout/use-root-layout-sync-effects';
+import { ProjectNextActionPromptProvider } from '@/components/project-next-action-prompt';
+import { ThemedAlertProvider } from '@/components/themed-alert';
+import { AppAnnouncementModal } from '@/components/app-announcement-modal';
+import { MobileOnboardingFlow } from '@/components/MobileOnboardingFlow';
+import { MobileAppLockGate } from '@/components/mobile-app-lock-gate';
+import { useIncomingUrl } from '@/hooks/use-incoming-url';
+import { useWidgetLaunch, WidgetLaunchContext } from '@/hooks/use-widget-launch';
+import { PersistenceFailureBanner } from '@/components/persistence-failure-banner';
+import { MobileWorkspaceBootGate } from '@/components/mobile-workspace-boot-gate';
+import { MobileWorkspaceSwitchOverlay, SandboxWorkspaceBanner } from '@/components/sandbox-workspace-banner';
+import { applyAndroidSystemBars } from '@/lib/android-system-bars';
+import { isCloudKitAvailable } from '@/lib/cloudkit-sync';
+import {
+  recordLocalPromptActivity,
+  updateLocalUserPromptState,
+} from '@/lib/user-prompt-state';
+import { subscribePromptTest } from '@/lib/prompt-test-controls';
+import { requestStoreReviewForTesting } from '@/lib/store-review-prompt';
+import {
+  readMobileOnboardingDismissed,
+  subscribeMobileOnboardingEvent,
+  writeMobileOnboardingDismissed,
+} from '@/lib/mobile-onboarding-events';
+import { SYNC_BACKEND_KEY } from '@/lib/sync-constants';
+import { coerceSupportedBackend, resolveBackend } from '@/lib/sync-service-utils';
+import { persistLastRoute, sanitizeAndroidActivityNavigationState } from '@/lib/session-restore';
+import { useAndroidActivitySession } from '@/hooks/use-android-activity-session';
+import { useIosSceneDiagnostics } from '@/hooks/use-ios-scene-diagnostics';
+
+
+enableFreeze(true);
+
+let coreLoggerBridgeInstalled = false;
+
+const installCoreLoggerBridge = () => {
+  if (coreLoggerBridgeInstalled) return;
+  coreLoggerBridgeInstalled = true;
+  setLogger((payload) => {
+    consoleLogger(payload);
+    const scope = payload.scope ?? 'core';
+    const extra = buildCoreLogExtra(payload);
+    if (payload.level === 'error') {
+      void logError(payload.error ?? payload.message, {
+        scope,
+        extra,
+        message: payload.message,
+        force: payload.force,
+      });
+      return;
+    }
+    if (payload.level === 'warn') {
+      void logWarn(payload.message, { scope, extra, force: payload.force });
+      return;
+    }
+    void logInfo(payload.message, { scope, extra, force: payload.force });
+  });
+};
+
+type MobileExtraConfig = {
+  isFossBuild?: boolean | string;
+  analyticsHeartbeatUrl?: string;
+  analyticsHeartbeatChannel?: string;
+  analyticsReleaseVersion?: string;
+  donationPromptEnabled?: boolean | string;
+  promptTestControlsEnabled?: boolean | string;
+};
+
+const parseBool = (value: unknown): boolean =>
+  value === true || value === 1 || value === '1' || value === 'true';
+
+const APP_STORE_APP_ID = '6758597144';
+const APP_STORE_REVIEW_URL = `itms-apps://itunes.apple.com/app/id${APP_STORE_APP_ID}?action=write-review`;
+const APP_STORE_LISTING_URL = `https://apps.apple.com/app/stride/id${APP_STORE_APP_ID}`;
+
+const getAndroidPackageName = (): string => (
+  Constants.expoConfig?.android?.package || Application.applicationId || 'com.ishaanpilar.stride'
+);
+
+const getGooglePlayListingUrl = (): string => (
+  `https://play.google.com/store/apps/details?id=${getAndroidPackageName()}`
+);
+
+const openMobileStoreReviewDestination = async (): Promise<boolean> => {
+  if (Platform.OS === 'android') {
+    const packageName = getAndroidPackageName();
+    const marketUrl = `market://details?id=${packageName}`;
+    const webUrl = getGooglePlayListingUrl();
+    try {
+      await Linking.openURL(marketUrl);
+      return true;
+    } catch {
+      await Linking.openURL(webUrl);
+      return true;
+    }
+  }
+
+  if (Platform.OS === 'ios') {
+    try {
+      await Linking.openURL(APP_STORE_REVIEW_URL);
+      return true;
+    } catch {
+      await Linking.openURL(APP_STORE_LISTING_URL);
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getMobileUpdateTestTarget = (options: {
+  androidInstallerSource: AndroidInstallerSource;
+  isFossBuild: boolean;
+}): { label: string; url: string } | null => {
+  if (options.isFossBuild) return null;
+  if (Platform.OS === 'ios') {
+    return { label: UPDATE_NOW_ACTION_LABEL, url: APP_STORE_LISTING_URL };
+  }
+  if (Platform.OS === 'android' && options.androidInstallerSource === 'play-store') {
+    return {
+      label: UPDATE_NOW_ACTION_LABEL,
+      url: getGooglePlayListingUrl(),
+    };
+  }
+  if (Platform.OS === 'android' && options.androidInstallerSource === 'sideload') {
+    return { label: UPDATE_NOW_ACTION_LABEL, url: UPDATE_REMINDER_RELEASES_URL };
+  }
+  return { label: VIEW_RELEASE_ACTION_LABEL, url: UPDATE_REMINDER_RELEASES_URL };
+};
+
+const getDeviceLocale = (): string => {
+  try {
+    return String(Intl.DateTimeFormat().resolvedOptions().locale || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const getViewBreadcrumb = (pathname: string | null): string | null => {
+  const trimmed = String(pathname || '').trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/^\/+|\/+$/g, '');
+  if (!normalized) return 'view:root';
+  const segments = normalized.split('/').filter(Boolean);
+  const view = segments[segments.length - 1] || 'root';
+  return `view:${view}`;
+};
+
+installCoreLoggerBridge();
+
+
+setSha256HexProvider(mobileSha256Hex);
+
+
+void SplashScreen.preventAutoHideAsync().catch(() => {});
+markStartupPhase('js.root_layout.module_loaded');
+
+export function RootAdaptiveWindowHost({ children }: { children: React.ReactNode }) {
+  return <AdaptiveWindowProvider>{children}</AdaptiveWindowProvider>;
+}
+
+function RootLayoutContent() {
+  const tc = useThemeColors();
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: tc.bg }}>
+      <ToastProvider>
+        <ThemedAlertProvider>
+          <RootAdaptiveWindowHost>
+            <RootLayoutContentInner />
+          </RootAdaptiveWindowHost>
+        </ThemedAlertProvider>
+      </ToastProvider>
+    </GestureHandlerRootView>
+  );
+}
+
+function RootLayoutContentInner() {
+  useIosSceneDiagnostics();
+  const sandboxMode = isSandboxMode();
+  const router = useRouter();
+  const navigationRef = useNavigationContainerRef();
+  const pathname = usePathname();
+  const { url: incomingUrl, key: incomingUrlKey } = useIncomingUrl();
+  const widgetLaunch = useWidgetLaunch(incomingUrlKey);
+  const { isDark, isReady: themeReady } = useTheme();
+  const tc = useThemeColors();
+  const { language, setLanguage, isReady: languageReady, t } = useLanguage();
+  const { showToast } = useToast();
+  const {
+    hasShareIntent,
+    shareIntent,
+    resetShareIntent,
+    error: shareIntentError,
+    isReady: shareIntentReady,
+  } = useShareIntentContext();
+  const extraConfig = Constants.expoConfig?.extra as MobileExtraConfig | undefined;
+  const isFossBuild = parseBool(extraConfig?.isFossBuild);
+  const analyticsHeartbeatUrl = String(extraConfig?.analyticsHeartbeatUrl || '').trim();
+  const analyticsHeartbeatChannel = String(extraConfig?.analyticsHeartbeatChannel || '').trim();
+  const analyticsReleaseVersion = String(extraConfig?.analyticsReleaseVersion || '').trim();
+  const donationPromptEnabled = parseBool(extraConfig?.donationPromptEnabled);
+  const promptTestControlsEnabled = process.env.NODE_ENV !== 'test'
+    && (__DEV__ || parseBool(extraConfig?.promptTestControlsEnabled));
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const appVersion = Constants.expoConfig?.version ?? '0.0.0';
+  const analyticsAppVersion = resolveMobileAnalyticsVersion(appVersion, analyticsReleaseVersion);
+  const settingsLanguage = useTaskStore((state) => state.settings?.language);
+  const settingsDateFormat = useTaskStore((state) => state.settings?.dateFormat);
+  const settingsCalendarSystem = useTaskStore((state) => state.settings?.calendarSystem);
+  const settingsTimeFormat = useTaskStore((state) => state.settings?.timeFormat);
+  const mobileAppLockEnabled = useTaskStore((state) => state.settings?.security?.mobileAppLockEnabled === true);
+
+
+  const [appLocked, setAppLocked] = useState(true);
+  const seedGettingStarted = useTaskStore((state) => state.seedGettingStarted);
+  const visibleDataCount = useTaskStore((state) => (
+    state.tasks.length + state.projects.length + state.sections.length + state.areas.length
+  ));
+  const firstRenderLogged = useRef(false);
+  const [mobileOnboardingDismissed, setMobileOnboardingDismissed] = useState(false);
+  const [mobileOnboardingDismissalLoaded, setMobileOnboardingDismissalLoaded] = useState(false);
+  const [mobileOnboardingBusy, setMobileOnboardingBusy] = useState(false);
+  const [mobileOnboardingError, setMobileOnboardingError] = useState<string | null>(null);
+  const [donationPromptAllowed, setDonationPromptAllowed] = useState<boolean | null>(null);
+  const [updateReminderAllowed, setUpdateReminderAllowed] = useState<boolean | null>(null);
+  const [updateReminderInfo, setUpdateReminderInfo] = useState<MobileUpdateReminderInfo | null>(null);
+  const [androidInstallerSource, setAndroidInstallerSource] = useState<AndroidInstallerSource>(
+    Platform.OS === 'android' ? 'unknown' : 'play-store'
+  );
+  const [testAnnouncement, setTestAnnouncement] = useState<AppAnnouncement | null>(null);
+  const [recoveredActivityNavigationState, setRecoveredActivityNavigationState] = useState<ReturnType<
+    typeof sanitizeAndroidActivityNavigationState
+  >>(null);
+
+
+  const [promptStateSnapshot, setPromptStateSnapshot] = useState<UserPromptState | null>(null);
+  const activeAnnouncement = testAnnouncement ?? ACTIVE_APP_ANNOUNCEMENT;
+
+  const resolveText = useCallback((key: string, fallback: string) => (
+    translateWithFallback(t, key, fallback)
+  ), [t]);
+
+  const donationPromptAnnouncement = useMemo<AppAnnouncement>(() => translateDonationPromptAnnouncement(resolveText), [resolveText]);
+
+  const buildQuickCaptureInitialProps = useCallback((initialProps?: QuickCaptureOptions['initialProps']) => {
+    const nextInitialProps = initialProps ? { ...initialProps } : {};
+    return Object.keys(nextInitialProps).length > 0 ? nextInitialProps : undefined;
+  }, []);
+
+  const openSyncSettings = useCallback(() => {
+    router.push({ pathname: '/settings', params: { settingsScreen: 'sync' } } as never);
+  }, [router]);
+
+  const openNotificationsSettings = useCallback(() => {
+    router.push({ pathname: '/settings', params: { settingsScreen: 'notifications' } } as never);
+  }, [router]);
+
+  const returnContextAutomationToBackground = useCallback(() => {
+    if (Platform.OS === 'android') {
+      BackHandler.exitApp();
+    }
+  }, []);
+
+  const { requestSync } = useRootLayoutSyncEffects({
+    disabled: sandboxMode,
+    resolveText,
+    openNotificationsSettings,
+    openSyncSettings,
+    showToast,
+  });
+  const { dataReady, canonicalDataReady } = useRootLayoutStartup({
+    analyticsHeartbeatUrl,
+    analyticsHeartbeatChannel,
+    appVersion: analyticsAppVersion,
+    isExpoGo,
+    isFossBuild,
+    requestSync,
+    sandboxMode,
+    storageInitError: null,
+  });
+  useRootLayoutArchiveRetention(canonicalDataReady, sandboxMode);
+  useRootLayoutAppBadge({ canonicalDataReady, disabled: sandboxMode });
+  const isShellReady = themeReady && languageReady;
+  const isFirstPaintReady = isShellReady && dataReady;
+  const startupReadiness = useMemo(() => ({ canonicalDataReady, pathname }), [canonicalDataReady, pathname]);
+  const lastActivityNavigationStateRef = useRef<ReturnType<typeof sanitizeAndroidActivityNavigationState>>(null);
+  const captureActivityNavigationState = useCallback(() => {
+    if (!navigationRef.isReady()) return lastActivityNavigationStateRef.current;
+    try {
+      const state = sanitizeAndroidActivityNavigationState(navigationRef.getRootState());
+      if (state) lastActivityNavigationStateRef.current = state;
+      return state ?? lastActivityNavigationStateRef.current;
+    } catch {
+      return lastActivityNavigationStateRef.current;
+    }
+  }, [navigationRef]);
+  const restoreActivityNavigationState = useCallback((value: unknown) => {
+    setRecoveredActivityNavigationState(sanitizeAndroidActivityNavigationState(value as never));
+  }, []);
+  useAndroidActivitySession({
+    enabled: Platform.OS === 'android',
+    getValue: captureActivityNavigationState,
+    onRestore: restoreActivityNavigationState,
+    ownerId: `root-navigation:${sandboxMode ? 'sandbox' : 'personal'}`,
+    validate: (value): value is NonNullable<typeof recoveredActivityNavigationState> => (
+      sanitizeAndroidActivityNavigationState(value as never) !== null
+    ),
+  });
+
+  useEffect(() => {
+    const captureReadyState = () => {
+      captureActivityNavigationState();
+    };
+    captureReadyState();
+    return navigationRef.addListener('state', captureReadyState);
+  }, [captureActivityNavigationState, navigationRef]);
+
+  useEffect(() => {
+    if (!isFirstPaintReady || !recoveredActivityNavigationState) return undefined;
+
+
+    if (incomingUrlKey > 0 || hasShareIntent || widgetLaunch.pending) {
+      setRecoveredActivityNavigationState(null);
+      return undefined;
+    }
+
+    let applied = false;
+    const applyRecoveredState = () => {
+      if (applied || !navigationRef.isReady()) return;
+      applied = true;
+      try {
+        navigationRef.resetRoot(recoveredActivityNavigationState);
+        void logInfo('Android activity navigation restored', {
+          scope: 'navigation',
+          extra: {
+            releaseCheck: 'v1.3.0/android-activity-session-recovery',
+            outcome: 'restored',
+            surface: 'navigation',
+          },
+        });
+      } catch {
+
+      }
+      setRecoveredActivityNavigationState(null);
+    };
+    applyRecoveredState();
+    if (applied) return undefined;
+    const unsubscribe = navigationRef.addListener('state', applyRecoveredState);
+    return unsubscribe;
+  }, [
+    hasShareIntent,
+    incomingUrlKey,
+    isFirstPaintReady,
+    navigationRef,
+    recoveredActivityNavigationState,
+    widgetLaunch.pending,
+  ]);
+
+  useRootLayoutNotificationOpenHandler({
+
+
+    appReady: isFirstPaintReady && canonicalDataReady,
+    disabled: sandboxMode,
+    pathname,
+    router,
+  });
+
+
+  useEffect(() => {
+    if (sandboxMode || !languageReady || Platform.OS !== 'android') return;
+    return keepPersistentCaptureNotificationArmed(() => ({
+      title: resolveText('captureNotification.title', 'Quick capture'),
+      text: resolveText('captureNotification.text', 'Tap to capture to your Inbox'),
+      channelName: resolveText('captureNotification.channelName', 'Quick capture'),
+    }));
+  }, [languageReady, resolveText, sandboxMode]);
+
+
+  useRootLayoutContextAutomation({
+    canonicalDataReady,
+    disabled: sandboxMode,
+    incomingUrl,
+    incomingUrlKey,
+    returnToBackground: returnContextAutomationToBackground,
+    resolveText,
+  });
+  useRootLayoutExternalCapture({
+    canonicalDataReady,
+    dataReady,
+    disabled: sandboxMode,
+    hasShareIntent,
+    incomingUrl,
+    incomingUrlKey,
+    locked: mobileAppLockEnabled && appLocked,
+    providerReady: shareIntentReady,
+    resolveText,
+    resetShareIntent,
+    router,
+    shareError: shareIntentError,
+    shareFiles: shareIntent?.files,
+    shareSubject: shareIntent?.meta?.title,
+    shareText: shareIntent?.text,
+    shareWebUrl: shareIntent?.webUrl,
+    showToast,
+  });
+  useRootLayoutPomodoro({ canonicalDataReady, disabled: sandboxMode, resolveText });
+  const drainPendingCaptures = useRootLayoutPendingCaptures({ canonicalDataReady, disabled: sandboxMode });
+  useRootLayoutGmailCapture({ canonicalDataReady, disabled: sandboxMode });
+  useRootLayoutAppleRemindersAutoImport({ canonicalDataReady, disabled: sandboxMode, showToast, t });
+  useRootLayoutWatch({ canonicalDataReady, disabled: sandboxMode, language, onPendingCapture: drainPendingCaptures });
+
+  if (!firstRenderLogged.current) {
+    firstRenderLogged.current = true;
+    markStartupPhase('js.root_layout.first_render');
+  }
+
+  useEffect(() => {
+    markStartupPhase('js.root_layout.mounted');
+  }, []);
+
+  useEffect(() => {
+    if (sandboxMode) return;
+    const breadcrumb = getViewBreadcrumb(pathname);
+    if (!breadcrumb) return;
+    addBreadcrumb(breadcrumb);
+  }, [pathname, sandboxMode]);
+
+
+  const globalSearchParams = useGlobalSearchParams<{ projectId?: string; tab?: string }>();
+  const routeProjectId = typeof globalSearchParams.projectId === 'string' ? globalSearchParams.projectId : undefined;
+
+
+  const routeTab = typeof globalSearchParams.tab === 'string' ? globalSearchParams.tab : undefined;
+  const lastRouteRef = useRef<{ pathname: string; projectId?: string; tab?: string }>({ pathname });
+  useEffect(() => {
+    if (sandboxMode) return;
+    lastRouteRef.current = { pathname, projectId: routeProjectId, tab: routeTab };
+    void persistLastRoute(pathname, { projectId: routeProjectId, tab: routeTab });
+  }, [pathname, routeProjectId, routeTab, sandboxMode]);
+  useEffect(() => {
+    if (sandboxMode) return;
+
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'background' && state !== 'inactive') return;
+      const { pathname: lastPathname, projectId, tab } = lastRouteRef.current;
+      void persistLastRoute(lastPathname, { projectId, tab });
+    });
+    return () => subscription.remove();
+  }, [sandboxMode]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || isExpoGo) return;
+    SplashScreen.setOptions({ duration: 0, fade: false });
+  }, [isExpoGo]);
+
+  const systemBarsBg = tc.bg;
+  useEffect(() => {
+    void applyAndroidSystemBars({ bg: systemBarsBg }, isDark);
+  }, [isDark, systemBarsBg]);
+
+  useEffect(() => {
+    if (!settingsLanguage || !isSupportedLanguage(settingsLanguage)) return;
+    if (settingsLanguage === language) return;
+    void setLanguage(settingsLanguage);
+  }, [language, settingsLanguage, setLanguage]);
+
+  useEffect(() => {
+    const systemDateFormat = getSystemDateFormat();
+    configureDateFormatting({
+      language: settingsLanguage || language,
+      dateFormat: settingsDateFormat,
+      calendarSystem: settingsCalendarSystem,
+      timeFormat: settingsTimeFormat,
+      systemLocale: getDeviceLocale(),
+      systemDateFormat,
+    });
+    if (Platform.OS === 'ios') {
+      void logInfo('System date format configured', { scope: 'regional-format', extra: {
+        releaseCheck: 'v1.3.5/system-date-format', outcome: systemDateFormat ? 'native' : 'locale-fallback',
+      } });
+    }
+  }, [language, settingsCalendarSystem, settingsDateFormat, settingsLanguage, settingsTimeFormat]);
+
+  useEffect(() => {
+    if (sandboxMode) {
+      setAndroidInstallerSource('play-store');
+      return;
+    }
+    if (Platform.OS !== 'android') {
+      setAndroidInstallerSource('play-store');
+      return;
+    }
+    if (isFossBuild) {
+      setAndroidInstallerSource('sideload');
+      return;
+    }
+    let cancelled = false;
+    Application.getInstallReferrerAsync()
+      .then((referrer) => {
+        if (cancelled) return;
+        setAndroidInstallerSource(resolveAndroidInstallerSource(referrer, getInstallerPackageName()));
+      })
+      .catch((error) => {
+        if (!cancelled) setAndroidInstallerSource('unknown');
+        void logWarn('Failed to detect Android installer source', {
+          scope: 'prompt-state',
+          extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFossBuild, sandboxMode]);
+
+  useEffect(() => {
+    if (sandboxMode) {
+      setMobileOnboardingDismissed(true);
+      setMobileOnboardingDismissalLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    readMobileOnboardingDismissed()
+      .then((dismissed) => {
+        if (cancelled) return;
+        setMobileOnboardingDismissed(dismissed);
+      })
+      .finally(() => {
+        if (!cancelled) setMobileOnboardingDismissalLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sandboxMode]);
+
+
+  const startupPromptsEnabled = !sandboxMode && process.env.NODE_ENV !== 'test';
+
+
+  const onboardingHeldLogged = useRef(false);
+  const dataLoadFailed = useTaskStore((state) => Boolean(state.error));
+  useEffect(() => {
+    if (!startupPromptsEnabled || onboardingHeldLogged.current || !mobileOnboardingDismissalLoaded) return;
+    if (!dataReady || canonicalDataReady || !dataLoadFailed || mobileOnboardingDismissed || visibleDataCount !== 0) return;
+    onboardingHeldLogged.current = true;
+    void logWarn('First-run onboarding held: the local data did not load', {
+      scope: 'onboarding',
+      force: true,
+      extra: { releaseCheck: 'v1.3.8/onboarding-waits-for-canonical-load', outcome: 'held' },
+    });
+  }, [
+    canonicalDataReady,
+    dataLoadFailed,
+    dataReady,
+    mobileOnboardingDismissalLoaded,
+    mobileOnboardingDismissed,
+    startupPromptsEnabled,
+    visibleDataCount,
+  ]);
+  const startupPromptGateOpen = isFirstPaintReady && mobileOnboardingDismissalLoaded;
+  const startupPromptDescriptors = useMemo<StartupPromptDescriptor[]>(() => buildMobileStartupPromptDescriptors({
+    storage: AsyncStorage,
+    dataReady,
+    canonicalDataReady,
+    mobileOnboardingDismissed,
+    visibleDataCount,
+    readSyncBackend: async () => coerceSupportedBackend(resolveBackend(await AsyncStorage.getItem(SYNC_BACKEND_KEY)), isCloudKitAvailable()),
+    onSyncBackendReadError: (error) => {
+      void logError(error, { scope: 'onboarding', extra: { step: 'readMobileSyncBackend' } });
+    },
+    updateReminderAllowed,
+    donationPromptAllowed,
+    promptStateSnapshot,
+    onUpdateCheckRecordError: (error) => {
+      void logWarn('Failed to record update reminder check', {
+        scope: 'prompt-state',
+        extra: { error: error instanceof Error ? error.message : String(error) },
+      });
+    },
+    fetchUpdateInfo: () => fetchMobileUpdateReminderInfo(appVersion, fetch),
+    onUpdateReminderInfo: setUpdateReminderInfo,
+    getSupportPrompt: () => useTaskStore.getState().settings.supportPrompt,
+  }), [
+    appVersion,
+    canonicalDataReady,
+    dataReady,
+    donationPromptAllowed,
+    mobileOnboardingDismissed,
+    promptStateSnapshot,
+    updateReminderAllowed,
+    visibleDataCount,
+  ]);
+
+
+  const {
+    openId: startupPromptOpenId,
+    dismiss: dismissStartupPrompt,
+    forceOpen: forceOpenStartupPrompt,
+    closeAll: closeStartupPrompts,
+  } = useStartupPromptQueue({
+    enabled: startupPromptsEnabled,
+    gateOpen: startupPromptGateOpen,
+    descriptors: startupPromptDescriptors,
+    signals: [donationPromptAllowed, promptStateSnapshot, updateReminderAllowed],
+    onLog: (error, context) => {
+      void logWarn('Startup prompt failed', {
+        scope: 'prompt-state',
+        extra: {
+          prompt: context.id,
+          phase: context.phase,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    },
+  });
+
+  useEffect(() => subscribeMobileOnboardingEvent(() => {
+    setMobileOnboardingBusy(false);
+    setMobileOnboardingError(null);
+    forceOpenStartupPrompt('onboarding');
+  }), [forceOpenStartupPrompt]);
+
+  const dismissMobileOnboarding = useCallback(() => {
+    void writeMobileOnboardingDismissed();
+    setMobileOnboardingDismissed(true);
+    dismissStartupPrompt('onboarding');
+    setMobileOnboardingError(null);
+  }, [dismissStartupPrompt]);
+
+  const openOnboardingSync = useCallback(() => {
+    dismissStartupPrompt('onboarding');
+    setMobileOnboardingError(null);
+    router.push({
+      pathname: '/settings',
+      params: { settingsScreen: 'sync', onboardingHandoff: '1' },
+    } as never);
+  }, [dismissStartupPrompt, router]);
+
+  const openOnboardingImport = useCallback(() => {
+    dismissStartupPrompt('onboarding');
+    setMobileOnboardingError(null);
+    router.push({
+      pathname: '/settings',
+      params: { settingsScreen: 'data', onboardingHandoff: '1' },
+    } as never);
+  }, [dismissStartupPrompt, router]);
+
+  const startFreshOnboarding = useCallback(() => {
+    if (mobileOnboardingBusy) return;
+    setMobileOnboardingBusy(true);
+    setMobileOnboardingError(null);
+    seedGettingStarted({ language })
+      .then((result) => {
+        if (!result.id) {
+          setMobileOnboardingError(t('onboarding.errorNotCreated'));
+          showToast({
+            message: t('onboarding.toastNotCreated'),
+            tone: 'info',
+          });
+          return;
+        }
+        dismissMobileOnboarding();
+        router.push({ pathname: '/projects-screen', params: { projectId: result.id } } as never);
+        showToast({
+          message: t('onboarding.toastReady'),
+          tone: 'success',
+        });
+      })
+      .catch((error) => {
+        setMobileOnboardingError(t('onboarding.errorFailed'));
+        showToast({
+          message: t('onboarding.toastFailed'),
+          tone: 'error',
+        });
+        void logError(error, { scope: 'onboarding', extra: { step: 'seedGettingStarted' } });
+      })
+      .finally(() => setMobileOnboardingBusy(false));
+  }, [
+    dismissMobileOnboarding,
+    language,
+    mobileOnboardingBusy,
+    router,
+    seedGettingStarted,
+    showToast,
+    t,
+  ]);
+
+  const dismissAppAnnouncement = useCallback(() => {
+    if (testAnnouncement) {
+      setTestAnnouncement(null);
+      closeStartupPrompts();
+      return;
+    }
+    const announcement = ACTIVE_APP_ANNOUNCEMENT;
+    dismissStartupPrompt('announcement');
+    if (!announcement) return;
+    AsyncStorage.setItem(
+      getAnnouncementDismissalStorageKey(announcement.id),
+      APP_ANNOUNCEMENT_DISMISSED_VALUE,
+    ).catch((error) => {
+      void logWarn('Failed to persist announcement dismissal', {
+        scope: 'announcement',
+        extra: { error: error instanceof Error ? error.message : String(error) },
+      });
+    });
+  }, [closeStartupPrompts, dismissStartupPrompt, testAnnouncement]);
+
+  const openAnnouncementUrl = useCallback((url: string) => {
+    const nextUrl = url.trim();
+    if (!nextUrl) return;
+    Linking.openURL(nextUrl).catch((error) => {
+      void logWarn('Failed to open announcement link', {
+        scope: 'announcement',
+        extra: { error: error instanceof Error ? error.message : String(error) },
+      });
+    });
+  }, []);
+
+  const handleAppAnnouncementAction = useCallback((action: AppAnnouncementAction) => {
+    dismissAppAnnouncement();
+    if (action.type === 'feedback') {
+      router.push({ pathname: '/settings', params: { settingsScreen: 'about' } } as never);
+      return;
+    }
+    openAnnouncementUrl(action.url);
+  }, [dismissAppAnnouncement, openAnnouncementUrl, router]);
+
+  const dismissDonationPrompt = useCallback(() => {
+    dismissStartupPrompt('donation');
+  }, [dismissStartupPrompt]);
+
+  const handleDonationPromptAction = useCallback((action: AppAnnouncementAction) => {
+    dismissDonationPrompt();
+    if (action.type === 'feedback') {
+      router.push({ pathname: '/settings', params: { settingsScreen: 'about' } } as never);
+      return;
+    }
+    openAnnouncementUrl(action.url);
+  }, [dismissDonationPrompt, openAnnouncementUrl, router]);
+
+  const recordDonationPromptVisible = useCallback(() => {
+    const nowMs = Date.now();
+    updateLocalUserPromptState((state) => recordDonationPromptShown(state, nowMs))
+      .catch((error) => {
+        void logWarn('Failed to record donation prompt state', {
+          scope: 'prompt-state',
+          extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+      });
+
+    const { settings, updateSettings } = useTaskStore.getState();
+    void updateSettings({ supportPrompt: withSupportPromptShown(settings.supportPrompt, nowMs) });
+  }, []);
+
+  const dismissUpdateReminder = useCallback(() => {
+    const latestVersion = updateReminderInfo?.latestVersion;
+    if (latestVersion && updateReminderInfo?.testOnly !== true) {
+      updateLocalUserPromptState((state) => recordUpdateReminderDismissed(state, latestVersion))
+        .catch((error) => {
+          void logWarn('Failed to persist update reminder dismissal', {
+            scope: 'prompt-state',
+            extra: { error: error instanceof Error ? error.message : String(error) },
+          });
+        });
+    }
+    dismissStartupPrompt('update-reminder');
+  }, [dismissStartupPrompt, updateReminderInfo?.latestVersion, updateReminderInfo?.testOnly]);
+
+  const handleUpdateReminderAction = useCallback((action: AppAnnouncementAction) => {
+    dismissUpdateReminder();
+    if (action.type === 'feedback') {
+      router.push({ pathname: '/settings', params: { settingsScreen: 'about' } } as never);
+      return;
+    }
+    openAnnouncementUrl(action.url);
+  }, [dismissUpdateReminder, openAnnouncementUrl, router]);
+
+  useEffect(() => {
+    if (!promptTestControlsEnabled) return;
+    return subscribePromptTest((kind) => {
+      closeStartupPrompts();
+      setTestAnnouncement(null);
+
+      if (kind === 'announcement') {
+        setTestAnnouncement(PROMPT_TEST_ANNOUNCEMENT);
+        forceOpenStartupPrompt('announcement');
+        return;
+      }
+      if (kind === 'donation') {
+        forceOpenStartupPrompt('donation');
+        return;
+      }
+      if (kind === 'update') {
+        const updateTarget = getMobileUpdateTestTarget({ androidInstallerSource, isFossBuild });
+        if (!updateTarget) {
+          showToast({
+            message: 'Updates are managed by this build channel.',
+            tone: 'info',
+          });
+          return;
+        }
+        setUpdateReminderInfo({
+          currentVersion: appVersion,
+          latestVersion: '99.99.99',
+          latestReleasedAt: new Date().toISOString(),
+          releaseUrl: updateTarget.url,
+          actionLabel: updateTarget.label,
+          testOnly: true,
+        });
+        forceOpenStartupPrompt('update-reminder');
+        return;
+      }
+      if (isExpoGo) {
+        showToast({
+          message: 'Native review prompt is unavailable in Expo Go.',
+          tone: 'info',
+        });
+        return;
+      }
+      requestStoreReviewForTesting()
+        .then((shown) => {
+          if (shown) return;
+          return openMobileStoreReviewDestination()
+            .then((opened) => {
+              if (opened) return;
+              showToast({
+                message: 'Native review prompt is unavailable in this build.',
+                tone: 'info',
+              });
+            });
+        })
+        .catch((error) => {
+          void logWarn('Failed to request review prompt test', {
+            scope: 'store-review',
+            extra: { error: error instanceof Error ? error.message : String(error) },
+          });
+        });
+    });
+  }, [
+    androidInstallerSource,
+    appVersion,
+    closeStartupPrompts,
+    forceOpenStartupPrompt,
+    isExpoGo,
+    isFossBuild,
+    promptTestControlsEnabled,
+    showToast,
+  ]);
+
+  useEffect(() => {
+    if (!isFirstPaintReady) return;
+    markStartupPhase('js.shell_ready');
+    if (typeof SplashScreen?.hideAsync === 'function') {
+      SplashScreen.hideAsync()
+        .then(() => {
+          markStartupPhase('js.splash_hidden');
+        })
+        .catch((error) => {
+          markStartupPhase('js.splash_hide.failed');
+          void logWarn('Failed to hide splash screen', {
+            scope: 'app',
+            extra: { error: error instanceof Error ? error.message : String(error) },
+          });
+        });
+      return;
+    }
+    markStartupPhase('js.splash_hidden.noop');
+  }, [isFirstPaintReady]);
+
+  useEffect(() => {
+    if (sandboxMode || !isFirstPaintReady) return undefined;
+    let cancelled = false;
+
+
+    recordLocalPromptActivity()
+      .then((promptState) => {
+        if (!cancelled) setPromptStateSnapshot(promptState);
+      })
+      .catch((error) => {
+        void logWarn('Failed to record local prompt activity', {
+          scope: 'prompt-state',
+          extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFirstPaintReady, sandboxMode]);
+
+  useEffect(() => {
+    if (sandboxMode) {
+      setDonationPromptAllowed(false);
+      return;
+    }
+    let cancelled = false;
+    resolveMobileDonationPromptAllowed({ platform: Platform.OS, donationPromptEnabled, isExpoGo })
+      .then((allowed) => {
+        if (!cancelled) setDonationPromptAllowed(allowed);
+      })
+      .catch((error) => {
+        if (!cancelled) setDonationPromptAllowed(false);
+        void logWarn('Failed to resolve donation prompt channel', {
+          scope: 'prompt-state',
+          extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [donationPromptEnabled, isExpoGo, sandboxMode]);
+
+  useEffect(() => {
+    if (sandboxMode) {
+      setUpdateReminderAllowed(false);
+      return;
+    }
+    let cancelled = false;
+    resolveMobileUpdateReminderAllowed({ platform: Platform.OS, androidInstallerSource, isExpoGo, isFossBuild })
+      .then((allowed) => {
+        if (!cancelled) setUpdateReminderAllowed(allowed);
+      })
+      .catch((error) => {
+        if (!cancelled) setUpdateReminderAllowed(false);
+        void logWarn('Failed to resolve update reminder channel', {
+          scope: 'prompt-state',
+          extra: { error: error instanceof Error ? error.message : String(error) },
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [androidInstallerSource, isExpoGo, isFossBuild, sandboxMode]);
+
+
+  if (!isFirstPaintReady) {
+    return null;
+  }
+
+  return (
+    <QuickCaptureProvider
+      value={{
+        openQuickCapture: (options?: QuickCaptureOptions) => {
+          const params = new URLSearchParams();
+          if (options?.initialValue) {
+            params.set('initialValue', options.initialValue);
+          }
+          const initialProps = buildQuickCaptureInitialProps(options?.initialProps);
+          if (initialProps) {
+            params.set('initialProps', encodeURIComponent(JSON.stringify(initialProps)));
+          }
+          if (options?.returnTo) {
+            params.set('returnTo', options.returnTo);
+          }
+          const query = params.toString();
+          router.push((query ? `/capture-modal?${query}` : '/capture-modal') as never);
+        },
+      }}
+    >
+      <NavigationThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
+          <MobileAppLockGate enabled={mobileAppLockEnabled} onLockedChange={setAppLocked}>
+          <ProjectNextActionPromptProvider>
+          <StartupReadinessContext.Provider value={startupReadiness}>
+            <PersistenceFailureBanner />
+          <SandboxWorkspaceBanner />
+          <MobileWorkspaceSwitchOverlay />
+          <WidgetLaunchContext.Provider value={widgetLaunch}>
+          <Stack>
+            <Stack.Screen name="index" options={{ headerShown: false, animation: 'none' }} />
+            <Stack.Screen name="(drawer)" options={{ headerShown: false, animation: 'none' }} />
+            <Stack.Screen
+              name="daily-review"
+              options={{
+                headerShown: false,
+              }}
+            />
+            <Stack.Screen
+              name="weekly-review"
+              options={{
+                headerShown: false,
+              }}
+            />
+            <Stack.Screen
+              name="global-search"
+              options={{
+                headerShown: false,
+                presentation: 'modal',
+                animation: 'slide_from_bottom'
+              }}
+            />
+            <Stack.Screen
+              name="capture-modal"
+              options={{
+                headerShown: false,
+                presentation: 'modal',
+                animation: 'slide_from_bottom'
+              }}
+            />
+            <Stack.Screen
+              name="mind-sweep-modal"
+              options={{
+                headerShown: false,
+                presentation: 'modal',
+                animation: 'slide_from_bottom'
+              }}
+            />
+          </Stack>
+          </WidgetLaunchContext.Provider>
+          <MobileOnboardingFlow
+            busy={mobileOnboardingBusy}
+            error={mobileOnboardingError}
+            isOpen={startupPromptOpenId === 'onboarding'}
+            onOpenImport={openOnboardingImport}
+            onOpenSync={openOnboardingSync}
+            onSkip={dismissMobileOnboarding}
+            onStartFresh={startFreshOnboarding}
+          />
+          <AppAnnouncementModal
+            announcement={activeAnnouncement}
+            visible={startupPromptOpenId === 'announcement'}
+            onAction={handleAppAnnouncementAction}
+            onDismiss={dismissAppAnnouncement}
+          />
+          <AppAnnouncementModal
+            announcement={donationPromptAnnouncement}
+            visible={startupPromptOpenId === 'donation'}
+            onAction={handleDonationPromptAction}
+            onDismiss={dismissDonationPrompt}
+            onShown={recordDonationPromptVisible}
+          />
+          <AppAnnouncementModal
+            announcement={updateReminderInfo ? buildUpdateReminderAnnouncement(updateReminderInfo, resolveText) : null}
+            visible={startupPromptOpenId === 'update-reminder'}
+            onAction={handleUpdateReminderAction}
+            onDismiss={dismissUpdateReminder}
+          />
+          </StartupReadinessContext.Provider>
+          </ProjectNextActionPromptProvider>
+        </MobileAppLockGate>
+        <StatusBar
+          barStyle={sandboxMode ? 'dark-content' : (isDark ? 'light-content' : 'dark-content')}
+          backgroundColor={Platform.OS === 'android' && Number(Platform.Version) < 35
+            ? (sandboxMode ? '#FEF3C7' : tc.bg)
+            : undefined}
+        />
+      </NavigationThemeProvider>
+    </QuickCaptureProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <MobileWorkspaceBootGate>
+      {
+                                                                                                       }
+      <ShareIntentProvider options={{ resetOnBackground: false }}>
+        <ThemeProvider>
+          <LanguageProvider>
+            <ErrorBoundary>
+              <RootLayoutContent />
+            </ErrorBoundary>
+          </LanguageProvider>
+        </ThemeProvider>
+      </ShareIntentProvider>
+    </MobileWorkspaceBootGate>
+  );
+}

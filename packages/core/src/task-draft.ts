@@ -1,0 +1,480 @@
+import { normalizeBulkTaskTokenInput } from './bulk-task-tokens';
+import {
+    hasTimeComponent,
+    safeFormatDate,
+    safeParseDate,
+} from './date';
+import {
+    getRecurrenceCompletedOccurrencesValue,
+    getRecurrenceRRuleValue,
+    parseRRuleString,
+} from './recurrence';
+import { canonicalizeStringMapForComparison } from './sync-signatures';
+import { computeRelativeStartTime } from './task-relative-start';
+import { isTaskActionable } from './task-status';
+import { getTaskReminderPolicy } from './task-reminder-policy';
+import { logInfo } from './logger';
+import type {
+    Attachment,
+    Recurrence,
+    RecurrenceRule,
+    RecurrenceStrategy,
+    Task,
+    TaskEnergyLevel,
+    TaskPriority,
+    TaskStatus,
+    TimeEstimate,
+} from './types';
+
+
+export type TaskDraft = {
+    title: string;
+    dueDate: string;
+    startTime: string;
+    relativeStartOffset: Task['relativeStartOffset'];
+    projectId: string;
+    sectionId: string;
+    viewSectionIds: Task['viewSectionIds'];
+    areaId: string;
+    completedAt: string;
+    status: TaskStatus;
+    focusedToday: boolean;
+    contexts: string;
+    tags: string;
+    description: string;
+    location: string;
+    recurrence: RecurrenceRule | '';
+    recurrenceStrategy: RecurrenceStrategy;
+    recurrenceRRule: string;
+    showFutureRecurrence: boolean;
+    preserveChecklistOnRepeat: boolean;
+    timeEstimate: TimeEstimate | '';
+    timeSpentMinutes: number | undefined;
+    priority: TaskPriority | '';
+    energyLevel: TaskEnergyLevel | '';
+    assignedTo: string;
+    reviewAt: string;
+    repeatReminderMinutes: number | undefined;
+    dueReminderLeadMinutes: number | undefined;
+    startReminderLeadMinutes: number | undefined;
+    reminderPolicy: NonNullable<Task['reminderPolicy']>;
+    suppressStrideReminders: boolean;
+
+    dateInputBaseline?: TaskDraftDateInputBaseline;
+};
+
+const DATE_INPUT_FIELDS = ['startTime', 'dueDate', 'reviewAt'] as const;
+type DateInputField = typeof DATE_INPUT_FIELDS[number];
+export type TaskDraftDateInputBaseline = { taskId: string } & Record<DateInputField, { raw: string | null; input: string }>;
+
+export type TaskDraftField = Exclude<keyof TaskDraft, 'dateInputBaseline'>;
+
+
+export function isTaskDraftDateInputBaseline(value: unknown): value is TaskDraftDateInputBaseline {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).length === 4 && typeof record.taskId === 'string'
+        && DATE_INPUT_FIELDS.every((field) => {
+            const entry = record[field];
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+            const date = entry as Record<string, unknown>;
+            return Object.keys(date).length === 2 && (date.raw === null || typeof date.raw === 'string')
+                && typeof date.input === 'string';
+        });
+}
+
+const openingDateInput = (draft: TaskDraft, task: Task, field: DateInputField): string | undefined => {
+    const baseline = draft.dateInputBaseline;
+    return isTaskDraftDateInputBaseline(baseline) && baseline.taskId === task.id && baseline[field].raw === (task[field] ?? null)
+        ? baseline[field].input : undefined;
+};
+
+const preservesDateAfterTimezoneChange = (draft: TaskDraft, task: Task, field: DateInputField): boolean => {
+    const opening = openingDateInput(draft, task, field);
+    return opening !== undefined && draft[field] === opening && opening !== toTaskDraftDateTimeLocalValue(task[field]);
+};
+
+const serializeDraftDate = (draft: TaskDraft, task: Task, field: DateInputField): string | undefined => (
+    preservesDateAfterTimezoneChange(draft, task, field) ? task[field] : draft[field] || undefined
+);
+
+
+export type TaskDraftSetter = <K extends TaskDraftField>(field: K, value: TaskDraft[K]) => void;
+
+type FieldSpec<K extends TaskDraftField> = {
+    fromTask: (task: Task) => TaskDraft[K];
+
+    isDirty?: (draftValue: TaskDraft[K], task: Task) => boolean;
+
+    onSet?: (draft: TaskDraft) => TaskDraft;
+};
+
+const trimmedDiffers = (draftValue: string, taskValue: string) => draftValue.trim() !== taskValue.trim();
+
+
+export function toTaskDraftDateTimeLocalValue(dateStr: string | undefined): string {
+    if (!dateStr) return '';
+    const parsed = safeParseDate(dateStr);
+    if (!parsed) return dateStr;
+    if (!hasTimeComponent(dateStr)) {
+        return safeFormatDate(parsed, 'yyyy-MM-dd', dateStr);
+    }
+    return safeFormatDate(parsed, "yyyy-MM-dd'T'HH:mm", dateStr);
+}
+
+export function getTaskDraftRecurrenceRuleValue(recurrence: Task['recurrence']): RecurrenceRule | '' {
+    if (!recurrence) return '';
+    if (typeof recurrence === 'string') return recurrence as RecurrenceRule;
+    return recurrence.rule || '';
+}
+
+export function getTaskDraftRecurrenceStrategyValue(recurrence: Task['recurrence']): RecurrenceStrategy {
+    if (recurrence && typeof recurrence === 'object' && recurrence.strategy === 'fluid') {
+        return 'fluid';
+    }
+    return 'strict';
+}
+
+export const getTaskDraftRecurrenceRRuleValue = getRecurrenceRRuleValue;
+
+const TASK_DRAFT_FIELDS: { [K in TaskDraftField]: FieldSpec<K> } = {
+    title: { fromTask: (task) => task.title },
+    dueDate: {
+        fromTask: (task) => toTaskDraftDateTimeLocalValue(task.dueDate),
+
+
+        onSet: (draft) => {
+            if (!draft.relativeStartOffset) return draft;
+            const startTime = draft.dueDate ? computeRelativeStartTime(draft.dueDate, draft.relativeStartOffset) : undefined;
+            return startTime
+                ? { ...draft, startTime }
+                : { ...draft, relativeStartOffset: undefined };
+        },
+    },
+    startTime: {
+        fromTask: (task) => toTaskDraftDateTimeLocalValue(task.startTime),
+
+        onSet: (draft) => (
+            draft.relativeStartOffset
+            && draft.startTime !== computeRelativeStartTime(draft.dueDate, draft.relativeStartOffset)
+                ? { ...draft, relativeStartOffset: undefined }
+                : draft
+        ),
+    },
+    relativeStartOffset: {
+        fromTask: (task) => task.relativeStartOffset,
+        isDirty: (value, task) =>
+            JSON.stringify(value ?? null) !== JSON.stringify(task.relativeStartOffset ?? null),
+    },
+    projectId: { fromTask: (task) => task.projectId || '' },
+    sectionId: { fromTask: (task) => task.sectionId || '' },
+    viewSectionIds: {
+        fromTask: (task) => task.viewSectionIds,
+        isDirty: (value, task) => (
+            (value === undefined) !== (task.viewSectionIds === undefined)
+            || JSON.stringify(canonicalizeStringMapForComparison(value) ?? {})
+                !== JSON.stringify(canonicalizeStringMapForComparison(task.viewSectionIds) ?? {})
+        ),
+    },
+    areaId: { fromTask: (task) => task.areaId || '' },
+    completedAt: {
+        fromTask: (task) => task.completedAt || '',
+        onSet: (draft) => draft.status === 'done' || !draft.completedAt
+            ? draft
+            : { ...draft, completedAt: '' },
+    },
+    status: {
+        fromTask: (task) => task.status,
+
+
+        onSet: (draft) => {
+            const focusedToday = draft.status === 'inbox' || !isTaskActionable(draft.status)
+                ? false : draft.focusedToday;
+            const completedAt = draft.status === 'done' ? draft.completedAt : '';
+            return focusedToday === draft.focusedToday && completedAt === draft.completedAt
+                ? draft
+                : { ...draft, focusedToday, completedAt };
+        },
+    },
+    focusedToday: {
+        fromTask: (task) => task.isFocusedToday === true,
+
+        onSet: (draft) => {
+            if (!draft.focusedToday) return draft;
+            if (draft.status === 'inbox') return { ...draft, status: 'next' };
+            return isTaskActionable(draft.status) ? draft : { ...draft, focusedToday: false };
+        },
+    },
+    contexts: {
+        fromTask: (task) => task.contexts?.join(', ') || '',
+        isDirty: (value, task) => trimmedDiffers(value, task.contexts?.join(', ') || ''),
+    },
+    tags: {
+        fromTask: (task) => task.tags?.join(', ') || '',
+        isDirty: (value, task) => trimmedDiffers(value, task.tags?.join(', ') || ''),
+    },
+    description: { fromTask: (task) => task.description || '' },
+    location: { fromTask: (task) => task.location || '' },
+    recurrence: { fromTask: (task) => getTaskDraftRecurrenceRuleValue(task.recurrence) },
+    recurrenceStrategy: { fromTask: (task) => getTaskDraftRecurrenceStrategyValue(task.recurrence) },
+    recurrenceRRule: { fromTask: (task) => getTaskDraftRecurrenceRRuleValue(task.recurrence) },
+    preserveChecklistOnRepeat: { fromTask: (task) => typeof task.recurrence === 'object' && task.recurrence?.preserveChecklistOnRepeat === true },
+    showFutureRecurrence: { fromTask: (task) => Boolean(task.showFutureRecurrence) },
+    timeEstimate: { fromTask: (task) => task.timeEstimate || '' },
+    timeSpentMinutes: {
+        fromTask: (task) => task.timeSpentMinutes,
+        isDirty: (value, task) => (value ?? undefined) !== (task.timeSpentMinutes ?? undefined),
+    },
+    priority: { fromTask: (task) => task.priority || '' },
+    energyLevel: { fromTask: (task) => task.energyLevel || '' },
+    assignedTo: { fromTask: (task) => task.assignedTo || '' },
+    reviewAt: { fromTask: (task) => toTaskDraftDateTimeLocalValue(task.reviewAt) },
+    dueReminderLeadMinutes: {
+        fromTask: (task) => task.dueReminderLeadMinutes,
+        isDirty: (value, task) => value !== undefined && value !== task.dueReminderLeadMinutes,
+    },
+    startReminderLeadMinutes: {
+        fromTask: (task) => task.startReminderLeadMinutes,
+        isDirty: (value, task) => value !== undefined && value !== task.startReminderLeadMinutes,
+    },
+    repeatReminderMinutes: {
+        fromTask: (task) => task.repeatReminderMinutes,
+        isDirty: (value, task) => (value ?? undefined) !== (task.repeatReminderMinutes ?? undefined),
+    },
+    suppressStrideReminders: {
+        fromTask: (task) => task.suppressStrideReminders === true,
+        isDirty: (value, task) => value !== (task.suppressStrideReminders === true),
+        onSet: (draft) => ({ ...draft, reminderPolicy: draft.suppressStrideReminders ? 'skip' : 'send' }),
+    },
+    reminderPolicy: {
+        fromTask: getTaskReminderPolicy,
+    },
+};
+
+export const TASK_DRAFT_FIELD_KEYS = Object.keys(TASK_DRAFT_FIELDS) as TaskDraftField[];
+
+export function createTaskDraft(task: Task): TaskDraft {
+    const draft = {} as TaskDraft;
+    for (const key of TASK_DRAFT_FIELD_KEYS) {
+        (draft as Record<TaskDraftField, unknown>)[key] = TASK_DRAFT_FIELDS[key].fromTask(task);
+    }
+    draft.dateInputBaseline = {
+        taskId: task.id,
+        startTime: { raw: task.startTime ?? null, input: draft.startTime },
+        dueDate: { raw: task.dueDate ?? null, input: draft.dueDate },
+        reviewAt: { raw: task.reviewAt ?? null, input: draft.reviewAt },
+    };
+    return draft;
+}
+
+
+export function setTaskDraftField<K extends TaskDraftField>(
+    draft: TaskDraft,
+    field: K,
+    value: TaskDraft[K],
+): TaskDraft {
+    if (draft[field] === value && !(field === 'suppressStrideReminders' && draft.reminderPolicy === 'inherit')) return draft;
+    const next = { ...draft, [field]: value };
+    const spec = TASK_DRAFT_FIELDS[field] as FieldSpec<K>;
+    return spec.onSet ? spec.onSet(next) : next;
+}
+
+export function isTaskDraftDirty(draft: TaskDraft, task: Task): boolean {
+    return TASK_DRAFT_FIELD_KEYS.some((key) => {
+        const spec = TASK_DRAFT_FIELDS[key] as FieldSpec<TaskDraftField>;
+        if (spec.isDirty) return spec.isDirty(draft[key], task);
+        if ((DATE_INPUT_FIELDS as readonly string[]).includes(key)) {
+            return draft[key] !== (openingDateInput(draft, task, key as DateInputField) ?? spec.fromTask(task));
+        }
+        return draft[key] !== spec.fromTask(task);
+    });
+}
+
+const attachmentFingerprint = (attachments: Attachment[] | undefined) =>
+    (attachments ?? [])
+        .map((attachment) => (
+            `${attachment.id}\0${attachment.uri ?? ''}\0${attachment.title ?? ''}\0${attachment.deletedAt ?? ''}`
+        ))
+        .join('\n');
+
+
+export function areDraftAttachmentsDirty(editAttachments: Attachment[] | undefined, task: Task): boolean {
+    return attachmentFingerprint(editAttachments) !== attachmentFingerprint(task.attachments);
+}
+
+type TaskDraftPatchOptions = {
+    statusOverride?: TaskStatus;
+    attachments?: Attachment[];
+};
+
+const RECURRENCE_ANCHOR_FIELDS = [
+    'anchorDay',
+    'startAnchorDay',
+    'dueAnchorDay',
+    'reviewAnchorDay',
+] as const satisfies readonly (keyof Recurrence)[];
+
+
+export function resolveTaskDraftTitle(draftTitle: string, originalTitle: string): string {
+    return draftTitle.trim() || originalTitle;
+}
+
+
+export function serializeTaskDraftTokens(value: string, field: 'contexts' | 'tags'): string[] {
+    return value.split(',').map((token) => normalizeBulkTaskTokenInput(token, field)).filter(Boolean);
+}
+
+
+export function taskDraftToUpdatePatch(
+    draft: TaskDraft,
+    task: Task,
+    options: TaskDraftPatchOptions = {},
+): Partial<Task> | null {
+    const cleanedTitle = resolveTaskDraftTitle(draft.title, task.title);
+    if (!cleanedTitle.trim()) return null;
+
+    const resolvedProjectId = draft.projectId || undefined;
+    const recurrenceValue: Recurrence | undefined = draft.recurrence
+        ? { rule: draft.recurrence, strategy: draft.recurrenceStrategy,
+            ...(draft.preserveChecklistOnRepeat ? { preserveChecklistOnRepeat: true } : {}) }
+        : undefined;
+    const storedRecurrence = task.recurrence && typeof task.recurrence === 'object'
+        ? task.recurrence
+        : undefined;
+    if (recurrenceValue && storedRecurrence?.rule === recurrenceValue.rule) {
+        for (const field of RECURRENCE_ANCHOR_FIELDS) {
+            const value = storedRecurrence[field];
+            if (typeof value === 'number') {
+                recurrenceValue[field] = value;
+            }
+        }
+    }
+    if (recurrenceValue && draft.recurrenceRRule) {
+        const parsed = parseRRuleString(draft.recurrenceRRule);
+        if (parsed.byDay && parsed.byDay.length > 0) {
+            recurrenceValue.byDay = parsed.byDay;
+        }
+        if (parsed.byMonthDay && parsed.byMonthDay.length > 0) {
+            recurrenceValue.byMonthDay = parsed.byMonthDay;
+        }
+        if (parsed.weekStart) {
+            recurrenceValue.weekStart = parsed.weekStart;
+        }
+        if (parsed.count) {
+            recurrenceValue.count = parsed.count;
+        }
+        if (parsed.until) {
+            recurrenceValue.until = parsed.until;
+        }
+        const completedOccurrences = getRecurrenceCompletedOccurrencesValue(task.recurrence);
+        if (typeof completedOccurrences === 'number') {
+            recurrenceValue.completedOccurrences = completedOccurrences;
+        }
+        recurrenceValue.rrule = draft.recurrenceRRule;
+    }
+
+
+    const attachmentsPatch = (options.attachments?.length ?? 0) > 0
+        ? { attachments: options.attachments }
+        : {};
+
+    return {
+        title: cleanedTitle,
+        status: options.statusOverride ?? draft.status,
+        completedAt: draft.status === 'done' ? (draft.completedAt || undefined) : undefined,
+        isFocusedToday: draft.focusedToday,
+        dueDate: serializeDraftDate(draft, task, 'dueDate'),
+        startTime: serializeDraftDate(draft, task, 'startTime'),
+        relativeStartOffset: draft.relativeStartOffset,
+        projectId: resolvedProjectId,
+
+
+        sectionId: resolvedProjectId ? (draft.sectionId || undefined) : undefined,
+        viewSectionIds: draft.viewSectionIds,
+        areaId: resolvedProjectId ? undefined : (draft.areaId || undefined),
+        contexts: serializeTaskDraftTokens(draft.contexts, 'contexts'),
+        tags: serializeTaskDraftTokens(draft.tags, 'tags'),
+        description: draft.description || undefined,
+        location: draft.location.trim() || undefined,
+        recurrence: recurrenceValue,
+        showFutureRecurrence: recurrenceValue && draft.showFutureRecurrence ? true : undefined,
+        timeEstimate: draft.timeEstimate || undefined,
+        timeSpentMinutes: draft.timeSpentMinutes || undefined,
+        priority: draft.priority || undefined,
+        energyLevel: draft.energyLevel || undefined,
+        assignedTo: draft.assignedTo.trim() || undefined,
+        reviewAt: serializeDraftDate(draft, task, 'reviewAt'),
+        repeatReminderMinutes: draft.repeatReminderMinutes || undefined,
+        ...(draft.dueReminderLeadMinutes !== undefined && draft.dueReminderLeadMinutes !== task.dueReminderLeadMinutes
+            ? { dueReminderLeadMinutes: draft.dueReminderLeadMinutes } : {}),
+        ...(draft.startReminderLeadMinutes !== undefined && draft.startReminderLeadMinutes !== task.startReminderLeadMinutes
+            ? { startReminderLeadMinutes: draft.startReminderLeadMinutes } : {}),
+        ...(task.reminderPolicy !== undefined || draft.reminderPolicy !== getTaskReminderPolicy(task)
+            ? { reminderPolicy: draft.reminderPolicy } : {}),
+        ...attachmentsPatch,
+    };
+}
+
+const RAW_CONTAINER_TASK_FIELDS = new Set<keyof Task>(['projectId', 'sectionId', 'areaId']);
+
+const areSerializedTaskFieldValuesEqual = (left: unknown, right: unknown): boolean => {
+    if ((left === '' && right == null) || (right === '' && left == null)) {
+        return true;
+    }
+    if (
+        Array.isArray(left)
+        || Array.isArray(right)
+        || (typeof left === 'object' && left !== null)
+        || (typeof right === 'object' && right !== null)
+    ) {
+        return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+    }
+    return (left ?? null) === (right ?? null);
+};
+
+
+export function taskDraftToChangedUpdatePatch(
+    draft: TaskDraft,
+    baselineTask: Task,
+    options: TaskDraftPatchOptions = {},
+): Partial<Task> | null {
+    const patch = taskDraftToUpdatePatch(draft, baselineTask, options);
+    if (!patch) return null;
+
+    const baseline = taskDraftToUpdatePatch(createTaskDraft(baselineTask), baselineTask, {
+        attachments: baselineTask.attachments,
+    }) ?? {};
+    const narrowed: Partial<Task> = { ...patch };
+    let preservedDate = false;
+    for (const key of Object.keys(narrowed) as (keyof Task)[]) {
+
+
+        let baselineValue = RAW_CONTAINER_TASK_FIELDS.has(key)
+            ? baselineTask[key]
+            : baseline[key];
+        if ((DATE_INPUT_FIELDS as readonly string[]).includes(key)) {
+            const field = key as DateInputField;
+            const opening = openingDateInput(draft, baselineTask, field);
+            if (opening !== undefined) {
+                const preserved = preservesDateAfterTimezoneChange(draft, baselineTask, field);
+                baselineValue = preserved ? baselineTask[field] : opening || undefined;
+                preservedDate ||= preserved;
+            }
+        }
+        if (areSerializedTaskFieldValuesEqual(narrowed[key], baselineValue)) {
+            delete narrowed[key];
+        }
+    }
+    if (preservedDate) {
+        logInfo('Task draft preserved unchanged dates after timezone change', {
+            scope: 'task-draft', category: 'storage',
+            context: { releaseCheck: 'v1.3.3/task-draft-timezone', outcome: 'preserved' },
+        });
+    }
+
+
+    if (patch.relativeStartOffset && ('startTime' in narrowed || 'dueDate' in narrowed)) {
+        narrowed.relativeStartOffset = patch.relativeStartOffset;
+    }
+    return narrowed;
+}

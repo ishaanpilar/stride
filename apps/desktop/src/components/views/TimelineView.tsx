@@ -1,0 +1,1329 @@
+import React from 'react';
+import { createPortal } from 'react-dom';
+import { ChevronDown } from 'lucide-react';
+import { addDays, differenceInCalendarDays, startOfDay } from 'date-fns';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { DndContext, PointerSensor, closestCenter, pointerWithin, useSensor, useSensors, type CollisionDetection } from '@dnd-kit/core';
+import { SortableContext } from '@dnd-kit/sortable';
+import {
+    buildProjectTaskListModel,
+    compareAreasByOrder,
+    DEFAULT_AREA_COLOR,
+    compareProjectsByOrder,
+    canEditTimelineTaskDates,
+    canEditTimelineProjectDates,
+    getCalendarDayOfMonth,
+    getCalendarMonthIndex,
+    getWeekStartsOnIndex,
+    hasTimeComponent,
+    isTaskVisibleInArea,
+    isTaskCompleted,
+    isTaskFinished,
+    taskMatchesAreaFilterSelection,
+    projectMatchesAreaFilterSelection,
+    safeFormatDate,
+    safeParseDate,
+    resolveTaskSortByForFeatures,
+    tFallback,
+    useTaskStore,
+    type Project,
+    type Task,
+} from '@stride/core';
+
+import { ErrorBoundary } from '../ErrorBoundary';
+import type { TimelineDateEditTarget } from '../../lib/timeline-date-edit';
+import { useTimelineDateEditing } from './timeline/useTimelineDateEditing';
+import { TASK_STATUS_ICONS } from '../../lib/task-status-icons';
+import { useDropdownPosition } from '../ui/use-dropdown-position';
+import { cn } from '../../lib/utils';
+import { dispatchNavigateEvent } from '../../lib/navigation-events';
+import { useUiStore } from '../../store/ui-store';
+import { getProjectAccentColor, getTaskAccentColor } from '../../lib/task-accent-color';
+import { useLanguage } from '../../contexts/language-context';
+import { useAreaVisibility } from '../../hooks/useVisibleTaskContext';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
+import { useLocalDayKey } from '../../hooks/useLocalDayKey';
+import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
+import { checkBudget } from '../../config/performanceBudgets';
+import { ListEmptyState } from './list/ListEmptyState';
+import { CalendarOpenTaskModal } from './calendar/CalendarModals';
+import { resolveCalendarLocale } from './calendar-locale';
+import { beginRendererActivity, recordRendererActivity } from '../../lib/renderer-navigation-diagnostics';
+import { captureTimelineOrder, commitTimelineOrder, timelineOrderScope, type TimelineOrderSnapshot, type TimelineOrderTarget } from '../../lib/timeline-order';
+import { TimelineOrderRow } from './timeline/TimelineOrderRow';
+
+const timelineOrderCollision: CollisionDetection = (args) => {
+    const scope = args.active.data.current?.scope;
+    const droppableContainers = args.droppableContainers.filter((entry) => entry.data.current?.scope === scope);
+    return (args.pointerCoordinates ? pointerWithin : closestCenter)({ ...args, droppableContainers });
+};
+
+const TIMELINE_VIEW_STATE_STORAGE_KEY = 'stride:view:timeline:v1';
+
+const ZOOM_LEVELS = ['day', 'week', 'month'] as const;
+type TimelineZoom = (typeof ZOOM_LEVELS)[number];
+
+
+const DAY_WIDTH: Record<TimelineZoom, number> = { day: 32, week: 12, month: 4 };
+
+const MIN_BAR_WIDTH = 10;
+
+const MARKER_WIDTH = 12;
+const MARKER_HEIGHT = 12;
+const ROW_HEIGHT = 30;
+const BAR_HEIGHT = 10;
+
+const PROJECT_BAR_HEIGHT = 14;
+const AXIS_HEIGHT = 44;
+
+const GUTTER_WIDTH = 224;
+
+const TRACK_TAIL = 24;
+const MIN_MAJOR_LABEL_GAP = 68;
+const MIN_MINOR_LABEL_GAP = 26;
+
+
+const MAX_SPAN_DAYS = 400;
+
+const VIRTUALIZE_ABOVE_ROWS = 100;
+
+const TIMELINE_STATUSES = ['inbox', 'next', 'waiting', 'someday', 'done'] as const;
+type TimelineStatus = (typeof TIMELINE_STATUSES)[number];
+type TimelinePersistedViewState = {
+    zoom: TimelineZoom;
+    statuses: TimelineStatus[];
+};
+
+const DEFAULT_TIMELINE_VIEW_STATE: TimelinePersistedViewState = {
+    zoom: 'week', statuses: ['inbox', 'next', 'waiting', 'someday'],
+};
+
+function sanitizeTimelineViewState(
+    value: unknown,
+    fallback: TimelinePersistedViewState,
+): TimelinePersistedViewState {
+    const parsed = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Partial<TimelinePersistedViewState>
+        : {};
+    const statuses = Array.isArray(parsed.statuses)
+        ? TIMELINE_STATUSES.filter((status) => parsed.statuses?.includes(status))
+        : fallback.statuses;
+    return {
+        statuses: statuses.length > 0 || (Array.isArray(parsed.statuses) && parsed.statuses.length === 0)
+            ? statuses : fallback.statuses,
+        zoom: ZOOM_LEVELS.includes(parsed.zoom as TimelineZoom) ? parsed.zoom as TimelineZoom : fallback.zoom,
+    };
+}
+
+
+function hexChannels(hex: string): string | null {
+    const value = hex.trim().replace('#', '');
+    const full = value.length === 3
+        ? value.split('').map((channel) => channel + channel).join('')
+        : value.slice(0, 6);
+    if (!/^[0-9a-fA-F]{6}$/.test(full)) return null;
+    const int = Number.parseInt(full, 16);
+    return `${(int >> 16) & 255}, ${(int >> 8) & 255}, ${int & 255}`;
+}
+
+
+export function taskBarTint(color: string | undefined): { fill: string; border: string } {
+    const channels = color ? hexChannels(color) : null;
+    return channels
+        ? { fill: `rgba(${channels}, 0.25)`, border: `rgba(${channels}, 0.7)` }
+        : { fill: 'hsl(var(--primary) / 0.25)', border: 'hsl(var(--primary) / 0.7)' };
+}
+
+
+function describeDates(
+    t: (key: string) => string,
+    start: string | undefined,
+    due: string | undefined,
+): string {
+    return [
+        start
+            ? `${tFallback(
+                t,
+                hasTimeComponent(start) ? 'task.aria.startTime' : 'task.aria.startDate',
+                hasTimeComponent(start) ? 'Start time' : 'Start date',
+            )}: ${safeFormatDate(start, hasTimeComponent(start) ? 'PPp' : 'PP', start)}`
+            : null,
+        due
+            ? `${tFallback(
+                t,
+                hasTimeComponent(due) ? 'task.aria.dueTime' : 'task.aria.dueDate',
+                hasTimeComponent(due) ? 'Due time' : 'Due date',
+            )}: ${safeFormatDate(due, hasTimeComponent(due) ? 'PPp' : 'PP', due)}`
+            : null,
+    ].filter((part): part is string => Boolean(part)).join('. ');
+}
+
+
+function taskDays(task: Task): { start: Date | null; due: Date | null } {
+    const start = safeParseDate(task.startTime);
+    const due = safeParseDate(task.dueDate);
+    return {
+        start: start ? startOfDay(start) : null,
+        due: due ? startOfDay(due) : null,
+    };
+}
+
+
+export function resolveTimelineTrack(
+    days: number,
+    minDayWidth: number,
+    viewportWidth: number,
+): { dayWidth: number; trackWidth: number; fitted: boolean } {
+    if (days <= 0) return { dayWidth: minDayWidth, trackWidth: 0, fitted: false };
+
+
+    return viewportWidth > 0 && days * minDayWidth <= viewportWidth
+        ? { dayWidth: viewportWidth / days, trackWidth: viewportWidth, fitted: true }
+        : { dayWidth: minDayWidth, trackWidth: days * minDayWidth, fitted: false };
+}
+
+type AxisTick = { left: number; label: string };
+
+
+function thinTicks(ticks: AxisTick[], gap: number): AxisTick[] {
+    const kept: AxisTick[] = [];
+    for (const tick of ticks) {
+        const previous = kept[kept.length - 1];
+        if (previous && tick.left - previous.left < gap) {
+            if (previous.left !== 0) continue;
+            kept.pop();
+        }
+        kept.push(tick);
+    }
+    return kept;
+}
+
+type TimelineRow =
+    | {
+        kind: 'group';
+        key: string;
+        label: string;
+        color: string | undefined;
+        project: Project | undefined;
+
+        span: { lo: number; hi: number } | undefined;
+    }
+    | { kind: 'task'; key: string; task: Task; color: string | undefined; lo: number; hi: number; single: boolean };
+
+export function TimelineView() {
+    const perf = usePerformanceMonitor('TimelineView');
+    const activeTasks = useTaskStore((state) => state.tasks);
+    const allTasks = useTaskStore((state) => state._allTasks);
+    const sections = useTaskStore((state) => state.sections);
+    const allSections = useTaskStore((state) => state._allSections);
+    const settings = useTaskStore((state) => state.settings);
+    const weekStart = useTaskStore((state) => state.settings?.weekStart);
+    const calendarSystem = useTaskStore((state) => state.settings?.calendarSystem);
+    const dateFormat = useTaskStore((state) => state.settings?.dateFormat);
+    const language = useTaskStore((state) => state.settings?.language);
+    const { t } = useLanguage();
+    const visibility = useAreaVisibility();
+    const { areaById, projectById, resolvedAreaFilter } = visibility;
+    const [persistedViewState, setPersistedViewState] = usePersistedViewState(
+        TIMELINE_VIEW_STATE_STORAGE_KEY,
+        DEFAULT_TIMELINE_VIEW_STATE,
+        sanitizeTimelineViewState,
+    );
+    const zoom = persistedViewState.zoom;
+    const statuses = persistedViewState.statuses;
+    const tasks = statuses.includes('done') ? allTasks : activeTasks;
+    const statusLabel = (status: TimelineStatus) => t(status === 'done' ? 'list.done' : `status.${status}`);
+    const statusFilterLabel = t('taskEdit.statusLabel');
+    const [statusFilterOpen, setStatusFilterOpen] = React.useState(false);
+    const statusFilterRef = React.useRef<HTMLDivElement>(null);
+    const statusTriggerRef = React.useRef<HTMLButtonElement>(null);
+    const statusPanelRef = React.useRef<HTMLDivElement>(null);
+    const statusPanelId = React.useId();
+    const { fixedDropdownStyle, listMaxHeight } = useDropdownPosition({
+        open: statusFilterOpen, containerRef: statusFilterRef, dropdownRef: statusPanelRef,
+    });
+    React.useEffect(() => {
+        if (!statusFilterOpen) return;
+        statusPanelRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+        const onPointer = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (!statusFilterRef.current?.contains(target) && !statusPanelRef.current?.contains(target)) {
+                setStatusFilterOpen(false);
+            }
+        };
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            setStatusFilterOpen(false);
+            statusTriggerRef.current?.focus();
+        };
+        document.addEventListener('mousedown', onPointer);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onPointer);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [statusFilterOpen]);
+    const hasStatusFilter = statuses.length !== DEFAULT_TIMELINE_VIEW_STATE.statuses.length
+        || DEFAULT_TIMELINE_VIEW_STATE.statuses.some((status) => !statuses.includes(status));
+    const weekStartsOn = getWeekStartsOnIndex(weekStart);
+    const calendarLocale = React.useMemo(() => resolveCalendarLocale({
+        language,
+        dateFormat,
+        calendarSystem,
+        systemLocale: typeof navigator === 'undefined' ? undefined : navigator.language,
+    }), [calendarSystem, dateFormat, language]);
+    const axisDateFormatters = React.useMemo(() => {
+        const create = (options: Intl.DateTimeFormatOptions) => {
+            try {
+                return new Intl.DateTimeFormat(calendarLocale, options);
+            } catch {
+                return new Intl.DateTimeFormat('en-US', options);
+            }
+        };
+        return {
+            day: create({ day: 'numeric' }),
+            month: create({ month: 'short' }),
+            monthYear: create({ month: 'short', year: 'numeric' }),
+            year: create({ year: 'numeric' }),
+        };
+    }, [calendarLocale]);
+    const scrollRef = React.useRef<HTMLDivElement>(null);
+    const [viewportWidth, setViewportWidth] = React.useState(0);
+    const [openTaskId, setOpenTaskId] = React.useState<string | null>(null);
+    const [windowStart, setWindowStart] = React.useState<Date | null>(null);
+    const localDayKey = useLocalDayKey();
+
+    React.useEffect(() => {
+        if (!perf.enabled) return;
+        const timer = window.setTimeout(() => {
+            checkBudget('TimelineView', perf.metrics, 'complex');
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [perf.enabled]);
+
+    const today = React.useMemo(() => startOfDay(new Date()), [localDayKey]);
+
+    const datedTasks = React.useMemo(() => {
+        perf.trackUseMemo();
+        return tasks.filter((task) => {
+            if (task.deletedAt || task.purgedAt) return false;
+            const completed = isTaskCompleted(task);
+            if (!statuses.includes(completed ? 'done' : task.status as TimelineStatus)) return false;
+            if (!safeParseDate(task.startTime) && !safeParseDate(task.dueDate)) return false;
+
+            return completed
+                ? taskMatchesAreaFilterSelection(task, resolvedAreaFilter, projectById, areaById)
+                : isTaskVisibleInArea(task, visibility);
+        });
+    }, [tasks, statuses, visibility, resolvedAreaFilter, projectById, areaById]);
+
+    const projectSpans = React.useMemo(() => {
+        perf.trackUseMemo();
+        const historicalProjectIds = new Set(datedTasks.filter(isTaskCompleted).map((task) => task.projectId));
+        const spans = new Map<string, { start: Date | null; due: Date | null }>();
+        for (const project of projectById.values()) {
+            if (project.deletedAt || project.purgedAt) continue;
+            if (project.status === 'archived' && !historicalProjectIds.has(project.id)) continue;
+            const start = safeParseDate(project.startDate);
+            const due = safeParseDate(project.dueDate);
+            if (!start && !due) continue;
+            if (!projectMatchesAreaFilterSelection(project, resolvedAreaFilter, areaById)) continue;
+            spans.set(project.id, {
+                start: start ? startOfDay(start) : null,
+                due: due ? startOfDay(due) : null,
+            });
+        }
+        return spans;
+    }, [areaById, datedTasks, projectById, resolvedAreaFilter]);
+
+    const range = React.useMemo(() => {
+        perf.trackUseMemo();
+        let min: Date | null = null;
+        let max: Date | null = null;
+        for (const task of datedTasks) {
+            const { start, due } = taskDays(task);
+            for (const day of [start, due]) {
+                if (!day) continue;
+                if (!min || day < min) min = day;
+                if (!max || day > max) max = day;
+            }
+        }
+
+        for (const span of projectSpans.values()) {
+            for (const day of [span.start, span.due]) {
+                if (!day) continue;
+                if (!min || day < min) min = day;
+                if (!max || day > max) max = day;
+            }
+        }
+        if (!min || !max) return null;
+        if (windowStart && differenceInCalendarDays(max, min) > MAX_SPAN_DAYS) {
+            const latestFrom = addDays(max, -MAX_SPAN_DAYS);
+            const from = windowStart < min
+                ? min
+                : windowStart > latestFrom
+                    ? latestFrom
+                    : windowStart;
+            const requestedTo = addDays(from, MAX_SPAN_DAYS);
+            const to = requestedTo > max ? max : requestedTo;
+            return { from, to, days: differenceInCalendarDays(to, from) + 1 };
+        }
+
+
+        let from = min < today ? min : today;
+        let to = max > today ? max : today;
+        if (differenceInCalendarDays(to, from) > MAX_SPAN_DAYS) {
+
+
+            from = min;
+            to = max;
+            if (differenceInCalendarDays(to, from) > MAX_SPAN_DAYS) {
+                const anchor = today < min
+                    ? min
+                    : today > max
+                        ? addDays(max, -MAX_SPAN_DAYS)
+                        : addDays(today, -Math.floor(MAX_SPAN_DAYS / 2));
+                from = anchor < min ? min : anchor;
+                to = addDays(from, MAX_SPAN_DAYS);
+                if (to > max) to = max;
+            }
+        }
+        return { from, to, days: differenceInCalendarDays(to, from) + 1 };
+    }, [datedTasks, projectSpans, today, windowStart]);
+
+    const timelineRows = React.useMemo(() => {
+        perf.trackUseMemo();
+        if (!range) return { rows: [] as TimelineRow[], earlierOmitted: 0, laterOmitted: 0 };
+        const dayIndex = (day: Date) => differenceInCalendarDays(day, range.from);
+        const byProject = new Map<string, TimelineRow[]>();
+        let earlierOmitted = 0;
+        let laterOmitted = 0;
+        for (const task of datedTasks) {
+            const { start, due } = taskDays(task);
+            const a = start ? dayIndex(start) : null;
+            const b = due ? dayIndex(due) : null;
+            const single = a === null || b === null;
+
+            const lo = Math.min(a ?? b!, b ?? a!);
+            const hi = Math.max(a ?? b!, b ?? a!);
+            if (hi < 0) {
+                earlierOmitted += 1;
+                continue;
+            }
+            if (lo > range.days - 1) {
+                laterOmitted += 1;
+                continue;
+            }
+            const color = getTaskAccentColor(task, projectById, areaById);
+            const key = task.projectId && projectById.has(task.projectId) ? task.projectId : '';
+            const list = byProject.get(key);
+            const row: TimelineRow = { kind: 'task', key: task.id, task, color, lo, hi, single };
+            if (list) list.push(row);
+            else byProject.set(key, [row]);
+        }
+
+        const projectGroups: { project: Project | undefined; rows: TimelineRow[] }[] = [];
+        for (const [projectId, groupRows] of byProject) {
+            if (!projectId) continue;
+            projectGroups.push({ project: projectById.get(projectId), rows: groupRows });
+        }
+
+
+        for (const projectId of projectSpans.keys()) {
+            if (byProject.has(projectId)) continue;
+            const project = projectById.get(projectId);
+            if (project) projectGroups.push({ project, rows: [] });
+        }
+        projectGroups.sort((a, b) => {
+            if (a.project && b.project) {
+                const aArea = a.project.areaId ? areaById.get(a.project.areaId) : undefined;
+                const bArea = b.project.areaId ? areaById.get(b.project.areaId) : undefined;
+                if (aArea?.id !== bArea?.id) {
+                    if (aArea && bArea) return compareAreasByOrder(aArea, bArea);
+                    return aArea ? -1 : bArea ? 1 : 0;
+                }
+                return compareProjectsByOrder(a.project, b.project);
+            }
+            return a.project ? -1 : b.project ? 1 : 0;
+        });
+        const noProjectRows = byProject.get('');
+        if (noProjectRows) projectGroups.push({ project: undefined, rows: noProjectRows });
+
+        const flattened: TimelineRow[] = [];
+        for (const group of projectGroups) {
+            if (group.project) {
+                const rowsById = new Map(group.rows.map((row) => [row.key, row]));
+                const model = buildProjectTaskListModel({
+                    project: group.project, tasks: group.rows.flatMap((row) => row.kind === 'task' ? [row.task] : []),
+                    visibleTasks: [], sections, allSections, statusFilter: 'all', criteria: {}, searchQuery: '',
+                    sortBy: resolveTaskSortByForFeatures(group.project.taskSortBy ?? 'default', settings),
+                    projectOrder: true, reorderMode: false, groupCompletedTasksLast: false, completedCollapsed: false, t,
+                });
+                group.rows = model.items.flatMap((item) => item.type === 'task' ? [rowsById.get(item.task.id)!] : []);
+            } else {
+                group.rows.sort((a, b) => a.kind === 'task' && b.kind === 'task'
+                    ? a.lo - b.lo || (safeParseDate(a.task.createdAt)?.getTime() ?? 0) - (safeParseDate(b.task.createdAt)?.getTime() ?? 0)
+                    : 0);
+            }
+
+
+            const groupColor = group.project ? getProjectAccentColor(group.project, areaById) : undefined;
+
+
+            const projectSpan = group.project ? projectSpans.get(group.project.id) : undefined;
+            let span: { lo: number; hi: number } | undefined;
+            if (projectSpan) {
+                let taskLo = Number.POSITIVE_INFINITY;
+                let taskHi = Number.NEGATIVE_INFINITY;
+                for (const row of group.rows) {
+                    if (row.kind !== 'task') continue;
+                    if (row.lo < taskLo) taskLo = row.lo;
+                    if (row.hi > taskHi) taskHi = row.hi;
+                }
+
+
+                const from = projectSpan.start
+                    ? dayIndex(projectSpan.start)
+                    : Number.isFinite(taskLo) ? taskLo : dayIndex(projectSpan.due!);
+                const to = projectSpan.due
+                    ? dayIndex(projectSpan.due)
+                    : Number.isFinite(taskHi) ? taskHi : from;
+                const lo = Math.min(from, to);
+                const hi = Math.max(from, to);
+
+
+                if (hi >= 0 && lo <= range.days - 1) {
+                    span = { lo: Math.max(0, lo), hi: Math.min(range.days - 1, hi) };
+                } else if (group.rows.length === 0) {
+
+
+                    if (hi < 0) earlierOmitted += 1;
+                    else laterOmitted += 1;
+                    continue;
+                }
+            }
+            flattened.push({
+                kind: 'group',
+                key: `group:${group.project?.id ?? 'none'}`,
+                label: group.project?.title ?? tFallback(t, 'inbox.noProject', 'No project'),
+                color: groupColor,
+                project: group.project,
+                span,
+            });
+            flattened.push(...group.rows);
+        }
+        return { rows: flattened, earlierOmitted, laterOmitted };
+    }, [allSections, areaById, datedTasks, projectById, projectSpans, range, sections, settings, t]);
+
+    const { rows, earlierOmitted, laterOmitted } = timelineRows;
+    const omittedCount = earlierOmitted + laterOmitted;
+    const taskRowCount = React.useMemo(() => rows.reduce((count, row) => (row.kind === 'task' ? count + 1 : count), 0), [rows]);
+    const hasDatedWork = datedTasks.length > 0 || projectSpans.size > 0;
+    const hasRows = Boolean(range) && rows.length > 0;
+    const { dayWidth, trackWidth, fitted } = resolveTimelineTrack(
+        range?.days ?? 0,
+        DAY_WIDTH[zoom],
+        Math.max(0, viewportWidth - GUTTER_WIDTH),
+    );
+    const dateEditing = useTimelineDateEditing({
+        dayWidth,
+        geometryKey: `${zoom}:${range?.from.getTime()}:${range?.days}:${statuses.join(',')}`,
+        scrollRef,
+        t,
+    });
+    const orderSnapshotRef = React.useRef<TimelineOrderSnapshot | null>(null);
+    const orderSavingRef = React.useRef(false);
+    const keyboardOrderTargetRef = React.useRef<TimelineOrderTarget | null>(null);
+    const [keyboardOrderId, setKeyboardOrderId] = React.useState<string | null>(null);
+    const [keyboardOrderAnnouncement, setKeyboardOrderAnnouncement] = React.useState('');
+    const [activeOrderScope, setActiveOrderScope] = React.useState<string | null>(null);
+    const [orderPending, setOrderPending] = React.useState(false);
+    const orderSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+    const contentWidth = GUTTER_WIDTH + trackWidth + (fitted ? 0 : TRACK_TAIL);
+    const todayIndex = range ? differenceInCalendarDays(today, range.from) : -1;
+    const todayVisible = range ? todayIndex >= 0 && todayIndex < range.days : false;
+    const todayLeft = todayIndex * dayWidth;
+
+
+    const axis = React.useMemo(() => {
+        if (!range) return { major: [] as AxisTick[], minor: [] as AxisTick[], monthLines: [] as number[], minorLines: [] as number[] };
+        const majorCandidates: AxisTick[] = [];
+        const minorCandidates: AxisTick[] = [];
+        const monthLines: number[] = [];
+        const minorLines: number[] = [];
+        for (let index = 0; index < range.days; index += 1) {
+            const day = addDays(range.from, index);
+            const left = index * dayWidth;
+            const isMonthStart = getCalendarDayOfMonth(day, calendarSystem) === 1;
+            if (isMonthStart && index > 0) monthLines.push(left);
+            const isMajor = index === 0
+                || (zoom === 'month' ? isMonthStart && getCalendarMonthIndex(day, calendarSystem) === 0 : isMonthStart);
+            if (isMajor) {
+                majorCandidates.push({
+                    left,
+                    label: (zoom === 'month' ? axisDateFormatters.year : axisDateFormatters.monthYear).format(day),
+                });
+            }
+            const isMinor = zoom === 'day'
+                ? true
+                : zoom === 'week'
+                    ? day.getDay() === weekStartsOn
+                    : isMonthStart;
+            if (isMinor) {
+                minorCandidates.push({
+                    left,
+                    label: (zoom === 'month' ? axisDateFormatters.month : axisDateFormatters.day).format(day),
+                });
+
+
+                if (zoom !== 'month' && index > 0 && !isMonthStart) minorLines.push(left);
+            }
+        }
+        return {
+            major: thinTicks(majorCandidates, MIN_MAJOR_LABEL_GAP),
+            minor: thinTicks(minorCandidates, MIN_MINOR_LABEL_GAP),
+            monthLines,
+            minorLines,
+        };
+    }, [axisDateFormatters, calendarSystem, dayWidth, range, weekStartsOn, zoom]);
+
+    const shouldVirtualize = rows.length > VIRTUALIZE_ABOVE_ROWS;
+    const rowVirtualizer = useVirtualizer({
+        count: shouldVirtualize ? rows.length : 0,
+        getScrollElement: () => scrollRef.current,
+        estimateSize: () => ROW_HEIGHT,
+        overscan: 12,
+    });
+
+
+    React.useEffect(() => {
+        const scroller = scrollRef.current;
+        if (!scroller) return;
+        const activity = beginRendererActivity('timeline-measurement');
+        const attachMode = typeof ResizeObserver === 'function' ? 'observer' : 'window-resize';
+        let callbackCount = 0;
+        let widthChangeCount = 0;
+        let lastWidth: number | undefined;
+        const measure = (initial = false) => {
+            if (activity && !initial) callbackCount++;
+            const sampled = initial || callbackCount <= 3;
+            if (sampled) recordRendererActivity(activity, initial ? 'initial-start' : 'callback-start', { attachMode, callbackCount });
+            const width = scroller.clientWidth;
+            if (activity) {
+                if (lastWidth !== undefined && lastWidth !== width) widthChangeCount++;
+                lastWidth = width;
+            }
+            setViewportWidth(width);
+            if (sampled) recordRendererActivity(activity, initial ? 'initial-end' : 'callback-end', { attachMode, callbackCount, width });
+        };
+        const onResize = () => measure();
+        const cleanup = () => recordRendererActivity(activity, 'cleanup', { attachMode, callbackCount, widthChangeCount });
+        measure(true);
+        if (typeof ResizeObserver === 'function') {
+            const observer = new ResizeObserver(onResize);
+            observer.observe(scroller);
+            recordRendererActivity(activity, 'attached', { attachMode });
+            return () => { observer.disconnect(); cleanup(); };
+        }
+        window.addEventListener('resize', onResize);
+        recordRendererActivity(activity, 'attached', { attachMode });
+        return () => { window.removeEventListener('resize', onResize); cleanup(); };
+    }, [hasRows]);
+
+    const scrollToToday = React.useCallback(() => {
+        const scroller = scrollRef.current;
+        if (!scroller || !todayVisible) return;
+        scroller.scrollLeft = Math.max(0, GUTTER_WIDTH + todayLeft - scroller.clientWidth / 2);
+    }, [todayLeft, todayVisible]);
+
+
+    const centeredZoomRef = React.useRef<TimelineZoom | null>(null);
+    React.useLayoutEffect(() => {
+        if (viewportWidth === 0 || centeredZoomRef.current === zoom) return;
+        centeredZoomRef.current = zoom;
+        const activity = beginRendererActivity('timeline-centering');
+        recordRendererActivity(activity, 'centering-start', { measured: viewportWidth > 0, todayVisible, zoom });
+        scrollToToday();
+        recordRendererActivity(activity, 'centering-end', { measured: viewportWidth > 0, todayVisible, zoom });
+    }, [scrollToToday, viewportWidth, zoom, todayVisible]);
+
+    const showEarlierWindow = React.useCallback(() => {
+        if (!range || earlierOmitted === 0) return;
+        setWindowStart(addDays(range.from, -MAX_SPAN_DAYS));
+    }, [earlierOmitted, range]);
+
+    const showLaterWindow = React.useCallback(() => {
+        if (!range || laterOmitted === 0) return;
+        setWindowStart(addDays(range.from, MAX_SPAN_DAYS));
+    }, [laterOmitted, range]);
+
+    const openTask = React.useMemo(
+        () => (openTaskId ? allTasks.find((task) => task.id === openTaskId) ?? null : null),
+        [openTaskId, allTasks],
+    );
+    const openProject = openTask?.projectId ? projectById.get(openTask.projectId) : undefined;
+
+    const setProjectView = useUiStore((state) => state.setProjectView);
+    const goToProject = React.useCallback((projectId: string) => {
+        setProjectView({ selectedProjectId: projectId });
+        dispatchNavigateEvent('projects');
+    }, [setProjectView]);
+
+    const previewSpan = (target: TimelineDateEditTarget) => {
+        const preview = dateEditing.preview;
+        if (!range || !preview?.dates || preview.target.kind !== target.kind) return null;
+        const id = target.kind === 'task' ? target.task.id : target.project.id;
+        const previewId = preview.target.kind === 'task' ? preview.target.task.id : preview.target.project.id;
+        if (id !== previewId) return null;
+        const start = safeParseDate(preview.dates.start);
+        const due = safeParseDate(preview.dates.due);
+        const a = differenceInCalendarDays(start ?? due!, range.from);
+        const b = differenceInCalendarDays(due ?? start!, range.from);
+        return { lo: Math.min(a, b), hi: Math.max(a, b) };
+    };
+    const renderDateControls = (
+        target: TimelineDateEditTarget,
+        dates: { start?: string; due?: string },
+        resizeStart: boolean,
+        resizeDue: boolean,
+        open: () => void,
+    ) => {
+        const editable = target.kind === 'task'
+            ? canEditTimelineTaskDates(target.task, target.project)
+            : canEditTimelineProjectDates(target.project);
+        if (!editable) return null;
+        const label = target.kind === 'task' ? target.task.title : target.project.title;
+        const spokenDates = describeDates(t, dates.start, dates.due);
+        const actionLabel = (key: string) => `${t(`timeline.${key}`)}: ${label}. ${spokenDates}`;
+        return (
+            <>
+                <button
+                    type="button"
+                    data-testid={`timeline-move-${target.kind}`}
+                    aria-label={actionLabel(target.kind === 'task' ? 'moveTaskDates' : 'moveProjectDates')}
+                    title={actionLabel(target.kind === 'task' ? 'moveTaskDates' : 'moveProjectDates')}
+                    disabled={dateEditing.pending}
+                    onPointerDown={(event) => dateEditing.onPointerDown(event, target, 'move')}
+                    onKeyDown={(event) => dateEditing.onKeyDown(event, target, 'move')}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        if (!dateEditing.consumeClick(target)) open();
+                    }}
+                    className="absolute inset-0 rounded-[inherit] cursor-grab touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-wait"
+                />
+                {(['start', 'due'] as const).map((edge) => (edge === 'start' ? resizeStart : resizeDue) && (
+                    <button
+                        key={edge}
+                        type="button"
+                        data-testid={`timeline-resize-${edge}`}
+                        aria-label={actionLabel(edge === 'start' ? 'resizeStart' : 'resizeDue')}
+                        title={actionLabel(edge === 'start' ? 'resizeStart' : 'resizeDue')}
+                        disabled={dateEditing.pending}
+                        onPointerDown={(event) => dateEditing.onPointerDown(event, target, edge)}
+                        onKeyDown={(event) => dateEditing.onKeyDown(event, target, edge)}
+                        onClick={(event) => { event.stopPropagation(); dateEditing.consumeClick(target); }}
+                        style={{ top: -8, [edge === 'start' ? 'left' : 'right']: 0, width: 10, height: 8 }}
+                        className="absolute z-20 cursor-ew-resize rounded-sm border border-border bg-background opacity-0 touch-none group-hover/timeline-row:opacity-100 group-hover/timeline-bar:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait"
+                    />
+                ))}
+            </>
+        );
+    };
+
+    const renderRow = (row: TimelineRow, index: number, handle: React.ReactNode) => {
+        if (row.kind === 'group') {
+            const project = row.project;
+            const target: TimelineDateEditTarget | null = project ? { kind: 'project', project } : null;
+            const displayedSpan = target ? previewSpan(target) ?? row.span : row.span;
+            const editable = project ? canEditTimelineProjectDates(project) : false;
+            const groupDates = project ? describeDates(t, project.startDate, project.dueDate) : '';
+            const groupActionLabel = groupDates ? `${row.label}. ${groupDates}` : row.label;
+            const gutterClassName = 'sticky left-0 z-20 flex shrink-0 items-center gap-2 border-r border-border/60 bg-muted pl-3 pr-2 text-left text-xs font-semibold text-foreground';
+
+            const dot = (
+                <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: row.color || (project ? DEFAULT_AREA_COLOR : 'hsl(var(--primary))') }}
+                />
+            );
+
+
+            const showSeparator = index > 0;
+            return (
+                <div
+                    data-testid={showSeparator ? 'timeline-group-separator' : undefined}
+                    className={cn(
+                        'flex border-b border-t border-b-border/60',
+                        showSeparator ? 'border-t-border' : 'border-t-border/60',
+                    )}
+                    style={{ height: ROW_HEIGHT }}
+                >
+                    <div className={gutterClassName} style={{ width: GUTTER_WIDTH }}>
+                    {handle}
+                    {project ? (
+
+
+                        <button
+                            type="button"
+                            data-testid="timeline-group"
+                            data-project-id={project.id}
+                            title={row.label}
+                            aria-label={groupActionLabel}
+                            onClick={() => goToProject(project.id)}
+                            className={cn(
+                                'flex h-full min-w-0 flex-1 items-center gap-2 text-left',
+                                'transition-colors hover:bg-muted/70',
+                                'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary',
+                            )}
+                        >
+                            {dot}
+                            <span className="min-w-0 truncate">{row.label}</span>
+                        </button>
+                    ) : (
+                        <div
+                            data-testid="timeline-group"
+                            className="flex min-w-0 flex-1 items-center gap-2"
+                        >
+                            {dot}
+                            <span className="min-w-0 truncate">{row.label}</span>
+                        </div>
+                    )}
+                    </div>
+                    <div className="relative min-w-0 flex-1 bg-muted/60">
+                        {displayedSpan && project && target && (
+                            <div
+                                data-testid="timeline-project-bar"
+                                data-project-id={project.id}
+                                title={row.label}
+                                aria-hidden={editable ? undefined : true}
+                                onClick={editable ? undefined : () => goToProject(project.id)}
+                                className="group/timeline-bar absolute z-10 cursor-pointer rounded-[3px] shadow-sm transition-[filter] hover:brightness-110"
+                                style={{
+                                    left: Math.max(0, displayedSpan.lo) * dayWidth,
+                                    width: Math.max(MIN_BAR_WIDTH, (Math.min(range!.days - 1, displayedSpan.hi) - Math.max(0, displayedSpan.lo) + 1) * dayWidth),
+                                    height: PROJECT_BAR_HEIGHT,
+                                    top: (ROW_HEIGHT - PROJECT_BAR_HEIGHT) / 2,
+                                    backgroundColor: row.color || 'hsl(var(--primary))',
+                                }}
+                            >
+                                {renderDateControls(target, { start: project.startDate, due: project.dueDate },
+                                    Boolean(project.startDate && differenceInCalendarDays(safeParseDate(project.startDate)!, range!.from) >= 0),
+                                    Boolean(project.dueDate && differenceInCalendarDays(safeParseDate(project.dueDate)!, range!.from) < range!.days),
+                                    () => goToProject(project.id))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+
+        const project = row.task.projectId ? projectById.get(row.task.projectId) : undefined;
+        const target: TimelineDateEditTarget = { kind: 'task', task: row.task, project };
+        const displayedSpan = previewSpan(target) ?? row;
+        const editable = canEditTimelineTaskDates(row.task, project);
+        const drawingLo = Math.max(0, displayedSpan.lo);
+        const drawingHi = Math.min(range!.days - 1, displayedSpan.hi);
+        const naturalWidth = row.single
+            ? MARKER_WIDTH
+            : Math.max(MIN_BAR_WIDTH, (drawingHi - drawingLo + 1) * dayWidth);
+        const width = Math.min(naturalWidth, trackWidth);
+        const barHeight = row.single ? MARKER_HEIGHT : BAR_HEIGHT;
+        const naturalLeft = row.single
+            ? drawingLo * dayWidth + (dayWidth - MARKER_WIDTH) / 2
+            : drawingLo * dayWidth;
+
+
+        const left = Math.min(Math.max(0, naturalLeft), Math.max(0, trackWidth - width));
+
+
+        const tint = taskBarTint(row.color);
+        const dateDescription = describeDates(t, row.task.startTime, row.task.dueDate);
+        const status = isTaskCompleted(row.task) ? 'done' : row.task.status as TimelineStatus;
+        const label = statusLabel(status);
+        const StatusIcon = TASK_STATUS_ICONS[status];
+        const taskActionLabel = dateDescription
+            ? `${row.task.title}. ${label}. ${dateDescription}`
+            : `${row.task.title}. ${label}`;
+        return (
+            <div className="group/timeline-row flex border-b border-border/40" style={{ height: ROW_HEIGHT }}>
+                {
+                                                                                       }
+                <div
+                    className="sticky left-0 z-20 flex shrink-0 items-center border-r border-border/60 bg-card pl-6 pr-3 group-hover/timeline-row:bg-muted"
+                    style={{ width: GUTTER_WIDTH }}
+                >
+                {handle}
+                <button
+                    type="button"
+                    data-testid="timeline-row-label"
+                    data-task-id={row.task.id}
+                    title={row.task.title}
+                    aria-label={taskActionLabel}
+                    onClick={() => setOpenTaskId(row.task.id)}
+                    className={cn(
+                        'flex h-full min-w-0 flex-1 items-center gap-2 text-left',
+                        'text-xs text-foreground transition-colors hover:bg-muted group-hover/timeline-row:bg-muted',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary',
+                    )}
+                >
+                    <span role="img" aria-label={label} title={label} className="shrink-0 text-muted-foreground">
+                        <StatusIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 truncate">{row.task.title}</span>
+                </button>
+                </div>
+                <div className="relative min-w-0 flex-1 transition-colors group-hover/timeline-row:bg-muted/40">
+                    <div
+                        data-testid="timeline-bar"
+                        data-task-id={row.task.id}
+                        data-variant={row.single ? 'mini' : 'bar'}
+                        title={row.task.title}
+                        aria-hidden={editable ? undefined : true}
+                        onClick={editable ? undefined : () => setOpenTaskId(row.task.id)}
+
+
+                        className="group/timeline-bar absolute z-10 cursor-pointer rounded-full transition-[filter] hover:brightness-110"
+                        style={{
+                            left,
+                            width,
+                            height: barHeight,
+                            top: (ROW_HEIGHT - barHeight) / 2,
+                            backgroundColor: tint.fill,
+                            border: `1px solid ${tint.border}`,
+                        }}
+                    >
+                        {renderDateControls(target, { start: row.task.startTime, due: row.task.dueDate },
+                            !row.single && row.lo >= 0, !row.single && row.hi < range!.days,
+                            () => setOpenTaskId(row.task.id))}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const orderTargetForRow = (row: TimelineRow): TimelineOrderTarget | null => {
+        const project = row.kind === 'group' ? row.project
+            : row.task.projectId ? projectById.get(row.task.projectId) : undefined;
+        let target: TimelineOrderTarget | null = null;
+        if (project && !project.deletedAt && !project.purgedAt && project.status !== 'archived') {
+            if (row.kind === 'group') target = { kind: 'project', id: project.id, areaId: project.areaId };
+            else if (!isTaskFinished(row.task)
+                && resolveTaskSortByForFeatures(project.taskSortBy ?? 'default', settings) === 'default') {
+                target = { kind: 'task', id: row.task.id, projectId: project.id, sectionId: row.task.sectionId ?? null };
+            }
+        }
+        return target;
+    };
+    const saveOrder = (snapshot: TimelineOrderSnapshot, target: TimelineOrderTarget) => {
+        if (orderSavingRef.current) return;
+        orderSavingRef.current = true;
+        setOrderPending(true);
+        void commitTimelineOrder(snapshot, target).then((result) => {
+            if (result === 'conflict') useUiStore.getState().showToast(t('timeline.reorderConflict'), 'error');
+        }).catch(() => {
+            useUiStore.getState().showToast(t('timeline.reorderFailed'), 'error');
+        }).finally(() => {
+            orderSavingRef.current = false;
+            setOrderPending(false);
+        });
+    };
+    const orderIdForTarget = (target: TimelineOrderTarget) => target.kind === 'project'
+        ? `timeline:group:group:${target.id}` : `timeline:task:${target.id}`;
+    const onOrderKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, target: TimelineOrderTarget) => {
+        if (orderSavingRef.current || dateEditing.pending || dateEditing.preview) return;
+        const pickedUp = keyboardOrderTargetRef.current;
+        if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.repeat) return;
+            if (!pickedUp) {
+                const snapshot = captureTimelineOrder(target);
+                if (!snapshot) return;
+                orderSnapshotRef.current = snapshot;
+                keyboardOrderTargetRef.current = target;
+                setKeyboardOrderId(orderIdForTarget(target));
+                setActiveOrderScope(timelineOrderScope(target));
+                setKeyboardOrderAnnouncement(event.currentTarget.getAttribute('aria-label') ?? '');
+            } else {
+                const snapshot = orderSnapshotRef.current;
+                orderSnapshotRef.current = null;
+                keyboardOrderTargetRef.current = null;
+                setKeyboardOrderId(null);
+                setActiveOrderScope(null);
+                if (snapshot) saveOrder(snapshot, pickedUp);
+            }
+        } else if (pickedUp && event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            orderSnapshotRef.current = null;
+            keyboardOrderTargetRef.current = null;
+            setKeyboardOrderId(null);
+            setActiveOrderScope(null);
+            setKeyboardOrderAnnouncement(t('common.cancel'));
+        } else if (pickedUp && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const targets = rows.flatMap((row, index) => {
+                const candidate = orderTargetForRow(row);
+                return candidate && timelineOrderScope(candidate) === timelineOrderScope(pickedUp)
+                    ? [{ target: candidate, index, label: row.kind === 'group' ? row.label : row.task.title }] : [];
+            });
+            const current = targets.findIndex((entry) => entry.target.id === pickedUp.id);
+            const next = targets[current + (event.key === 'ArrowUp' ? -1 : 1)];
+            if (current < 0 || !next) return;
+            keyboardOrderTargetRef.current = next.target;
+            setKeyboardOrderId(orderIdForTarget(next.target));
+            setKeyboardOrderAnnouncement(next.label);
+            if (shouldVirtualize) rowVirtualizer.scrollToIndex(next.index, { align: 'center' });
+        }
+    };
+    const renderOrderedRow = (row: TimelineRow, index: number) => {
+        const id = `timeline:${row.kind}:${row.key}`;
+        return (
+            <TimelineOrderRow
+                id={id}
+                target={orderTargetForRow(row)}
+                activeScope={activeOrderScope}
+                pending={orderPending || dateEditing.pending || Boolean(dateEditing.preview)}
+                selected={keyboardOrderId === id}
+                onKeyDown={onOrderKeyDown}
+                label={`${t(row.kind === 'group' ? 'timeline.reorderProject' : 'timeline.reorderTask')}: ${row.kind === 'group' ? row.label : row.task.title}`}
+            >
+                {(handle) => renderRow(row, index, handle)}
+            </TimelineOrderRow>
+        );
+    };
+
+    const zoomLabels: Record<TimelineZoom, string> = {
+        day: tFallback(t, 'calendar.day', 'Day'),
+        week: tFallback(t, 'calendar.week', 'Week'),
+        month: tFallback(t, 'calendar.month', 'Month'),
+    };
+
+    return (
+        <ErrorBoundary>
+            <DndContext
+                sensors={orderSensors}
+                collisionDetection={timelineOrderCollision}
+                autoScroll={{ threshold: { x: 0, y: 0.15 } }}
+                accessibility={{
+                    screenReaderInstructions: { draggable: t('timeline.reorderInstructions') },
+                    announcements: {
+                        onDragStart: ({ active }) => active.data.current?.label,
+                        onDragOver: ({ over }) => over?.data.current?.label,
+                        onDragEnd: ({ over }) => over?.data.current?.label,
+                        onDragCancel: () => t('common.cancel'),
+                    },
+                }}
+                onDragStart={({ active }) => {
+                    if (orderSavingRef.current) return;
+                    keyboardOrderTargetRef.current = null;
+                    setKeyboardOrderId(null);
+                    const target = active.data.current?.target as TimelineOrderTarget | undefined;
+                    orderSnapshotRef.current = target ? captureTimelineOrder(target) : null;
+                    setActiveOrderScope(target ? timelineOrderScope(target) : null);
+                }}
+                onDragCancel={() => {
+                    orderSnapshotRef.current = null;
+                    setActiveOrderScope(null);
+                }}
+                onDragEnd={({ over }) => {
+                    const snapshot = orderSnapshotRef.current;
+                    orderSnapshotRef.current = null;
+                    setActiveOrderScope(null);
+                    const target = over?.data.current?.target as TimelineOrderTarget | undefined;
+                    if (snapshot && target) saveOrder(snapshot, target);
+                }}
+            >
+            <SortableContext items={rows.map((row) => `timeline:${row.kind}:${row.key}`)} strategy={() => null}>
+            <div className="sr-only" aria-live="assertive">{keyboardOrderAnnouncement}</div>
+            <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 items-center justify-between pb-3">
+                    <div className="flex items-baseline gap-3">
+                        <h2 className="text-2xl font-bold tracking-tight">{tFallback(t, 'nav.timeline', 'Timeline')}</h2>
+                        <span className="text-xs text-muted-foreground">
+                            {taskRowCount} {t('common.tasks')}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <div ref={statusFilterRef}>
+                            <button
+                                ref={statusTriggerRef}
+                                type="button"
+                                aria-haspopup="dialog"
+                                aria-expanded={statusFilterOpen}
+                                aria-controls={statusFilterOpen ? statusPanelId : undefined}
+                                aria-label={statusFilterLabel}
+                                onClick={() => setStatusFilterOpen((open) => !open)}
+                                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                            >
+                                {statusFilterLabel}
+                                {hasStatusFilter && <span className="text-muted-foreground">{statuses.length}</span>}
+                                <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                            {statusFilterOpen && createPortal(
+                                <div
+                                    ref={statusPanelRef}
+                                    id={statusPanelId}
+                                    role="dialog"
+                                    aria-label={statusFilterLabel}
+                                    style={{ ...fixedDropdownStyle, width: 180, maxHeight: listMaxHeight }}
+                                    className="z-50 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-lg"
+                                    onBlur={(event) => {
+                                        const target = event.relatedTarget as Node | null;
+                                        if (target && !event.currentTarget.contains(target) && !statusFilterRef.current?.contains(target)) {
+                                            setStatusFilterOpen(false);
+                                        }
+                                    }}
+                                >
+                                    {TIMELINE_STATUSES.map((status) => {
+                                        const Icon = TASK_STATUS_ICONS[status];
+                                        return (
+                                            <label key={status} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-foreground hover:bg-muted focus-within:bg-muted">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={statuses.includes(status)}
+                                                    onChange={() => setPersistedViewState((current) => ({
+                                                        ...current,
+                                                        statuses: TIMELINE_STATUSES.filter((value) => value === status
+                                                            ? !current.statuses.includes(value) : current.statuses.includes(value)),
+                                                    }))}
+                                                    className="accent-primary"
+                                                />
+                                                <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                                                {statusLabel(status)}
+                                            </label>
+                                        );
+                                    })}
+                                    <button
+                                        type="button"
+                                        onClick={() => setPersistedViewState((current) => ({ ...current, statuses: DEFAULT_TIMELINE_VIEW_STATE.statuses }))}
+                                        className="mt-1 w-full rounded border-t border-border px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                                    >
+                                        {t('common.reset')}
+                                    </button>
+                                </div>, document.body,
+                            )}
+                        </div>
+                        {todayVisible && (
+                            <button
+                                type="button"
+                                onClick={scrollToToday}
+                                className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            >
+                                {tFallback(t, 'calendar.today', 'Today')}
+                            </button>
+                        )}
+                        <div
+                            className="flex items-center rounded-md border border-border bg-card p-0.5"
+                            role="group"
+                            aria-label={tFallback(t, 'timeline.zoomLabel', 'Timeline zoom')}
+                        >
+                            {ZOOM_LEVELS.map((level) => (
+                                <button
+                                    key={level}
+                                    type="button"
+                                    aria-pressed={zoom === level}
+                                    onClick={() => setPersistedViewState((current) => ({ ...current, zoom: level }))}
+                                    className={cn(
+                                        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                                        zoom === level
+                                            ? 'bg-muted text-foreground'
+                                            : 'text-muted-foreground hover:text-foreground',
+                                    )}
+                                >
+                                    {zoomLabels[level]}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {dateEditing.preview && (
+                    <div role="status" data-testid="timeline-date-preview" className="mb-2 text-xs text-muted-foreground">
+                        {dateEditing.preview.dates
+                            ? describeDates(t, dateEditing.preview.dates.start, dateEditing.preview.dates.due)
+                            : t('timeline.dateEditFailed')}
+                    </div>
+                )}
+                {!hasDatedWork ? (
+                    <div>
+                        <ListEmptyState
+                            hasFilters={hasStatusFilter}
+                            emptyState={{
+                                title: tFallback(t, 'timeline.empty', 'Nothing scheduled yet'),
+                                body: tFallback(t, 'timeline.emptyHint', 'Projects and tasks with a start or due date appear here as bars.'),
+                            }}
+                            onAddTask={() => undefined}
+                            t={t}
+                        />
+                    </div>
+                ) : (
+                    <>
+                        {omittedCount > 0 && (
+                            <div
+                                data-testid="timeline-omitted-notice"
+                                className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+                            >
+                                <span className="text-xs text-muted-foreground">
+                                    {t('timeline.omittedItems').replace('{{count}}', String(omittedCount))}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    {earlierOmitted > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={showEarlierWindow}
+                                            className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                                        >
+                                            {tFallback(t, 'list.completedGroup.earlier', 'Earlier')}
+                                        </button>
+                                    )}
+                                    {laterOmitted > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={showLaterWindow}
+                                            className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                                        >
+                                            {tFallback(t, 'settings.later', 'Later')}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        {hasRows && (
+
+
+                            <div className="min-h-0 flex-1 pb-4">
+                        <div className="flex max-h-full flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+                            {
+
+                                                                              }
+                            <div
+                                ref={scrollRef}
+                                data-testid="timeline-scroller"
+                                className="min-h-0 overflow-auto"
+                                tabIndex={0}
+                                role="region"
+                                aria-label={tFallback(t, 'timeline.trackRegionLabel', 'Timeline track')}
+                            >
+                                <div className="relative flex flex-col" style={{ width: contentWidth }}>
+                                    <div
+                                        className="sticky top-0 z-30 flex border-b border-border bg-card"
+                                        style={{ height: AXIS_HEIGHT }}
+                                    >
+                                        <div
+                                            className="sticky left-0 z-40 shrink-0 border-r border-border/60 bg-card"
+                                            style={{ width: GUTTER_WIDTH }}
+                                        />
+                                        <div className="relative h-full" style={{ width: trackWidth }}>
+                                            {axis.monthLines.map((left) => (
+                                                <div
+                                                    key={`axis-month-${left}`}
+                                                    className="absolute inset-y-0 w-px bg-border"
+                                                    style={{ left }}
+                                                />
+                                            ))}
+                                            {axis.major.map((tick) => (
+                                                <div
+                                                    key={`axis-major-${tick.left}`}
+                                                    data-testid="timeline-axis-major"
+                                                    className="absolute top-0 whitespace-nowrap pl-2 text-[11px] font-semibold leading-[22px] text-foreground"
+                                                    style={{ left: tick.left }}
+                                                >
+                                                    {tick.label}
+                                                </div>
+                                            ))}
+                                            {axis.minor.map((tick) => (
+                                                <div
+                                                    key={`axis-minor-${tick.left}`}
+                                                    data-testid="timeline-axis-minor"
+                                                    className="absolute bottom-0 whitespace-nowrap pl-2 text-[10px] leading-[22px] tabular-nums text-muted-foreground"
+                                                    style={{ left: tick.left }}
+                                                >
+                                                    {tick.label}
+                                                </div>
+                                            ))}
+                                            {todayVisible && (
+                                                <div
+                                                    className="pointer-events-none absolute bottom-0 flex flex-col items-center"
+                                                    style={{ left: todayLeft - 3, top: 18, width: 6 }}
+                                                >
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                                                    <span className="w-0.5 flex-1 bg-primary" />
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div
+                                        className="relative"
+                                        style={{ minHeight: shouldVirtualize ? rowVirtualizer.getTotalSize() : rows.length * ROW_HEIGHT }}
+                                    >
+                                        <div
+                                            aria-hidden
+                                            className="pointer-events-none absolute inset-y-0 z-0"
+                                            style={{ left: GUTTER_WIDTH, width: trackWidth }}
+                                        >
+                                            {axis.minorLines.map((left) => (
+                                                <div
+                                                    key={`grid-minor-${left}`}
+                                                    data-testid="timeline-gridline-minor"
+                                                    className="absolute inset-y-0 w-px bg-border/50"
+                                                    style={{ left }}
+                                                />
+                                            ))}
+                                            {axis.monthLines.map((left) => (
+                                                <div
+                                                    key={`grid-month-${left}`}
+                                                    className="absolute inset-y-0 w-px bg-border"
+                                                    style={{ left }}
+                                                />
+                                            ))}
+                                        </div>
+                                        {todayVisible && (
+                                            <div
+                                                data-testid="timeline-today-line"
+                                                className="pointer-events-none absolute inset-y-0 z-[5] w-0.5 bg-primary"
+                                                style={{ left: GUTTER_WIDTH + todayLeft - 1 }}
+                                            />
+                                        )}
+                                        {shouldVirtualize
+                                            ? rowVirtualizer.getVirtualItems().map((virtualRow) => (
+                                                <div
+                                                    key={rows[virtualRow.index].key}
+                                                    className="absolute left-0 right-0"
+                                                    style={{ top: virtualRow.start, height: virtualRow.size }}
+                                                >
+                                                    {renderOrderedRow(rows[virtualRow.index], virtualRow.index)}
+                                                </div>
+                                            ))
+                                            : rows.map((row, index) => (
+                                                <React.Fragment key={row.key}>{renderOrderedRow(row, index)}</React.Fragment>
+                                            ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+            <CalendarOpenTaskModal
+                readOnly={Boolean(openTask && (isTaskFinished(openTask)
+                    || (openProject && openProject.status !== 'active')))}
+                controller={{
+                    closeOpenTask: () => setOpenTaskId(null),
+                    openProject,
+                    openTask,
+                    t,
+                }}
+            />
+            </SortableContext>
+            </DndContext>
+        </ErrorBoundary>
+    );
+}

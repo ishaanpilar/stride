@@ -1,0 +1,834 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { NotificationSettings, Task } from '@stride/core';
+
+import { buildReminderSchedule, getNextScheduledAt, useTaskStore } from '@stride/core';
+
+const runtimeMock = vi.hoisted(() => ({
+    isTauriRuntime: vi.fn(() => false),
+    isFlatpakRuntime: vi.fn(() => false),
+    isLinuxRuntime: vi.fn(() => false),
+    isWindowsRuntime: vi.fn(() => false),
+    isMacRuntime: vi.fn(() => false),
+}));
+const pluginMock = vi.hoisted(() => ({
+    sendNotification: vi.fn(),
+    isPermissionGranted: vi.fn(async () => true),
+    requestPermission: vi.fn(async () => 'granted'),
+}));
+type LogCall = (
+    message: string,
+    context?: { scope?: string; extra?: Record<string, unknown> },
+) => Promise<string | null>;
+const logMock = vi.hoisted(() => ({
+    logInfo: vi.fn<LogCall>(async () => null),
+    logWarn: vi.fn<LogCall>(async () => null),
+}));
+
+vi.mock('./runtime', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./runtime')>()),
+    ...runtimeMock,
+}));
+vi.mock('@tauri-apps/plugin-notification', () => pluginMock);
+vi.mock('./app-log', () => logMock);
+
+import { setNativeInvokeTransport } from './tauri-invoke';
+import { resetAppLockStoreForTests } from './app-lock';
+import {
+    buildDesktopTaskNotificationBody,
+    resolveDesktopReminderGates,
+    resolveDueRepeatToFire,
+    resolvePollCatchUpMs,
+    sendDesktopImmediateNotification,
+    startDesktopNotifications,
+    stopDesktopNotifications,
+} from './notification-service';
+
+const baseTask: Task = {
+    id: 'task-1',
+    title: 'Prepare report',
+    status: 'next',
+    tags: [],
+    contexts: [],
+    createdAt: '2026-05-23T00:00:00.000Z',
+    updatedAt: '2026-05-23T00:00:00.000Z',
+};
+
+const translations = {
+    'settings.startDateNotifications': 'Start date reminders',
+    'settings.dueDateNotifications': 'Due date reminders',
+    'settings.reviewAtNotifications': 'Review date reminders',
+    'settings.notifications': 'Notifications',
+};
+
+describe('desktop advance reminders', () => {
+    const initial = useTaskStore.getState();
+    const tick = new Date('2026-06-17T09:00:00Z');
+    const advanceTask: Task = { ...baseTask, dueDate: '2026-06-17T10:01:00Z', dueReminderLeadMinutes: 60 };
+    let delivered: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(tick);
+        delivered = vi.fn();
+        vi.stubGlobal('Notification', Object.assign(function (...args: unknown[]) { delivered(...args); }, { permission: 'granted' }));
+        useTaskStore.setState({ _allTasks: [advanceTask], _allProjects: [], settings: { notificationsEnabled: true } });
+    });
+    afterEach(() => {
+        stopDesktopNotifications();
+        useTaskStore.setState(initial, true);
+        vi.clearAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+    });
+
+    it('waits until the fire time, sends once, and retains the original due alert', async () => {
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'stride-reminder:task:task-1' });
+        expect(logMock.logInfo).toHaveBeenCalledWith('Advance reminder delivered', expect.objectContaining({
+            extra: { releaseCheck: 'v1.3.8/due-advance-reminder', outcome: 'delivered' },
+        }));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(delivered).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not catch up a prealert that was already past when configured', async () => {
+        useTaskStore.setState({ _allTasks: [{ ...advanceTask, dueReminderLeadMinutes: 0 }] });
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(65_000);
+        useTaskStore.setState({ _allTasks: [advanceTask], lastDataChangeAt: Date.now() });
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(delivered).not.toHaveBeenCalled();
+    });
+
+    it('discards a changed deadline and admits the new future occurrence independently', async () => {
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(30_000);
+        useTaskStore.setState({ _allTasks: [{ ...advanceTask, dueDate: '2026-06-17T10:02:00Z' }], lastDataChangeAt: Date.now() });
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('desktop start advance reminders', () => {
+    const initial = useTaskStore.getState();
+    const tick = new Date('2026-06-17T09:00:00Z');
+    const advanceTask: Task = { ...baseTask, startTime: '2026-06-17T10:01:00Z', startReminderLeadMinutes: 60 };
+    let delivered: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(tick);
+        delivered = vi.fn();
+        vi.stubGlobal('Notification', Object.assign(function (...args: unknown[]) { delivered(...args); }, { permission: 'granted' }));
+        useTaskStore.setState({ _allTasks: [advanceTask], _allProjects: [], settings: { notificationsEnabled: true } });
+    });
+    afterEach(() => {
+        stopDesktopNotifications();
+        useTaskStore.setState(initial, true);
+        vi.clearAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+    });
+
+    it('waits until the fire time, sends once, and retains the original start alert', async () => {
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'stride-reminder:task:task-1' });
+        expect(logMock.logInfo).toHaveBeenCalledWith('Advance reminder delivered', expect.objectContaining({
+            extra: { releaseCheck: 'v1.3.8/start-advance-reminder', outcome: 'delivered' },
+        }));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(delivered).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not catch up a prealert that was already past when configured', async () => {
+        useTaskStore.setState({ _allTasks: [{ ...advanceTask, startReminderLeadMinutes: 0 }] });
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(65_000);
+        useTaskStore.setState({ _allTasks: [advanceTask], lastDataChangeAt: Date.now() });
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(delivered).not.toHaveBeenCalled();
+    });
+
+    it('discards a changed start and admits the new future occurrence independently', async () => {
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(30_000);
+        useTaskStore.setState({ _allTasks: [{ ...advanceTask, startTime: '2026-06-17T10:02:00Z' }], lastDataChangeAt: Date.now() });
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(delivered).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('desktop notification service', () => {
+    it('includes the reminder type before the task description', () => {
+        const task: Task = {
+            ...baseTask,
+            dueDate: '2026-05-23T17:00:00.000Z',
+            description: '**Bring** notes',
+        };
+
+        expect(buildDesktopTaskNotificationBody(
+            task,
+            'due',
+            translations,
+        )).toBe('Due date reminders\nBring notes');
+    });
+
+    it('still shows the reminder type when the task has no description', () => {
+        const task: Task = {
+            ...baseTask,
+            startTime: '2026-05-23T09:00:00.000Z',
+        };
+
+        expect(buildDesktopTaskNotificationBody(
+            task,
+            'start',
+            translations,
+        )).toBe('Start date reminders');
+    });
+});
+
+describe('resolveDueRepeatToFire', () => {
+    const repeatTask: Task = {
+        ...baseTask,
+        status: 'next',
+        dueDate: '2026-06-17T09:00:00.000Z',
+        repeatReminderMinutes: 10,
+    };
+    const opts = { includeDueDate: true };
+
+    it('uses the inherited default for due repeats and keeps explicit Send authoritative', () => {
+        const now = new Date('2026-06-17T09:20:05.000Z');
+        const task = { ...repeatTask, reminderPolicy: 'inherit' as const };
+        expect(resolveDueRepeatToFire(task, now, undefined, { ...opts, taskReminderDefault: 'skip' })).toBeNull();
+        expect(resolveDueRepeatToFire(task, now, undefined, { ...opts, taskReminderDefault: 'send' })).toMatchObject({ index: 2 });
+        expect(resolveDueRepeatToFire({ ...task, reminderPolicy: 'send' }, now, undefined, { ...opts, taskReminderDefault: 'skip' })).toMatchObject({ index: 2 });
+    });
+
+    it('fires the occurrence just reached, within one poll window', () => {
+
+        const now = new Date('2026-06-17T09:20:05.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, undefined, opts)).toEqual({
+            key: '2026-06-17T09:00:00.000Z#2',
+            index: 2,
+            scheduledAt: new Date('2026-06-17T09:20:00.000Z'),
+        });
+    });
+
+    it('does not re-fire the same occurrence (dedup by key)', () => {
+        const now = new Date('2026-06-17T09:20:05.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, '2026-06-17T09:00:00.000Z#2', opts)).toBeNull();
+    });
+
+    it('invalidates dedup when the due time changes', () => {
+        const moved = { ...repeatTask, dueDate: '2026-06-17T10:00:00.000Z' };
+        const now = new Date('2026-06-17T10:20:05.000Z');
+
+        expect(resolveDueRepeatToFire(moved, now, '2026-06-17T09:00:00.000Z#2', opts)).toEqual({
+            key: '2026-06-17T10:00:00.000Z#2',
+            index: 2,
+            scheduledAt: new Date('2026-06-17T10:20:00.000Z'),
+        });
+    });
+
+    it('returns null before the first repeat occurrence', () => {
+        const now = new Date('2026-06-17T09:05:00.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, undefined, opts)).toBeNull();
+    });
+
+    it('skips an occurrence missed beyond the poll window (desktop was not polling)', () => {
+
+        const now = new Date('2026-06-17T09:10:30.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, undefined, opts)).toBeNull();
+    });
+
+    it('fires an occurrence missed inside a widened poll window (throttled tab)', () => {
+
+
+        const now = new Date('2026-06-17T09:10:30.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, undefined, { ...opts, catchUpMs: 60_000 })).toEqual({
+            key: '2026-06-17T09:00:00.000Z#1',
+            index: 1,
+            scheduledAt: new Date('2026-06-17T09:10:00.000Z'),
+        });
+    });
+
+    it('returns null when due-date notifications are disabled', () => {
+        const now = new Date('2026-06-17T09:20:05.000Z');
+        expect(resolveDueRepeatToFire(repeatTask, now, undefined, { includeDueDate: false })).toBeNull();
+    });
+
+    it('never fires repeat reminders for a task that suppresses Stride reminders (#885)', () => {
+        const suppressed = { ...repeatTask, suppressStrideReminders: true };
+        const now = new Date('2026-06-17T09:20:05.000Z');
+        expect(resolveDueRepeatToFire(suppressed, now, undefined, opts)).toBeNull();
+    });
+});
+
+
+describe('resolvePollCatchUpMs', () => {
+    const nowMs = new Date('2026-06-17T09:20:00.000Z').getTime();
+
+    it('uses one poll window on the first check, so reminders reached before the app opened stay skipped', () => {
+        expect(resolvePollCatchUpMs(nowMs, null)).toBe(15_000);
+    });
+
+    it('covers the whole gap when a throttled tab polled a minute ago', () => {
+        expect(resolvePollCatchUpMs(nowMs, nowMs - 60_000)).toBe(60_000);
+    });
+
+    it('caps the gap so a window reopened after a suspend does not empty a queue of stale reminders', () => {
+        expect(resolvePollCatchUpMs(nowMs, nowMs - 3 * 60 * 60_000)).toBe(5 * 60_000);
+    });
+
+    it('never narrows the normal window when a data change triggers an early check', () => {
+        expect(resolvePollCatchUpMs(nowMs, nowMs - 2_000)).toBe(15_000);
+    });
+});
+
+
+describe('desktop next-reminder scheduling honors suppressStrideReminders', () => {
+    const allOn = { includeStartTime: true, includeDueDate: true, includeReviewAt: true };
+    const now = new Date('2026-06-17T08:00:00.000Z');
+
+    it('schedules the next start/due reminder for a task that does not suppress reminders', () => {
+        const task: Task = {
+            ...baseTask,
+            startTime: '2026-06-17T09:00:00.000Z',
+            dueDate: '2026-06-17T17:00:00.000Z',
+        };
+        expect(getNextScheduledAt(task, now, allOn)).toEqual(new Date('2026-06-17T09:00:00.000Z'));
+    });
+
+    it('drops start and due reminders when the task suppresses Stride reminders', () => {
+        const task: Task = {
+            ...baseTask,
+            startTime: '2026-06-17T09:00:00.000Z',
+            dueDate: '2026-06-17T17:00:00.000Z',
+            suppressStrideReminders: true,
+        };
+        expect(getNextScheduledAt(task, now, allOn)).toBeNull();
+    });
+
+    it('still fires review reminders even when start/due reminders are suppressed', () => {
+        const task: Task = {
+            ...baseTask,
+            startTime: '2026-06-17T09:00:00.000Z',
+            dueDate: '2026-06-17T17:00:00.000Z',
+            reviewAt: '2026-06-17T10:00:00.000Z',
+            suppressStrideReminders: true,
+        };
+        expect(getNextScheduledAt(task, now, allOn)).toEqual(new Date('2026-06-17T10:00:00.000Z'));
+    });
+});
+
+
+describe('desktop/mobile reminder-kind parity', () => {
+    const now = new Date('2026-07-30T12:00:00.000Z');
+
+    const rows: Array<{ label: string; settings: NotificationSettings }> = [
+        { label: 'all off', settings: { notificationsEnabled: false } },
+        { label: 'notifications off, weekly review on', settings: { notificationsEnabled: false, weeklyReviewEnabled: true } },
+        {
+            label: 'notifications on, everything on',
+            settings: {
+                notificationsEnabled: true,
+                weeklyReviewEnabled: true,
+                dailyDigestMorningEnabled: true,
+                dailyDigestEveningEnabled: true,
+            },
+        },
+        { label: 'notifications off, morning digest on', settings: { notificationsEnabled: false, dailyDigestMorningEnabled: true } },
+        { label: 'notifications off, evening digest on', settings: { notificationsEnabled: false, dailyDigestEveningEnabled: true } },
+        { label: 'notifications on, weekly review explicitly off', settings: { notificationsEnabled: true, weeklyReviewEnabled: false } },
+    ];
+
+    it.each(rows)('desktop gates match mobile\'s schedule for: $label', ({ settings }) => {
+        const desktop = resolveDesktopReminderGates(settings);
+        const mobile = buildReminderSchedule({ settings, tasks: [], projects: [], now, translations: {} });
+
+        expect(desktop.taskRemindersEnabled).toBe(mobile.diagnostics.taskRemindersEnabled);
+        expect(desktop.weeklyReviewEnabled).toBe(mobile.diagnostics.weeklyReviewEnabled);
+        expect(desktop.morningDigestEnabled).toBe(mobile.requests.some((request) => request.key === 'digest:morning'));
+        expect(desktop.eveningDigestEnabled).toBe(mobile.requests.some((request) => request.key === 'digest:evening'));
+    });
+
+    it('keeps explicitly enabled digest notifications on when task reminders are off', () => {
+        const gates = resolveDesktopReminderGates({
+            notificationsEnabled: false,
+            weeklyReviewEnabled: true,
+            dailyDigestMorningEnabled: true,
+            dailyDigestEveningEnabled: true,
+        });
+        expect(gates.weeklyReviewEnabled).toBe(true);
+        expect(gates.taskRemindersEnabled).toBe(false);
+        expect(gates.morningDigestEnabled).toBe(true);
+        expect(gates.eveningDigestEnabled).toBe(true);
+    });
+});
+
+
+describe('startDesktopNotifications sends the weekly review while notificationsEnabled is off (#reminder-window)', () => {
+    const initialStoreState = useTaskStore.getState();
+
+    afterEach(async () => {
+        stopDesktopNotifications();
+        useTaskStore.setState(initialStoreState, true);
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+    });
+
+    it('constructs one notification for the weekly review slot', async () => {
+        const fixedNow = new Date(2026, 6, 31, 18, 0, 0, 0);
+        vi.useFakeTimers();
+        vi.setSystemTime(fixedNow);
+
+        useTaskStore.setState({
+            tasks: [],
+            projects: [],
+            settings: {
+                notificationsEnabled: false,
+                weeklyReviewEnabled: true,
+                weeklyReviewDay: fixedNow.getDay(),
+                weeklyReviewTime: '18:00',
+            },
+        });
+
+        const NotificationSpy = vi.fn() as any;
+        NotificationSpy.permission = 'granted';
+        vi.stubGlobal('Notification', NotificationSpy);
+
+        await startDesktopNotifications();
+
+        expect(NotificationSpy).toHaveBeenCalledTimes(1);
+    });
+});
+
+
+describe('Linux native notification path (#1232)', () => {
+    const initialStoreState = useTaskStore.getState();
+
+    beforeEach(() => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isFlatpakRuntime.mockReturnValue(false);
+        runtimeMock.isLinuxRuntime.mockReturnValue(true);
+        runtimeMock.isWindowsRuntime.mockReturnValue(false);
+        runtimeMock.isMacRuntime.mockReturnValue(false);
+        useTaskStore.setState({ settings: { notificationsEnabled: true } });
+    });
+
+    afterEach(() => {
+        setNativeInvokeTransport(null);
+        vi.clearAllMocks();
+        runtimeMock.isTauriRuntime.mockReturnValue(false);
+        runtimeMock.isFlatpakRuntime.mockReturnValue(false);
+        runtimeMock.isLinuxRuntime.mockReturnValue(false);
+        useTaskStore.setState(initialStoreState, true);
+    });
+
+    function captureInvokes(reject?: string) {
+        const commands: string[] = [];
+        setNativeInvokeTransport(async (command: string) => {
+            commands.push(command);
+            if (reject && command === reject) {
+                throw new Error(`${command}: service_unavailable; private title must stay out`);
+            }
+            return undefined as never;
+        });
+        return commands;
+    }
+
+    it('awaits the direct D-Bus command for native Linux and skips the plugin', async () => {
+        const commands = captureInvokes();
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_linux_notification');
+        expect(commands).not.toContain('send_flatpak_notification');
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+        expect(logMock.logInfo).toHaveBeenCalledWith(
+            'Linux desktop notification submitted',
+            expect.objectContaining({
+                extra: {
+                    backend: 'linux-dbus',
+                    outcome: 'submitted',
+                },
+            }),
+        );
+    });
+
+    it('preserves the portal command in Flatpak and skips direct D-Bus', async () => {
+        runtimeMock.isFlatpakRuntime.mockReturnValue(true);
+        const commands = captureInvokes();
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_flatpak_notification');
+        expect(commands).not.toContain('send_linux_notification');
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+        expect(logMock.logInfo).toHaveBeenCalledWith(
+            'Linux desktop notification submitted',
+            expect.objectContaining({
+                extra: expect.objectContaining({ backend: 'linux-portal' }),
+            }),
+        );
+    });
+
+    it('does not fall back or log private native error text after direct delivery fails', async () => {
+        const commands = captureInvokes('send_linux_notification');
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_linux_notification');
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+        expect(logMock.logWarn).toHaveBeenCalledWith(
+            'Linux desktop notification delivery failed',
+            expect.objectContaining({
+                extra: {
+                    backend: 'linux-dbus',
+                    outcome: 'failed',
+                    errorType: 'service_unavailable',
+                },
+            }),
+        );
+        expect(JSON.stringify(logMock.logWarn.mock.calls)).not.toContain('private title');
+    });
+
+    it('does not fall back to the plugin when the Flatpak portal rejects delivery', async () => {
+        runtimeMock.isFlatpakRuntime.mockReturnValue(true);
+        const commands = captureInvokes('send_flatpak_notification');
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_flatpak_notification');
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+        expect(logMock.logWarn).toHaveBeenCalledWith(
+            'Linux desktop notification delivery failed',
+            expect.objectContaining({
+                extra: expect.objectContaining({
+                    backend: 'linux-portal',
+                    outcome: 'failed',
+                }),
+            }),
+        );
+    });
+});
+
+
+describe('Windows packaged notification path (#1146)', () => {
+    const initialStoreState = useTaskStore.getState();
+
+    beforeEach(() => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isFlatpakRuntime.mockReturnValue(false);
+        runtimeMock.isLinuxRuntime.mockReturnValue(false);
+        runtimeMock.isWindowsRuntime.mockReturnValue(false);
+        runtimeMock.isMacRuntime.mockReturnValue(false);
+        useTaskStore.setState({ settings: { notificationsEnabled: true } });
+    });
+
+    afterEach(() => {
+        setNativeInvokeTransport(null);
+        vi.clearAllMocks();
+        runtimeMock.isTauriRuntime.mockReturnValue(false);
+        runtimeMock.isLinuxRuntime.mockReturnValue(false);
+        runtimeMock.isWindowsRuntime.mockReturnValue(false);
+        runtimeMock.isMacRuntime.mockReturnValue(false);
+        useTaskStore.setState(initialStoreState, true);
+    });
+
+    function captureInvokes(reject?: string) {
+        const commands: string[] = [];
+        setNativeInvokeTransport(async (command: string) => {
+            commands.push(command);
+            if (reject && command === reject) throw new Error('Windows package identity is unavailable');
+            return undefined as never;
+        });
+        return commands;
+    }
+
+    it('sends through the packaged command and skips the plugin when it resolves', async () => {
+        runtimeMock.isWindowsRuntime.mockReturnValue(true);
+        const commands = captureInvokes();
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_windows_packaged_notification');
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the plugin when the process is not packaged', async () => {
+        runtimeMock.isWindowsRuntime.mockReturnValue(true);
+        const commands = captureInvokes('send_windows_packaged_notification');
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).toContain('send_windows_packaged_notification');
+        expect(pluginMock.sendNotification).toHaveBeenCalledTimes(1);
+        expect(logMock.logWarn).toHaveBeenCalledWith(
+            'Desktop notification send failed',
+            expect.objectContaining({
+                extra: expect.objectContaining({
+                    path: 'windows-packaged',
+                }),
+            }),
+        );
+    });
+
+    it('never invokes the packaged command off Windows', async () => {
+        const commands = captureInvokes();
+
+        await sendDesktopImmediateNotification('Prepare report', 'Due date reminders');
+
+        expect(commands).not.toContain('send_windows_packaged_notification');
+        expect(pluginMock.sendNotification).toHaveBeenCalledTimes(1);
+    });
+});
+
+
+describe('fired reminders are logged (#1146)', () => {
+    const initialStoreState = useTaskStore.getState();
+
+    afterEach(() => {
+        stopDesktopNotifications();
+        useTaskStore.setState(initialStoreState, true);
+        vi.clearAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+    });
+
+    it('rechecks an inherited default change even when the data timestamp stays unchanged, without duplicate delivery', async () => {
+        vi.useFakeTimers();
+        const now = new Date('2026-07-29T09:00:00.000Z');
+        vi.setSystemTime(now);
+        useTaskStore.setState({ _allTasks: [{ ...baseTask, id: 'inherited-default-change', reminderPolicy: 'inherit', dueDate: now.toISOString(), repeatReminderMinutes: 10 }],
+            _allProjects: [], settings: { notificationsEnabled: true, taskReminderDefault: 'skip' }, lastDataChangeAt: 7 });
+        const NotificationSpy = vi.fn() as any;
+        NotificationSpy.permission = 'granted';
+        vi.stubGlobal('Notification', NotificationSpy);
+        await startDesktopNotifications();
+        expect(NotificationSpy).not.toHaveBeenCalled();
+        useTaskStore.setState({ settings: { notificationsEnabled: true, taskReminderDefault: 'send' } });
+        await vi.advanceTimersByTimeAsync(751);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Desktop reminder fired')).toHaveLength(1);
+        expect(logMock.logInfo).toHaveBeenCalledWith('Task reminder policy reevaluated', {
+            scope: 'notifications', extra: { releaseCheck: 'v1.3.7/task-reminder-policy', outcome: 'planned' },
+        });
+        await vi.advanceTimersByTimeAsync(2500);
+        useTaskStore.setState({ settings: { notificationsEnabled: true, taskReminderDefault: 'skip' } });
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Desktop reminder fired')).toHaveLength(1);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Task reminder policy reevaluated')).toHaveLength(2);
+        useTaskStore.setState({ settings: { notificationsEnabled: true, taskReminderDefault: 'send' } });
+        await vi.advanceTimersByTimeAsync(751);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Desktop reminder fired')).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Desktop reminder fired')).toHaveLength(2);
+        expect(logMock.logInfo.mock.calls.filter(([message]) => message === 'Task reminder policy reevaluated')).toHaveLength(3);
+    });
+
+    it('writes one Desktop reminder fired line without the task title or body', async () => {
+        const fixedNow = new Date(2026, 6, 31, 9, 0, 0, 0);
+        vi.useFakeTimers();
+        vi.setSystemTime(fixedNow);
+
+
+        useTaskStore.setState({
+            _allTasks: [{ ...baseTask, dueDate: fixedNow.toISOString() }],
+            _allProjects: [],
+            settings: { notificationsEnabled: true },
+        });
+
+        const NotificationSpy = vi.fn() as any;
+        NotificationSpy.permission = 'granted';
+        vi.stubGlobal('Notification', NotificationSpy);
+
+        await startDesktopNotifications();
+
+        const fired = logMock.logInfo.mock.calls.filter(([message]) => message === 'Desktop reminder fired');
+        expect(fired).toHaveLength(1);
+        const extra = fired[0][1]?.extra as Record<string, unknown>;
+        expect(extra).toMatchObject({
+            kind: 'task',
+            entity: 'task',
+            fireAt: fixedNow.toISOString(),
+        });
+        expect(extra.appState).toMatch(/^(focused|hidden)$/);
+        expect(JSON.stringify(extra)).not.toContain(baseTask.title);
+    });
+});
+
+
+describe('a task\'s reminders replace its notification', () => {
+    const initialStoreState = useTaskStore.getState();
+    const tag = 'stride-reminder:task:task-1';
+
+    afterEach(() => {
+        stopDesktopNotifications();
+        setNativeInvokeTransport(null);
+        useTaskStore.setState(initialStoreState, true);
+        vi.clearAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+        runtimeMock.isTauriRuntime.mockReturnValue(false);
+        runtimeMock.isLinuxRuntime.mockReturnValue(false);
+        runtimeMock.isWindowsRuntime.mockReturnValue(false);
+        runtimeMock.isMacRuntime.mockReturnValue(false);
+    });
+
+
+    function captureInvokes(...rejected: string[]) {
+        const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+        setNativeInvokeTransport(async (command: string, args?: Record<string, unknown>) => {
+            calls.push({ command, args: args ?? {} });
+            if (rejected.includes(command)) throw new Error('not here');
+            return undefined as never;
+        });
+        return calls;
+    }
+
+    async function fireDueThenRepeat(fixedNow: Date) {
+        vi.useFakeTimers();
+        vi.setSystemTime(fixedNow);
+        useTaskStore.setState({
+            _allTasks: [{ ...baseTask, dueDate: fixedNow.toISOString(), repeatReminderMinutes: 10 }],
+            _allProjects: [],
+            settings: { notificationsEnabled: true },
+        });
+        await startDesktopNotifications();
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+    }
+
+    it('fires a reminder while the privacy lock is on with no task text, keeping its tag (#1472)', async () => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isMacRuntime.mockReturnValue(true);
+        resetAppLockStoreForTests({ enabled: true, locked: true });
+        try {
+            const calls = captureInvokes();
+            await fireDueThenRepeat(new Date(2026, 7, 9, 9, 0, 0, 0));
+            const replaced = calls.filter((call) => call.command === 'send_replacing_notification');
+            expect(replaced.length).toBeGreaterThanOrEqual(1);
+            expect(replaced.every((call) => call.args.tag === tag)).toBe(true);
+            expect(replaced.every((call) => call.args.title === 'Stride reminder' && call.args.body === undefined)).toBe(true);
+            expect(JSON.stringify(calls)).not.toContain('Prepare report');
+        } finally {
+            resetAppLockStoreForTests();
+        }
+    });
+
+    it('passes the task\'s tag with the due reminder and its repeats on Linux', async () => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isLinuxRuntime.mockReturnValue(true);
+        const calls = captureInvokes();
+
+        await fireDueThenRepeat(new Date(2026, 6, 31, 9, 0, 0, 0));
+
+        const sent = calls.filter((call) => call.command === 'send_linux_notification');
+        expect(sent.length).toBeGreaterThanOrEqual(2);
+        expect(sent.every((call) => call.args.tag === tag)).toBe(true);
+    });
+
+    it('tags the packaged Windows toast', async () => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isWindowsRuntime.mockReturnValue(true);
+        const calls = captureInvokes();
+
+        await fireDueThenRepeat(new Date(2026, 7, 1, 9, 0, 0, 0));
+
+        const sent = calls.filter((call) => call.command === 'send_windows_packaged_notification');
+        expect(sent.length).toBeGreaterThanOrEqual(2);
+        expect(sent.every((call) => call.args.tag === tag)).toBe(true);
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+    });
+
+    it('replaces through the native command on macOS, and falls back to the plugin when it fails', async () => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isMacRuntime.mockReturnValue(true);
+        let calls = captureInvokes('send_windows_packaged_notification');
+        await sendDesktopImmediateNotification('Prepare report');
+
+        expect(calls.map((call) => call.command)).not.toContain('send_replacing_notification');
+        expect(pluginMock.sendNotification).toHaveBeenCalledTimes(1);
+        pluginMock.sendNotification.mockClear();
+
+        await fireDueThenRepeat(new Date(2026, 7, 2, 9, 0, 0, 0));
+        const replaced = calls.filter((call) => call.command === 'send_replacing_notification');
+        expect(replaced.length).toBeGreaterThanOrEqual(2);
+        expect(replaced.every((call) => call.args.tag === tag)).toBe(true);
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+
+        stopDesktopNotifications();
+        calls = captureInvokes('send_windows_packaged_notification', 'send_replacing_notification');
+        await fireDueThenRepeat(new Date(2026, 7, 3, 9, 0, 0, 0));
+        expect(calls.some((call) => call.command === 'send_replacing_notification')).toBe(true);
+        expect(pluginMock.sendNotification.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('replaces through the native command on unpackaged Windows, and falls back to the plugin when it fails', async () => {
+        runtimeMock.isTauriRuntime.mockReturnValue(true);
+        runtimeMock.isWindowsRuntime.mockReturnValue(true);
+        let calls = captureInvokes('send_windows_packaged_notification');
+        await sendDesktopImmediateNotification('Prepare report');
+
+        expect(calls.map((call) => call.command)).not.toContain('send_replacing_notification');
+        expect(pluginMock.sendNotification).toHaveBeenCalledTimes(1);
+        pluginMock.sendNotification.mockClear();
+
+        await fireDueThenRepeat(new Date(2026, 7, 6, 9, 0, 0, 0));
+        const replaced = calls.filter((call) => call.command === 'send_replacing_notification');
+        expect(replaced.length).toBeGreaterThanOrEqual(2);
+        expect(replaced.every((call) => call.args.tag === tag)).toBe(true);
+        expect(pluginMock.sendNotification).not.toHaveBeenCalled();
+
+        stopDesktopNotifications();
+        calls = captureInvokes('send_windows_packaged_notification', 'send_replacing_notification');
+        await fireDueThenRepeat(new Date(2026, 7, 7, 9, 0, 0, 0));
+        expect(calls.some((call) => call.command === 'send_replacing_notification')).toBe(true);
+        expect(pluginMock.sendNotification.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('tags the web notification and alerts again', async () => {
+
+        vi.resetModules();
+        const core = await import('@stride/core');
+        const service = await import('./notification-service');
+        const NotificationSpy = vi.fn() as any;
+        NotificationSpy.permission = 'granted';
+        vi.stubGlobal('Notification', NotificationSpy);
+        const fixedNow = new Date(2026, 7, 4, 9, 0, 0, 0);
+        vi.useFakeTimers();
+        vi.setSystemTime(fixedNow);
+        core.useTaskStore.setState({
+            _allTasks: [{ ...baseTask, dueDate: fixedNow.toISOString(), repeatReminderMinutes: 10 }],
+            _allProjects: [],
+            settings: { notificationsEnabled: true },
+        });
+
+        try {
+            await service.startDesktopNotifications();
+            await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+            expect(NotificationSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+            for (const [, options] of NotificationSpy.mock.calls) {
+                expect(options).toMatchObject({ tag, renotify: true });
+            }
+        } finally {
+            service.stopDesktopNotifications();
+        }
+    });
+});

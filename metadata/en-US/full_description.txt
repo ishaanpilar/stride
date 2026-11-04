@@ -1,0 +1,18 @@
+Stride is an AI-powered personal organiser. Capture tasks and ideas the moment they appear, start the day with an AI morning briefing, and ask the built-in assistant to help you plan.
+
+WHAT YOU GET
+
+- Capture: add tasks and notes in seconds with quick add, widgets, sharing from other apps, or voice.
+- AI morning briefing: a short summary of what matters today, built from your own tasks.
+- Assistant chat: ask questions about your tasks, projects, and schedule, or get help planning your day. Uses your own AI provider account.
+- Menu bar panel: on Mac, see and add tasks from the menu bar without opening the full app.
+- GTD lists: Inbox, Next, Waiting For, Someday/Maybe, Projects, Areas, and Contexts, plus a guided weekly review.
+- Pomodoro: a built-in focus timer for working through your Next actions.
+- Reminders, repeating tasks, checklists, Markdown notes, and attachments.
+- List, calendar, and kanban board views.
+
+YOUR DATA, YOUR CALL
+
+Works offline with no account required. Your tasks stay on your device. Sync is optional: choose Dropbox, a folder you control, WebDAV, your own server, or iCloud on Apple devices. AI features are optional and only run if you set up a provider.
+
+Free and open source under AGPL-3.0.

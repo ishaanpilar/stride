@@ -1,0 +1,18 @@
+<en-US>
+- Fixed stale “Conflicts resolved” sync banner showing on mobile.
+- Updated Android edge-to-edge handling and removed deprecated status/navigation bar color overrides.
+- Removed unused FOREGROUND_SERVICE_MEDIA_PLAYBACK permission.
+- Improved official-build heartbeat endpoint configuration while keeping heartbeat behavior silent for users.
+</en-US>
+<zh-CN>
+- 修复移动端误显示“Conflicts resolved”同步横幅的问题。
+- 更新 Android 沉浸式边到边适配，并移除已弃用的状态栏/导航栏颜色覆盖。
+- 移除未使用的 FOREGROUND_SERVICE_MEDIA_PLAYBACK 权限。
+- 改进正式构建的心跳端点配置，同时保持用户侧静默体验。
+</zh-CN>
+<es-ES>
+- Corregimos el banner de sync “Conflicts resolved” que aparecia de forma incorrecta en mobile.
+- Actualizamos el manejo edge-to-edge en Android y quitamos overrides de color obsoletos para barra de estado/navegacion.
+- Eliminamos el permiso no usado FOREGROUND_SERVICE_MEDIA_PLAYBACK.
+- Mejoramos la configuracion del endpoint de heartbeat en builds oficiales manteniendo un comportamiento silencioso para el usuario.
+</es-ES>
