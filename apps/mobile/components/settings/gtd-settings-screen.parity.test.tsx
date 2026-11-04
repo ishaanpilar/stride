@@ -159,7 +159,7 @@ const SETTINGS: Record<string, AppSettings> = {
   },
 };
 
-const OPEN_MODE_KEY = 'stride:view:taskOpenMode:v1';
+const OPEN_MODE_KEY = 'mindwtr:view:taskOpenMode:v1';
 
 type Screen = 'gtd' | 'gtd-archive' | 'gtd-capture' | 'gtd-inbox' | 'gtd-pomodoro' | 'gtd-review' | 'gtd-task-editor';
 type Device = {

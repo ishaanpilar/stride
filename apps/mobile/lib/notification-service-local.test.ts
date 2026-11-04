@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTranslations } from '@stride/core';
 
-const POMODORO_ALARM_STORAGE_KEY = 'stride:local:pomodoro-alarm:v1';
+const POMODORO_ALARM_STORAGE_KEY = 'mindwtr:local:pomodoro-alarm:v1';
 const backgroundStore = vi.hoisted(() => ({ sandbox: false, transition: false, available: true }));
 const noopStorage = vi.hoisted(() => ({}));
 
@@ -366,7 +366,7 @@ describe('notification-service-local', () => {
     expect(mockAlarmRemoveFiredNotification).toHaveBeenCalledWith(42);
     expect(mockAlarmRemoveAllFiredNotifications).toHaveBeenCalledTimes(1);
     expect(__localNotificationTestUtils.getAlarmMapSnapshot().size).toBe(0);
-    expect(mockAsyncStorageSetItem).toHaveBeenCalledWith('stride:local:alarms:v1', '{}');
+    expect(mockAsyncStorageSetItem).toHaveBeenCalledWith('mindwtr:local:alarms:v1', '{}');
   });
 
   it('re-asserts the persistent capture notification after wiping fired notifications', async () => {
@@ -388,7 +388,7 @@ describe('notification-service-local', () => {
     await startLocalMobileNotifications();
 
     expect(mockEnsureReminderNotificationChannel).toHaveBeenCalledWith(
-      'stride_reminders_v2',
+      'mindwtr_reminders_v2',
       'Stride reminders'
     );
   });
@@ -400,7 +400,7 @@ describe('notification-service-local', () => {
     await startLocalMobileNotifications();
 
     expect(mockEnsureReminderNotificationChannel).toHaveBeenCalledWith(
-      'stride_reminders_v2',
+      'mindwtr_reminders_v2',
       'Stride reminders'
     );
   });
@@ -420,7 +420,7 @@ describe('notification-service-local', () => {
     expect(mockAlarmScheduleAlarm).toHaveBeenCalledWith(
       expect.objectContaining({
         auto_cancel: true,
-        channel: 'stride_reminders_v2',
+        channel: 'mindwtr_reminders_v2',
         has_button: true,
         has_complete_action: true,
         loop_sound: false,
@@ -760,7 +760,7 @@ describe('notification-service-local', () => {
         { id: 'finished', title: 'Finished', status: 'done', startTime: past.toISOString() },
       ];
       mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-        key === 'stride:local:alarms:v1' ? JSON.stringify({ 'task:live': { id: 42 } }) : null
+        key === 'mindwtr:local:alarms:v1' ? JSON.stringify({ 'task:live': { id: 42 } }) : null
       ));
       mockAlarmGetScheduledAlarms.mockResolvedValue([
         nativeRow(42, future, taskData('live')),
@@ -971,7 +971,7 @@ describe('notification-service-local', () => {
     await startLocalMobileNotifications();
     const listener = (mockStoreSubscribe.mock.calls as unknown[][])[0]?.[0] as (state: unknown, prevState: unknown) => void;
     const alarmMapWrites = () => mockAsyncStorageSetItem.mock.calls.filter(
-      ([key]) => key === 'stride:local:alarms:v1'
+      ([key]) => key === 'mindwtr:local:alarms:v1'
     ).length;
     expect(alarmMapWrites()).toBe(1);
 
@@ -1009,8 +1009,8 @@ describe('notification-service-local', () => {
       .map(([details]) => details);
     const callReminders = scheduled.filter((details) => details.data?.taskId === 'call');
     expect(callReminders.length).toBeGreaterThan(1);
-    expect(new Set(callReminders.map((details) => details.tag))).toEqual(new Set(['stride-reminder:task:call']));
-    expect(scheduled.find((details) => details.data?.taskId === 'other')?.tag).toBe('stride-reminder:task:other');
+    expect(new Set(callReminders.map((details) => details.tag))).toEqual(new Set(['mindwtr-reminder:task:call']));
+    expect(scheduled.find((details) => details.data?.taskId === 'other')?.tag).toBe('mindwtr-reminder:task:other');
 
     expect(mockAlarmCollapseDeliveredReminderNotifications).not.toHaveBeenCalled();
   });
@@ -1169,7 +1169,7 @@ describe('notification-service-local', () => {
     expect(mockAlarmScheduleAlarm).toHaveBeenCalledWith(
       expect.objectContaining({
         auto_cancel: true,
-        channel: 'stride_reminders_v2',
+        channel: 'mindwtr_reminders_v2',
         message: 'Weekly review body',
         title: 'Weekly review',
       })
@@ -1404,7 +1404,7 @@ describe('notification-service-local', () => {
       })
     );
     expect(mockAsyncStorageSetItem).toHaveBeenCalledWith(
-      'stride:local:pomodoro-alarm:v1',
+      'mindwtr:local:pomodoro-alarm:v1',
       JSON.stringify({ id: 99, fireAtMs: fireAt.getTime(), phase: 'focus-complete' })
     );
   });
@@ -1452,7 +1452,7 @@ describe('notification-service-local', () => {
 
   it('cancels the superseded pomodoro alarm only after its replacement is scheduled', async () => {
     mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-      key === 'stride:local:pomodoro-alarm:v1'
+      key === 'mindwtr:local:pomodoro-alarm:v1'
         ? JSON.stringify({ id: 41, fireAtMs: Date.now() + 60_000 })
         : null
     ));
@@ -1466,14 +1466,14 @@ describe('notification-service-local', () => {
     const deleteOrder = mockAlarmDeleteAlarm.mock.invocationCallOrder[0];
     expect(scheduleOrder).toBeLessThan(deleteOrder);
     expect(mockAsyncStorageSetItem).toHaveBeenCalledWith(
-      'stride:local:pomodoro-alarm:v1',
+      'mindwtr:local:pomodoro-alarm:v1',
       JSON.stringify({ id: 99, fireAtMs: fireAt.getTime() })
     );
   });
 
   it('preserves an expired pomodoro alarm when the next phase auto-starts', async () => {
     mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-      key === 'stride:local:pomodoro-alarm:v1'
+      key === 'mindwtr:local:pomodoro-alarm:v1'
         ? JSON.stringify({ id: 41, fireAtMs: Date.now() - 1000 })
         : null
     ));
@@ -1490,7 +1490,7 @@ describe('notification-service-local', () => {
 
   it('keeps the fresh pomodoro alarm when the module reuses the previous identifier', async () => {
     mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-      key === 'stride:local:pomodoro-alarm:v1'
+      key === 'mindwtr:local:pomodoro-alarm:v1'
         ? JSON.stringify({ id: 99, fireAtMs: Date.now() + 60_000 })
         : null
     ));
@@ -1505,7 +1505,7 @@ describe('notification-service-local', () => {
 
   it('cancels a pending pomodoro completion alarm', async () => {
     mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-      key === 'stride:local:pomodoro-alarm:v1'
+      key === 'mindwtr:local:pomodoro-alarm:v1'
         ? JSON.stringify({ id: 41, fireAtMs: Date.now() + 60_000 })
         : null
     ));
@@ -1515,14 +1515,14 @@ describe('notification-service-local', () => {
     expect(mockAlarmDeleteAlarm).toHaveBeenCalledWith(41);
     expect(mockAlarmDeleteRepeatingAlarm).toHaveBeenCalledWith(41);
     expect(mockAlarmRemoveFiredNotification).toHaveBeenCalledWith(41);
-    expect(mockAsyncStorageRemoveItem).toHaveBeenCalledWith('stride:local:pomodoro-alarm:v1');
+    expect(mockAsyncStorageRemoveItem).toHaveBeenCalledWith('mindwtr:local:pomodoro-alarm:v1');
   });
 
   it('preserves a due pomodoro alarm when normal timer completion reaches JS first', async () => {
     const nativePending = new Set([41]);
     mockAlarmDeleteAlarm.mockImplementation((id: number) => { nativePending.delete(id); });
     mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-      key === 'stride:local:pomodoro-alarm:v1'
+      key === 'mindwtr:local:pomodoro-alarm:v1'
         ? JSON.stringify({ id: 41, fireAtMs: Date.now() - 1000 })
         : null
     ));
@@ -1532,7 +1532,7 @@ describe('notification-service-local', () => {
     expect(mockAlarmDeleteAlarm).not.toHaveBeenCalledWith(41);
     expect(mockAlarmDeleteRepeatingAlarm).not.toHaveBeenCalledWith(41);
     expect(mockAlarmRemoveFiredNotification).not.toHaveBeenCalled();
-    expect(mockAsyncStorageRemoveItem).not.toHaveBeenCalledWith('stride:local:pomodoro-alarm:v1');
+    expect(mockAsyncStorageRemoveItem).not.toHaveBeenCalledWith('mindwtr:local:pomodoro-alarm:v1');
     expect(nativePending.has(41)).toBe(true);
 
 
@@ -1908,7 +1908,7 @@ describe('notification-service-local', () => {
     const readSavedAlarmMap = () => {
       const call = [...mockAsyncStorageSetItem.mock.calls]
         .reverse()
-        .find(([key]) => key === 'stride:local:alarms:v1');
+        .find(([key]) => key === 'mindwtr:local:alarms:v1');
       return call ? JSON.parse(call[1] as string) as Record<string, { id: number }> : null;
     };
 
@@ -1942,7 +1942,7 @@ describe('notification-service-local', () => {
         { id: 'task-done', title: 'Done', status: 'done', dueDate: new Date(Date.now() + 30 * 60 * 1000).toISOString() },
       ];
       mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-        key === 'stride:local:alarms:v1' ? JSON.stringify({ 'task:task-done': { id: 77, signature: 'before it was done' } }) : null
+        key === 'mindwtr:local:alarms:v1' ? JSON.stringify({ 'task:task-done': { id: 77, signature: 'before it was done' } }) : null
       ));
       let nextId = 200;
       mockAlarmScheduleAlarm.mockReset();
@@ -1975,7 +1975,7 @@ describe('notification-service-local', () => {
         { id: 'task-new', title: 'New', dueDate: new Date(Date.now() + 60 * 1000).toISOString() },
       ];
       mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-        key === 'stride:local:alarms:v1'
+        key === 'mindwtr:local:alarms:v1'
           ? JSON.stringify({ 'task:gone-1': { id: 71, signature: 'deleted task' }, 'task:gone-2': { id: 72, signature: 'deleted task' } })
           : null
       ));

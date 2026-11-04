@@ -66,12 +66,12 @@ describe('Dropbox credential storage', () => {
 
     it('migrates legacy plaintext tokens into secure storage on read', async () => {
         const { getStoredDropboxTokens } = await import('./dropbox-auth');
-        storeMocks.asyncItems.set('@stride_dropbox_tokens', JSON.stringify(tokens));
+        storeMocks.asyncItems.set('@mindwtr_dropbox_tokens', JSON.stringify(tokens));
 
         await expect(getStoredDropboxTokens()).resolves.toEqual(tokens);
 
-        expect(storeMocks.secureItems.get('stride_dropbox_tokens')).toBe(JSON.stringify(tokens));
-        expect(storeMocks.asyncItems.has('@stride_dropbox_tokens')).toBe(false);
+        expect(storeMocks.secureItems.get('mindwtr_dropbox_tokens')).toBe(JSON.stringify(tokens));
+        expect(storeMocks.asyncItems.has('@mindwtr_dropbox_tokens')).toBe(false);
     });
 
     it('retries a transient availability failure without writing plaintext', async () => {
@@ -83,7 +83,7 @@ describe('Dropbox credential storage', () => {
 
         await expect(saveDropboxTokens(tokens)).resolves.toBeUndefined();
         expect(storeMocks.isAvailableAsync).toHaveBeenCalledTimes(2);
-        expect(storeMocks.secureItems.get('stride_dropbox_tokens')).toBe(JSON.stringify(tokens));
+        expect(storeMocks.secureItems.get('mindwtr_dropbox_tokens')).toBe(JSON.stringify(tokens));
     });
 
     it('keeps new tokens in memory only when secure storage is unsupported', async () => {
@@ -93,17 +93,17 @@ describe('Dropbox credential storage', () => {
         await saveDropboxTokens(tokens);
 
         expect(storeMocks.setItem).not.toHaveBeenCalled();
-        expect(storeMocks.secureItems.has('stride_dropbox_tokens')).toBe(false);
+        expect(storeMocks.secureItems.has('mindwtr_dropbox_tokens')).toBe(false);
         await expect(getStoredDropboxTokens()).resolves.toEqual(tokens);
     });
 
     it('evacuates legacy plaintext tokens into memory when secure storage is unsupported', async () => {
         const { getStoredDropboxTokens } = await import('./dropbox-auth');
         storeMocks.secureAvailable = false;
-        storeMocks.asyncItems.set('@stride_dropbox_tokens', JSON.stringify(tokens));
+        storeMocks.asyncItems.set('@mindwtr_dropbox_tokens', JSON.stringify(tokens));
 
         await expect(getStoredDropboxTokens()).resolves.toEqual(tokens);
-        expect(storeMocks.asyncItems.has('@stride_dropbox_tokens')).toBe(false);
+        expect(storeMocks.asyncItems.has('@mindwtr_dropbox_tokens')).toBe(false);
         await expect(getStoredDropboxTokens()).resolves.toEqual(tokens);
     });
 });

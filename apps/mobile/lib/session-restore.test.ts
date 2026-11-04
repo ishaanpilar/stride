@@ -105,9 +105,9 @@ describe('mobile session restore', () => {
     });
 
     it('ignores unknown routes and malformed payloads', async () => {
-        memoryStore.set('stride:session:lastRoute', JSON.stringify({ pathname: '/nope', at: Date.now() }));
+        memoryStore.set('mindwtr:session:lastRoute', JSON.stringify({ pathname: '/nope', at: Date.now() }));
         expect(await readRestorableRoute()).toBeNull();
-        memoryStore.set('stride:session:lastRoute', 'not json');
+        memoryStore.set('mindwtr:session:lastRoute', 'not json');
         expect(await readRestorableRoute()).toBeNull();
     });
 

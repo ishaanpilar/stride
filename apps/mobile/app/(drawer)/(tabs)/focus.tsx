@@ -130,7 +130,8 @@ function resolveTaskRouteTab(value?: string | string[]): TaskEditTab {
   return routeValue === 'task' ? 'task' : 'view';
 }
 
-const FOCUS_VIEW_STATE_STORAGE_KEY = 'stride:view:focus:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const FOCUS_VIEW_STATE_STORAGE_KEY = 'mindwtr:view:focus:v1';
 const FOCUS_REORDER_ITEM_HEIGHT = 80;
 const FOCUS_LIST_INITIAL_RENDER_COUNT = 12;
 const FOCUS_LIST_BATCH_RENDER_COUNT = 12;

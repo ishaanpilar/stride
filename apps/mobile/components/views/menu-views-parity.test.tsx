@@ -503,7 +503,7 @@ export const scenarios: MenuViewScenario[] = [
     name: 'done: stored view state',
     screen: 'done',
     settings: 'base',
-    storage: { 'stride:view:done:v1': JSON.stringify({ groupBy: 'completedDate', sortBy: 'title' }) },
+    storage: { 'mindwtr:view:done:v1': JSON.stringify({ groupBy: 'completedDate', sortBy: 'title' }) },
     actions: [['group', 'tag']],
   },
   { name: 'done: empty', screen: 'done', settings: 'base', omit: ['d-a', 'd-b', 'd-c', 'd-d', 'd-e', 'd-f', 'd-g'], actions: [] },

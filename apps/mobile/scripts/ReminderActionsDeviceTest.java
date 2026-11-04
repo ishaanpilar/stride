@@ -37,7 +37,7 @@ public class ReminderActionsDeviceTest extends InstrumentationTestCase {
         alarm.setTitle("Reminder device check " + id);
         alarm.setMessage("Disposable reminder validation");
         alarm.setChannel("pr1346-device-check");
-        alarm.setTag("stride-reminder:task:" + task);
+        alarm.setTag("mindwtr-reminder:task:" + task);
         alarm.setData("taskId==>" + task + ";;kind==>" + kind + ";;alarmKey==>task:" + task + ":r" + id + ";;notificationActionComplete==>true;;");
         alarm.setHasButton(true);
         alarm.setPlaySound(false);
@@ -49,7 +49,7 @@ public class ReminderActionsDeviceTest extends InstrumentationTestCase {
     private StatusBarNotification shown(String task) throws Exception {
         for (int i = 0; i < 40; i++) {
             for (StatusBarNotification item : manager.getActiveNotifications())
-                if (("stride-reminder:task:" + task).equals(item.getTag())) return item;
+                if (("mindwtr-reminder:task:" + task).equals(item.getTag())) return item;
             Thread.sleep(50);
         }
         fail("No notification for " + task); return null;
@@ -94,7 +94,7 @@ public class ReminderActionsDeviceTest extends InstrumentationTestCase {
             boolean delivered = false;
             for (int i = 0; i < 120; i++) {
                 for (StatusBarNotification item : manager.getActiveNotifications())
-                    if (("stride-reminder:task:" + TASK).equals(item.getTag())) delivered = true;
+                    if (("mindwtr-reminder:task:" + TASK).equals(item.getTag())) delivered = true;
                 if (delivered) break;
                 Thread.sleep(500);
             }

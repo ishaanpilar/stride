@@ -64,7 +64,8 @@ import type { useProjectAttachments } from './use-project-attachments';
 import type { useProjectNotesEditor } from './use-project-notes-editor';
 import { getAndroidKeyboardFrame } from '../../lib/android-keyboard-frame';
 
-const PROJECT_SHOW_COMPLETED_STORAGE_KEY = 'stride:view:project-detail:show-completed:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const PROJECT_SHOW_COMPLETED_STORAGE_KEY = 'mindwtr:view:project-detail:show-completed:v1';
 
 type ProjectDetailPresentationStyle = 'pageSheet' | 'fullScreen';
 

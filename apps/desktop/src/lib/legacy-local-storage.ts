@@ -34,4 +34,43 @@ export function migrateLegacyLocalStorage(storage: Storage | undefined): number 
     }
 }
 
-migrateLegacyLocalStorage(typeof window !== 'undefined' ? window.localStorage : undefined);
+export const LEGACY_WEBKIT_IMPORT_KEY = 'stride:legacy-webkit-import:v1';
+
+/**
+ * Adds rows read from a previous install's WebKit storage (another origin/profile, read natively)
+ * that this storage lacks, under both the legacy and the `stride…` name. Returns how many were added.
+ */
+export function importLegacyLocalStorageItems(storage: Storage, items: Array<[string, string]>): number {
+    let added = 0;
+    for (const [key, value] of items) {
+        if (typeof key !== 'string' || typeof value !== 'string') continue;
+        const names = LEGACY_PREFIX.test(key) ? [key, key.replace(LEGACY_PREFIX, 'stride')] : [key];
+        for (const name of names) {
+            if (storage.getItem(name) === null) {
+                storage.setItem(name, value);
+                added += 1;
+            }
+        }
+    }
+    return added;
+}
+
+/** One-time import from the previous install (Tauri only); reloads once when anything was added. */
+async function importLegacyWebKitStorage(storage: Storage): Promise<void> {
+    if (storage.getItem(LEGACY_WEBKIT_IMPORT_KEY)) return;
+    const { invokeNative } = await import('./tauri-invoke');
+    const items = await invokeNative<Array<[string, string]>>('legacy_local_storage_items');
+    if (storage.getItem(LEGACY_WEBKIT_IMPORT_KEY)) return; // another window finished first
+    const added = importLegacyLocalStorageItems(storage, Array.isArray(items) ? items : []);
+    storage.setItem(LEGACY_WEBKIT_IMPORT_KEY, new Date().toISOString());
+    if (added > 0) window.location.reload();
+}
+
+if (typeof window !== 'undefined') {
+    migrateLegacyLocalStorage(window.localStorage);
+    if ('__TAURI_INTERNALS__' in window) {
+        importLegacyWebKitStorage(window.localStorage).catch(() => {
+            // best effort: never block startup
+        });
+    }
+}

@@ -1,7 +1,8 @@
 import type { TaskSortBy } from '@stride/core';
 import { DONE_TASK_LIST_SORT_OPTIONS } from '@stride/core';
 
-export const ARCHIVED_LIST_VIEW_STATE_STORAGE_KEY = 'stride:view:archived:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const ARCHIVED_LIST_VIEW_STATE_STORAGE_KEY = 'mindwtr:view:archived:v1';
 
 
 export const ARCHIVED_LIST_GROUP_OPTIONS = ['none', 'completedDate', 'context', 'area', 'project', 'tag'] as const;

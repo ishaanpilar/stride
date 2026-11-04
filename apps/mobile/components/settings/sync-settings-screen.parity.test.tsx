@@ -402,14 +402,14 @@ const SETTINGS: Record<string, AppSettings> = {
 };
 
 const KEYS = {
-  backend: '@stride_sync_backend',
-  path: '@stride_sync_path',
-  webdavUrl: '@stride_webdav_url',
-  webdavUser: '@stride_webdav_username',
-  webdavPassword: '@stride_webdav_password',
-  cloudUrl: '@stride_cloud_url',
-  cloudToken: '@stride_cloud_token',
-  cloudProvider: '@stride_cloud_provider',
+  backend: '@mindwtr_sync_backend',
+  path: '@mindwtr_sync_path',
+  webdavUrl: '@mindwtr_webdav_url',
+  webdavUser: '@mindwtr_webdav_username',
+  webdavPassword: '@mindwtr_webdav_password',
+  cloudUrl: '@mindwtr_cloud_url',
+  cloudToken: '@mindwtr_cloud_token',
+  cloudProvider: '@mindwtr_cloud_provider',
 };
 const WEBDAV_STORED = {
   storage: { [KEYS.backend]: 'webdav', [KEYS.webdavUrl]: 'https://dav.example.com/stride', [KEYS.webdavUser]: 'alice' },

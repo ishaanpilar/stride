@@ -750,7 +750,7 @@ export async function replayMenuViewsScenario(options: {
     let storedReferenceGroupBy = scenario.storage?.[REFERENCE_GROUP_BY_KEY] ?? null;
     const initialReferenceGroupBy = (TASK_LIST_GROUP_OPTIONS as readonly string[]).includes(storedReferenceGroupBy ?? '')
         ? storedReferenceGroupBy as TaskGroupBy : REFERENCE_LIST_DEFAULT_GROUP_BY;
-    const storedDone = scenario.storage?.['stride:view:done:v1'];
+    const storedDone = scenario.storage?.['mindwtr:view:done:v1']; // LEGACY: stored view-state key kept from Mindwtr
     const parsedDone = storedDone ? JSON.parse(storedDone) as { groupBy?: TaskGroupBy; sortBy?: TaskSortBy } : {};
     const session: StatusSession = {
         groupBy: kind === 'reference' ? initialReferenceGroupBy

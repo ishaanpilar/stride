@@ -453,7 +453,7 @@ describe('widget-service', () => {
 
     it('localizes the capture dialog labels with the widget language', async () => {
         await loadTranslations('de');
-        mockAsyncStorageGetItem.mockImplementation(async (key: string) => (key === 'stride-language' ? 'de' : null));
+        mockAsyncStorageGetItem.mockImplementation(async (key: string) => (key === 'mindwtr-language' ? 'de' : null));
 
         expect(await updateMobileWidgetFromData(buildData(1))).toBe(true);
 
@@ -586,7 +586,7 @@ describe('widget-service', () => {
         mockPlatform.OS = 'ios';
         let language = 'en';
         mockAsyncStorageGetItem.mockImplementation(async (key: string) => (
-            key === 'stride-language' ? language : null
+            key === 'mindwtr-language' ? language : null
         ));
         const data = buildData(5);
         const storeState = {

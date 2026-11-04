@@ -3,7 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getIosAppBadgeNative, type IosAppBadgeNative } from '@/modules/ios-app-badge';
 import { logInfo, logWarn } from './app-log';
 
-const STORAGE_KEY = 'stride:iosAppBadgeEnabled';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const STORAGE_KEY = 'mindwtr:iosAppBadgeEnabled';
 export type IosAppBadgeToggleResult = 'enabled' | 'disabled' | 'denied' | 'unavailable';
 
 type BadgePorts = {

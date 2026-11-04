@@ -263,12 +263,12 @@ const SETTINGS: Record<string, AppSettings> = {
 };
 
 const KEYS = {
-  feeds: 'stride-external-calendars',
-  system: 'stride-system-calendar-settings',
-  pushEnabled: 'stride:calendar-push-sync:enabled',
-  pushCalendar: 'stride:calendar-push-sync:calendar-id',
-  pushTarget: 'stride:calendar-push-sync:target-calendar-id',
-  pushColor: 'stride:calendar-push-sync:color',
+  feeds: 'mindwtr-external-calendars',
+  system: 'mindwtr-system-calendar-settings',
+  pushEnabled: 'mindwtr:calendar-push-sync:enabled',
+  pushCalendar: 'mindwtr:calendar-push-sync:calendar-id',
+  pushTarget: 'mindwtr:calendar-push-sync:target-calendar-id',
+  pushColor: 'mindwtr:calendar-push-sync:color',
 };
 
 type Device = {

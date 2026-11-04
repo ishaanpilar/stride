@@ -94,12 +94,12 @@ describe('AI credential storage', () => {
     });
 
     it('migrates a legacy plaintext key into secure storage on read', async () => {
-        storeMocks.asyncItems.set('stride-ai-key:openai', 'legacy-ai-key');
+        storeMocks.asyncItems.set('mindwtr-ai-key:openai', 'legacy-ai-key');
 
         await expect(loadAIKey('openai')).resolves.toBe('legacy-ai-key');
 
-        expect(storeMocks.secureItems.get('stride-ai-key_openai')).toBe('legacy-ai-key');
-        expect(storeMocks.asyncItems.has('stride-ai-key:openai')).toBe(false);
+        expect(storeMocks.secureItems.get('mindwtr-ai-key_openai')).toBe('legacy-ai-key');
+        expect(storeMocks.asyncItems.has('mindwtr-ai-key:openai')).toBe(false);
     });
 
     it('retries a transient availability failure without writing plaintext', async () => {
@@ -110,7 +110,7 @@ describe('AI credential storage', () => {
 
         await expect(saveAIKey('openai', 'fresh-ai-key')).resolves.toBeUndefined();
         expect(storeMocks.isAvailableAsync).toHaveBeenCalledTimes(2);
-        expect(storeMocks.secureItems.get('stride-ai-key_openai')).toBe('fresh-ai-key');
+        expect(storeMocks.secureItems.get('mindwtr-ai-key_openai')).toBe('fresh-ai-key');
     });
 
     it('keeps a new key in memory only when secure storage is unsupported', async () => {
@@ -119,16 +119,16 @@ describe('AI credential storage', () => {
         await saveAIKey('openai', 'session-ai-key');
 
         expect(storeMocks.setItem).not.toHaveBeenCalled();
-        expect(storeMocks.secureItems.has('stride-ai-key_openai')).toBe(false);
+        expect(storeMocks.secureItems.has('mindwtr-ai-key_openai')).toBe(false);
         await expect(loadAIKey('openai')).resolves.toBe('session-ai-key');
     });
 
     it('evacuates a legacy plaintext key into memory when secure storage is unsupported', async () => {
         storeMocks.secureAvailable = false;
-        storeMocks.asyncItems.set('stride-ai-key:openai', 'legacy-session-ai-key');
+        storeMocks.asyncItems.set('mindwtr-ai-key:openai', 'legacy-session-ai-key');
 
         await expect(loadAIKey('openai')).resolves.toBe('legacy-session-ai-key');
-        expect(storeMocks.asyncItems.has('stride-ai-key:openai')).toBe(false);
+        expect(storeMocks.asyncItems.has('mindwtr-ai-key:openai')).toBe(false);
         await expect(loadAIKey('openai')).resolves.toBe('legacy-session-ai-key');
     });
 });

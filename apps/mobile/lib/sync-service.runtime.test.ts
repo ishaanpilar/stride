@@ -15,17 +15,17 @@ import { SYNC_ENCRYPTION_STATE_KEY } from './sync-constants';
 import { WEBDAV_CAPABILITY_PROOF_STORAGE_KEY } from './webdav-capability-proof';
 
 
-const ATTACHMENT_PRESENCE_KEY = '@stride_attachment_presence_reconcile_v1';
+const ATTACHMENT_PRESENCE_KEY = '@mindwtr_attachment_presence_reconcile_v1';
 
 
 const presenceStampFor = (values: Record<string, string | null>): string => JSON.stringify({
   scope: buildSyncLocationScope({
-    backend: values['@stride_sync_backend'] ?? null,
-    syncPath: values['@stride_sync_path'] ?? null,
-    webdavUrl: values['@stride_webdav_url'] ?? null,
-    webdavUsername: values['@stride_webdav_username'] ?? null,
-    cloudProvider: values['@stride_cloud_provider'] ?? null,
-    cloudUrl: values['@stride_cloud_url'] ?? null,
+    backend: values['@mindwtr_sync_backend'] ?? null,
+    syncPath: values['@mindwtr_sync_path'] ?? null,
+    webdavUrl: values['@mindwtr_webdav_url'] ?? null,
+    webdavUsername: values['@mindwtr_webdav_username'] ?? null,
+    cloudProvider: values['@mindwtr_cloud_provider'] ?? null,
+    cloudUrl: values['@mindwtr_cloud_url'] ?? null,
   }),
   at: Date.now(),
 });
@@ -329,10 +329,10 @@ describe('mobile sync-service runtime', () => {
 
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
       };
       return values[key] ?? null;
     });
@@ -484,10 +484,10 @@ describe('mobile sync-service runtime', () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       if (key === SYNC_ENCRYPTION_STATE_KEY) throw new Error('state store unavailable');
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
       };
       return values[key] ?? null;
     });
@@ -543,10 +543,10 @@ describe('mobile sync-service runtime', () => {
           return JSON.stringify({ state: 'off', incompleteTransition: 'enable' });
         }
         const values: Record<string, string | null> = {
-          '@stride_sync_backend': 'webdav',
-          '@stride_webdav_url': 'https://sync.example.com/data.json',
-          '@stride_webdav_username': 'user',
-          '@stride_webdav_password': 'pass',
+          '@mindwtr_sync_backend': 'webdav',
+          '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+          '@mindwtr_webdav_username': 'user',
+          '@mindwtr_webdav_password': 'pass',
         };
         return values[key] ?? null;
       });
@@ -561,10 +561,10 @@ describe('mobile sync-service runtime', () => {
 
   describe('stale no-key discovery scope (#1138)', () => {
     const webdavConfig: Record<string, string | null> = {
-      '@stride_sync_backend': 'webdav',
-      '@stride_webdav_url': 'https://sync.example.com/data.json',
-      '@stride_webdav_username': 'user',
-      '@stride_webdav_password': 'pass',
+      '@mindwtr_sync_backend': 'webdav',
+      '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+      '@mindwtr_webdav_username': 'user',
+      '@mindwtr_webdav_password': 'pass',
     };
     const persistedNoKey = (discoveredScope?: string) => {
       asyncStorageMocks.getItem.mockImplementation(async (key: string) => (
@@ -725,8 +725,8 @@ describe('mobile sync-service runtime', () => {
 
 
         const fileValues: Record<string, string | null> = {
-          '@stride_sync_backend': 'file',
-          '@stride_sync_path': 'file:///candidate/data.json',
+          '@mindwtr_sync_backend': 'file',
+          '@mindwtr_sync_path': 'file:///candidate/data.json',
         };
         asyncStorageMocks.getItem.mockImplementation(async (key: string) => (
           key === ATTACHMENT_PRESENCE_KEY ? presenceStampFor(fileValues) : (fileValues[key] ?? null)
@@ -750,8 +750,8 @@ describe('mobile sync-service runtime', () => {
 
       it('establishes posture from the presence stamp even when the resolved cycle path has /data.json appended and storage does not', async () => {
         const folderValues: Record<string, string | null> = {
-          '@stride_sync_backend': 'file',
-          '@stride_sync_path': 'file:///Documents/StrideFolder',
+          '@mindwtr_sync_backend': 'file',
+          '@mindwtr_sync_path': 'file:///Documents/StrideFolder',
         };
         asyncStorageMocks.getItem.mockImplementation(async (key: string) => (
           key === ATTACHMENT_PRESENCE_KEY ? presenceStampFor(folderValues) : (folderValues[key] ?? null)
@@ -991,8 +991,8 @@ describe('mobile sync-service runtime', () => {
   it('restores the File Sync contention retry budget after an ordinary follow-up', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'file',
-        '@stride_sync_path': 'file:///sync/Stride/data.json',
+        '@mindwtr_sync_backend': 'file',
+        '@mindwtr_sync_path': 'file:///sync/Stride/data.json',
       };
       return values[key] ?? null;
     });
@@ -1123,7 +1123,7 @@ describe('mobile sync-service runtime', () => {
 
   it('runs a first WebDAV round trip from session config without reading or activating persisted transport settings', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
-      if (key === '@stride_sync_backend') return 'off';
+      if (key === '@mindwtr_sync_backend') return 'off';
       return null;
     });
 
@@ -1163,7 +1163,7 @@ describe('mobile sync-service runtime', () => {
     );
 
 
-    expect(asyncStorageMocks.setItem).not.toHaveBeenCalledWith('@stride_sync_backend', 'webdav');
+    expect(asyncStorageMocks.setItem).not.toHaveBeenCalledWith('@mindwtr_sync_backend', 'webdav');
     expect(storageMocks.saveData).not.toHaveBeenCalled();
     expect(externalCalendarMocks.getExternalCalendars).not.toHaveBeenCalled();
     expect(externalCalendarMocks.saveExternalCalendars).not.toHaveBeenCalled();
@@ -1201,7 +1201,7 @@ describe('mobile sync-service runtime', () => {
 
   it('does not persist candidate remote data when a mobile activation probe write fails', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
-      if (key === '@stride_sync_backend') return 'off';
+      if (key === '@mindwtr_sync_backend') return 'off';
       return null;
     });
     coreMocks.webdavGetJson.mockResolvedValue(remoteChangedData);
@@ -1298,11 +1298,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope,
           localFingerprint: computeSyncPayloadFingerprint(emptyData),
           remoteFingerprint,
@@ -1333,7 +1333,7 @@ describe('mobile sync-service runtime', () => {
       expect.objectContaining({ allowWeakFingerprint: true }),
     );
     expect(storeStateRef.current.updateSettings).not.toHaveBeenCalled();
-    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@stride_local_sync_status_v1')).toBe(true);
+    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@mindwtr_local_sync_status_v1')).toBe(true);
   });
 
   it('manual sync reads the remote even when cached fast-check fingerprints claim no changes', async () => {
@@ -1345,11 +1345,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope,
           localFingerprint: computeSyncPayloadFingerprint(emptyData),
           remoteFingerprint,
@@ -1417,10 +1417,10 @@ describe('mobile sync-service runtime', () => {
     coreMocks.webdavGetJson.mockResolvedValue(syncedData);
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
       };
       return values[key] ?? null;
     });
@@ -1452,7 +1452,7 @@ describe('mobile sync-service runtime', () => {
     expect(coreMocks.webdavGetJson).toHaveBeenCalledTimes(1);
     expect(coreMocks.webdavHeadFile).not.toHaveBeenCalled();
     expect(storeStateRef.current.updateSettings).not.toHaveBeenCalled();
-    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@stride_local_sync_status_v1')).toBe(true);
+    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@mindwtr_local_sync_status_v1')).toBe(true);
   });
 
   it('reuses the local snapshot when fast and read checks fall through to a full WebDAV sync', async () => {
@@ -1465,11 +1465,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope,
           localFingerprint: computeSyncPayloadFingerprint(emptyData),
           remoteFingerprint,
@@ -1523,11 +1523,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope: establishedScope,
           localFingerprint: 'established',
           remoteFingerprint: 'established',
@@ -1573,10 +1573,10 @@ describe('mobile sync-service runtime', () => {
   it('enables steady-state attachment content checks for self-hosted Cloud', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'selfhosted',
-        '@stride_cloud_url': 'https://cloud.example/v1/data',
-        '@stride_cloud_token': 'token',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'selfhosted',
+        '@mindwtr_cloud_url': 'https://cloud.example/v1/data',
+        '@mindwtr_cloud_token': 'token',
       };
       return values[key] ?? null;
     });
@@ -1650,7 +1650,7 @@ describe('mobile sync-service runtime', () => {
     expect(savedAttachment?.deletedAt).toBe('2026-04-01T00:00:00.000Z');
     expect(savedAttachment?.cloudKey).toBeUndefined();
     expect(savedAttachment?.localStatus).toBe('missing');
-    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@stride_fast_sync_state_v1')).toBe(false);
+    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@mindwtr_fast_sync_state_v1')).toBe(false);
   });
 
   it('passes the resolved weak-fingerprint option to the WebDAV read, write, and head calls', async () => {
@@ -1710,7 +1710,7 @@ describe('mobile sync-service runtime', () => {
     expect(result).toEqual({ success: true, stats: emptyStats });
     expect(coreMocks.webdavPutJson).toHaveBeenCalledTimes(1);
     expect(coreMocks.webdavHeadFile).not.toHaveBeenCalled();
-    const fastStateWrite = asyncStorageMocks.setItem.mock.calls.find(([key]) => key === '@stride_fast_sync_state_v1');
+    const fastStateWrite = asyncStorageMocks.setItem.mock.calls.find(([key]) => key === '@mindwtr_fast_sync_state_v1');
     expect(fastStateWrite).toBeTruthy();
     expect(JSON.parse(fastStateWrite?.[1] as string).remoteFingerprint).toBe('webdav:v1:etag="put-rev"');
   });
@@ -1733,10 +1733,10 @@ describe('mobile sync-service runtime', () => {
     };
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'selfhosted',
-        '@stride_cloud_url': 'https://cloud.example.com/v1/data',
-        '@stride_cloud_token': 'token',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'selfhosted',
+        '@mindwtr_cloud_url': 'https://cloud.example.com/v1/data',
+        '@mindwtr_cloud_token': 'token',
       };
       return values[key] ?? null;
     });
@@ -1765,7 +1765,7 @@ describe('mobile sync-service runtime', () => {
     expect(result).toEqual({ success: true, stats: emptyStats });
     expect(coreMocks.cloudPutJson).toHaveBeenCalledTimes(1);
     expect(coreMocks.cloudHeadJson).not.toHaveBeenCalled();
-    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@stride_fast_sync_state_v1')).toBe(false);
+    expect(asyncStorageMocks.setItem.mock.calls.some(([key]) => key === '@mindwtr_fast_sync_state_v1')).toBe(false);
 
 
     await vi.waitFor(() => expect(coreMocks.performSyncCycle).toHaveBeenCalledTimes(2), { timeout: 5_000 });
@@ -1776,8 +1776,8 @@ describe('mobile sync-service runtime', () => {
   it('reports Dropbox as unavailable in FOSS builds instead of falling through to self-hosted config', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'dropbox',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'dropbox',
       };
       return values[key] ?? null;
     });
@@ -1830,9 +1830,9 @@ describe('mobile sync-service runtime', () => {
     (Platform as { OS: string }).OS = 'ios';
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'file',
-        '@stride_sync_path': 'file:///stale/Stride/data.json',
-        '@stride_sync_path_bookmark': 'bookmark-token',
+        '@mindwtr_sync_backend': 'file',
+        '@mindwtr_sync_path': 'file:///stale/Stride/data.json',
+        '@mindwtr_sync_path_bookmark': 'bookmark-token',
       };
       return values[key] ?? null;
     });
@@ -1845,7 +1845,7 @@ describe('mobile sync-service runtime', () => {
 
     expect(result.success).toBe(true);
     expect(syncPathBookmarkMocks.resolveSyncPathBookmark).toHaveBeenCalledWith('bookmark-token');
-    expect(asyncStorageMocks.setItem).toHaveBeenCalledWith('@stride_sync_path', 'file:///resolved/Stride/data.json');
+    expect(asyncStorageMocks.setItem).toHaveBeenCalledWith('@mindwtr_sync_path', 'file:///resolved/Stride/data.json');
     expect(storageFileMocks.readSyncFileVersioned).toHaveBeenCalledWith(
       'file:///resolved/Stride/data.json',
 
@@ -1862,9 +1862,9 @@ describe('mobile sync-service runtime', () => {
     (Platform as { OS: string }).OS = 'ios';
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'file',
-        '@stride_sync_path': 'file:///resolved/Stride/data.json',
-        '@stride_sync_path_bookmark': 'stale-token',
+        '@mindwtr_sync_backend': 'file',
+        '@mindwtr_sync_path': 'file:///resolved/Stride/data.json',
+        '@mindwtr_sync_path_bookmark': 'stale-token',
       };
       return values[key] ?? null;
     });
@@ -1876,7 +1876,7 @@ describe('mobile sync-service runtime', () => {
     const result = await syncServiceModule.performMobileSync();
 
     expect(result.success).toBe(true);
-    expect(asyncStorageMocks.setItem).toHaveBeenCalledWith('@stride_sync_path_bookmark', 'fresh-token');
+    expect(asyncStorageMocks.setItem).toHaveBeenCalledWith('@mindwtr_sync_path_bookmark', 'fresh-token');
     expect(storageFileMocks.writeSyncFile).toHaveBeenCalledWith(
       'file:///resolved/Stride/data.json',
       expect.any(Object),
@@ -1887,8 +1887,8 @@ describe('mobile sync-service runtime', () => {
   it('requeues when an ordinary File Sync generation changes before the atomic write', async () => {
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'file',
-        '@stride_sync_path': 'file:///sync/Stride/data.json',
+        '@mindwtr_sync_backend': 'file',
+        '@mindwtr_sync_path': 'file:///sync/Stride/data.json',
       };
       return values[key] ?? null;
     });
@@ -1917,9 +1917,9 @@ describe('mobile sync-service runtime', () => {
     (Platform as { OS: string }).OS = 'ios';
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'file',
-        '@stride_sync_path': 'file:///stale/Stride/data.json',
-        '@stride_sync_path_bookmark': 'dead-token',
+        '@mindwtr_sync_backend': 'file',
+        '@mindwtr_sync_path': 'file:///stale/Stride/data.json',
+        '@mindwtr_sync_path_bookmark': 'dead-token',
       };
       return values[key] ?? null;
     });
@@ -2070,11 +2070,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope: establishedScope,
           localFingerprint: 'established',
           remoteFingerprint: 'established',
@@ -2153,11 +2153,11 @@ describe('mobile sync-service runtime', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'webdav',
-        '@stride_webdav_url': 'https://sync.example.com/data.json',
-        '@stride_webdav_username': 'user',
-        '@stride_webdav_password': 'pass',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'webdav',
+        '@mindwtr_webdav_url': 'https://sync.example.com/data.json',
+        '@mindwtr_webdav_username': 'user',
+        '@mindwtr_webdav_password': 'pass',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope: establishedScope,
           localFingerprint: 'established',
           remoteFingerprint: 'established',
@@ -2226,7 +2226,7 @@ describe('mobile sync-service runtime', () => {
     expect(storeStateRef.current.fetchData).not.toHaveBeenCalled();
     expect(storeStateRef.current.updateSettings).not.toHaveBeenCalled();
     expect(asyncStorageMocks.setItem).toHaveBeenCalledWith(
-      '@stride_local_sync_status_v1',
+      '@mindwtr_local_sync_status_v1',
       expect.stringContaining('"lastSyncStatus":"error"')
     );
   });
@@ -2478,7 +2478,7 @@ describe('mobile sync-service runtime', () => {
     });
 
     const cached = asyncStorageMocks.setItem.mock.calls
-      .filter((call: any[]) => call[0] === '@stride_local_sync_status_v1')
+      .filter((call: any[]) => call[0] === '@mindwtr_local_sync_status_v1')
       .map((call: any[]) => JSON.parse(call[1] as string));
     expect(cached.at(-1)).toMatchObject({ lastSyncAt: syncedAt, lastSyncStatus: 'success' });
   });
@@ -2521,10 +2521,10 @@ describe('mobile sync-service runtime', () => {
 
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'selfhosted',
-        '@stride_cloud_url': 'https://cloud.example/v1/data',
-        '@stride_cloud_token': 'token',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'selfhosted',
+        '@mindwtr_cloud_url': 'https://cloud.example/v1/data',
+        '@mindwtr_cloud_token': 'token',
       };
       return values[key] ?? null;
     });
@@ -2598,10 +2598,10 @@ describe('mobile sync-service runtime', () => {
 
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'selfhosted',
-        '@stride_cloud_url': 'https://cloud.example/v1/data',
-        '@stride_cloud_token': 'token',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'selfhosted',
+        '@mindwtr_cloud_url': 'https://cloud.example/v1/data',
+        '@mindwtr_cloud_token': 'token',
       };
       return values[key] ?? null;
     });

@@ -252,9 +252,9 @@ type MockAndroidCalendar = {
 
 function setupStatefulAndroidCalendar() {
     const storage = new Map<string, string>([
-        ['stride:calendar-push-sync:enabled', '1'],
-        ['stride:calendar-push-sync:calendar-id', 'cal-old'],
-        ['stride:calendar-push-sync:color', '#3B82F6'],
+        ['mindwtr:calendar-push-sync:enabled', '1'],
+        ['mindwtr:calendar-push-sync:calendar-id', 'cal-old'],
+        ['mindwtr:calendar-push-sync:color', '#3B82F6'],
     ]);
     mockGetItem.mockImplementation(async (key: string) => storage.get(key) ?? null);
     mockSetItem.mockImplementation(async (key: string, value: string) => { storage.set(key, value); });
@@ -349,10 +349,10 @@ describe('ensureStrideCalendar', () => {
         const details = mockCreateCalendarAsync.mock.calls[0][0] as { title: string };
         expect(details.title).toMatch(/^Stride \([0-9a-f-]{36}\)$/);
         expect(mockUpdateCalendarAsync).toHaveBeenCalledWith('made-here', expect.objectContaining({ title: 'Stride' }));
-        expect(storage.get('stride:calendar-push-sync:calendar-id')).toBe('made-here');
-        expect(storage.has('stride:calendar-push-sync:creation-intent')).toBe(false);
+        expect(storage.get('mindwtr:calendar-push-sync:calendar-id')).toBe('made-here');
+        expect(storage.has('mindwtr:calendar-push-sync:creation-intent')).toBe(false);
         const calls = mockSetItem.mock.calls.map(([key]) => key);
-        expect(calls.indexOf('stride:calendar-push-sync:creation-intent')).toBeLessThan(calls.indexOf('stride:calendar-push-sync:calendar-id'));
+        expect(calls.indexOf('mindwtr:calendar-push-sync:creation-intent')).toBeLessThan(calls.indexOf('mindwtr:calendar-push-sync:calendar-id'));
     });
 
     it('returns the stored calendar ID when the calendar still exists', async () => {
@@ -373,13 +373,13 @@ describe('ensureStrideCalendar', () => {
 
         expect(mockCreateCalendarAsync).toHaveBeenCalledOnce();
         expect(id).toBe('cal-2');
-        expect(mockSetItem).toHaveBeenCalledWith('stride:calendar-push-sync:calendar-id', 'cal-2');
+        expect(mockSetItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:calendar-id', 'cal-2');
     });
 
     it('uses the saved Stride calendar color when creating the calendar', async () => {
         mockGetItem.mockImplementation(async (key: string) => {
-            if (key === 'stride:calendar-push-sync:calendar-id') return null;
-            if (key === 'stride:calendar-push-sync:color') return '#DB2777';
+            if (key === 'mindwtr:calendar-push-sync:calendar-id') return null;
+            if (key === 'mindwtr:calendar-push-sync:color') return '#DB2777';
             return null;
         });
         mockGetCalendarsAsync.mockResolvedValue([]);
@@ -446,8 +446,8 @@ describe('ensureStrideCalendar', () => {
 describe('calendar push color', () => {
     it('normalizes saved colors and updates the managed Stride calendar when supported', async () => {
         mockGetItem.mockImplementation(async (key: string) => {
-            if (key === 'stride:calendar-push-sync:calendar-id') return 'cal-1';
-            if (key === 'stride:calendar-push-sync:color') return '#db2777';
+            if (key === 'mindwtr:calendar-push-sync:calendar-id') return 'cal-1';
+            if (key === 'mindwtr:calendar-push-sync:color') return '#db2777';
             return null;
         });
         mockGetCalendarsAsync.mockResolvedValue([{ id: 'cal-1', title: 'Stride', allowsModifications: true }]);
@@ -456,7 +456,7 @@ describe('calendar push color', () => {
         const updated = await updateStrideCalendarColor('#059669');
 
         expect(updated).toBe(true);
-        expect(mockSetItem).toHaveBeenCalledWith('stride:calendar-push-sync:color', '#059669');
+        expect(mockSetItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:color', '#059669');
         expect(mockUpdateCalendarAsync).toHaveBeenCalledWith('cal-1', { color: '#059669' });
 
         expect(mockDeleteCalendarAsync).not.toHaveBeenCalled();
@@ -471,7 +471,7 @@ describe('calendar push color', () => {
         const updated = await updateStrideCalendarColor('#059669');
 
         expect(updated).toBe(true);
-        expect(mockSetItem).toHaveBeenCalledWith('stride:calendar-push-sync:color', '#059669');
+        expect(mockSetItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:color', '#059669');
 
 
         expect(mockUpdateCalendarAsync).not.toHaveBeenCalled();
@@ -479,7 +479,7 @@ describe('calendar push color', () => {
         expect(mockCreateCalendarAsync).toHaveBeenCalledTimes(1);
         expect(mockCreateCalendarAsync).toHaveBeenCalledWith(expect.objectContaining({ color: '#059669' }));
         expect(calendars().some((c) => c.id === 'cal-new' && c.color === '#059669')).toBe(true);
-        expect(mockSetItem).toHaveBeenCalledWith('stride:calendar-push-sync:calendar-id', 'cal-new');
+        expect(mockSetItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:calendar-id', 'cal-new');
     });
 
     it('re-pushes events to the recreated Android calendar so they inherit the new color (#726)', async () => {
@@ -497,7 +497,7 @@ describe('calendar push color', () => {
     it('stores the color but does not recreate when no managed Android calendar exists yet (#726)', async () => {
         mockPlatform.OS = 'android';
         mockGetItem.mockImplementation(async (key: string) => (
-            key === 'stride:calendar-push-sync:color' ? '#3B82F6' : null
+            key === 'mindwtr:calendar-push-sync:color' ? '#3B82F6' : null
         ));
         mockGetCalendarsAsync.mockResolvedValue([
             { id: 'google-primary', title: 'Personal', accessLevel: 'owner', allowsModifications: true },
@@ -506,15 +506,15 @@ describe('calendar push color', () => {
         const updated = await updateStrideCalendarColor('#059669');
 
         expect(updated).toBe(false);
-        expect(mockSetItem).toHaveBeenCalledWith('stride:calendar-push-sync:color', '#059669');
+        expect(mockSetItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:color', '#059669');
         expect(mockDeleteCalendarAsync).not.toHaveBeenCalled();
         expect(mockCreateCalendarAsync).not.toHaveBeenCalled();
     });
 
     it('stores nothing when the device refuses the color change, so the same pick retries it', async () => {
         mockGetItem.mockImplementation(async (key: string) => {
-            if (key === 'stride:calendar-push-sync:calendar-id') return 'cal-1';
-            if (key === 'stride:calendar-push-sync:color') return '#3B82F6';
+            if (key === 'mindwtr:calendar-push-sync:calendar-id') return 'cal-1';
+            if (key === 'mindwtr:calendar-push-sync:color') return '#3B82F6';
             return null;
         });
         mockGetCalendarsAsync.mockResolvedValue([{ id: 'cal-1', title: 'Stride', allowsModifications: true }]);
@@ -522,7 +522,7 @@ describe('calendar push color', () => {
 
         await expect(updateStrideCalendarColor('#059669')).rejects.toThrow('refused');
 
-        expect(mockSetItem).not.toHaveBeenCalledWith('stride:calendar-push-sync:color', '#059669');
+        expect(mockSetItem).not.toHaveBeenCalledWith('mindwtr:calendar-push-sync:color', '#059669');
     });
 });
 
@@ -693,7 +693,7 @@ describe('deleteStrideCalendar', () => {
         expect(mockDeleteCalendarAsync).not.toHaveBeenCalledWith('old-app-calendar');
         expect(mockDeleteCalendarAsync).not.toHaveBeenCalledWith('user-calendar');
         expect(mockDeleteCalendarAsync).not.toHaveBeenCalledWith('other');
-        expect(mockRemoveItem).toHaveBeenCalledWith('stride:calendar-push-sync:calendar-id');
+        expect(mockRemoveItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:calendar-id');
     });
 
     it('clears the selected target and sync rows for deleted Stride calendars', async () => {
@@ -718,14 +718,14 @@ describe('deleteStrideCalendar', () => {
         await deleteStrideCalendar();
 
         expect(mockDeleteCalendarAsync).toHaveBeenCalledWith('stored-calendar');
-        expect(mockRemoveItem).toHaveBeenCalledWith('stride:calendar-push-sync:target-calendar-id');
+        expect(mockRemoveItem).toHaveBeenCalledWith('mindwtr:calendar-push-sync:target-calendar-id');
         expect(mockDeleteCalendarSyncEntry).toHaveBeenCalledWith('task-1', 'ios');
         expect(mockDeleteCalendarSyncEntry).not.toHaveBeenCalledWith('task-2', 'ios');
     });
 
     it('keeps the saved calendar and its pushed events when the calendar cannot be deleted', async () => {
         const storage = new Map<string, string>([
-            ['stride:calendar-push-sync:calendar-id', 'stored-calendar'],
+            ['mindwtr:calendar-push-sync:calendar-id', 'stored-calendar'],
         ]);
         mockGetItem.mockImplementation(async (key: string) => storage.get(key) ?? null);
         mockRemoveItem.mockImplementation(async (key: string) => { storage.delete(key); });
@@ -739,13 +739,13 @@ describe('deleteStrideCalendar', () => {
 
         await expect(deleteStrideCalendar()).rejects.toThrow();
 
-        expect(storage.get('stride:calendar-push-sync:calendar-id')).toBe('stored-calendar');
+        expect(storage.get('mindwtr:calendar-push-sync:calendar-id')).toBe('stored-calendar');
         expect(mockDeleteCalendarSyncEntry).not.toHaveBeenCalled();
     });
 
     it('clears nothing when the device cannot list its calendars', async () => {
         mockGetItem.mockImplementation(async (key: string) => (
-            key === 'stride:calendar-push-sync:target-calendar-id' ? 'google-primary' : null
+            key === 'mindwtr:calendar-push-sync:target-calendar-id' ? 'google-primary' : null
         ));
         mockGetCalendarsAsync.mockRejectedValue(new Error('Calendar provider unavailable'));
 

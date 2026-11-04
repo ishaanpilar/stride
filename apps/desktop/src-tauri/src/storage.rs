@@ -477,7 +477,11 @@ fn sqlite_schema_state_is_current(
     });
     Ok(version_matches
         && has_column(conn, "tasks", "archivedAt")?
-        && has_column(conn, "projects", "archivedAt")?)
+        && has_column(conn, "projects", "archivedAt")?
+        // A database carried over from Mindwtr can be "current" by generation yet still have the
+        // legacy suppressMindwtrReminders column; force the migration path so the renamed column
+        // is added and backfilled.
+        && has_column(conn, "tasks", "suppressStrideReminders")?)
 }
 
 fn record_sqlite_schema_state(conn: &Connection, schema_generation: i64) -> Result<(), String> {
@@ -6889,6 +6893,21 @@ mod tests {
             .query_row("SELECT suppressStrideReminders FROM tasks WHERE id='a'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn schema_init_adds_renamed_column_to_a_current_legacy_database() {
+        // A Mindwtr database: schema state already current, but the column still has its old name.
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE tasks DROP COLUMN suppressStrideReminders;
+             ALTER TABLE tasks ADD COLUMN suppressMindwtrReminders INTEGER;",
+        )
+        .unwrap();
+        assert!(!has_column(&conn, "tasks", "suppressStrideReminders").unwrap());
+        initialize_sqlite_schema(&mut conn).unwrap();
+        assert!(has_column(&conn, "tasks", "suppressStrideReminders").unwrap());
     }
 
     #[test]

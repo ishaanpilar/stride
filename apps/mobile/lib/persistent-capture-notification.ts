@@ -7,7 +7,8 @@ import {
 } from '@/modules/notification-open-intents';
 
 
-const STORAGE_KEY = 'stride:persistentCaptureNotification';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const STORAGE_KEY = 'mindwtr:persistentCaptureNotification';
 
 export type PersistentCaptureStrings = {
     title: string;

@@ -60,7 +60,7 @@ describe('secure-config', () => {
 
         expect(isSecretConfigKey(CLOUD_TOKEN_KEY)).toBe(true);
         expect(isSecretConfigKey(WEBDAV_PASSWORD_KEY)).toBe(true);
-        expect(isSecretConfigKey('@stride_cloud_url')).toBe(false);
+        expect(isSecretConfigKey('@mindwtr_cloud_url')).toBe(false);
     });
 
     it('writes secrets to the secure store and scrubs the plaintext copy', async () => {
@@ -69,10 +69,10 @@ describe('secure-config', () => {
 
         await setSecureConfigValue(CLOUD_TOKEN_KEY, 'fresh-token');
 
-        expect(storeMocks.secureItems.get('stride_cloud_token')).toBe('fresh-token');
+        expect(storeMocks.secureItems.get('mindwtr_cloud_token')).toBe('fresh-token');
         expect(storeMocks.asyncItems.has(CLOUD_TOKEN_KEY)).toBe(false);
         expect(storeMocks.setItemAsync).toHaveBeenCalledWith(
-            'stride_cloud_token',
+            'mindwtr_cloud_token',
             'fresh-token',
             { keychainAccessible: 'afterFirstUnlockThisDeviceOnly' },
         );
@@ -80,7 +80,7 @@ describe('secure-config', () => {
 
     it('reads from the secure store first', async () => {
         const { getSecureConfigValue } = await import('./secure-config');
-        storeMocks.secureItems.set('stride_webdav_password', 'secure-pass');
+        storeMocks.secureItems.set('mindwtr_webdav_password', 'secure-pass');
         storeMocks.asyncItems.set(WEBDAV_PASSWORD_KEY, 'stale-plaintext');
 
         await expect(getSecureConfigValue(WEBDAV_PASSWORD_KEY)).resolves.toBe('secure-pass');
@@ -92,7 +92,7 @@ describe('secure-config', () => {
         storeMocks.asyncItems.set(CLOUD_TOKEN_KEY, 'legacy-token');
 
         await expect(getSecureConfigValue(CLOUD_TOKEN_KEY)).resolves.toBe('legacy-token');
-        expect(storeMocks.secureItems.get('stride_cloud_token')).toBe('legacy-token');
+        expect(storeMocks.secureItems.get('mindwtr_cloud_token')).toBe('legacy-token');
         expect(storeMocks.asyncItems.has(CLOUD_TOKEN_KEY)).toBe(false);
     });
 
@@ -116,7 +116,7 @@ describe('secure-config', () => {
 
         await expect(setSecureConfigValue(CLOUD_TOKEN_KEY, 'fresh-token')).resolves.toBeUndefined();
         expect(storeMocks.isAvailableAsync).toHaveBeenCalledTimes(2);
-        expect(storeMocks.secureItems.get('stride_cloud_token')).toBe('fresh-token');
+        expect(storeMocks.secureItems.get('mindwtr_cloud_token')).toBe('fresh-token');
     });
 
     it('keeps new secrets in memory only when secure storage is unsupported', async () => {
@@ -126,7 +126,7 @@ describe('secure-config', () => {
         await setSecureConfigValue(CLOUD_TOKEN_KEY, 'session-token');
 
         expect(storeMocks.asyncItems.has(CLOUD_TOKEN_KEY)).toBe(false);
-        expect(storeMocks.secureItems.has('stride_cloud_token')).toBe(false);
+        expect(storeMocks.secureItems.has('mindwtr_cloud_token')).toBe(false);
         await expect(getSecureConfigValue(CLOUD_TOKEN_KEY)).resolves.toBe('session-token');
     });
 
@@ -147,12 +147,12 @@ describe('secure-config', () => {
 
     it('deletes from both stores', async () => {
         const { deleteSecureConfigValue } = await import('./secure-config');
-        storeMocks.secureItems.set('stride_webdav_password', 'secure-pass');
+        storeMocks.secureItems.set('mindwtr_webdav_password', 'secure-pass');
         storeMocks.asyncItems.set(WEBDAV_PASSWORD_KEY, 'stale-plaintext');
 
         await deleteSecureConfigValue(WEBDAV_PASSWORD_KEY);
 
-        expect(storeMocks.secureItems.has('stride_webdav_password')).toBe(false);
+        expect(storeMocks.secureItems.has('mindwtr_webdav_password')).toBe(false);
         expect(storeMocks.asyncItems.has(WEBDAV_PASSWORD_KEY)).toBe(false);
     });
 });

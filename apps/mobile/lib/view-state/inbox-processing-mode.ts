@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { workspaceSessionStorage as AsyncStorage } from '@/lib/workspace-session-storage';
 
 
-export const INBOX_PROCESSING_MODE_STORAGE_KEY = 'stride:view:inboxProcessingMode:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const INBOX_PROCESSING_MODE_STORAGE_KEY = 'mindwtr:view:inboxProcessingMode:v1';
 
 export const INBOX_PROCESSING_MODES = ['guided', 'quick'] as const;
 export type InboxProcessingMode = typeof INBOX_PROCESSING_MODES[number];

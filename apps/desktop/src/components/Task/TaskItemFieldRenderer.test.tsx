@@ -298,7 +298,7 @@ function TagAutocompleteHarness() {
     return (
         <DraftFieldHarness
             fieldId="tags"
-            options={{ allTagOptions: ['#music', '#stride'], popularTagOptions: [] }}
+            options={{ allTagOptions: ['#music', '#meetings'], popularTagOptions: [] }}
         />
     );
 }
@@ -1412,12 +1412,12 @@ describe('TaskItemFieldRenderer date clear buttons', () => {
         fireEvent.change(input, { target: { value: 'm' } });
 
         expect(await findByRole('option', { name: '#music' })).toBeInTheDocument();
-        expect(await findByRole('option', { name: '#stride' })).toBeInTheDocument();
+        expect(await findByRole('option', { name: '#meetings' })).toBeInTheDocument();
 
         fireEvent.keyDown(input, { key: 'ArrowDown' });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        expect(input).toHaveValue('#stride');
+        expect(input).toHaveValue('#meetings');
     });
 
     it('suggests existing assignees in the assigned-to field', async () => {

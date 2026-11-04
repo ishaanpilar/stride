@@ -518,7 +518,7 @@ describe('sync-service test utils', () => {
 
     it('hashes sync payloads with sha256 output', async () => {
         const hash = await hashString('stride');
-        expect(hash).toBe('feb7a7b01b1c68e586e77288a4b2598d146ee3696ec7dbfac0074196b8d68c33');
+        expect(hash).toBe('d6b59057098aeadb333a2bec4f1d5087ed17b34fe920e00b6a7d45d18a440380');
     });
 
     it('formats fallback hashes as unsigned hex', () => {

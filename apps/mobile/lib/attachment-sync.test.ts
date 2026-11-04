@@ -1005,11 +1005,11 @@ describe('attachment sync', () => {
       projects: [], sections: [], areas: [], settings: {},
     });
 
-    const RECONCILE_KEY = '@stride_attachment_presence_reconcile_v1';
+    const RECONCILE_KEY = '@mindwtr_attachment_presence_reconcile_v1';
     const CONFIG: Record<string, string | null> = {
-      '@stride_sync_backend': 'webdav',
-      '@stride_webdav_url': WEBDAV_CONFIG.url,
-      '@stride_webdav_username': WEBDAV_CONFIG.username,
+      '@mindwtr_sync_backend': 'webdav',
+      '@mindwtr_webdav_url': WEBDAV_CONFIG.url,
+      '@mindwtr_webdav_username': WEBDAV_CONFIG.username,
     };
 
     const stubDeviceConfig = async (stamp: { scope: string; at: number } | null): Promise<void> => {
@@ -5834,11 +5834,11 @@ describe('attachment sync', () => {
       const dropbox = await import('./dropbox-sync');
       const scope = JSON.stringify(['cloud', 'dropbox']);
       vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => {
-        if (key === '@stride_attachment_presence_reconcile_v1') {
+        if (key === '@mindwtr_attachment_presence_reconcile_v1') {
           return JSON.stringify({ scope, at: Date.now() });
         }
-        if (key === '@stride_sync_backend') return 'cloud';
-        if (key === '@stride_cloud_provider') return 'dropbox';
+        if (key === '@mindwtr_sync_backend') return 'cloud';
+        if (key === '@mindwtr_cloud_provider') return 'dropbox';
         return null;
       });
 

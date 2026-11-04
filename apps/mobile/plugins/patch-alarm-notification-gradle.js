@@ -988,7 +988,8 @@ const applyAlarmActionDeadRowPatchToSource = (original) => {
 
 const REMINDER_SLOT_HELPERS = `    // Stride reminder notification slots
     private static final int REMINDER_SLOT_NOTIFICATION_ID = 1;
-    private static final String REMINDER_SLOT_PREFS = "stride_reminder_notification_slots";
+    // LEGACY: pre-Stride-rename SharedPreferences name, kept so existing reminder slot state stays readable.
+    private static final String REMINDER_SLOT_PREFS = "mindwtr_reminder_notification_slots";
 
     private android.content.SharedPreferences getReminderSlotPrefs() {
         return mContext.getSharedPreferences(REMINDER_SLOT_PREFS, Context.MODE_PRIVATE);
@@ -1510,7 +1511,7 @@ RCT_EXPORT_METHOD(collapseDeliveredReminderNotifications:(RCTPromiseResolveBlock
             NSMutableArray<NSString *> *superseded = [NSMutableArray array];
             for (UNNotification *notification in notifications) {
                 NSString *thread = notification.request.content.threadIdentifier;
-                if (![thread hasPrefix:@"stride-reminder:"]) continue;
+                if (![thread hasPrefix:@"mindwtr-reminder:"]) continue;
                 UNNotification *kept = newest[thread];
                 if (kept == nil) {
                     newest[thread] = notification;

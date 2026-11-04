@@ -13,7 +13,8 @@ import {
 
 import { logWarn } from './app-log';
 
-export const APPLE_REMINDERS_IMPORT_SETTINGS_KEY = 'stride-apple-reminders-import-v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const APPLE_REMINDERS_IMPORT_SETTINGS_KEY = 'mindwtr-apple-reminders-import-v1';
 
 export type AppleRemindersPermissionStatus = 'unavailable' | 'undetermined' | 'granted' | 'denied';
 

@@ -941,7 +941,7 @@ describe('FocusScreen', () => {
     expect(() => findButtonByText(tree, 'Review project')).toThrow();
     expect(findButtonByLabel(tree, 'Expand sections').props.accessibilityState.selected).toBe(true);
     expect(asyncStorageMock.setItem).toHaveBeenLastCalledWith(
-      'stride:view:focus:v1',
+      'mindwtr:view:focus:v1',
       JSON.stringify({
         showDetails: false,
         expandedSections: {
@@ -1028,7 +1028,7 @@ describe('FocusScreen', () => {
       node.props.accessibilityLabel === 'Next Actions' && typeof node.props.onPress === 'function'
     );
 
-    expect(asyncStorageMock.getItem).toHaveBeenCalledWith('stride:view:focus:v1');
+    expect(asyncStorageMock.getItem).toHaveBeenCalledWith('mindwtr:view:focus:v1');
     expect(nextSectionButton.props.accessibilityState).toEqual({ expanded: false });
     expect(
       tree.root.findAllByType(SwipeableTaskItem).map((node) => node.props.task.id),
@@ -1051,7 +1051,7 @@ describe('FocusScreen', () => {
     });
 
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride:view:focus:v1',
+      'mindwtr:view:focus:v1',
       JSON.stringify({
         showDetails: false,
         expandedSections: {
@@ -1105,7 +1105,7 @@ describe('FocusScreen', () => {
     });
 
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride:view:focus:v1',
+      'mindwtr:view:focus:v1',
       JSON.stringify({
         showDetails: true,
         expandedSections: {
@@ -1394,7 +1394,7 @@ describe('FocusScreen', () => {
     expect(list().props.extraData).not.toEqual(version);
     expect(lastFrame().offset).toBeLessThan(fullFrame.offset);
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride:view:group-collapse:focus-next:v1', JSON.stringify({ context: ['context:@home'] }),
+      'mindwtr:view:group-collapse:focus-next:v1', JSON.stringify({ context: ['context:@home'] }),
     );
     expect(storeState.updateSettings).not.toHaveBeenCalled();
 
@@ -1405,7 +1405,7 @@ describe('FocusScreen', () => {
 
   it('restores Focus subgroup folds per grouping mode without affecting their counts', () => {
     asyncStorageMock.getItem.mockImplementation((storageName: string) => createImmediatePromise(
-      storageName === 'stride:view:group-collapse:focus-next:v1'
+      storageName === 'mindwtr:view:group-collapse:focus-next:v1'
         ? JSON.stringify({ context: ['context:@home'] }) : null,
     ));
     storeState.settings = { gtd: { focusGroupBy: 'context' } };
@@ -1682,7 +1682,7 @@ describe('FocusScreen', () => {
     ]);
     expect(findButtonByLabel(tree, 'Later today 1').props.accessibilityState).toEqual({ expanded: false });
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride:view:group-collapse:focus-schedule:v1', JSON.stringify({ schedule: ['focus:schedule:later-today'] }),
+      'mindwtr:view:group-collapse:focus-schedule:v1', JSON.stringify({ schedule: ['focus:schedule:later-today'] }),
     );
   });
 

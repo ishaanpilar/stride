@@ -128,7 +128,7 @@ describe('AISettingsScreen live model lists', () => {
         aiConfigMocks.saveAIKey.mockResolvedValue(undefined);
         coreMocks.fetchProviderModelsCached.mockResolvedValue([]);
 
-        storage.values = { 'stride-ai-provider-consent-v1': JSON.stringify({ openai: true, gemini: true, anthropic: true }) };
+        storage.values = { 'mindwtr-ai-provider-consent-v1': JSON.stringify({ openai: true, gemini: true, anthropic: true }) };
     });
 
     afterEach(() => {

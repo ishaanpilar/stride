@@ -150,7 +150,7 @@ const settingsVariants: Record<string, AppSettings> = {
   ymdDates: { dateFormat: 'ymd', timeFormat: '24h' },
 };
 
-const SESSION_KEY = 'stride:weeklyReview:currentStep';
+const SESSION_KEY = 'mindwtr:weeklyReview:currentStep';
 const session = (step: string, startedAt: string) => JSON.stringify({ step, startedAt });
 const THROUGH = Array.from({ length: 7 }, () => ['next'] as [string]);
 

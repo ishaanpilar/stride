@@ -179,7 +179,7 @@ const SETTINGS: Record<string, AppSettings> = {
   noEstimates: { ai: { enabled: true, provider: 'openai' }, features: { timeEstimates: false } },
 };
 
-const KEYS = { 'stride-ai-key_openai': 'sk-open-111', 'stride-ai-key_anthropic': 'sk-ant-222' };
+const KEYS = { 'mindwtr-ai-key_openai': 'sk-open-111', 'mindwtr-ai-key_anthropic': 'sk-ant-222' };
 
 type Device = { language?: Language; secrets?: Record<string, string>; queues?: Record<string, unknown[]> };
 
@@ -695,7 +695,7 @@ describe('React Native AI actions parity fixture', () => {
 
   it('never shows or logs the API key when a provider echoes it', async () => {
     const echo = (key: string) => ({ error: `Provider error: 401 Incorrect API key provided: ${key}` });
-    const secrets = { 'stride-ai-key_openai': 'local-secret-42' };
+    const secrets = { 'mindwtr-ai-key_openai': 'local-secret-42' };
     harness.logs.length = 0;
     const shown = [
       ...await runScenario({

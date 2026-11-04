@@ -130,33 +130,100 @@ pub(crate) fn migrate_legacy_data_dirs() {
     }
 }
 
-/// WKWebView keeps localStorage/IndexedDB in `~/Library/WebKit/<executable name>`.
-/// The executable used to be `mindwtr`; copy that folder (including its origin
-/// salt, so the hashed origin folders stay valid) to `stride` when Stride has none.
-/// Legacy-only.
-const LEGACY_WEBKIT_DIR_NAME: &str = "mindwtr";
-const WEBKIT_DIR_NAME: &str = "stride";
+/// WKWebView keeps localStorage in `~/Library/WebKit/<name>/WebsiteData/Default/<hash>/<hash>/
+/// LocalStorage/localstorage.sqlite3`, where `<name>` was the bundle identifier (packaged app)
+/// or the executable name (dev builds) of a previous install. Storage is also keyed by page
+/// origin (`tauri://localhost` packaged, `http://localhost` in dev), so copying folders cannot
+/// carry it across; instead the rows are read here and handed to the page once, which adds the
+/// ones it lacks (apps/desktop/src/lib/legacy-local-storage.ts). Legacy-only.
+const LEGACY_WEBKIT_DIR_NAMES: &[&str] = &["com.ishaanpilar.donext", "tech.dongdongbh.mindwtr", "mindwtr", "donext"];
 
-fn import_legacy_webkit_data(webkit_base: &Path) -> io::Result<usize> {
-    let source = webkit_base.join(LEGACY_WEBKIT_DIR_NAME);
-    let target = webkit_base.join(WEBKIT_DIR_NAME);
-    if !source.is_dir() || target.exists() {
-        return Ok(0);
+fn find_local_storage_dbs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_local_storage_dbs(&path, out);
+        } else if entry.file_name() == "localstorage.sqlite3" {
+            out.push(path);
+        }
     }
-    copy_dir_no_overwrite(&source, &target)
 }
 
-/// Run before the first webview is created (macOS only).
-pub(crate) fn migrate_legacy_webkit_data() {
+fn decode_utf16le(bytes: &[u8]) -> Option<String> {
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    String::from_utf16(&units).ok()
+}
+
+/// Reads one WebKit localStorage database. It is copied (with its -wal/-shm) to a temp dir
+/// first so the legacy files are never opened for writing.
+fn read_local_storage_db(db: &Path) -> rusqlite::Result<Vec<(String, String)>> {
+    let tmp = std::env::temp_dir().join(format!("stride-legacy-ls-{}", std::process::id()));
+    let _ = fs::create_dir_all(&tmp);
+    let copy = tmp.join("localstorage.sqlite3");
+    for suffix in ["", "-wal", "-shm"] {
+        let from = PathBuf::from(format!("{}{suffix}", db.display()));
+        let to = PathBuf::from(format!("{}{suffix}", copy.display()));
+        let _ = fs::remove_file(&to);
+        if from.is_file() {
+            let _ = fs::copy(&from, &to);
+        }
+    }
+    let result = (|| {
+        let conn = rusqlite::Connection::open(&copy)?;
+        let mut stmt = conn.prepare("SELECT key, value FROM ItemTable")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))?;
+        let mut items = Vec::new();
+        for row in rows.flatten() {
+            if let Some(value) = decode_utf16le(&row.1) {
+                items.push((row.0, value));
+            }
+        }
+        Ok(items)
+    })();
+    let _ = fs::remove_dir_all(&tmp);
+    result
+}
+
+/// All legacy localStorage rows, newest database first; the first value seen for a key wins.
+fn read_legacy_local_storage(webkit_base: &Path) -> Vec<(String, String)> {
+    let mut dbs = Vec::new();
+    for name in LEGACY_WEBKIT_DIR_NAMES {
+        find_local_storage_dbs(&webkit_base.join(name), &mut dbs);
+    }
+    let modified = |p: &PathBuf| {
+        let wal = PathBuf::from(format!("{}-wal", p.display()));
+        [p.clone(), wal]
+            .iter()
+            .filter_map(|f| fs::metadata(f).and_then(|m| m.modified()).ok())
+            .max()
+    };
+    dbs.sort_by_key(|p| std::cmp::Reverse(modified(p)));
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for db in dbs {
+        for (key, value) in read_local_storage_db(&db).unwrap_or_default() {
+            if seen.insert(key.clone()) {
+                items.push((key, value));
+            }
+        }
+    }
+    items
+}
+
+/// Legacy localStorage rows for the page to import once (macOS only; empty elsewhere).
+/// Async so the file reads never block the main thread.
+#[tauri::command(async)]
+pub(crate) fn legacy_local_storage_items() -> Vec<(String, String)> {
     if !cfg!(target_os = "macos") || crate::storage::is_portable_mode() {
-        return;
+        return Vec::new();
     }
-    let Some(home) = dirs::home_dir() else { return };
-    match import_legacy_webkit_data(&home.join("Library/WebKit")) {
-        Ok(0) => {}
-        Ok(count) => eprintln!("Stride: imported {count} web storage files from a previous installation (originals untouched)"),
-        Err(error) => eprintln!("Stride: legacy web storage import failed: {error}"),
-    }
+    dirs::home_dir()
+        .map(|home| read_legacy_local_storage(&home.join("Library/WebKit")))
+        .unwrap_or_default()
 }
 
 /// Which value (if any) to write into the Stride keychain for a key. Pure.
@@ -278,17 +345,34 @@ mod tests {
     }
 
     #[test]
-    fn webkit_folder_is_copied_once_and_never_overwritten() {
+    fn reads_legacy_local_storage_rows_without_touching_them() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
-        write(&base.join("mindwtr/WebsiteData/Default/salt"), "s");
-        write(&base.join("mindwtr/WebsiteData/Default/h/h/LocalStorage/localstorage.sqlite3"), "db");
-        assert_eq!(import_legacy_webkit_data(base).unwrap(), 2);
-        assert_eq!(fs::read_to_string(base.join("stride/WebsiteData/Default/salt")).unwrap(), "s");
-        // Stride already has web data: nothing is copied again.
-        write(&base.join("mindwtr/WebsiteData/Default/new"), "x");
-        assert_eq!(import_legacy_webkit_data(base).unwrap(), 0);
-        assert!(base.join("mindwtr/WebsiteData/Default/salt").exists());
+        let dir = base.join("mindwtr/WebsiteData/Default/h/h/LocalStorage");
+        fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("localstorage.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB NOT NULL ON CONFLICT FAIL);").unwrap();
+            let utf16 = |s: &str| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+            conn.execute("INSERT INTO ItemTable VALUES (?1, ?2)", rusqlite::params!["mindwtr-theme", utf16("dark")]).unwrap();
+            conn.execute("INSERT INTO ItemTable VALUES (?1, ?2)", rusqlite::params!["mindwtr:view", utf16("{\"a\":\"é\"}")]).unwrap();
+        }
+        let before = fs::read(&db).unwrap();
+        let mut items = read_legacy_local_storage(base);
+        items.sort();
+        assert_eq!(items, vec![
+            ("mindwtr-theme".to_string(), "dark".to_string()),
+            ("mindwtr:view".to_string(), "{\"a\":\"é\"}".to_string()),
+        ]);
+        assert_eq!(fs::read(&db).unwrap(), before);
+        assert!(read_legacy_local_storage(&base.join("nothing")).is_empty());
+    }
+
+    #[test]
+    fn utf16_decoding() {
+        assert_eq!(decode_utf16le(&[0x64, 0, 0x61, 0]), Some("da".to_string()));
+        assert_eq!(decode_utf16le(&[0x64]), None);
     }
 
     #[test]

@@ -2651,7 +2651,7 @@ describe('InboxProcessingModal', () => {
     setPlatform('ios');
     appleClarificationMocks.prototypeEnabled = true;
     asyncStorageMock.getItem.mockImplementation(async (storageKey: string) => (
-      storageKey === 'stride:appleClarificationBackend:v1' ? 'on-device' : null
+      storageKey === 'mindwtr:appleClarificationBackend:v1' ? 'on-device' : null
     ));
     appleClarificationMocks.request.mockResolvedValue({
       cleanedTitle: 'Call the dentist',
@@ -2694,7 +2694,7 @@ describe('InboxProcessingModal', () => {
     setPlatform('ios');
     appleClarificationMocks.prototypeEnabled = true;
     asyncStorageMock.getItem.mockImplementation(async (storageKey: string) => (
-      storageKey === 'stride:appleClarificationBackend:v1' ? 'on-device' : null
+      storageKey === 'mindwtr:appleClarificationBackend:v1' ? 'on-device' : null
     ));
     let resolveSuggestion!: (value: any) => void;
     appleClarificationMocks.request.mockReturnValue(new Promise((resolve) => {
@@ -2728,7 +2728,7 @@ describe('InboxProcessingModal', () => {
     setPlatform('ios');
     appleClarificationMocks.prototypeEnabled = true;
     asyncStorageMock.getItem.mockImplementation(async (storageKey: string) => (
-      storageKey === 'stride:appleClarificationBackend:v1' ? 'on-device' : null
+      storageKey === 'mindwtr:appleClarificationBackend:v1' ? 'on-device' : null
     ));
     let observedSignal: AbortSignal | undefined;
     appleClarificationMocks.request.mockImplementation((_input, options) => {
@@ -2760,7 +2760,7 @@ describe('InboxProcessingModal', () => {
     setPlatform('ios');
     appleClarificationMocks.prototypeEnabled = true;
     asyncStorageMock.getItem.mockImplementation(async (storageKey: string) => (
-      storageKey === 'stride:appleClarificationBackend:v1' ? 'on-device' : null
+      storageKey === 'mindwtr:appleClarificationBackend:v1' ? 'on-device' : null
     ));
     let resolveCapability!: (value: { available: boolean; supportedOperations: string[] }) => void;
     appleClarificationMocks.capability.mockReturnValue(new Promise((resolve) => {
@@ -3150,14 +3150,14 @@ describe('InboxProcessingModal', () => {
     it('remembers the mode on this device only', async () => {
       const root = await openFlow();
 
-      expect(asyncStorageMock.getItem).toHaveBeenCalledWith('stride:view:inboxProcessingMode:v1');
+      expect(asyncStorageMock.getItem).toHaveBeenCalledWith('mindwtr:view:inboxProcessingMode:v1');
       expect(findNodesWithText(root, 'inbox.isActionable').length).toBeGreaterThan(0);
 
       act(() => {
         root.findByProps({ accessibilityLabel: 'Quick', accessibilityRole: 'button' }).props.onPress();
       });
 
-      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride:view:inboxProcessingMode:v1', 'quick');
+      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr:view:inboxProcessingMode:v1', 'quick');
       expect(findNodesWithText(root, 'inbox.isActionable')).toHaveLength(0);
       expect(findNodesWithText(root, 'inbox.illDoIt').length).toBeGreaterThan(0);
 

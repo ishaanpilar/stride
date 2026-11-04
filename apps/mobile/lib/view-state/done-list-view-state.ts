@@ -2,7 +2,8 @@ import type { TaskSortBy } from '@stride/core';
 import { DONE_LIST_GROUP_OPTIONS, DONE_TASK_LIST_SORT_OPTIONS } from '@stride/core';
 
 export { DONE_LIST_GROUP_OPTIONS };
-export const DONE_LIST_VIEW_STATE_STORAGE_KEY = 'stride:view:done:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const DONE_LIST_VIEW_STATE_STORAGE_KEY = 'mindwtr:view:done:v1';
 export type DoneListGroupBy = typeof DONE_LIST_GROUP_OPTIONS[number];
 
 export type DoneListViewState = {

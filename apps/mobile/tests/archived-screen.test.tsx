@@ -560,7 +560,7 @@ describe('ArchivedScreen', () => {
       { ...mocks.storeState._allTasks[0], id: 'task-2', title: 'Fix the printer' },
     ];
     vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => (
-      key === 'stride:view:archived:v1' ? JSON.stringify({ groupBy: 'area' }) : null
+      key === 'mindwtr:view:archived:v1' ? JSON.stringify({ groupBy: 'area' }) : null
     ));
 
     let tree!: renderer.ReactTestRenderer;
@@ -596,7 +596,7 @@ describe('ArchivedScreen', () => {
       { ...mocks.storeState._allTasks[0], tags: ['Work', 'Urgent'] },
     ];
     vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => (
-      key === 'stride:view:archived:v1' ? JSON.stringify({ groupBy: 'tag' }) : null
+      key === 'mindwtr:view:archived:v1' ? JSON.stringify({ groupBy: 'tag' }) : null
     ));
 
     let tree!: renderer.ReactTestRenderer;

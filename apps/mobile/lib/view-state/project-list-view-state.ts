@@ -4,7 +4,8 @@ export type ProjectListViewState = {
   showDeferredProjects: boolean;
 };
 
-export const PROJECT_LIST_VIEW_STATE_STORAGE_KEY = 'stride:view:projects:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const PROJECT_LIST_VIEW_STATE_STORAGE_KEY = 'mindwtr:view:projects:v1';
 
 export const DEFAULT_PROJECT_LIST_VIEW_STATE: ProjectListViewState = {
   collapsedAreas: {},

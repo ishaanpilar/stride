@@ -2,7 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isSandboxMode, LANGUAGE_STORAGE_KEY, type AppSettings } from '@stride/core';
 
 const sandboxValues = new Map<string, string>();
-const MOBILE_THEME_STORAGE_KEY = '@stride_theme';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const MOBILE_THEME_STORAGE_KEY = '@mindwtr_theme';
 
 export const seedSandboxSessionStorage = (settings: AppSettings): void => {
     sandboxValues.clear();

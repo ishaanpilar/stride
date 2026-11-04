@@ -25,9 +25,11 @@ import {
 import { logInfo } from '@/lib/app-log';
 import { seedSandboxSessionStorage } from '@/lib/workspace-session-storage';
 
-export const MOBILE_SANDBOX_BOOT_REQUEST_KEY = '@stride_sandbox_boot_request_v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const MOBILE_SANDBOX_BOOT_REQUEST_KEY = '@mindwtr_sandbox_boot_request_v1';
 export const MOBILE_WORKSPACE_TRANSITION_TIMEOUT_MS = 15_000;
-const MOBILE_THEME_STORAGE_KEY = '@stride_theme';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const MOBILE_THEME_STORAGE_KEY = '@mindwtr_theme';
 const PERSISTENCE_IDLE_POLL_MS = 10;
 
 type BootRequestStorage = Pick<typeof AsyncStorage, 'getItem' | 'removeItem' | 'setItem'>;

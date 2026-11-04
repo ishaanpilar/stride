@@ -531,7 +531,7 @@ describe('mobile background sync task', () => {
   describe('automatic background sync schedule', () => {
     it.each(['off', '15m', '1h', '6h', 'invalid'])('ignores the legacy saved %s choice and registers the fixed schedule', async (legacyChoice) => {
       syncServiceMock.getMobileSyncConfigurationStatus.mockResolvedValue({ backend: 'cloud', configured: true });
-      asyncStorageMock.store.set('@stride_background_sync_interval', legacyChoice);
+      asyncStorageMock.store.set('@mindwtr_background_sync_interval', legacyChoice);
 
       const module = await loadModule();
       const result = await module.syncMobileBackgroundSyncRegistration();
@@ -812,7 +812,7 @@ describe('mobile background sync task', () => {
 
     it('syncs right after a Save from the capture dialog, even during a failure cooldown', async () => {
       configureSync();
-      asyncStorageMock.store.set('@stride_background_sync_failure_state_v1', JSON.stringify({
+      asyncStorageMock.store.set('@mindwtr_background_sync_failure_state_v1', JSON.stringify({
         lastFailureAt: Date.now(),
         consecutiveFailures: 3,
       }));

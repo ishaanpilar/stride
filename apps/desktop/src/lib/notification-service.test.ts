@@ -87,7 +87,7 @@ describe('desktop advance reminders', () => {
         expect(delivered).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(15_000);
         expect(delivered).toHaveBeenCalledTimes(1);
-        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'stride-reminder:task:task-1' });
+        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'mindwtr-reminder:task:task-1' });
         expect(logMock.logInfo).toHaveBeenCalledWith('Advance reminder delivered', expect.objectContaining({
             extra: { releaseCheck: 'v1.3.8/due-advance-reminder', outcome: 'delivered' },
         }));
@@ -144,7 +144,7 @@ describe('desktop start advance reminders', () => {
         expect(delivered).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(15_000);
         expect(delivered).toHaveBeenCalledTimes(1);
-        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'stride-reminder:task:task-1' });
+        expect(delivered.mock.calls[0][1]).toMatchObject({ tag: 'mindwtr-reminder:task:task-1' });
         expect(logMock.logInfo).toHaveBeenCalledWith('Advance reminder delivered', expect.objectContaining({
             extra: { releaseCheck: 'v1.3.8/start-advance-reminder', outcome: 'delivered' },
         }));
@@ -676,7 +676,7 @@ describe('fired reminders are logged (#1146)', () => {
 
 describe('a task\'s reminders replace its notification', () => {
     const initialStoreState = useTaskStore.getState();
-    const tag = 'stride-reminder:task:task-1';
+    const tag = 'mindwtr-reminder:task:task-1';
 
     afterEach(() => {
         stopDesktopNotifications();

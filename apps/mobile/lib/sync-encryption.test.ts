@@ -1599,7 +1599,7 @@ describe('File Sync transitions through core orchestration', () => {
     const operationId = 'crashed-publication';
     const stagedPath = `${SYNC_DIR}/attachments/.stride-generation-stage-${operationId}.tmp`;
     fs.files.set(stagedPath, new Uint8Array([1, 2, 3]));
-    asyncStorage.set('@stride/file-sync-publication-reservations-v1', JSON.stringify([{
+    asyncStorage.set('@mindwtr/file-sync-publication-reservations-v1', JSON.stringify([{
       version: 1,
       operationId,
       stagedPath,

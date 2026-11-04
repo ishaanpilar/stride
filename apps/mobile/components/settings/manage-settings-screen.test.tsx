@@ -205,7 +205,7 @@ describe('ManageSettingsScreen', () => {
       await flushEffects();
     });
 
-    expect(asyncStorageMocks.getItem).toHaveBeenCalledWith('stride:settings:manage:openSections');
+    expect(asyncStorageMocks.getItem).toHaveBeenCalledWith('mindwtr:settings:manage:openSections');
     expect(
       tree.root.findAll((node) => (node.type as unknown) === 'Text' && node.props.children === 'Design'),
     ).toHaveLength(1);
@@ -233,7 +233,7 @@ describe('ManageSettingsScreen', () => {
     });
 
     expect(asyncStorageMocks.setItem).toHaveBeenLastCalledWith(
-      'stride:settings:manage:openSections',
+      'mindwtr:settings:manage:openSections',
       JSON.stringify({ areas: true, people: false, somedaySections: false, contexts: false, tags: false }),
     );
   });

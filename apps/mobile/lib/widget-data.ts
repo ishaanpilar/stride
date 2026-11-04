@@ -55,8 +55,10 @@ export {
     WIDGET_QUICK_CAPTURE_URI,
 };
 
-export const WIDGET_DATA_KEY = 'stride-data';
-export const WIDGET_LANGUAGE_KEY = 'stride-language';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const WIDGET_DATA_KEY = 'mindwtr-data';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const WIDGET_LANGUAGE_KEY = 'mindwtr-language';
 export const IOS_WIDGET_APP_GROUP = 'group.com.ishaanpilar.stride';
 export const IOS_WIDGET_PAYLOAD_KEY = 'stride-ios-widget-payload';
 export const IOS_WIDGET_PAYLOAD_KEY_SMALL = 'stride-ios-widget-payload-small';

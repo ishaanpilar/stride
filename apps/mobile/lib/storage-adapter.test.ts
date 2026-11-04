@@ -255,7 +255,7 @@ describe('mobile storage adapter', () => {
     expect(sqliteAdapterSaveTask).toHaveBeenCalledWith(currentTask);
 
 
-    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('stride-data', expect.anything());
+    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('mindwtr-data', expect.anything());
 
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
@@ -263,15 +263,15 @@ describe('mobile storage adapter', () => {
     await __mobileStorageTestUtils.flushPendingWidgetRefresh();
 
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride-data',
+      'mindwtr-data',
       JSON.stringify(currentSnapshot),
     );
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride-data:startup-backup-version',
+      'mindwtr-data:startup-backup-version',
       '2',
     );
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride-data:startup-backup-updated-at',
+      'mindwtr-data:startup-backup-updated-at',
       expect.stringMatching(/^\d+$/),
     );
     expect(updateMobileWidgetFromDataMock).toHaveBeenCalledWith(currentSnapshot);
@@ -310,9 +310,9 @@ describe('mobile storage adapter', () => {
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
 
-    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('stride-data', expect.anything());
+    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('mindwtr-data', expect.anything());
     expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith(
-      'stride-data:startup-backup-version',
+      'mindwtr-data:startup-backup-version',
       expect.anything(),
     );
     expect(logWarnMock).toHaveBeenCalledWith(
@@ -497,12 +497,12 @@ describe('mobile storage adapter', () => {
   });
 
   const storeStaleBackup = (stored: Map<string, string>) => {
-    stored.set('stride-data', JSON.stringify({
+    stored.set('mindwtr-data', JSON.stringify({
       ...makeWidgetSnapshot(makeWidgetTask('task-stale')),
       settings: { language: 'fr' },
     }));
-    stored.set('stride-data:startup-backup-version', '2');
-    stored.set('stride-data:startup-backup-updated-at', '1');
+    stored.set('mindwtr-data:startup-backup-version', '2');
+    stored.set('mindwtr-data:startup-backup-updated-at', '1');
 
     stored.set('focus-gtd-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-legacy'))));
   };
@@ -526,9 +526,9 @@ describe('mobile storage adapter', () => {
     await firstRun.mobileStorage.saveTask!(oversized.tasks[0], oversized);
     await firstRun.__mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(true);
-    expect(stored.has('stride-data')).toBe(true);
-    expect(stored.has('stride-data:startup-backup-updated-at')).toBe(true);
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(true);
+    expect(stored.has('mindwtr-data')).toBe(true);
+    expect(stored.has('mindwtr-data:startup-backup-updated-at')).toBe(true);
     expect(stored.has('focus-gtd-data')).toBe(true);
     firstRun.__mobileStorageTestUtils.reset();
 
@@ -558,9 +558,9 @@ describe('mobile storage adapter', () => {
 
   it('clears the outgrown marker once a backup fits again, so a slow read falls back to that copy', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     storeStaleBackup(stored);
-    stored.set('stride-data:startup-backup-outgrown-at', '1');
+    stored.set('mindwtr-data:startup-backup-outgrown-at', '1');
     const library = makeWidgetSnapshot(makeWidgetTask('task-small'));
     const { mobileStorage, __mobileStorageTestUtils } = await import('./storage-adapter');
     __mobileStorageTestUtils.setSqliteStateForTests({
@@ -570,8 +570,8 @@ describe('mobile storage adapter', () => {
 
     await mobileStorage.saveTask!(library.tasks[0], library);
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(false);
-    expect(stored.get('stride-data')).toBe(JSON.stringify(library));
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(false);
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(library));
 
     vi.useFakeTimers();
     try {
@@ -591,9 +591,9 @@ describe('mobile storage adapter', () => {
   it('serves no outgrown or legacy copy on the JSON fast path while the outgrown marker is set', async () => {
     const stored = storedAsyncStorage();
     storeStaleBackup(stored);
-    stored.delete('stride-data');
-    stored.set('stride-data:startup-backup-updated-at', String(Date.now() + 60_000));
-    stored.set('stride-data:startup-backup-outgrown-at', '1');
+    stored.delete('mindwtr-data');
+    stored.set('mindwtr-data:startup-backup-updated-at', String(Date.now() + 60_000));
+    stored.set('mindwtr-data:startup-backup-outgrown-at', '1');
     sqliteAdapterSaveTask.mockRejectedValue(new Error('disk I/O error'));
     const { mobileStorage, __mobileStorageTestUtils } = await import('./storage-adapter');
     __mobileStorageTestUtils.setSqliteStateForTests({
@@ -607,7 +607,7 @@ describe('mobile storage adapter', () => {
     await expect(mobileStorage.getData()).resolves.toEqual(expect.objectContaining({
       tasks: [expect.objectContaining({ id: 'task-sqlite' })],
     }));
-    expect(stored.has('stride-data')).toBe(false);
+    expect(stored.has('mindwtr-data')).toBe(false);
   }, 10_000);
 
   it('keeps the old backup when an oversized write skips it while the JSON copy is ahead of SQLite', async () => {
@@ -619,16 +619,16 @@ describe('mobile storage adapter', () => {
     await expect(mobileStorage.saveData(makeOversizedLibrary())).rejects.toThrow('too large for the JSON backup');
 
 
-    expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
-    expect(stored.has('stride-data')).toBe(true);
-    expect(stored.has('stride-data:startup-backup-updated-at')).toBe(true);
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(false);
+    expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
+    expect(stored.has('mindwtr-data')).toBe(true);
+    expect(stored.has('mindwtr-data:startup-backup-updated-at')).toBe(true);
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(false);
   }, 20_000);
 
   it('refuses a stamp without its backup when SQLite fails instead of serving an empty library', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
-    stored.set('stride-data:startup-backup-updated-at', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:startup-backup-updated-at', '1');
     const { mobileStorage, __mobileStorageTestUtils } = await import('./storage-adapter');
     __mobileStorageTestUtils.setSqliteInitializerForTests(() => Promise.reject(new Error('disk I/O error')));
 
@@ -641,9 +641,9 @@ describe('mobile storage adapter', () => {
   it('keeps an over-cap JSON copy when migrating it into an empty SQLite fails, so the next launch migrates it', async () => {
     const stored = storedAsyncStorage();
     const oversized = makeOversizedLibrary();
-    stored.set('stride-data', JSON.stringify(oversized));
-    stored.set('stride-data:startup-backup-version', '2');
-    stored.set('stride-data:startup-backup-updated-at', '1');
+    stored.set('mindwtr-data', JSON.stringify(oversized));
+    stored.set('mindwtr-data:startup-backup-version', '2');
+    stored.set('mindwtr-data:startup-backup-updated-at', '1');
     stored.set('focus-gtd-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-legacy'))));
     const emptySqlite = (): AppData => ({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] });
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
@@ -663,7 +663,7 @@ describe('mobile storage adapter', () => {
     });
     await expect(firstRun.mobileStorage.getData()).resolves.toEqual(expect.objectContaining({ tasks: [] }));
     await firstRun.__mobileStorageTestUtils.flushPendingStartupJsonBackup();
-    expect(stored.get('stride-data')).toBe(JSON.stringify(oversized));
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(oversized));
     expect(stored.has('focus-gtd-data')).toBe(true);
     firstRun.__mobileStorageTestUtils.reset();
 
@@ -683,9 +683,9 @@ describe('mobile storage adapter', () => {
   it('serves the JSON copy and blocks writes after a failed first-launch migration, so nothing writes the empty SQLite over it', async () => {
     const stored = storedAsyncStorage();
     const oversized = makeOversizedLibrary();
-    stored.set('stride-data', JSON.stringify(oversized));
-    stored.set('stride-data:startup-backup-version', '2');
-    stored.set('stride-data:startup-backup-updated-at', '1');
+    stored.set('mindwtr-data', JSON.stringify(oversized));
+    stored.set('mindwtr-data:startup-backup-version', '2');
+    stored.set('mindwtr-data:startup-backup-updated-at', '1');
     const emptySqlite = (): AppData => ({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] });
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const failingAdapter = {
@@ -702,7 +702,7 @@ describe('mobile storage adapter', () => {
       const data = await mobileStorage.getData();
       vi.setSystemTime(Date.now() + 6 * 60_000);
       await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-      expect(stored.get('stride-data')).toBe(JSON.stringify(oversized));
+      expect(stored.get('mindwtr-data')).toBe(JSON.stringify(oversized));
       expect(data.tasks).toHaveLength(6_000);
       await expect(mobileStorage.queryTasks!({})).resolves.toHaveLength(6_000);
       expect(failingAdapter.queryTasks).not.toHaveBeenCalled();
@@ -711,7 +711,7 @@ describe('mobile storage adapter', () => {
       await expect(mobileStorage.saveTask!(makeWidgetTask('task-new'), emptySqlite()))
         .rejects.toThrow('moving your data into the database failed');
       await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-      expect(stored.get('stride-data')).toBe(JSON.stringify(oversized));
+      expect(stored.get('mindwtr-data')).toBe(JSON.stringify(oversized));
       expect(logWarnMock).toHaveBeenCalledWith(
         '[Storage] JSON migration into SQLite failed; saving is blocked',
         expect.objectContaining({ force: true, extra: expect.objectContaining({ releaseCheck: 'v1.3.8/rn-migration-write-block' }) }),
@@ -732,9 +732,9 @@ describe('mobile storage adapter', () => {
   }, 30_000);
 
   const storeVersionedBackup = (stored: Map<string, string>, data?: AppData) => {
-    if (data) stored.set('stride-data', JSON.stringify(data));
-    stored.set('stride-data:startup-backup-version', '2');
-    stored.set('stride-data:startup-backup-updated-at', '1');
+    if (data) stored.set('mindwtr-data', JSON.stringify(data));
+    stored.set('mindwtr-data:startup-backup-version', '2');
+    stored.set('mindwtr-data:startup-backup-updated-at', '1');
   };
 
   const failSetItemFor = (match: (key: string) => boolean) => {
@@ -745,7 +745,7 @@ describe('mobile storage adapter', () => {
     });
   };
 
-  const isReconcileMarker = (key: string) => key === 'stride-data:sqlite-json-reconcile-v1';
+  const isReconcileMarker = (key: string) => key === 'mindwtr-data:sqlite-json-reconcile-v1';
 
 
   it('keeps saving to SQLite after a failed reconcile, but writes no backup over the unmerged JSON copy until a later start merges it', async () => {
@@ -773,8 +773,8 @@ describe('mobile storage adapter', () => {
       vi.useRealTimers();
     }
     expect(adapter.saveData).toHaveBeenCalledTimes(2);
-    expect(stored.get('stride-data')).toBe(JSON.stringify(backup));
-    expect(stored.has('stride-data:sqlite-json-reconcile-v1')).toBe(false);
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(backup));
+    expect(stored.has('mindwtr-data:sqlite-json-reconcile-v1')).toBe(false);
     expect(logWarnMock).toHaveBeenCalledWith(
       '[Storage] JSON reconcile into SQLite failed; JSON backup frozen',
       expect.objectContaining({ force: true, extra: expect.objectContaining({ step: 'reconcile' }) }),
@@ -784,8 +784,8 @@ describe('mobile storage adapter', () => {
     adapter.saveData.mockRejectedValue(new Error('disk I/O error'));
     await expect(mobileStorage.saveData(sqliteData)).rejects.toThrow('not yet merged');
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-    expect(stored.get('stride-data')).toBe(JSON.stringify(backup));
-    expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(backup));
+    expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
 
     __mobileStorageTestUtils.reset();
     vi.resetModules();
@@ -822,7 +822,7 @@ describe('mobile storage adapter', () => {
 
   it('neither shows nor saves an unversioned legacy copy when only the reconcile marker write fails', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-legacy-stale'))));
+    stored.set('mindwtr-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-legacy-stale'))));
     failSetItemFor(isReconcileMarker);
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
     const sqliteData = makeWidgetSnapshot(makeWidgetTask('task-sqlite'));
@@ -869,7 +869,7 @@ describe('mobile storage adapter', () => {
 
     expect(data.tasks[0]?.title).toBe('New title');
     expect((adapter.saveData.mock.calls[0]?.[0] as AppData).tasks[0]?.title).toBe('New title');
-    expect(stored.get('stride-data')).toBe(JSON.stringify(oldCopy));
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(oldCopy));
   }, 10_000);
 
   it('freezes the backup when the JSON copy cannot be read for the reconcile, so it survives to a later start', async () => {
@@ -879,7 +879,7 @@ describe('mobile storage adapter', () => {
     let failCopyRead = true;
     const getItem = asyncStorageMock.getItem.getMockImplementation()!;
     asyncStorageMock.getItem.mockImplementation(async (key: string) => {
-      if (failCopyRead && key === 'stride-data') throw new Error('transient AsyncStorage read failure');
+      if (failCopyRead && key === 'mindwtr-data') throw new Error('transient AsyncStorage read failure');
       return getItem(key);
     });
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
@@ -898,8 +898,8 @@ describe('mobile storage adapter', () => {
     await mobileStorage.saveData(data);
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
-    expect(stored.get('stride-data')).toBe(JSON.stringify(copy));
-    expect(stored.has('stride-data:sqlite-json-reconcile-v1')).toBe(false);
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(copy));
+    expect(stored.has('mindwtr-data:sqlite-json-reconcile-v1')).toBe(false);
   }, 10_000);
 
 
@@ -956,7 +956,7 @@ describe('mobile storage adapter', () => {
     await expect(mobileStorage.getData()).resolves.toEqual(expect.objectContaining({
       tasks: [expect.objectContaining({ id: 'task-sqlite' })],
     }));
-    expect(JSON.parse(stored.get('stride-data')!).tasks[0].id).toBe('task-old');
+    expect(JSON.parse(stored.get('mindwtr-data')!).tasks[0].id).toBe('task-old');
   }, 10_000);
 
   it('gives a slow SQLite read the long bound while the backup is frozen', async () => {
@@ -1032,7 +1032,7 @@ describe('mobile storage adapter', () => {
   it('lets reads fall back to the copy again once this run has merged it', async () => {
     const stored = storedAsyncStorage();
     storeVersionedBackup(stored, makeWidgetSnapshot(makeWidgetTask('task-copy')));
-    stored.set('stride-data:startup-backup-updated-at', String(Date.now() + 60_000));
+    stored.set('mindwtr-data:startup-backup-updated-at', String(Date.now() + 60_000));
     let failRead = false;
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
     const adapter = {
@@ -1048,7 +1048,7 @@ describe('mobile storage adapter', () => {
     ));
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
 
-      if (key === 'stride-data:sqlite-json-reconcile-v1') throw new Error('database or disk is full');
+      if (key === 'mindwtr-data:sqlite-json-reconcile-v1') throw new Error('database or disk is full');
       stored.set(key, value);
     });
 
@@ -1118,32 +1118,32 @@ describe('mobile storage adapter', () => {
   it('marks the old copy outgrown when the merged library is too large to refresh it', async () => {
     const { stored, frozen } = await startReconcile(makeOversizedLibrary(), () => false);
 
-    expect(JSON.parse(stored.get('stride-data')!).tasks[0].id).toBe('task-old');
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(true);
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(JSON.parse(stored.get('mindwtr-data')!).tasks[0].id).toBe('task-old');
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(true);
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
     expect(frozen).toBe(false);
   }, 20_000);
 
   it('marks the old copy outgrown when the refresh write fails, so the next start does not merge again', async () => {
     const { stored, frozen } = await startReconcile(
       makeWidgetSnapshot(makeWidgetTask('task-sqlite')),
-      (key) => key === 'stride-data',
+      (key) => key === 'mindwtr-data',
     );
 
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(true);
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(true);
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
     expect(frozen).toBe(false);
   }, 10_000);
 
   it('freezes the backup when the old copy can be neither refreshed nor marked outgrown', async () => {
     const { stored, state, frozen } = await startReconcile(
       makeWidgetSnapshot(makeWidgetTask('task-sqlite')),
-      (key) => key === 'stride-data' || key === 'stride-data:startup-backup-outgrown-at',
+      (key) => key === 'mindwtr-data' || key === 'mindwtr-data:startup-backup-outgrown-at',
     );
 
     expect(state.writeBlockedReason).toBeUndefined();
     expect(frozen).toBe(true);
-    expect(stored.has('stride-data:sqlite-json-reconcile-v1')).toBe(false);
+    expect(stored.has('mindwtr-data:sqlite-json-reconcile-v1')).toBe(false);
   }, 10_000);
 
 
@@ -1156,7 +1156,7 @@ describe('mobile storage adapter', () => {
         await new Promise((resolve) => setTimeout(resolve, 4_000));
         throw new Error('transient AsyncStorage read failure');
       }
-      if (key === 'stride-data') await new Promise((resolve) => setTimeout(resolve, 1_500));
+      if (key === 'mindwtr-data') await new Promise((resolve) => setTimeout(resolve, 1_500));
       return getItem(key);
     });
     const sqliteData = { ...makeWidgetSnapshot(makeWidgetTask('task-sqlite')), settings: { theme: 'dark' } } as AppData;
@@ -1182,7 +1182,7 @@ describe('mobile storage adapter', () => {
     storeVersionedBackup(stored, makeWidgetSnapshot(makeWidgetTask('task-old')));
 
 
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     let markerReads = 0;
     const getItem = asyncStorageMock.getItem.getMockImplementation()!;
     asyncStorageMock.getItem.mockImplementation(async (key: string) => {
@@ -1222,7 +1222,7 @@ describe('mobile storage adapter', () => {
     storeVersionedBackup(stored, makeWidgetSnapshot(makeWidgetTask('task-old')));
 
 
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     let markerReads = 0;
     const getItem = asyncStorageMock.getItem.getMockImplementation()!;
     asyncStorageMock.getItem.mockImplementation(async (key: string) => {
@@ -1230,7 +1230,7 @@ describe('mobile storage adapter', () => {
         await new Promise((resolve) => setTimeout(resolve, 4_000));
         throw new Error('transient AsyncStorage read failure');
       }
-      if (key === 'stride-data') await new Promise((resolve) => setTimeout(resolve, 1_500));
+      if (key === 'mindwtr-data') await new Promise((resolve) => setTimeout(resolve, 1_500));
       return getItem(key);
     });
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
@@ -1272,7 +1272,7 @@ describe('mobile storage adapter', () => {
 
     asyncStorageMock.getItem.mockImplementation(getItem);
     __mobileStorageTestUtils.reset();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     await expect(getMobileStartupSnapshotFromBackup()).resolves.toEqual(expect.objectContaining({
       tasks: [expect.objectContaining({ id: 'task-old' })],
     }));
@@ -1281,7 +1281,7 @@ describe('mobile storage adapter', () => {
 
   it('drops broken saved filters from the copy so the move into SQLite succeeds', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify({
+    stored.set('mindwtr-data', JSON.stringify({
       ...makeWidgetSnapshot(makeWidgetTask('task-a')),
       settings: { theme: 'dark', savedFilters: [null] },
     }));
@@ -1306,8 +1306,8 @@ describe('mobile storage adapter', () => {
   it('keeps device-local settings when it recovers JSON-ahead writes into a SQLite with no settings', async () => {
     const stored = storedAsyncStorage();
     const settings = { theme: 'dark', notificationsEnabled: false, syncPreferences: { appearance: false } } as AppData['settings'];
-    stored.set('stride-data', JSON.stringify({ ...makeWidgetSnapshot(makeWidgetTask('task-a')), settings }));
-    stored.set('stride-data:json-ahead-of-sqlite', '1');
+    stored.set('mindwtr-data', JSON.stringify({ ...makeWidgetSnapshot(makeWidgetTask('task-a')), settings }));
+    stored.set('mindwtr-data:json-ahead-of-sqlite', '1');
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const adapter = {
       getData: vi.fn().mockResolvedValue({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] }),
@@ -1342,7 +1342,7 @@ describe('mobile storage adapter', () => {
 
   it("keeps the copy's device-local settings when another process writes settings during the first move", async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify({
+    stored.set('mindwtr-data', JSON.stringify({
       ...makeWidgetSnapshot(makeWidgetTask('task-a')),
       settings: { theme: 'dark', notificationsEnabled: false, savedFilters: [null] },
     }));
@@ -1385,7 +1385,7 @@ describe('mobile storage adapter', () => {
 
   it('repairs a copy SQLite rejects so the first move succeeds and saving is not blocked', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(brokenCopy()));
+    stored.set('mindwtr-data', JSON.stringify(brokenCopy()));
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const adapter = {
       getData: vi.fn().mockResolvedValue({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] }),
@@ -1400,7 +1400,7 @@ describe('mobile storage adapter', () => {
     expect(moved.tasks).toEqual([expect.objectContaining({ id: 'task-untitled', title: 'Untitled', description: 'Private note' })]);
     expect(moved.sections).toEqual([]);
 
-    expect(JSON.parse(stored.get('stride-data')!).tasks[0].title).toBe('Untitled');
+    expect(JSON.parse(stored.get('mindwtr-data')!).tasks[0].title).toBe('Untitled');
     expectRepairLogged('migrate');
   }, 10_000);
 
@@ -1418,15 +1418,15 @@ describe('mobile storage adapter', () => {
 
     const frozen = logWarnMock.mock.calls.some(([message]) => message === '[Storage] JSON reconcile into SQLite failed; JSON backup frozen');
     expect(frozen).toBe(false);
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
     expect((adapter.saveData.mock.calls[0]?.[0] as AppData).tasks.map((task) => task.id).sort()).toEqual(['task-sqlite', 'task-untitled']);
     expectRepairLogged('reconcile');
   }, 10_000);
 
   it('repairs a copy SQLite rejects when it recovers JSON-ahead writes', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(brokenCopy()));
-    stored.set('stride-data:json-ahead-of-sqlite', '1');
+    stored.set('mindwtr-data', JSON.stringify(brokenCopy()));
+    stored.set('mindwtr-data:json-ahead-of-sqlite', '1');
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
     const adapter = {
       getData: vi.fn().mockResolvedValue(makeWidgetSnapshot(makeWidgetTask('task-sqlite'))),
@@ -1436,8 +1436,8 @@ describe('mobile storage adapter', () => {
 
     await expect(__mobileStorageTestUtils.prepareSqliteStateForTests(adapter as never, client as never)).resolves.toBeDefined();
 
-    expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
-    expect(JSON.parse(stored.get('stride-data')!).tasks.find((task: Task) => task.id === 'task-untitled').title).toBe('Untitled');
+    expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
+    expect(JSON.parse(stored.get('mindwtr-data')!).tasks.find((task: Task) => task.id === 'task-untitled').title).toBe('Untitled');
     expectRepairLogged('recover');
   }, 10_000);
 
@@ -1465,10 +1465,10 @@ describe('mobile storage adapter', () => {
   it('keeps a copy the recovery left unsafe out of reads across inits, until a backup lands', async () => {
     const stored = storedAsyncStorage();
     storeVersionedBackup(stored, makeWidgetSnapshot(makeWidgetTask('task-ahead')));
-    stored.set('stride-data:json-ahead-of-sqlite', '1');
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:json-ahead-of-sqlite', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     let storageFull = true;
-    failSetItemFor((key) => storageFull && (key === 'stride-data' || key === 'stride-data:startup-backup-outgrown-at'));
+    failSetItemFor((key) => storageFull && (key === 'mindwtr-data' || key === 'mindwtr-data:startup-backup-outgrown-at'));
     let failRead = false;
     let slowRead = false;
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
@@ -1491,7 +1491,7 @@ describe('mobile storage adapter', () => {
 
     failRead = false;
     await __mobileStorageTestUtils.prepareSqliteStateForTests(adapter as never, client as never);
-    expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
+    expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
     failRead = true;
     await expect(mobileStorage.getData()).rejects.toThrow('database is locked');
 
@@ -1516,9 +1516,9 @@ describe('mobile storage adapter', () => {
 
   const startRecoveryWithFullStorage = async (failKey: (key: string) => boolean) => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-ahead'))));
-    stored.set('stride-data:json-ahead-of-sqlite', '1');
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-ahead'))));
+    stored.set('mindwtr-data:json-ahead-of-sqlite', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     failSetItemFor(failKey);
     const client = { get: vi.fn().mockResolvedValue({ count: 1 }) };
     const adapter = {
@@ -1532,18 +1532,18 @@ describe('mobile storage adapter', () => {
 
   it('keeps the JSON-ahead marker when the recovered copy can be neither replaced nor marked outgrown', async () => {
     const { stored, adapter } = await startRecoveryWithFullStorage(
-      (key) => key === 'stride-data' || key === 'stride-data:startup-backup-outgrown-at',
+      (key) => key === 'mindwtr-data' || key === 'mindwtr-data:startup-backup-outgrown-at',
     );
 
     expect(adapter.saveData).toHaveBeenCalled();
-    expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
+    expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
   }, 10_000);
 
   it('clears the JSON-ahead marker once the recovered copy is marked outgrown', async () => {
-    const { stored } = await startRecoveryWithFullStorage((key) => key === 'stride-data');
+    const { stored } = await startRecoveryWithFullStorage((key) => key === 'mindwtr-data');
 
-    expect(stored.has('stride-data:startup-backup-outgrown-at')).toBe(true);
-    expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
+    expect(stored.has('mindwtr-data:startup-backup-outgrown-at')).toBe(true);
+    expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
   }, 10_000);
 
 
@@ -1579,7 +1579,7 @@ describe('mobile storage adapter', () => {
 
   it('still moves the JSON copy into SQLite when AsyncStorage is full', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-a'))));
+    stored.set('mindwtr-data', JSON.stringify(makeWidgetSnapshot(makeWidgetTask('task-a'))));
     failSetItemFor(() => true);
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const adapter = {
@@ -1608,7 +1608,7 @@ describe('mobile storage adapter', () => {
     const emptySqlite = (): AppData => ({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] });
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const stored = storedAsyncStorage();
-    stored.set('stride-data', JSON.stringify(copy));
+    stored.set('mindwtr-data', JSON.stringify(copy));
     const adapter = {
       getData: vi.fn().mockImplementation(async () => emptySqlite()),
       saveData: vi.fn().mockResolvedValue(undefined),
@@ -1616,9 +1616,9 @@ describe('mobile storage adapter', () => {
     const { mobileStorage, __mobileStorageTestUtils } = await import('./storage-adapter');
     await __mobileStorageTestUtils.prepareSqliteStateForTests(adapter as never, client as never);
     expect((adapter.saveData.mock.calls[0]?.[0] as AppData).settings).toEqual(expect.objectContaining(settings));
-    expect(JSON.parse(stored.get('stride-data')!).settings).toEqual(expect.objectContaining(settings));
+    expect(JSON.parse(stored.get('mindwtr-data')!).settings).toEqual(expect.objectContaining(settings));
 
-    stored.set('stride-data', JSON.stringify(copy));
+    stored.set('mindwtr-data', JSON.stringify(copy));
     adapter.saveData.mockRejectedValue(new Error('disk I/O error'));
     __mobileStorageTestUtils.setSqliteInitializerForTests(() => (
       __mobileStorageTestUtils.prepareSqliteStateForTests(adapter as never, client as never)
@@ -1661,7 +1661,7 @@ describe('mobile storage adapter', () => {
 
   it('keeps serving pinned JSON reads after a blocked save', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     storeVersionedBackup(stored, makeWidgetSnapshot(makeWidgetTask('task-a')));
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     let failMigration: () => void = () => undefined;
@@ -1687,7 +1687,7 @@ describe('mobile storage adapter', () => {
 
   it('migrates nothing from a corrupt JSON copy and keeps SQLite writable', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data', '{"tasks": [');
+    stored.set('mindwtr-data', '{"tasks": [');
     const client = { get: vi.fn().mockResolvedValue({ count: 0 }) };
     const adapter = {
       getData: vi.fn().mockResolvedValue({ ...makeWidgetSnapshot(makeWidgetTask('unused')), tasks: [] }),
@@ -1699,12 +1699,12 @@ describe('mobile storage adapter', () => {
 
     expect(state.writeBlockedReason).toBeUndefined();
     expect(adapter.saveData).not.toHaveBeenCalled();
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
   }, 10_000);
 
   it('pins reads to the JSON fast path when a SQLite query fails and a backup is stored', async () => {
     const stored = storedAsyncStorage();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     storeStaleBackup(stored);
     const { mobileStorage, __mobileStorageTestUtils } = await import('./storage-adapter');
     __mobileStorageTestUtils.setSqliteStateForTests({
@@ -1742,7 +1742,7 @@ describe('mobile storage adapter', () => {
   it('writes and trusts an oversized JSON backup on iOS, where it is the only fallback when SQLite fails (#979)', async () => {
     mockPlatformOS.value = 'ios';
     const stored = new Map<string, string>();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
       stored.set(key, value);
@@ -1779,7 +1779,7 @@ describe('mobile storage adapter', () => {
     await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
 
-    expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride-data', expect.any(String));
+    expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr-data', expect.any(String));
     expect(logWarnMock).not.toHaveBeenCalledWith(
       '[Storage] Skipped JSON backup; library exceeds the readable AsyncStorage size',
       expect.anything(),
@@ -1834,7 +1834,7 @@ describe('mobile storage adapter', () => {
 
     await __mobileStorageTestUtils.flushPendingWidgetRefresh();
 
-    const dataWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data');
+    const dataWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data');
     expect(dataWrites).toHaveLength(1);
     expect(dataWrites[0]?.[1]).toBe(JSON.stringify(makeSnapshot(third)));
     expect(updateMobileWidgetFromDataMock).toHaveBeenCalledTimes(1);
@@ -1874,7 +1874,7 @@ describe('mobile storage adapter', () => {
       const first = makeTask('task-first');
       await mobileStorage.saveTask(first, makeSnapshot(first));
       await vi.advanceTimersByTimeAsync(1_000);
-      const writesAfterFirst = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data');
+      const writesAfterFirst = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data');
       expect(writesAfterFirst).toHaveLength(1);
 
 
@@ -1884,12 +1884,12 @@ describe('mobile storage adapter', () => {
         await mobileStorage.saveTask(lastChurnTask, makeSnapshot(lastChurnTask));
         await vi.advanceTimersByTimeAsync(10_000);
       }
-      const writesDuringChurn = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data');
+      const writesDuringChurn = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data');
       expect(writesDuringChurn).toHaveLength(1);
 
 
       await vi.advanceTimersByTimeAsync(5 * 60_000);
-      const finalWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data');
+      const finalWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data');
       expect(finalWrites).toHaveLength(2);
       expect(finalWrites[1]?.[1]).toBe(JSON.stringify(makeSnapshot(lastChurnTask)));
     } finally {
@@ -1931,16 +1931,16 @@ describe('mobile storage adapter', () => {
       const first = makeTask('task-first');
       await mobileStorage.saveTask(first, makeSnapshot(first));
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data')).toHaveLength(1);
+      expect(asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data')).toHaveLength(1);
 
       const second = makeTask('task-second');
       await mobileStorage.saveTask(second, makeSnapshot(second));
 
-      expect(asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data')).toHaveLength(1);
+      expect(asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data')).toHaveLength(1);
 
       await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
 
-      const writes = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data');
+      const writes = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data');
       expect(writes).toHaveLength(2);
       expect(writes[1]?.[1]).toBe(JSON.stringify(makeSnapshot(second)));
     } finally {
@@ -1968,14 +1968,14 @@ describe('mobile storage adapter', () => {
     });
 
     const stored = new Map<string, string>();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     let resolveFirstDataWrite: (() => void) | undefined;
     let firstDataWriteStarted = false;
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
 
 
     asyncStorageMock.setItem.mockImplementation((key: string, value: string) => {
-      if (key === 'stride-data' && !firstDataWriteStarted) {
+      if (key === 'mindwtr-data' && !firstDataWriteStarted) {
         firstDataWriteStarted = true;
         return new Promise<void>((resolve) => {
           resolveFirstDataWrite = () => {
@@ -2024,7 +2024,7 @@ describe('mobile storage adapter', () => {
     await flushPromise;
     expect(flushSettled).toBe(true);
 
-    expect(stored.get('stride-data')).toBe(JSON.stringify(makeSnapshot(second)));
+    expect(stored.get('mindwtr-data')).toBe(JSON.stringify(makeSnapshot(second)));
 
 
     __mobileStorageTestUtils.setSqliteStateForTests({
@@ -2076,7 +2076,7 @@ describe('mobile storage adapter', () => {
         await vi.advanceTimersByTimeAsync(2_000);
       }
 
-      const backupWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'stride-data').length;
+      const backupWrites = asyncStorageMock.setItem.mock.calls.filter(([key]) => key === 'mindwtr-data').length;
       expect(backupWrites).toBe(1);
       expect(updateMobileWidgetFromDataMock).toHaveBeenCalledTimes(5);
       expect(updateMobileWidgetFromDataMock.mock.calls.length).toBeGreaterThan(backupWrites);
@@ -2223,7 +2223,7 @@ describe('mobile storage adapter', () => {
     expect(appStateListeners.length).toBeGreaterThan(0);
 
     await mobileStorage.saveTask(currentTask, currentSnapshot);
-    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('stride-data', expect.anything());
+    expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('mindwtr-data', expect.anything());
 
     appStateListeners.forEach((listener) => listener('background'));
 
@@ -2232,14 +2232,14 @@ describe('mobile storage adapter', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride-data',
+      'mindwtr-data',
       JSON.stringify(currentSnapshot),
     );
   }, 10_000);
 
   it('flushes a pending deferred backup before serving a JSON fallback read (#766)', async () => {
     const stored = new Map<string, string>();
-    stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+    stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
       stored.set(key, value);
@@ -2278,7 +2278,7 @@ describe('mobile storage adapter', () => {
 
 
     await mobileStorage.saveTask(currentTask, currentSnapshot);
-    expect(stored.has('stride-data')).toBe(false);
+    expect(stored.has('mindwtr-data')).toBe(false);
 
 
     const data = await mobileStorage.getData();
@@ -2318,7 +2318,7 @@ describe('mobile storage adapter', () => {
 
 
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      'stride-data',
+      'mindwtr-data',
       JSON.stringify(currentSnapshot),
     );
   }, 10_000);
@@ -2410,9 +2410,9 @@ describe('mobile storage adapter', () => {
         settings: {},
       };
       asyncStorageMock.getItem.mockImplementation((key: string) => {
-        if (key === 'stride-data:sqlite-json-reconcile-v1') return Promise.resolve('1');
-        if (key === 'stride-data:startup-backup-updated-at') return Promise.resolve(freshBackupUpdatedAt);
-        if (key === 'stride-data') return Promise.resolve(JSON.stringify(backupSnapshot));
+        if (key === 'mindwtr-data:sqlite-json-reconcile-v1') return Promise.resolve('1');
+        if (key === 'mindwtr-data:startup-backup-updated-at') return Promise.resolve(freshBackupUpdatedAt);
+        if (key === 'mindwtr-data') return Promise.resolve(JSON.stringify(backupSnapshot));
         return Promise.resolve(null);
       });
 
@@ -2477,9 +2477,9 @@ describe('mobile storage adapter', () => {
         settings: {},
       };
       asyncStorageMock.getItem.mockImplementation((key: string) => {
-        if (key === 'stride-data:sqlite-json-reconcile-v1') return Promise.resolve('1');
-        if (key === 'stride-data:startup-backup-updated-at') return Promise.resolve(staleBackupUpdatedAt);
-        if (key === 'stride-data') return Promise.resolve(JSON.stringify(staleBackup));
+        if (key === 'mindwtr-data:sqlite-json-reconcile-v1') return Promise.resolve('1');
+        if (key === 'mindwtr-data:startup-backup-updated-at') return Promise.resolve(staleBackupUpdatedAt);
+        if (key === 'mindwtr-data') return Promise.resolve(JSON.stringify(staleBackup));
         return Promise.resolve(null);
       });
 
@@ -2593,8 +2593,8 @@ describe('mobile storage adapter', () => {
       settings: {},
     };
     const stored = new Map<string, string>([
-      ['stride-data', JSON.stringify(backupData)],
-      ['stride-data:startup-backup-version', '2'],
+      ['mindwtr-data', JSON.stringify(backupData)],
+      ['mindwtr-data:startup-backup-version', '2'],
     ]);
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
@@ -2617,7 +2617,7 @@ describe('mobile storage adapter', () => {
     expect(merged.tasks.some((task) => task.id === 'backup-only')).toBe(true);
     expect(merged.tasks.find((task) => task.id === 'deleted-before-rc1')?.deletedAt)
       .toBe('2026-07-16T00:00:03.000Z');
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
 
     await __mobileStorageTestUtils.reconcileJsonBackupIntoSqliteForTests({
       getData,
@@ -2659,8 +2659,8 @@ describe('mobile storage adapter', () => {
       settings: {},
     };
     const stored = new Map<string, string>([
-      ['stride-data', JSON.stringify(backup)],
-      ['stride-data:startup-backup-version', '2'],
+      ['mindwtr-data', JSON.stringify(backup)],
+      ['mindwtr-data:startup-backup-version', '2'],
     ]);
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
@@ -2722,7 +2722,7 @@ describe('mobile storage adapter', () => {
       people: [],
       settings: {},
     };
-    const stored = new Map<string, string>([['stride-data', JSON.stringify(backup)]]);
+    const stored = new Map<string, string>([['mindwtr-data', JSON.stringify(backup)]]);
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
       stored.set(key, value);
@@ -2738,7 +2738,7 @@ describe('mobile storage adapter', () => {
 
     const migrated = saveData.mock.calls[0]?.[0] as AppData;
     expect(migrated.tasks.map((task) => task.id).sort()).toEqual(['backup-only', 'concurrent-sqlite']);
-    expect(JSON.parse(stored.get('stride-data') ?? '{}').tasks.map((task: Task) => task.id).sort())
+    expect(JSON.parse(stored.get('mindwtr-data') ?? '{}').tasks.map((task: Task) => task.id).sort())
       .toEqual(['backup-only', 'concurrent-sqlite']);
   }, 10_000);
 
@@ -2756,7 +2756,7 @@ describe('mobile storage adapter', () => {
 
   it('does not mark JSON reconciliation complete until the merged SQLite save succeeds', async () => {
     const stored = new Map<string, string>([
-      ['stride-data', JSON.stringify({
+      ['mindwtr-data', JSON.stringify({
         tasks: [],
         projects: [],
         sections: [],
@@ -2764,7 +2764,7 @@ describe('mobile storage adapter', () => {
         people: [],
         settings: {},
       } satisfies AppData)],
-      ['stride-data:startup-backup-version', '2'],
+      ['mindwtr-data:startup-backup-version', '2'],
     ]);
     asyncStorageMock.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
     asyncStorageMock.setItem.mockImplementation(async (key: string, value: string) => {
@@ -2785,12 +2785,12 @@ describe('mobile storage adapter', () => {
       saveData,
     } as never)).rejects.toThrow('disk I/O error');
 
-    expect(stored.has('stride-data:sqlite-json-reconcile-v1')).toBe(false);
+    expect(stored.has('mindwtr-data:sqlite-json-reconcile-v1')).toBe(false);
   }, 10_000);
 
   it('does not merge an unmarked legacy JSON snapshot into an existing SQLite store', async () => {
     const stored = new Map<string, string>([
-      ['stride-data', JSON.stringify({
+      ['mindwtr-data', JSON.stringify({
         tasks: [{
           id: 'stale-task',
           title: 'Stale legacy task',
@@ -2822,7 +2822,7 @@ describe('mobile storage adapter', () => {
 
     expect(getData).not.toHaveBeenCalled();
     expect(saveData).not.toHaveBeenCalled();
-    expect(stored.get('stride-data:sqlite-json-reconcile-v1')).toBe('1');
+    expect(stored.get('mindwtr-data:sqlite-json-reconcile-v1')).toBe('1');
   }, 10_000);
 
   it('maps op-sqlite rows and binds undefined params as null', async () => {
@@ -2870,7 +2870,7 @@ describe('mobile storage adapter', () => {
       settings: {},
     };
     asyncStorageMock.getItem.mockImplementation((key: string) => (
-      key === 'stride-data' ? Promise.resolve(JSON.stringify(staleBackup)) : Promise.resolve(null)
+      key === 'mindwtr-data' ? Promise.resolve(JSON.stringify(staleBackup)) : Promise.resolve(null)
     ));
 
     const { getMobileStartupSnapshotFromBackup } = await import('./storage-adapter');
@@ -2896,13 +2896,13 @@ describe('mobile storage adapter', () => {
       settings: {},
     };
     asyncStorageMock.getItem.mockImplementation((key: string) => {
-      if (key === 'stride-data:startup-backup-version') {
+      if (key === 'mindwtr-data:startup-backup-version') {
         return Promise.resolve('2');
       }
-      if (key === 'stride-data:sqlite-json-reconcile-v1') {
+      if (key === 'mindwtr-data:sqlite-json-reconcile-v1') {
         return Promise.resolve('1');
       }
-      if (key === 'stride-data') {
+      if (key === 'mindwtr-data') {
         return Promise.resolve(JSON.stringify(backup));
       }
       return Promise.resolve(null);
@@ -2945,7 +2945,7 @@ describe('mobile storage adapter', () => {
       const stored = new Map<string, string>();
       const dataKeyError = { current: null as Error | null };
       asyncStorageMock.getItem.mockImplementation(async (key: string) => {
-        if (key === 'stride-data' && dataKeyError.current) {
+        if (key === 'mindwtr-data' && dataKeyError.current) {
           throw dataKeyError.current;
         }
         return stored.get(key) ?? null;
@@ -2959,7 +2959,7 @@ describe('mobile storage adapter', () => {
 
       __mobileStorageTestUtils.setSqliteInitializerForTests(() => Promise.reject(new Error('disk I/O error')));
       await mobileStorage.saveData(jsonBackup);
-      expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
+      expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
 
       return { mobileStorage, __mobileStorageTestUtils, stored, dataKeyError };
     };
@@ -2970,16 +2970,16 @@ describe('mobile storage adapter', () => {
 
       await mobileStorage.saveData(jsonBackup);
 
-      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite', '1');
-      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride-data', JSON.stringify(jsonBackup));
+      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite', '1');
+      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr-data', JSON.stringify(jsonBackup));
       const persistedKeys = asyncStorageMock.setItem.mock.calls.map(([key]) => key);
-      expect(persistedKeys.indexOf('stride-data:json-ahead-of-sqlite'))
-        .toBeLessThan(persistedKeys.indexOf('stride-data'));
+      expect(persistedKeys.indexOf('mindwtr-data:json-ahead-of-sqlite'))
+        .toBeLessThan(persistedKeys.indexOf('mindwtr-data'));
     }, 10_000);
 
     it('reports failure instead of accepting an unmarked JSON-only write', async () => {
       asyncStorageMock.setItem.mockImplementation((key: string) => (
-        key === 'stride-data:json-ahead-of-sqlite'
+        key === 'mindwtr-data:json-ahead-of-sqlite'
           ? Promise.reject(new Error('marker write failed'))
           : Promise.resolve()
       ));
@@ -2987,13 +2987,13 @@ describe('mobile storage adapter', () => {
       __mobileStorageTestUtils.setSqliteInitializerForTests(() => Promise.reject(new Error('disk I/O error')));
 
       await expect(mobileStorage.saveData(jsonBackup)).rejects.toThrow('marker write failed');
-      expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('stride-data', JSON.stringify(jsonBackup));
+      expect(asyncStorageMock.setItem).not.toHaveBeenCalledWith('mindwtr-data', JSON.stringify(jsonBackup));
     }, 10_000);
 
     it('merges those writes back into SQLite on the next launch and clears the marker', async () => {
       stubStoredKeys({
-        'stride-data:json-ahead-of-sqlite': '1',
-        'stride-data': JSON.stringify(jsonBackup),
+        'mindwtr-data:json-ahead-of-sqlite': '1',
+        'mindwtr-data': JSON.stringify(jsonBackup),
       });
       const saveData = vi.fn().mockResolvedValue(undefined);
       const adapter = { getData: vi.fn().mockResolvedValue(staleSqliteData), saveData } as any;
@@ -3004,13 +3004,13 @@ describe('mobile storage adapter', () => {
 
       expect(saveData).toHaveBeenCalled();
       expect(saveData.mock.calls[0][0].tasks.map((task: Task) => task.id)).toEqual(['task-new']);
-      expect(asyncStorageMock.removeItem).toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite');
+      expect(asyncStorageMock.removeItem).toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite');
     }, 10_000);
 
     it('fails initialization when SQLite still refuses the recovered writes, so reads use the JSON copy', async () => {
       stubStoredKeys({
-        'stride-data:json-ahead-of-sqlite': '1',
-        'stride-data': JSON.stringify(jsonBackup),
+        'mindwtr-data:json-ahead-of-sqlite': '1',
+        'mindwtr-data': JSON.stringify(jsonBackup),
       });
       const adapter = {
         getData: vi.fn().mockResolvedValue(staleSqliteData),
@@ -3022,7 +3022,7 @@ describe('mobile storage adapter', () => {
       await expect(__mobileStorageTestUtils.prepareSqliteDataForTests(adapter, client))
         .rejects.toThrow('disk I/O error');
 
-      expect(asyncStorageMock.removeItem).not.toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite');
+      expect(asyncStorageMock.removeItem).not.toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite');
     }, 10_000);
 
 
@@ -3037,7 +3037,7 @@ describe('mobile storage adapter', () => {
 
 
       await mobileStorage.saveData(jsonBackup);
-      expect(stored.get('stride-data')).toBe(JSON.stringify(jsonBackup));
+      expect(stored.get('mindwtr-data')).toBe(JSON.stringify(jsonBackup));
 
 
       const sqliteAdapterGetData = vi.fn().mockResolvedValue(staleSqliteData);
@@ -3051,7 +3051,7 @@ describe('mobile storage adapter', () => {
       expect(data).toEqual(jsonBackup);
       expect(sqliteAdapterGetData).not.toHaveBeenCalled();
       await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-      expect(stored.get('stride-data')).toBe(JSON.stringify(jsonBackup));
+      expect(stored.get('mindwtr-data')).toBe(JSON.stringify(jsonBackup));
     }, 10_000);
 
     it('falls through to the SQLite read and skips scheduling a backup write when the marker is set but the JSON backup is unusable (#975)', async () => {
@@ -3081,7 +3081,7 @@ describe('mobile storage adapter', () => {
 
 
       await expect(mobileStorage.saveData(hugeSnapshot)).rejects.toThrow('too large for the JSON backup');
-      expect(stored.has('stride-data')).toBe(false);
+      expect(stored.has('mindwtr-data')).toBe(false);
 
       const sqliteAdapterGetData = vi.fn().mockResolvedValue(staleSqliteData);
       __mobileStorageTestUtils.setSqliteStateForTests({
@@ -3094,7 +3094,7 @@ describe('mobile storage adapter', () => {
       expect(data).toEqual(staleSqliteData);
       expect(sqliteAdapterGetData).toHaveBeenCalledTimes(1);
       await __mobileStorageTestUtils.flushPendingStartupJsonBackup();
-      expect(stored.has('stride-data')).toBe(false);
+      expect(stored.has('mindwtr-data')).toBe(false);
     }, 20_000);
 
     it('recoverJsonAheadWrites keeps the marker and rethrows on a transient AsyncStorage read error, but still clears it when the backup is absent (#975)', async () => {
@@ -3104,18 +3104,18 @@ describe('mobile storage adapter', () => {
 
       __mobileStorageTestUtils.setSqliteInitializerForTests(() => Promise.reject(new Error('disk I/O error')));
       await mobileStorage.saveData(jsonBackup);
-      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite', '1');
+      expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite', '1');
 
 
       asyncStorageMock.getItem.mockImplementation((key: string) => (
-        key === 'stride-data'
+        key === 'mindwtr-data'
           ? Promise.reject(new Error('AsyncStorage getItem failed: I/O error'))
           : Promise.resolve(null)
       ));
 
       await expect(__mobileStorageTestUtils.recoverJsonAheadWritesForTests(adapter))
         .rejects.toThrow('AsyncStorage getItem failed');
-      expect(asyncStorageMock.removeItem).not.toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite');
+      expect(asyncStorageMock.removeItem).not.toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite');
       expect(adapter.getData).not.toHaveBeenCalled();
       expect(adapter.saveData).not.toHaveBeenCalled();
 
@@ -3124,7 +3124,7 @@ describe('mobile storage adapter', () => {
       asyncStorageMock.getItem.mockResolvedValue(null);
 
       await __mobileStorageTestUtils.recoverJsonAheadWritesForTests(adapter);
-      expect(asyncStorageMock.removeItem).toHaveBeenCalledWith('stride-data:json-ahead-of-sqlite');
+      expect(asyncStorageMock.removeItem).toHaveBeenCalledWith('mindwtr-data:json-ahead-of-sqlite');
       expect(adapter.saveData).not.toHaveBeenCalled();
     }, 10_000);
 
@@ -3136,7 +3136,7 @@ describe('mobile storage adapter', () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         await expect(__mobileStorageTestUtils.recoverJsonAheadWritesForTests(adapter))
           .rejects.toThrow('AsyncStorage getItem failed');
-        expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
+        expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
       }
       expect(adapter.getData).not.toHaveBeenCalled();
       expect(adapter.saveData).not.toHaveBeenCalled();
@@ -3145,7 +3145,7 @@ describe('mobile storage adapter', () => {
     it('quarantines SQLite writes when the persisted JSON-ahead marker cannot be read (#975)', async () => {
       const markerReadError = new Error('AsyncStorage marker read failed');
       asyncStorageMock.getItem.mockImplementation((key: string) => (
-        key === 'stride-data:json-ahead-of-sqlite'
+        key === 'mindwtr-data:json-ahead-of-sqlite'
           ? Promise.reject(markerReadError)
           : Promise.resolve(null)
       ));
@@ -3184,11 +3184,11 @@ describe('mobile storage adapter', () => {
         let sqliteData = newerSqliteData;
         let markerReadFails = true;
         const stored = new Map<string, string>([
-          ['stride-data', JSON.stringify(staleJsonData)],
-          ['stride-data:sqlite-json-reconcile-v1', '1'],
+          ['mindwtr-data', JSON.stringify(staleJsonData)],
+          ['mindwtr-data:sqlite-json-reconcile-v1', '1'],
         ]);
         asyncStorageMock.getItem.mockImplementation(async (key: string) => {
-          if (key === 'stride-data:json-ahead-of-sqlite' && markerReadFails) {
+          if (key === 'mindwtr-data:json-ahead-of-sqlite' && markerReadFails) {
             throw new Error('AsyncStorage marker read failed');
           }
           return stored.get(key) ?? null;
@@ -3263,8 +3263,8 @@ describe('mobile storage adapter', () => {
           ...jsonBackup,
           settings: { theme: 'dark' },
         };
-        stored.set('stride-data', JSON.stringify(recoveryBackup));
-        const pendingBackup = stored.get('stride-data');
+        stored.set('mindwtr-data', JSON.stringify(recoveryBackup));
+        const pendingBackup = stored.get('mindwtr-data');
         const replacementSnapshot: AppData = {
           ...staleSqliteData,
           tasks: [{ ...backupTask, id: 'task-replacement', title: 'Must not replace pending backup' }],
@@ -3280,7 +3280,7 @@ describe('mobile storage adapter', () => {
         const client = { get: vi.fn().mockResolvedValue({ count: 1 }) } as any;
 
 
-        stored.set('stride-data:sqlite-json-reconcile-v1', '1');
+        stored.set('mindwtr-data:sqlite-json-reconcile-v1', '1');
         dataKeyError.current = new Error('AsyncStorage getItem failed: I/O error');
         asyncStorageMock.setItem.mockClear();
         asyncStorageMock.removeItem.mockClear();
@@ -3298,8 +3298,8 @@ describe('mobile storage adapter', () => {
         expect(adapter.saveData).not.toHaveBeenCalled();
         expect(adapter.saveTask).not.toHaveBeenCalled();
         expect(asyncStorageMock.setItem).not.toHaveBeenCalled();
-        expect(stored.get('stride-data')).toBe(pendingBackup);
-        expect(stored.get('stride-data:json-ahead-of-sqlite')).toBe('1');
+        expect(stored.get('mindwtr-data')).toBe(pendingBackup);
+        expect(stored.get('mindwtr-data:json-ahead-of-sqlite')).toBe('1');
 
         dataKeyError.current = null;
         await vi.advanceTimersByTimeAsync(60_000);
@@ -3311,7 +3311,7 @@ describe('mobile storage adapter', () => {
         expect(adapter.saveData.mock.calls[0][0].tasks.map((task: Task) => task.id)).toEqual([backupTask.id]);
         expect(sqliteData.tasks.map((task) => task.id)).toEqual([backupTask.id]);
         expect(sqliteData.settings).toMatchObject(recoveryBackup.settings);
-        expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
+        expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
         const markerClearOrder = asyncStorageMock.removeItem.mock.invocationCallOrder[0];
         expect(adapter.saveData.mock.invocationCallOrder[0]).toBeLessThan(markerClearOrder);
 
@@ -3345,7 +3345,7 @@ describe('mobile storage adapter', () => {
 
       await __mobileStorageTestUtils.recoverJsonAheadWritesForTests(adapter);
 
-      expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
+      expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
       expect(adapter.getData).not.toHaveBeenCalled();
       expect(adapter.saveData).not.toHaveBeenCalled();
     }, 10_000);
@@ -3353,11 +3353,11 @@ describe('mobile storage adapter', () => {
     it('recoverJsonAheadWrites clears the marker when the backup is corrupt JSON', async () => {
       const { __mobileStorageTestUtils, stored } = await primeJsonAheadMarker();
       const adapter = { getData: vi.fn(), saveData: vi.fn() } as any;
-      stored.set('stride-data', '{ not valid json');
+      stored.set('mindwtr-data', '{ not valid json');
 
       await __mobileStorageTestUtils.recoverJsonAheadWritesForTests(adapter);
 
-      expect(stored.has('stride-data:json-ahead-of-sqlite')).toBe(false);
+      expect(stored.has('mindwtr-data:json-ahead-of-sqlite')).toBe(false);
       expect(adapter.getData).not.toHaveBeenCalled();
       expect(adapter.saveData).not.toHaveBeenCalled();
     }, 10_000);
@@ -3367,7 +3367,7 @@ describe('mobile storage adapter', () => {
       const { mobileStorage, __mobileStorageTestUtils, stored } = await primeJsonAheadMarker();
 
 
-      stored.delete('stride-data');
+      stored.delete('mindwtr-data');
 
       const sqliteAdapterGetData = vi.fn().mockResolvedValue(staleSqliteData);
       __mobileStorageTestUtils.setSqliteStateForTests({

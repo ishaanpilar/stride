@@ -1,7 +1,8 @@
 import { StorageAdapter, AppData } from '@stride/core';
 import { logError } from './app-log';
 
-const DATA_KEY = 'stride-data';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const DATA_KEY = 'mindwtr-data';
 const LEGACY_DATA_KEYS = ['focus-gtd-data', 'gtd-todo-data', 'gtd-data'];
 
 

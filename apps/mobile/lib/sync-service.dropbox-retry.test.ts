@@ -258,8 +258,8 @@ describe('mobile Dropbox sync transient retry', () => {
 
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'dropbox',
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'dropbox',
       };
       return values[key] ?? null;
     });
@@ -397,9 +397,9 @@ describe('mobile Dropbox sync transient retry', () => {
     });
     asyncStorageMocks.getItem.mockImplementation(async (key: string) => {
       const values: Record<string, string | null> = {
-        '@stride_sync_backend': 'cloud',
-        '@stride_cloud_provider': 'dropbox',
-        '@stride_fast_sync_state_v1': JSON.stringify({
+        '@mindwtr_sync_backend': 'cloud',
+        '@mindwtr_cloud_provider': 'dropbox',
+        '@mindwtr_fast_sync_state_v1': JSON.stringify({
           scope: establishedScope,
           localFingerprint: 'established',
           remoteFingerprint: 'established',

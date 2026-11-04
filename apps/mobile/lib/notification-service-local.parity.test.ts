@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const FIXTURE_PATH = decodeURIComponent(new URL('../../../packages/core/src/reminder-alarms-parity.fixtures.json', import.meta.url).pathname);
 const CAPTURE = process.env.STRIDE_CAPTURE_REMINDER_ALARMS === '1';
-const ALARM_MAP_KEY = 'stride:local:alarms:v1';
+const ALARM_MAP_KEY = 'mindwtr:local:alarms:v1';
 
 type Answer = { id: number | string } | { reject: string };
 type Cycle = {

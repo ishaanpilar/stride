@@ -260,7 +260,7 @@ describe('transition entry derivation', () => {
 
 describe('WebDAV remote port error boundaries', () => {
   const createPort = async () => {
-    asyncStorage.set('@stride_webdav_url', 'https://dav.example.com/stride');
+    asyncStorage.set('@mindwtr_webdav_url', 'https://dav.example.com/stride');
     return __syncEncryptionServiceTestUtils.createWebdavRemotePort(null);
   };
 
@@ -517,8 +517,8 @@ describe('WebDAV remote port error boundaries', () => {
       return new Response(new TextEncoder().encode('{"tasks":[]}'), { status: 200, headers: etag ? { etag } : undefined });
     });
     vi.stubGlobal('fetch', fetcher);
-    asyncStorage.set('@stride_sync_backend', 'webdav');
-    asyncStorage.set('@stride_webdav_url', 'https://dav.example.com/stride');
+    asyncStorage.set('@mindwtr_sync_backend', 'webdav');
+    asyncStorage.set('@mindwtr_webdav_url', 'https://dav.example.com/stride');
 
     const refused = await enableSyncEncryption(PASSPHRASE).then(() => null, (error: unknown) => error);
     expect(refused).toBeInstanceOf(SyncEncryptionRemoteVersionUnavailableError);

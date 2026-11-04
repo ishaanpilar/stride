@@ -37,7 +37,8 @@ export {
 } from '@stride/core/mobile-background-sync';
 export { supportsMobileScheduledBackgroundSync };
 
-export const MOBILE_BACKGROUND_SYNC_TASK_NAME = 'stride-background-sync';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+export const MOBILE_BACKGROUND_SYNC_TASK_NAME = 'mindwtr-background-sync';
 
 
 export const MOBILE_CAPTURE_SYNC_HEADLESS_TASK_NAME = 'StrideCaptureSync';

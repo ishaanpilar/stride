@@ -1291,22 +1291,22 @@ ${helpers}
     Notification n = new Notification();
     u.postReminderNotification(u.manager, "", 5, n);
     u.expect("notify 5");
-    u.postReminderNotification(u.manager, "stride-reminder:task:a", 10, n);
-    u.postReminderNotification(u.manager, "stride-reminder:task:a", 11, n);
-    u.expect("notify stride-reminder:task:a 1", "notify stride-reminder:task:a 1");
+    u.postReminderNotification(u.manager, "mindwtr-reminder:task:a", 10, n);
+    u.postReminderNotification(u.manager, "mindwtr-reminder:task:a", 11, n);
+    u.expect("notify mindwtr-reminder:task:a 1", "notify mindwtr-reminder:task:a 1");
     if (u.mContext.prefs.contains("slot:10")) throw new AssertionError("replaced reminder stays in the ledger");
-    u.postReminderNotification(u.manager, "stride-reminder:task:b", 20, n);
-    u.expect("notify stride-reminder:task:b 1");
+    u.postReminderNotification(u.manager, "mindwtr-reminder:task:b", 20, n);
+    u.expect("notify mindwtr-reminder:task:b 1");
     u.cancelPostedNotification(10);
     u.expect("cancel 10");
     u.cancelPostedNotification(11);
-    u.expect("cancel 11", "cancel stride-reminder:task:a 1");
+    u.expect("cancel 11", "cancel mindwtr-reminder:task:a 1");
     u.cancelPostedNotification(11);
     u.expect("cancel 11");
     u.cancelPostedNotification(5);
     u.expect("cancel 5");
     u.cancelPostedNotification(20);
-    u.expect("cancel 20", "cancel stride-reminder:task:b 1");
+    u.expect("cancel 20", "cancel mindwtr-reminder:task:b 1");
     if (!u.mContext.prefs.values.isEmpty()) throw new AssertionError("ledger not empty: " + u.mContext.prefs.values);
   }
 }`);
@@ -1379,9 +1379,9 @@ ${helpers}
 ${helper}
   static void check(boolean ok, String what) { if (!ok) throw new AssertionError(what); }
   public static void main(String[] args) {
-    String tag = "stride-reminder:task:a";
+    String tag = "mindwtr-reminder:task:a";
     check(isReminderOfTask(tag, null, tag, "a"), "same tag");
-    check(!isReminderOfTask("stride-reminder:task:b", "taskId==>b;;kind==>task-reminder;;", tag, "a"), "other task");
+    check(!isReminderOfTask("mindwtr-reminder:task:b", "taskId==>b;;kind==>task-reminder;;", tag, "a"), "other task");
     check(isReminderOfTask("", "taskId==>a;;kind==>task-reminder;;alarmKey==>task:a:r3;;", tag, "a"), "untagged repeat of the task");
     check(isReminderOfTask(null, "kind==>task-review;;taskId==>a;;", "", "a"), "review reminder of the task");
     check(!isReminderOfTask("", "kind==>pomodoro;;taskId==>a;;", tag, "a"), "Pomodoro alert");
@@ -1419,7 +1419,7 @@ ${helper}
       expect(module.match(/content\.threadIdentifier = contentInfo\.threadIdentifier;/g)).toHaveLength(2);
       expect(module).toContain('RCT_EXPORT_METHOD(collapseDeliveredReminderNotifications:(RCTPromiseResolveBlock)resolve');
       expect(module).toContain('resolve(@(superseded.count));');
-      expect(module).toContain('if (![thread hasPrefix:@"stride-reminder:"]) continue;');
+      expect(module).toContain('if (![thread hasPrefix:@"mindwtr-reminder:"]) continue;');
       expect(applyAlarmIosReminderThreadPatchToSource(module)).toBe(module);
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });

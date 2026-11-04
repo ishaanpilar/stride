@@ -8,7 +8,8 @@ import { TaskList, type TaskListGroupBy } from '../../components/task-list';
 import { useThemeColors } from '@/hooks/use-theme-colors';
 import { useLanguage } from '../../contexts/language-context';
 
-const GROUP_BY_STORAGE_KEY = 'stride:view:reference:groupBy:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const GROUP_BY_STORAGE_KEY = 'mindwtr:view:reference:groupBy:v1';
 
 export default function ReferenceScreen() {
   const tc = useThemeColors();

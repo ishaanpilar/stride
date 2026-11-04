@@ -27,13 +27,13 @@ describe('Apple clarification device-local backend preference', () => {
 
   it('persists only the on-device override and removes it for the default', async () => {
     await writeAppleClarificationBackend('on-device');
-    expect(storage.setItem).toHaveBeenCalledWith('stride:appleClarificationBackend:v1', 'on-device');
+    expect(storage.setItem).toHaveBeenCalledWith('mindwtr:appleClarificationBackend:v1', 'on-device');
 
     storage.getItem.mockResolvedValue('on-device');
     await expect(readAppleClarificationBackend()).resolves.toBe('on-device');
 
     await writeAppleClarificationBackend('configured');
-    expect(storage.removeItem).toHaveBeenCalledWith('stride:appleClarificationBackend:v1');
+    expect(storage.removeItem).toHaveBeenCalledWith('mindwtr:appleClarificationBackend:v1');
   });
 
   it('fails closed when device storage is unavailable', async () => {

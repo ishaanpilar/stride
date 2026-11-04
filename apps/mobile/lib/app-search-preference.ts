@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { MOBILE_APP_SEARCH_WIPE_OWED_STORAGE_KEY } from '@stride/core';
+import { MOBILE_APP_SEARCH_STORAGE_KEY, MOBILE_APP_SEARCH_WIPE_OWED_STORAGE_KEY } from '@stride/core';
 import { Platform } from 'react-native';
 
 
-const STORAGE_KEY = 'stride:appSearchIndexingEnabled';
+const STORAGE_KEY = MOBILE_APP_SEARCH_STORAGE_KEY;
 
 
 const WIPE_OWED_KEY = MOBILE_APP_SEARCH_WIPE_OWED_STORAGE_KEY;

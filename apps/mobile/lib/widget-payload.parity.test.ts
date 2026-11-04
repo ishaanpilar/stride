@@ -33,7 +33,7 @@ vi.mock('react-native', () => ({ Platform: harness.platform }));
 vi.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { version: '1.0.0' } } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({
     default: {
-        getItem: async (key: string) => (key === 'stride-language' ? harness.savedLanguage : null),
+        getItem: async (key: string) => (key === 'mindwtr-language' ? harness.savedLanguage : null),
         setItem: async () => undefined,
     },
 }));
@@ -484,7 +484,7 @@ describe('React Native widget payload parity fixture', () => {
     });
 
     it('publishes every scenario exactly as frozen', async () => {
-        expect(WIDGET_LANGUAGE_KEY).toBe('stride-language');
+        expect(WIDGET_LANGUAGE_KEY).toBe('mindwtr-language');
         const captured: Record<string, unknown> = {};
         for (const scenario of scenarios) captured[scenario.name] = await observe(scenario);
         const inputs = normalize({ timeZone: 'UTC', now: NOW, languages: LANGUAGES, stores: STORES, scenarios }) as Record<string, unknown>;

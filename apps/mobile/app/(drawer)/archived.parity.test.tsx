@@ -510,7 +510,7 @@ async function runScenario(scenario: Scenario) {
   harness.alerts.length = 0;
   harness.toasts.length = 0;
   harness.storage.clear();
-  if (scenario.stored) harness.storage.set('stride:view:archived:v1', JSON.stringify(scenario.stored));
+  if (scenario.stored) harness.storage.set('mindwtr:view:archived:v1', JSON.stringify(scenario.stored));
   const tasks = scenario.taskIds ? allTasks.filter((entry) => scenario.taskIds!.includes(entry.id)) : allTasks;
   await seedStore(settingsVariants[scenario.settings], tasks);
   let renderer!: ReactTestRenderer;

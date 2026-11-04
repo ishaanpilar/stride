@@ -120,7 +120,7 @@ const settingsVariants: Record<string, AppSettings> = {
   ymdDates: { dateFormat: 'ymd', timeFormat: '24h' },
 };
 
-const SESSION_KEY = 'stride:dailyReview:currentStep';
+const SESSION_KEY = 'mindwtr:dailyReview:currentStep';
 const session = (step: string, startedAt: string) => JSON.stringify({ step, startedAt });
 
 export const scenarios: Scenario[] = [

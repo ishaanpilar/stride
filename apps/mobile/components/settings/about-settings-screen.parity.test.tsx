@@ -164,12 +164,12 @@ const release = (tag: string, body?: string) => ({
   body: { tag_name: tag, html_url: `https://github.com/ishaanpilar/stride/releases/tag/${tag}`, ...(body === undefined ? {} : { body }) },
 });
 const longChangelog = Array.from({ length: 60 }, (_, index) => `- change ${index}`).join('\n');
-const STALE = { 'stride-update-last-check': String(NOW - 25 * 60 * 60 * 1000) };
+const STALE = { 'mindwtr-update-last-check': String(NOW - 25 * 60 * 60 * 1000) };
 
 const SCENARIOS: Scenario[] = [
   { name: 'play: screen opens, silent check finds a Play update', referrer: { value: 'utm_source=google-play&utm_medium=organic' }, play: [playInfo(true)] },
   { name: 'play: silent check within a day reads the stored dot', referrer: { value: 'utm_source=google-play' },
-    storage: { 'stride-update-last-check': String(NOW - 60_000), 'stride-update-available': 'true' } },
+    storage: { 'mindwtr-update-last-check': String(NOW - 60_000), 'mindwtr-update-available': 'true' } },
   { name: 'play: manual check, Play update, Open', referrer: { value: 'utm_source=google-play' }, storage: STALE,
     play: [playInfo(false), playInfo(true)], steps: [{ tap: 'settings.checkForUpdates' }, { pressAlert: 'attachments.open' }] },
   { name: 'play: manual check, Play up to date', referrer: { value: 'utm_source=google-play' }, storage: STALE,
@@ -188,38 +188,38 @@ const SCENARIOS: Scenario[] = [
     github: [release('1.3.5'), release('1.3.5')], steps: [{ tap: 'settings.checkForUpdates' }] },
   { name: 'sideload: GitHub same version', referrer: { value: '' }, storage: STALE,
     github: [release('v1.3.4'), release('v1.3.4')], steps: [{ tap: 'settings.checkForUpdates' }] },
-  { name: 'sideload: GitHub fails', referrer: { value: '' }, storage: { ...STALE, 'stride-update-available': 'true', 'stride-update-latest': '1.3.9' },
+  { name: 'sideload: GitHub fails', referrer: { value: '' }, storage: { ...STALE, 'mindwtr-update-available': 'true', 'mindwtr-update-latest': '1.3.9' },
     github: [{ status: 500 }, { status: 500 }], steps: [{ tap: 'settings.checkForUpdates' }] },
   { name: 'referrer fails: Play path', referrer: { error: 'no referrer' }, storage: STALE, play: [playInfo(false), playInfo(false)],
     steps: [{ tap: 'settings.checkForUpdates' }] },
   { name: 'foss build: no check row, rate row or silent check', foss: true, steps: [] },
-  { name: 'zh: play screen', language: 'zh', referrer: { value: 'utm_source=google-play' }, storage: { 'stride-update-last-check': String(NOW) } },
+  { name: 'zh: play screen', language: 'zh', referrer: { value: 'utm_source=google-play' }, storage: { 'mindwtr-update-last-check': String(NOW) } },
   { name: 'zh: sideload GitHub newer', language: 'zh', referrer: { value: '' }, storage: STALE,
     github: [release('v1.4.0', 'Notes'), release('v1.4.0', 'Notes')], steps: [{ tap: 'settings.checkForUpdates' }] },
   { name: 'links: rate, website, tutorials, privacy, terms, sponsor', referrer: { value: 'utm_source=google-play' },
-    storage: { 'stride-update-last-check': String(NOW) },
+    storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.aboutMobile.rateOurApp' }, { tap: 'settings.officialWebsite' }, { tap: 'settings.videoTutorials' },
       { tap: 'settings.privacy' }, { tap: 'settings.terms' }, { tap: 'settings.sponsorProject' }] },
-  { name: 'feedback: not configured', referrer: { value: '' }, storage: { 'stride-update-last-check': String(NOW) },
+  { name: 'feedback: not configured', referrer: { value: '' }, storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { type: { field: 'message', text: 'Hello' } }, { tap: 'settings.feedbackSubmit', last: true }] },
   { name: 'feedback: bug with location, email and diagnostics', feedbackEndpointUrl: FEEDBACK_URL,
-    referrer: { value: 'utm_source=google-play' }, storage: { 'stride-update-last-check': String(NOW) },
+    referrer: { value: 'utm_source=google-play' }, storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { tap: 'settings.feedbackWhereSync' }, { type: { field: 'message', text: '  Sync stopped  ' } },
       { type: { field: 'email', text: ' me@example.com ' } }, { diagnostics: true }, { tap: 'settings.feedbackSubmit', last: true }, { tap: 'common.close' }] },
-  { name: 'feedback: location chip toggles off', feedbackEndpointUrl: FEEDBACK_URL, referrer: { value: '' }, storage: { 'stride-update-last-check': String(NOW) },
+  { name: 'feedback: location chip toggles off', feedbackEndpointUrl: FEEDBACK_URL, referrer: { value: '' }, storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { tap: 'settings.feedbackWhereInbox' }, { tap: 'settings.feedbackWhereInbox' },
       { type: { field: 'message', text: 'No place' } }, { tap: 'settings.feedbackSubmit', last: true }, { pressAlert: 'settings.feedbackSendWithoutEmail' }] },
   { name: 'feedback: feature drops diagnostics, opens GitHub', feedbackEndpointUrl: FEEDBACK_URL, referrer: { value: '' },
-    storage: { 'stride-update-last-check': String(NOW) },
+    storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { diagnostics: true }, { tap: 'settings.feedbackCategoryFeature' },
       { tap: 'settings.feedbackOpenGitHubIssue' }, { type: { field: 'message', text: 'Add tags' } }, { tap: 'settings.feedbackSubmit', last: true }, { pressAlert: 'settings.feedbackSendWithoutEmail' }] },
   { name: 'feedback: other opens discussions', feedbackEndpointUrl: FEEDBACK_URL, foss: true,
     steps: [{ tap: 'settings.feedback' }, { tap: 'settings.feedbackCategoryOther' }, { tap: 'settings.feedbackOpenGitHubDiscussion' },
       { type: { field: 'message', text: 'Thanks' } }, { tap: 'settings.feedbackSubmit', last: true }, { pressAlert: 'settings.feedbackSendWithoutEmail' }] },
-  { name: 'feedback: invalid email', feedbackEndpointUrl: FEEDBACK_URL, referrer: { value: '' }, storage: { 'stride-update-last-check': String(NOW) },
+  { name: 'feedback: invalid email', feedbackEndpointUrl: FEEDBACK_URL, referrer: { value: '' }, storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { type: { field: 'message', text: 'Hi' } }, { type: { field: 'email', text: 'nope@' } }, { tap: 'settings.feedbackSubmit', last: true }] },
   { name: 'feedback: endpoint refuses', feedbackEndpointUrl: FEEDBACK_URL, feedbackStatus: 500, referrer: { value: '' },
-    storage: { 'stride-update-last-check': String(NOW) },
+    storage: { 'mindwtr-update-last-check': String(NOW) },
     steps: [{ tap: 'settings.feedback' }, { type: { field: 'message', text: 'Broken' } }, { tap: 'settings.feedbackSubmit', last: true }, { pressAlert: 'settings.feedbackSendWithoutEmail' }] },
 ];
 
@@ -345,7 +345,7 @@ async function storeReviews() {
   ];
   const out: unknown[] = [];
   for (const entry of cases) {
-    harness.storage = new Map(entry.stored === undefined ? [] : [['stride:local-user-prompts:v1', entry.stored]]);
+    harness.storage = new Map(entry.stored === undefined ? [] : [['mindwtr:local-user-prompts:v1', entry.stored]]);
     harness.events = [];
     harness.foss = entry.foss ?? false;
     harness.hasReviewAction = entry.hasAction ?? true;
@@ -365,6 +365,19 @@ const captureProvenance = () => {
   if (changed.length > 0) throw new Error(`Capture needs apps/ at HEAD; changed: ${changed.join(', ')}`);
   return { head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() };
 };
+
+// Stride never posts feedback to the upstream server (core FEEDBACK_SUBMISSION_ENABLED = false), so
+// scenarios whose frozen capture POSTs feedback can no longer match it. They are left out of the
+// replay instead of regenerating the frozen fixture.
+const FROZEN_FOR_DIVERGENCE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
+  scenarios: Array<{ name: string }>;
+  observations: { about: Array<{ events?: unknown[] }> };
+};
+const STRIDE_DIVERGED_SCENARIOS = new Set(FROZEN_FOR_DIVERGENCE.scenarios
+  .filter((_, i) => (FROZEN_FOR_DIVERGENCE.observations.about[i]?.events ?? []).some((event) =>
+    Array.isArray(event) && event[0] === 'fetch' && String((event[1] as { url?: string })?.url ?? '') === FEEDBACK_URL))
+  .map((scenario) => scenario.name));
+const ACTIVE_SCENARIOS = SCENARIOS.filter((scenario) => !STRIDE_DIVERGED_SCENARIOS.has(scenario.name));
 
 describe('Settings › About, the heartbeat and the store review prompt parity with the frozen fixture', () => {
   const originalFetch = globalThis.fetch;
@@ -399,20 +412,33 @@ describe('Settings › About, the heartbeat and the store review prompt parity w
   it('replays every scenario as frozen', async () => {
     expect(Platform.OS).toBe('android');
     const observed = { locale: Intl.DateTimeFormat().resolvedOptions().locale, about: [] as unknown[], heartbeats: [] as unknown[], storeReviews: [] as unknown[] };
-    for (const scenario of SCENARIOS) observed.about.push(await run(scenario));
+    for (const scenario of ACTIVE_SCENARIOS) observed.about.push(await run(scenario));
     observed.heartbeats = await heartbeats();
     observed.storeReviews = await storeReviews();
     if (CAPTURE) {
-      writeFileSync(FIXTURE_PATH, `${JSON.stringify({ provenance: captureProvenance(), now: new Date(NOW).toISOString(), scenarios: SCENARIOS, observations: observed }, null, 1)}\n`);
+      writeFileSync(FIXTURE_PATH, `${JSON.stringify({ provenance: captureProvenance(), now: new Date(NOW).toISOString(), scenarios: ACTIVE_SCENARIOS, observations: observed }, null, 1)}\n`);
     }
     const frozen = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
-    expect(frozen.scenarios).toEqual(JSON.parse(JSON.stringify(SCENARIOS)));
-    expect(JSON.parse(JSON.stringify(observed))).toEqual(frozen.observations);
+    const keep = (frozen.scenarios as Array<{ name: string }>).map((scenario) => !STRIDE_DIVERGED_SCENARIOS.has(scenario.name));
+    expect(frozen.scenarios.filter((_: unknown, i: number) => keep[i])).toEqual(JSON.parse(JSON.stringify(ACTIVE_SCENARIOS)));
+    // Stride's analytics heartbeat is disabled (core ANALYTICS_HEARTBEAT_ENABLED = false): instead of
+    // matching the frozen upstream heartbeats, assert that none is ever sent.
+    const observedJson = JSON.parse(JSON.stringify(observed));
+    expect(observedJson.heartbeats).toHaveLength(frozen.observations.heartbeats.length);
+    for (const heartbeat of observedJson.heartbeats as Array<{ sent?: boolean; events?: unknown[] }>) {
+      expect(heartbeat.sent).not.toBe(true);
+      expect((heartbeat.events ?? []).some((event) => Array.isArray(event) && event[0] === 'fetch')).toBe(false);
+    }
+    expect(observedJson).toEqual({
+      ...frozen.observations,
+      about: frozen.observations.about.filter((_: unknown, i: number) => keep[i]),
+      heartbeats: observedJson.heartbeats,
+    });
   });
 
   it('checks a Play testing-track install (Play installed it, the referrer is empty) with Play, not GitHub', async () => {
     const result = await run({ name: 'play testing track', referrer: { value: '' }, installer: 'com.android.vending',
-      storage: { 'stride-update-last-check': String(NOW) }, play: [playInfo(true)], steps: [{ tap: 'settings.checkForUpdates' }] });
+      storage: { 'mindwtr-update-last-check': String(NOW) }, play: [playInfo(true)], steps: [{ tap: 'settings.checkForUpdates' }] });
     expect(result.events.filter((event) => event[0] === 'fetch')).toEqual([]);
     expect(harness.play).toEqual([]);
     expect(result.events).toContainEqual(['badge', true]);

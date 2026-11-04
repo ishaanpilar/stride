@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { LEGACY_LOCAL_STORAGE_MIGRATION_KEY, migrateLegacyLocalStorage } from './legacy-local-storage';
+import { LEGACY_LOCAL_STORAGE_MIGRATION_KEY, importLegacyLocalStorageItems, migrateLegacyLocalStorage } from './legacy-local-storage';
 
 // A spec-shaped Storage (the shared test mock has no key()/length).
 class MemoryStorage implements Storage {
@@ -46,5 +46,21 @@ describe('legacy localStorage migration', () => {
     it('ignores keys that merely contain the old name', () => {
         localStorage.setItem('mindwtrish', 'x');
         expect(migrateLegacyLocalStorage(localStorage)).toBe(0);
+    });
+
+    it('imports rows from a previous install under both names without overwriting', () => {
+        localStorage.setItem('stride-theme', 'light');
+        const added = importLegacyLocalStorageItems(localStorage, [
+            ['mindwtr-theme', 'dark'],
+            ['mindwtr:assistant:thread:2026-11-04', '[]'],
+            ['other', 'x'],
+        ]);
+        expect(localStorage.getItem('stride-theme')).toBe('light');
+        expect(localStorage.getItem('mindwtr-theme')).toBe('dark');
+        expect(localStorage.getItem('mindwtr:assistant:thread:2026-11-04')).toBe('[]');
+        expect(localStorage.getItem('stride:assistant:thread:2026-11-04')).toBe('[]');
+        expect(localStorage.getItem('other')).toBe('x');
+        expect(added).toBe(4);
+        expect(importLegacyLocalStorageItems(localStorage, [['mindwtr-theme', 'dark']])).toBe(0);
     });
 });

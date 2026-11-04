@@ -3,7 +3,8 @@ import { workspaceSessionStorage as AsyncStorage } from '@/lib/workspace-session
 
 
 export function getTaskGroupCollapseStorageKey(listKey: string): string {
-  return `stride:view:group-collapse:${listKey}:v1`;
+  // LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+  return `mindwtr:view:group-collapse:${listKey}:v1`;
 }
 
 

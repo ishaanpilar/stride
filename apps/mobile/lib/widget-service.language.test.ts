@@ -9,7 +9,7 @@ vi.mock('react-native', () => ({ Platform: { OS: 'android' } }));
 vi.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { version: '1.0.0' } } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({
     default: {
-        getItem: async (key: string) => (key === 'stride-language' ? mocks.storedLanguage : null),
+        getItem: async (key: string) => (key === 'mindwtr-language' ? mocks.storedLanguage : null),
         setItem: async () => undefined,
     },
 }));

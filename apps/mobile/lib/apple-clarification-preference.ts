@@ -2,7 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type AppleClarificationBackend = 'configured' | 'on-device';
 
-const STORAGE_KEY = 'stride:appleClarificationBackend:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const STORAGE_KEY = 'mindwtr:appleClarificationBackend:v1';
 
 export async function readAppleClarificationBackend(): Promise<AppleClarificationBackend> {
   try {

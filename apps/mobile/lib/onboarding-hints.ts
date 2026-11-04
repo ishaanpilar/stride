@@ -1,7 +1,8 @@
 import { workspaceSessionStorage as AsyncStorage } from '@/lib/workspace-session-storage';
 import type { OnboardingTopic } from '@stride/core';
 
-const prefix = 'stride:mobile:onboarding-hint:v1:';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const prefix = 'mindwtr:mobile:onboarding-hint:v1:';
 const dismissedThisSession = new Set<OnboardingTopic>();
 
 export async function isMobileHintDismissed(topic: OnboardingTopic): Promise<boolean> {

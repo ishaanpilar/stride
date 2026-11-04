@@ -280,7 +280,7 @@ const menuScenarios: Scenario[] = [
   {
     name: 'menu: healthy sync and an update',
     data: 'none', settings: 'synced', syncBadge: 'healthy',
-    device: { sync: { configured: true, activity: 'idle' }, storage: { 'stride-update-available': 'true' } },
+    device: { sync: { configured: true, activity: 'idle' }, storage: { 'mindwtr-update-available': 'true' } },
     actions: [],
   },
   { name: 'menu: syncing', data: 'none', settings: 'synced', syncBadge: 'syncing', device: { sync: { configured: true, activity: 'syncing' } }, actions: [] },
@@ -346,12 +346,12 @@ const generalScenarios: Scenario[] = [
 
 const manageScenarios: Scenario[] = [
   { name: 'manage: closed sections', data: 'manage', settings: 'manage', device: {}, actions: [] },
-  { name: 'manage: stored open sections', data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': ALL_OPEN } }, actions: [] },
-  { name: 'manage: unreadable stored sections', data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': 'not json' } }, actions: [['toggle', 'tags']] },
+  { name: 'manage: stored open sections', data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } }, actions: [] },
+  { name: 'manage: unreadable stored sections', data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': 'not json' } }, actions: [['toggle', 'tags']] },
   { name: 'manage: toggling sections', data: 'manage', settings: 'manage', device: {}, actions: [['toggle', 'areas'], ['toggle', 'people'], ['toggle', 'areas']] },
   {
     name: 'manage: unassigned color and new areas',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': ALL_OPEN } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } },
     actions: [
       ['editUnassigned'], ['color', '#f97316'], ['save'],
       ['addArea'], ['save'], ['type', '  Garden  '], ['color', '#14b8a6'], ['save'],
@@ -361,7 +361,7 @@ const manageScenarios: Scenario[] = [
   },
   {
     name: 'manage: editing areas',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': ALL_OPEN } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } },
     actions: [
       ['editArea', 'Work'], ['type', 'Office'], ['color', '#ef4444'], ['save'],
       ['editArea', 'Home'], ['save'],
@@ -371,17 +371,17 @@ const manageScenarios: Scenario[] = [
   },
   {
     name: 'manage: deleting an area',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': ALL_OPEN } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } },
     actions: [['deleteArea', 'Work'], ['alert', 'Cancel'], ['deleteArea', 'Work'], ['alert', 'Delete']],
   },
   {
     name: 'manage: people rows and links',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': '{"people":true}' } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': '{"people":true}' } },
     actions: [['personCount', 'pe-alex'], ['personLink', 'pe-alex'], ['personLink', 'pe-bea']],
   },
   {
     name: 'manage: editing people',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': '{"people":true}' } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': '{"people":true}' } },
     actions: [
       ['editPerson', 'pe-alex'], ['typeNote', '  QA lead '], ['typeLink', ''], ['type', 'Alexis'], ['save'],
       ['editPerson', 'pe-dee'], ['type', 'BEA'], ['save'],
@@ -392,12 +392,12 @@ const manageScenarios: Scenario[] = [
   },
   {
     name: 'manage: deleting a person',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': '{"people":true}' } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': '{"people":true}' } },
     actions: [['deletePerson', 'pe-cy'], ['alert', 'Delete']],
   },
   {
     name: 'manage: contexts and tags',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': '{"contexts":true,"tags":true}' } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': '{"contexts":true,"tags":true}' } },
     actions: [
       ['renameValue', '@phone'], ['type', '@office'], ['save'],
       ['renameValue', '@home'], ['save'],
@@ -409,16 +409,16 @@ const manageScenarios: Scenario[] = [
   },
   {
     name: 'manage: someday sections',
-    data: 'manage', settings: 'manage', device: { storage: { 'stride:settings:manage:openSections': '{"somedaySections":true}' } },
+    data: 'manage', settings: 'manage', device: { storage: { 'mindwtr:settings:manage:openSections': '{"somedaySections":true}' } },
     actions: [
       ['somedayMove', 'Books', 'down'], ['somedayRename', 'Ideas'], ['somedayType', '  Someday ideas '], ['somedaySave'],
       ['somedayDelete', 'Trips'], ['alert', 'Delete'],
     ],
   },
-  { name: 'manage: empty lists', data: 'none', settings: 'base', device: { storage: { 'stride:settings:manage:openSections': ALL_OPEN } }, actions: [] },
+  { name: 'manage: empty lists', data: 'none', settings: 'base', device: { storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } }, actions: [] },
   {
     name: 'manage: in German',
-    data: 'manage', settings: 'manage', device: { language: 'de', systemLocale: 'de-DE', storage: { 'stride:settings:manage:openSections': ALL_OPEN } },
+    data: 'manage', settings: 'manage', device: { language: 'de', systemLocale: 'de-DE', storage: { 'mindwtr:settings:manage:openSections': ALL_OPEN } },
     actions: [['deleteArea', 'Work'], ['alert', 'Abbrechen'], ['editPerson', 'pe-alex'], ['cancel'], ['editUnassigned']],
   },
 ];

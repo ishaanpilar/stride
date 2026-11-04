@@ -23,8 +23,10 @@ export interface ThemeContextType {
     isReady: boolean;
 }
 
-const THEME_STORAGE_KEY = '@stride_theme';
-const THEME_STYLE_STORAGE_KEY = '@stride_theme_style';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const THEME_STORAGE_KEY = '@mindwtr_theme';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const THEME_STYLE_STORAGE_KEY = '@mindwtr_theme_style';
 
 export const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 

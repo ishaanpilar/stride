@@ -314,7 +314,7 @@ describe('installAttachmentFileGeneration', () => {
   });
 
   it('rejects a distinct 129th reservation without poisoning persisted recovery state', async () => {
-    const storageKey = '@stride/file-sync-publication-reservations-v1';
+    const storageKey = '@mindwtr/file-sync-publication-reservations-v1';
     const records = Array.from({ length: 128 }, (_, index) => ({
       version: 1,
       operationId: null,

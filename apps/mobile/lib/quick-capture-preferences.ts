@@ -1,7 +1,8 @@
 import { workspaceSessionStorage as AsyncStorage } from '@/lib/workspace-session-storage';
 
 
-const ADD_ANOTHER_STORAGE_KEY = 'stride:quickCapture:addAnother';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const ADD_ANOTHER_STORAGE_KEY = 'mindwtr:quickCapture:addAnother';
 
 export async function readQuickCaptureAddAnother(): Promise<boolean> {
     try {

@@ -115,7 +115,8 @@ const SERIALIZED_RESCHEDULE_RELEASE_CHECK = 'v1.3.4/serialized-reminder-cycles';
 const STALE_REMINDER_GUARD_RELEASE_CHECK = 'v1.3.4/stale-reminder-guard';
 const DELIVERED_REMINDER_RELEASE_CHECK = 'v1.3.4/delivered-reminder-withdrawn';
 const REMINDER_BOOT_RECOVERY_RELEASE_CHECK = 'v1.3.5/reminder-boot-recovery';
-const DELIVERED_REMINDERS_STORAGE_KEY = 'stride:local:delivered-reminders:v1';
+// LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
+const DELIVERED_REMINDERS_STORAGE_KEY = 'mindwtr:local:delivered-reminders:v1';
 
 
 const DELIVERED_REMINDER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

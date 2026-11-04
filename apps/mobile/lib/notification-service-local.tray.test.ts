@@ -21,7 +21,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: async (key: string) => {
-      if (key !== 'stride:local:alarms:v1' && harness.onRead) {
+      if (key !== 'mindwtr:local:alarms:v1' && harness.onRead) {
         const change = harness.onRead;
         harness.onRead = null;
         change();

@@ -36,7 +36,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({ default: asyncStor
 vi.mock('expo', () => ({ reloadAppAsync: vi.fn() }));
 vi.mock('@stride/core', () => ({
     ...core,
-    LANGUAGE_STORAGE_KEY: 'stride-language',
+    LANGUAGE_STORAGE_KEY: 'mindwtr-language',
 }));
 vi.mock('./storage-adapter', () => ({
     mobileStorage,

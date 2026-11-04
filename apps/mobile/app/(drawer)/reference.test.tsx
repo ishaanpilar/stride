@@ -46,7 +46,7 @@ describe('ReferenceScreen view state', () => {
     await act(async () => { tree = create(<ReferenceScreen />); });
     expect(tree.root.findByType('TaskList' as never).props.groupBy).toBe('tag');
     act(() => { tree.root.findByType('TaskList' as never).props.onChangeGroupBy('project'); });
-    expect(asyncStorageMock.setItem).toHaveBeenCalledWith('stride:view:reference:groupBy:v1', 'project');
+    expect(asyncStorageMock.setItem).toHaveBeenCalledWith('mindwtr:view:reference:groupBy:v1', 'project');
     act(() => tree.unmount());
     asyncStorageMock.getItem.mockResolvedValue('project');
     await act(async () => { tree = create(<ReferenceScreen />); });

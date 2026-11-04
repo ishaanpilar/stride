@@ -12,7 +12,7 @@ const asyncStorage = vi.hoisted(() => ({
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: asyncStorage }));
 vi.mock('@stride/core', () => ({
     isSandboxMode: () => runtime.sandbox,
-    LANGUAGE_STORAGE_KEY: 'stride-language',
+    LANGUAGE_STORAGE_KEY: 'mindwtr-language',
 }));
 
 describe('mobile onboarding hint persistence', () => {
@@ -51,11 +51,11 @@ describe('mobile onboarding hint persistence', () => {
         resolve(null);
 
         expect(await reading).toBe(true);
-        expect(AsyncStorage.setItem).toHaveBeenCalledWith('stride:mobile:onboarding-hint:v1:focus', 'dismissed');
+        expect(AsyncStorage.setItem).toHaveBeenCalledWith('mindwtr:mobile:onboarding-hint:v1:focus', 'dismissed');
     });
 
     it('keeps sandbox hint reads and dismissals out of personal storage', async () => {
-        personalValues.set('stride:mobile:onboarding-hint:v1:inbox-project', 'dismissed');
+        personalValues.set('mindwtr:mobile:onboarding-hint:v1:inbox-project', 'dismissed');
         runtime.sandbox = true;
         const sandboxHints = await import('./onboarding-hints');
 
@@ -64,13 +64,13 @@ describe('mobile onboarding hint persistence', () => {
         expect(await sandboxHints.isMobileHintDismissed('focus')).toBe(true);
         expect(asyncStorage.getItem).not.toHaveBeenCalled();
         expect(asyncStorage.setItem).not.toHaveBeenCalled();
-        expect(personalValues.get('stride:mobile:onboarding-hint:v1:inbox-project')).toBe('dismissed');
+        expect(personalValues.get('mindwtr:mobile:onboarding-hint:v1:inbox-project')).toBe('dismissed');
 
         runtime.sandbox = false;
         vi.resetModules();
         const personalHints = await import('./onboarding-hints');
         expect(await personalHints.isMobileHintDismissed('inbox-project')).toBe(true);
         expect(await personalHints.isMobileHintDismissed('focus')).toBe(false);
-        expect(personalValues.has('stride:mobile:onboarding-hint:v1:focus')).toBe(false);
+        expect(personalValues.has('mindwtr:mobile:onboarding-hint:v1:focus')).toBe(false);
     });
 });

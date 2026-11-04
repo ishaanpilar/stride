@@ -189,9 +189,9 @@ describe('ensureAttachmentAvailable', () => {
 
   it('does not download or mutate storage when a content uri is unreadable', async () => {
     fileSystemMock.getInfoAsync.mockRejectedValue(new Error('Permission denied'));
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
 
     const result = await ensureAttachmentAvailable(makeAttachment('unreadable', {
@@ -206,8 +206,8 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('natively stages plaintext from a path-based File Sync folder without a base64 read', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', 'file://sync/data.json');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', 'file://sync/data.json');
     let stagedPath = '';
     fileSystemMock.copyAsync.mockImplementation(async ({ to }: { from: string; to: string }) => {
       stagedPath = to;
@@ -242,8 +242,8 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('reads an unverified File Sync scratch in bounded chunks before installation', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', 'file://sync/data.json');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', 'file://sync/data.json');
     const sourceUri = 'file://sync/attachments/a-file-unverified.txt';
     let stagedPath = '';
     fileSystemMock.copyAsync.mockImplementation(async ({ to }: { from: string; to: string }) => {
@@ -296,8 +296,8 @@ describe('ensureAttachmentAvailable', () => {
       material,
       (await import('./sync-crypto-native')).mobileSyncCryptoPrimitives,
     );
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', 'file://sync/data.json');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', 'file://sync/data.json');
     let stagedPath = '';
     let stagedSize = sealed.length;
     fileSystemMock.copyAsync.mockImplementation(async ({ to }: { from: string; to: string }) => {
@@ -343,8 +343,8 @@ describe('ensureAttachmentAvailable', () => {
     const syncFileUri = 'content://com.android.externalstorage.documents/tree/primary%3ADocuments%2FStride%20Backup/document/primary%3ADocuments%2FStride%20Backup%2Fdata.json';
     const attachmentsDirUri = 'content://com.android.externalstorage.documents/tree/primary%3ADocuments%2FStride%20Backup/document/primary%3ADocuments%2FStride%20Backup%2Fattachments/';
     const remoteFileUri = `${attachmentsDirUri}a-saf.txt`;
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', syncFileUri);
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', syncFileUri);
     fileSystemMock.StorageAccessFramework.readDirectoryAsync.mockImplementation(async (uri: string) => {
       if (uri === attachmentsDirUri) return [remoteFileUri];
       if (uri.includes('primary%3ADocuments%2FStride%20Backup')) return [attachmentsDirUri];
@@ -384,8 +384,8 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('rejects an oversized path-based File Sync attachment before reading or installing it', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', 'file://sync/data.json');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', 'file://sync/data.json');
     const sourceUri = 'file://sync/attachments/a-file-large.txt';
     fileSystemMock.getInfoAsync.mockImplementation(async (uri: string) => (
       uri === sourceUri
@@ -406,8 +406,8 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('rejects an oversized File Sync scratch created by a copy race before reading or installing it', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'file');
-    asyncStorageMock.store.set('@stride_sync_path', 'file://sync/data.json');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'file');
+    asyncStorageMock.store.set('@mindwtr_sync_path', 'file://sync/data.json');
     const sourceUri = 'file://sync/attachments/a-file-copy-race.txt';
     let stagedPath = '';
     fileSystemMock.copyAsync.mockImplementation(async ({ to }: { from: string; to: string }) => {
@@ -437,8 +437,8 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('downloads through Dropbox when the cloud backend uses the Dropbox provider', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_provider', 'dropbox');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_provider', 'dropbox');
     const dropbox = await import('./dropbox-sync');
     vi.mocked(dropbox.downloadDropboxFile).mockResolvedValue(toArrayBuffer(REMOTE_BYTES) as never);
 
@@ -466,9 +466,9 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('downloads from the self-hosted cloud when no Dropbox provider is configured', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     vi.mocked(core.cloudGetFile).mockResolvedValue(toArrayBuffer(REMOTE_BYTES) as never);
 
@@ -495,9 +495,9 @@ describe('ensureAttachmentAvailable', () => {
 
   it('returns null and preserves the staged generation when the target is created during an on-demand download', async () => {
     const id = 'a-cloud-collision';
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     vi.mocked(core.cloudGetFile).mockResolvedValue(toArrayBuffer(REMOTE_BYTES) as never);
     attachmentFileInstallerMock.installAttachmentFileGeneration.mockResolvedValue({
@@ -534,9 +534,9 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('does not share an in-flight download across different immutable content identities', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     let releaseFirst!: () => void;
     let releaseSecond!: () => void;
@@ -595,9 +595,9 @@ describe('ensureAttachmentAvailable', () => {
     fileSystemMock.readAsStringAsync.mockImplementation(async (uri: string) => (
       scratchBytes.get(uri) ?? Buffer.from(REMOTE_BYTES).toString('base64')
     ));
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     let releaseH1!: () => void;
     let releaseH2!: () => void;
@@ -652,10 +652,10 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('downloads CloudKit assets to native scratch without falling through to stale WebDAV settings', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloudkit');
-    asyncStorageMock.store.set('@stride_webdav_url', 'https://stale-webdav.example/remote.php/dav/files/stride');
-    asyncStorageMock.store.set('@stride_webdav_username', 'stale-user');
-    asyncStorageMock.store.set('@stride_webdav_password', 'stale-password');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloudkit');
+    asyncStorageMock.store.set('@mindwtr_webdav_url', 'https://stale-webdav.example/remote.php/dav/files/stride');
+    asyncStorageMock.store.set('@mindwtr_webdav_username', 'stale-user');
+    asyncStorageMock.store.set('@mindwtr_webdav_password', 'stale-password');
     const core = await import('@stride/core');
     const attachment = makeAttachment('cloudkit-on-demand', {
       cloudKey: 'cloudkit:cloudkit-on-demand',
@@ -689,7 +689,7 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('terminates CloudKit progress when the absent-generation installer reports a conflict', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloudkit');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloudkit');
     attachmentFileInstallerMock.installAttachmentFileGeneration.mockResolvedValue({
       status: 'conflict',
       preservedPath: 'file://document/attachments/.stride-preserved-cloudkit.staged',
@@ -711,7 +711,7 @@ describe('ensureAttachmentAvailable', () => {
 
   it('answers a confirmed missing CloudKit asset as unavailable and leaves the row as it is', async () => {
 
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloudkit');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloudkit');
     cloudKitSyncMock.fetchCloudKitAttachmentAsset.mockRejectedValue(
       new cloudKitSyncMock.CloudKitAttachmentNotFoundError(),
     );
@@ -783,9 +783,9 @@ describe('ensureAttachmentAvailable', () => {
     );
     expect(core.inspectSyncArtifact(sealed).kind).toBe('encrypted');
 
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     vi.mocked(core.cloudGetFile).mockResolvedValue(toArrayBuffer(sealed) as never);
 
     const result = await ensureAttachmentAvailable(
@@ -814,9 +814,9 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('answers a self-hosted cloud 404 as unavailable, as WebDAV: the row stays and a later tap asks again', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     vi.mocked(core.cloudGetFile).mockRejectedValue(Object.assign(new Error('Cloud File GET failed (404)'), { status: 404 }));
     const attachment = makeAttachment('cloud-gone', { fileHash: sha256Hex(REMOTE_BYTES) });
@@ -835,8 +835,8 @@ describe('ensureAttachmentAvailable', () => {
     );
   });
   it('answers a Dropbox not-found as unavailable, as WebDAV', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_provider', 'dropbox');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_provider', 'dropbox');
     const dropbox = await import('./dropbox-sync');
     vi.mocked(dropbox.downloadDropboxFile).mockRejectedValue(new dropbox.DropboxFileNotFoundError('Dropbox file not found'));
     const attachment = makeAttachment('dropbox-gone', { fileHash: sha256Hex(REMOTE_BYTES) });
@@ -848,10 +848,10 @@ describe('ensureAttachmentAvailable', () => {
     expect(fileSystemMock.deleteAsync).not.toHaveBeenCalledWith('file://document/attachments/dropbox-gone.txt', expect.anything());
   });
   it('answers a WebDAV 404 as unavailable: the row keeps its Download button and a later tap asks again', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'webdav');
-    asyncStorageMock.store.set('@stride_webdav_url', 'https://dav.example/data.json');
-    asyncStorageMock.store.set('@stride_webdav_username', 'u');
-    asyncStorageMock.store.set('@stride_webdav_password', 'p');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'webdav');
+    asyncStorageMock.store.set('@mindwtr_webdav_url', 'https://dav.example/data.json');
+    asyncStorageMock.store.set('@mindwtr_webdav_username', 'u');
+    asyncStorageMock.store.set('@mindwtr_webdav_password', 'p');
     const core = await import('@stride/core');
     vi.mocked(core.webdavGetFile).mockRejectedValue(Object.assign(new Error('WebDAV GET failed (404)'), { status: 404 }));
     const attachment = makeAttachment('dav-gone', { fileHash: sha256Hex(REMOTE_BYTES) });
@@ -870,10 +870,10 @@ describe('ensureAttachmentAvailable', () => {
     );
   });
   it('falls back to WebDAV for any other backend that has a cloud key', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'webdav');
-    asyncStorageMock.store.set('@stride_webdav_url', 'https://dav.example/data.json');
-    asyncStorageMock.store.set('@stride_webdav_username', 'u');
-    asyncStorageMock.store.set('@stride_webdav_password', 'p');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'webdav');
+    asyncStorageMock.store.set('@mindwtr_webdav_url', 'https://dav.example/data.json');
+    asyncStorageMock.store.set('@mindwtr_webdav_username', 'u');
+    asyncStorageMock.store.set('@mindwtr_webdav_password', 'p');
     const core = await import('@stride/core');
     vi.mocked(core.webdavGetFile).mockResolvedValue(toArrayBuffer(REMOTE_BYTES) as never);
 
@@ -899,9 +899,9 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('cleans a bad-hash stage without publishing it to the canonical target', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     vi.mocked(core.cloudGetFile).mockResolvedValue(toArrayBuffer(REMOTE_BYTES) as never);
 
@@ -922,9 +922,9 @@ describe('ensureAttachmentAvailable', () => {
   });
 
   it('collapses concurrent requests for the same attachment into a single fetch', async () => {
-    asyncStorageMock.store.set('@stride_sync_backend', 'cloud');
-    asyncStorageMock.store.set('@stride_cloud_url', 'https://cloud.example/v1/data');
-    asyncStorageMock.store.set('@stride_cloud_token', 'cloud-token');
+    asyncStorageMock.store.set('@mindwtr_sync_backend', 'cloud');
+    asyncStorageMock.store.set('@mindwtr_cloud_url', 'https://cloud.example/v1/data');
+    asyncStorageMock.store.set('@mindwtr_cloud_token', 'cloud-token');
     const core = await import('@stride/core');
     let releaseDownload: (() => void) | null = null;
     vi.mocked(core.cloudGetFile).mockImplementation(async () => {

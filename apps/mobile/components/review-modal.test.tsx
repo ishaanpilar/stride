@@ -627,7 +627,7 @@ describe('ReviewModal', () => {
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<ReviewModal visible onClose={vi.fn()} />); });
         expect(currentStepOf(tree)).toBe('calendar');
-        expect(mockStorageSetItem).not.toHaveBeenCalledWith('stride:weeklyReview:currentStep', expect.stringContaining('completed'));
+        expect(mockStorageSetItem).not.toHaveBeenCalledWith('mindwtr:weeklyReview:currentStep', expect.stringContaining('completed'));
         await act(async () => { settle({ events: [], calendars: [] }); });
         expect(currentStepOf(tree)).toBe('completed');
     });
@@ -712,7 +712,7 @@ describe('ReviewModal', () => {
         await act(async () => {
             await finishLabel.parent?.props.onPress();
         });
-        expect(mockStorageRemoveItem).toHaveBeenCalledWith('stride:weeklyReview:currentStep');
+        expect(mockStorageRemoveItem).toHaveBeenCalledWith('mindwtr:weeklyReview:currentStep');
     });
 
     it('restores a later active checkpoint after canonicalizing an empty initial step', async () => {

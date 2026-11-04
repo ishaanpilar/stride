@@ -1528,7 +1528,6 @@ pub(crate) fn install_renderer_recovery(_window: &tauri::WebviewWindow) {}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     legacy_migration::migrate_legacy_data_dirs();
-    legacy_migration::migrate_legacy_webkit_data();
     workspaces::remember_launch_environment();
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let disable_hardware_acceleration = read_startup_disable_hardware_acceleration();
@@ -2086,6 +2085,7 @@ pub fn run() {
         .manage(ObsidianWatcherState::default())
         .invoke_handler(tauri::generate_handler![
             notify_ui_ready,
+            legacy_migration::legacy_local_storage_items,
             list_system_fonts,
             check_microsoft_store_update,
             get_data,

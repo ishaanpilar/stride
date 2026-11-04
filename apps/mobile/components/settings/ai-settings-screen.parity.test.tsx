@@ -181,8 +181,8 @@ const SETTINGS: Record<string, AppSettings> = {
   fossWrong: { ai: { enabled: true, provider: 'gemini', model: 'gemini-3.5-flash', speechToText: { provider: 'openai', model: 'gpt-transcribe' } } },
 };
 
-const CONSENT_KEY = 'stride-ai-provider-consent-v1';
-const KEY = { openai: 'stride-ai-key_openai', gemini: 'stride-ai-key_gemini', anthropic: 'stride-ai-key_anthropic' };
+const CONSENT_KEY = 'mindwtr-ai-provider-consent-v1';
+const KEY = { openai: 'mindwtr-ai-key_openai', gemini: 'mindwtr-ai-key_gemini', anthropic: 'mindwtr-ai-key_anthropic' };
 
 type Device = {
   language?: string;
@@ -319,7 +319,7 @@ const scenarios: Scenario[] = [
   },
   {
     name: 'assistant: a legacy plain key moves into the secure store',
-    settings: 'enabled', device: { storage: { 'stride-ai-key:openai': 'sk-legacy-9' } },
+    settings: 'enabled', device: { storage: { 'mindwtr-ai-key:openai': 'sk-legacy-9' } },
     actions: [['press', 'k:settings.ai']],
   },
   {

@@ -347,7 +347,7 @@ describe('DailyReviewScreen', () => {
         await act(async () => {
             await finishLabel.parent?.props.onPress();
         });
-        expect(mockStorageRemoveItem).toHaveBeenCalledWith('stride:dailyReview:currentStep');
+        expect(mockStorageRemoveItem).toHaveBeenCalledWith('mindwtr:dailyReview:currentStep');
     });
 
     it('restores a later active checkpoint after canonicalizing an empty initial step', async () => {

@@ -877,7 +877,7 @@ describe('ProjectsScreen view state hydration', () => {
       await Promise.resolve();
     });
 
-    expect(asyncStorageMock.getItem).toHaveBeenCalledWith('stride:view:projects:v1');
+    expect(asyncStorageMock.getItem).toHaveBeenCalledWith('mindwtr:view:projects:v1');
     const hydratedList = tree.root.findByType(FlatList);
     expect(hydratedList.props.data.some((row: { type: string }) => row.type === 'project')).toBe(false);
   });

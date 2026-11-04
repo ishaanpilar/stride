@@ -1112,7 +1112,7 @@
    "screen": "done",
    "settings": "base",
    "storage": {
-    "stride:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}"
+    "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}"
    },
    "actions": [
     [
@@ -17181,7 +17181,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}"
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}"
     }
    },
    {
@@ -17271,7 +17271,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "none"
     }
    },
@@ -17389,7 +17389,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "context"
     }
    },
@@ -17498,7 +17498,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "project"
     }
    },
@@ -17630,7 +17630,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -17777,7 +17777,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -17897,7 +17897,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18027,7 +18027,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18148,7 +18148,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18279,7 +18279,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18411,7 +18411,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18493,7 +18493,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18625,7 +18625,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "tag"
     }
    },
@@ -18738,7 +18738,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[\"a-home\"]}",
      "mindwtr:view:reference:groupBy:v1": "area"
     }
    },
@@ -18856,7 +18856,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[]}",
      "mindwtr:view:reference:groupBy:v1": "area"
     }
    },
@@ -18981,7 +18981,7 @@
     ],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[]}",
      "mindwtr:view:reference:groupBy:v1": "area"
     }
    },
@@ -19091,7 +19091,7 @@
     ],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[]}",
      "mindwtr:view:reference:groupBy:v1": "area"
     }
    },
@@ -19193,7 +19193,7 @@
     ],
     "toasts": [],
     "stored": {
-     "stride:view:group-collapse:reference:v1": "{\"area\":[]}",
+     "mindwtr:view:group-collapse:reference:v1": "{\"area\":[]}",
      "mindwtr:view:reference:groupBy:v1": "area"
     }
    }
@@ -19639,7 +19639,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"completedDate\"}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\"}"
     }
    },
    {
@@ -19739,8 +19739,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"completedDate\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -19840,8 +19840,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -19941,8 +19941,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20047,8 +20047,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"project\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"project\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20144,8 +20144,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20234,8 +20234,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20329,8 +20329,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20426,8 +20426,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20511,8 +20511,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20608,8 +20608,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"context\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20687,8 +20687,8 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20769,8 +20769,8 @@
     ],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    },
    {
@@ -20841,8 +20841,8 @@
     ],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
-     "stride:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"none\",\"sortBy\":\"default\"}",
+     "mindwtr:view:group-collapse:done:v1": "{\"completedDate\":[\"completedDate:yesterday\"]}"
     }
    }
   ],
@@ -20949,7 +20949,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"completedDate\",\"sortBy\":\"title\"}"
     },
     "sort": {
      "options": [
@@ -21129,7 +21129,7 @@
     "writes": [],
     "toasts": [],
     "stored": {
-     "stride:view:done:v1": "{\"groupBy\":\"tag\",\"sortBy\":\"title\"}"
+     "mindwtr:view:done:v1": "{\"groupBy\":\"tag\",\"sortBy\":\"title\"}"
     }
    }
   ],
