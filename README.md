@@ -1,17 +1,26 @@
 <div align="center">
 
-<img src="branding/source/stride-icon-source.png" width="120" alt="Stride icon">
+<img src="docs/assets/screenshots/cover.png" width="100%" alt="Stride: a calm, AI-powered organiser for the Mac. Capture everything, let the AI file and plan it, then focus on one thing at a time.">
 
-# Stride
-
-**A calm, AI-powered organiser for the Mac.**
-
-Capture everything, let the AI file and plan it, then focus on one thing at a time.
 Built on David Allen's *Getting Things Done*. Your data stays on your Mac.
 
 [Download](https://github.com/ishaanpilar/stride/releases/latest) · [Features](#features) · [Built with AI](#built-with-ai) · [User guide](docs/STRIDE-GUIDE.md)
 
 </div>
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/assets/screenshots/1-focus-briefing.png" alt="Focus view with the AI morning briefing" width="100%">
+</p>
+
+| The Assistant plans and asks | Full-screen focus timer |
+|---|---|
+| <img src="docs/assets/screenshots/2-assistant.png" alt="The Assistant plans the afternoon and asks a follow-up question"> | <img src="docs/assets/screenshots/3-focus-timer.png" alt="Full-screen Pomodoro timer with the focus coach"> |
+
+| Menu bar panel | Projects |
+|---|---|
+| <img src="docs/assets/screenshots/4-menu-bar.png" alt="Menu bar panel with today's tasks, AI Capture and a Pomodoro"> | <img src="docs/assets/screenshots/5-project.png" alt="Project view with progress, priorities and estimates"> |
 
 ## Features
 
