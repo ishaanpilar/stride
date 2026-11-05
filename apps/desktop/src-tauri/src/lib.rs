@@ -46,6 +46,7 @@ mod config;
 mod email_capture;
 mod gmail_capture;
 mod file_sync_attachment_publication;
+mod floating_timer; // floating focus timer window (focus-float)
 mod install;
 mod legacy_migration;
 mod system_fonts;
@@ -1588,6 +1589,8 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("Stride")
@@ -1656,6 +1659,10 @@ pub fn run() {
                 }
                 if window.label() == menubar_panel::MENUBAR_PANEL_WINDOW_LABEL {
                     menubar_panel::hide_panel(window.app_handle());
+                    return;
+                }
+                if window.label() == floating_timer::FOCUS_FLOAT_WINDOW_LABEL {
+                    floating_timer::hide(window.app_handle());
                     return;
                 }
                 append_native_log_line(
@@ -2245,6 +2252,10 @@ pub fn run() {
             menubar_panel::menubar_quit,
             menubar_panel::menubar_open_main,
             menubar_panel::set_tray_title,
+            floating_timer::focus_float_show,
+            floating_timer::focus_float_hide,
+            floating_timer::focus_float_set_expanded,
+            floating_timer::focus_float_open_main,
             app_lock::get_app_lock_state,
             app_lock::app_lock_engage,
             app_lock::app_lock_availability,

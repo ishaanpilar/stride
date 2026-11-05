@@ -12,6 +12,7 @@ import {
     waitForAIRequestRetry,
     withAIRequestStopNotifications,
 } from '../utils';
+import { handleRateLimitedResponse } from '../provider-rate-limit';
 import { resolveGeminiModel } from '../catalog';
 import { isBreakdownResponse, isClarifyResponse, isCopilotResponse, isReviewAnalysisResponse } from '../validators';
 
@@ -246,6 +247,7 @@ async function requestGemini(config: AIProviderConfig, prompt: { system: string;
     await rateLimit('gemini', 250, options?.signal, 'Gemini');
 
     let response: BufferedAIResponse | null = null;
+    let rateLimitRetried = false;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         throwIfAIRequestAborted(options?.signal, 'Gemini');
         try {
@@ -273,6 +275,12 @@ async function requestGemini(config: AIProviderConfig, prompt: { system: string;
             throw error;
         }
 
+        if (response.status === 429) {
+            await handleRateLimitedResponse(response, { canRetry: !rateLimitRetried && attempt < MAX_RETRIES, signal: options?.signal, label: 'Gemini' });
+            rateLimitRetried = true;
+            response = null;
+            continue;
+        }
         if (!response.ok) {
             if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
                 await waitForAIRequestRetry(400 * Math.pow(2, attempt), options?.signal, 'Gemini');

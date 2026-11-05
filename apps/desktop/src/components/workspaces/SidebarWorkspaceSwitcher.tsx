@@ -1,18 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, FolderOpen } from 'lucide-react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Check, ChevronsUpDown, FolderOpen } from 'lucide-react';
 
 import { useLanguage } from '../../contexts/language-context';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from './use-workspaces';
 import { ExitGhost } from '../ui/ExitGhost';
+import { Collapse } from '../ui/Collapse';
+import { SIDEBAR_SWITCHER_ROW_CLASS } from '../ui/SidebarAreaFilter';
 
 function ColorDot({ color }: { color: string | null }) {
     return (
-        <span
-            className={cn('inline-block h-2 w-2 shrink-0 rounded-full', !color && 'bg-muted-foreground/40')}
-            style={color ? { backgroundColor: color } : undefined}
-            aria-hidden="true"
-        />
+        <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center">
+            <span
+                className={cn('h-2.5 w-2.5 rounded-full', !color && 'bg-muted-foreground/40')}
+                style={color ? { backgroundColor: color } : undefined}
+            />
+        </span>
     );
 }
 
@@ -22,6 +25,7 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
     const { list, nameOf, requestSwitch, confirmModal, switching } = useWorkspaces();
     const [open, setOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
         if (!open) return;
@@ -37,9 +41,67 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
     const activeName = nameOf(active);
     const label = `${t('workspaces.switcherLabel')}: ${activeName}`;
 
+    const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            setOpen(false);
+            triggerRef.current?.focus();
+            return;
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]'));
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        const next = event.key === 'ArrowDown' ? Math.min(items.length - 1, index + 1) : Math.max(0, index - 1);
+        items[next]?.focus();
+    };
+
+    const menu = (
+        <div
+            role="menu"
+            aria-label={t('workspaces.switcherLabel')}
+            className="space-y-0.5"
+            onKeyDown={moveFocus}
+        >
+            {list.workspaces.map((workspace) => {
+                const isActive = workspace.id === list.activeId;
+                return (
+                    <button
+                        key={workspace.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={isActive}
+                        onClick={() => {
+                            setOpen(false);
+                            void requestSwitch(workspace);
+                        }}
+                        title={nameOf(workspace)}
+                        className={cn(SIDEBAR_SWITCHER_ROW_CLASS, isActive && 'bg-accent-soft font-semibold hover:bg-accent-soft')}
+                    >
+                        <ColorDot color={workspace.color} />
+                        <span className="min-w-0 flex-1 truncate">{nameOf(workspace)}</span>
+                        <Check className={cn('h-4 w-4 shrink-0 text-accent-text', isActive ? 'opacity-100' : 'opacity-0')} aria-hidden="true" />
+                    </button>
+                );
+            })}
+        </div>
+    );
+
     return (
-        <div ref={containerRef} className="relative mb-1.5" data-workspace-switcher>
+        <div ref={containerRef} className={cn('relative mb-1', !collapsed && 'min-w-0')} data-workspace-switcher>
+            {!collapsed && (
+                <Collapse open={open} className={cn(open && 'mb-1')} innerClassName="border-b border-border/60 pb-1">
+                    {menu}
+                </Collapse>
+            )}
+            {collapsed && open && (
+                <div className="motion-popover absolute bottom-0 left-full z-30 ml-2 w-64 rounded-sheet bg-card p-1.5 shadow-soft [--motion-origin:bottom_left]">
+                    <ExitGhost />
+                    {menu}
+                </div>
+            )}
             <button
+                ref={triggerRef}
                 type="button"
                 onClick={() => setOpen((prev) => !prev)}
                 onKeyDown={(event) => {
@@ -50,12 +112,12 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
                 }}
                 disabled={switching}
                 className={cn(
-                    'flex items-center gap-2 rounded-lg border-none bg-muted/40 text-[13px] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40',
                     collapsed
-                        ? 'h-10 w-10 justify-center hover:bg-accent hover:text-accent-foreground'
-                        : 'h-9 w-full justify-between px-3',
+                        ? 'focus-ring flex h-10 w-10 items-center justify-center rounded-control text-foreground transition-colors hover:bg-accent'
+                        : SIDEBAR_SWITCHER_ROW_CLASS,
+                    open && !collapsed && 'bg-accent',
                 )}
-                aria-haspopup="true"
+                aria-haspopup="menu"
                 aria-expanded={open}
                 aria-label={label}
                 title={label}
@@ -69,57 +131,12 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
                     </span>
                 ) : (
                     <>
-                        <span className="flex min-w-0 items-center gap-2">
-                            <ColorDot color={active.color} />
-                            <span className="truncate">{activeName}</span>
-                        </span>
-                        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                        <ColorDot color={active.color} />
+                        <span className="min-w-0 flex-1 truncate">{activeName}</span>
+                        <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     </>
                 )}
             </button>
-            {open && (
-                <div
-                    role="menu"
-                    aria-label={t('workspaces.switcherLabel')}
-                    className={cn(
-                        'motion-popover absolute z-20 rounded-lg border border-border bg-popover p-1 shadow-lg [--motion-pop-y:4px]',
-                        collapsed ? 'bottom-0 left-full ml-2 w-52 [--motion-origin:bottom_left]' : 'bottom-full mb-1 w-full [--motion-origin:bottom_center]',
-                    )}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                            event.preventDefault();
-                            setOpen(false);
-                        }
-                    }}
-                >
-                    <ExitGhost />
-                    {list.workspaces.map((workspace) => {
-                        const isActive = workspace.id === list.activeId;
-                        return (
-                            <button
-                                key={workspace.id}
-                                type="button"
-                                role="menuitemradio"
-                                aria-checked={isActive}
-                                onClick={() => {
-                                    setOpen(false);
-                                    void requestSwitch(workspace);
-                                }}
-                                className={cn(
-                                    'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted/50',
-                                    isActive && 'bg-muted/70',
-                                )}
-                            >
-                                <span className="flex min-w-0 items-center gap-2">
-                                    <ColorDot color={workspace.color} />
-                                    <span className="truncate">{nameOf(workspace)}</span>
-                                </span>
-                                <Check className={cn('h-3.5 w-3.5 shrink-0', isActive ? 'opacity-100' : 'opacity-0')} />
-                            </button>
-                        );
-                    })}
-                </div>
-            )}
             {confirmModal}
         </div>
     );

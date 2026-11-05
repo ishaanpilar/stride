@@ -13,7 +13,7 @@ import type { FocusUndo } from '../../lib/focus-coach-store';
 import { OfferChip, focusActionLabel, formatFocusWhen } from './FocusCoachCard';
 import type { FocusSummary } from './FocusFinish';
 
-type Stage = 'ask' | 'done' | 'almost' | 'left' | 'blocked' | 'waiting' | 'needInfo' | 'notNow';
+type Stage = 'ask' | 'done' | 'almost' | 'plan' | 'left' | 'blocked' | 'waiting' | 'needInfo' | 'notNow';
 
 interface FocusCheckInProps {
     task: Task;
@@ -28,6 +28,8 @@ interface FocusCheckInProps {
     onStartAnother: () => void;
     onTakeBreak: (afterDone: boolean) => void;
     onClose: () => void;
+    /** "Almost" → how much is left: extend this same session by that many minutes and keep going. */
+    onExtend: (minutes: number) => void;
 }
 
 const primaryClass = 'btn-gradient inline-flex h-10 items-center justify-center gap-2 px-5 text-[14px] focus-ring';
@@ -35,7 +37,8 @@ const secondaryClass = 'inline-flex h-10 items-center justify-center gap-2 round
 
 export function FocusCheckIn(props: FocusCheckInProps) {
     const { task, project, summary, tr } = props;
-    const [stage, setStage] = useState<Stage>('ask');
+    // Ticked done during the session (e.g. in overtime): the check-in opens on "Done".
+    const [stage, setStage] = useState<Stage>(task.status === 'done' ? 'done' : 'ask');
     const [doneUndo, setDoneUndo] = useState<FocusUndo | null>(null);
     const [left, setLeft] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
@@ -84,6 +87,11 @@ export function FocusCheckIn(props: FocusCheckInProps) {
         [tr('focus.checkin.left60', '~1 h'), 60],
         [tr('focus.checkin.leftSession', 'Another session'), props.focusMinutes],
     ];
+    /** The last option is a fresh focus phase on the same task; the others extend this session. */
+    const keepGoingFor = (index: number, minutes: number) => {
+        if (index === leftOptions.length - 1) props.onStartAnother();
+        else props.onExtend(minutes);
+    };
 
     let body;
     if (stage === 'done') {
@@ -98,7 +106,7 @@ export function FocusCheckIn(props: FocusCheckInProps) {
                 <p className="fx-done-line mx-auto mt-3 w-fit" role="status">
                     <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />
                     {tr('focus.checkin.markedDone', 'Marked done')}
-                    <button type="button" className="fx-link focus-ring" onClick={() => { void undoDone(); }}>{tr('common.undo', 'Undo')}</button>
+                    {doneUndo && <button type="button" className="fx-link focus-ring" onClick={() => { void undoDone(); }}>{tr('common.undo', 'Undo')}</button>}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                     <button type="button" data-autofocus onClick={() => props.onTakeBreak(true)} className={primaryClass}>
@@ -109,6 +117,35 @@ export function FocusCheckIn(props: FocusCheckInProps) {
             </>
         );
     } else if (stage === 'almost') {
+        // Primary: keep going on this same session for about that long (back to the running stage).
+        body = (
+            <>
+                <h2 id="fx-finish-heading">{tr('focus.checkin.howMuchLeft', 'How much is left?')}</h2>
+                <p className="fx-finish-line">{tr('focus.checkin.keepGoingHint', 'Pick one and keep going on this task.')}</p>
+                <div className="fx-chips fx-chips--center mt-4" role="group" aria-label={tr('focus.checkin.howMuchLeft', 'How much is left?')}>
+                    {leftOptions.map(([label, minutes], index) => (
+                        <button
+                            key={label}
+                            type="button"
+                            data-autofocus={index === 0 ? true : undefined}
+                            className="fx-chip fx-chip--lg focus-ring"
+                            data-testid={`focus-checkin-keep-${index === leftOptions.length - 1 ? 'session' : minutes}`}
+                            onClick={() => keepGoingFor(index, minutes)}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                    <button type="button" className="fx-text-btn focus-ring" onClick={() => setStage('plan')} data-testid="focus-checkin-plan">
+                        {tr('focus.checkin.planInstead', 'Plan the rest instead')}
+                    </button>
+                </div>
+                <div className="mt-1">{back}</div>
+            </>
+        );
+    } else if (stage === 'plan') {
+        // Secondary: set an estimate or schedule the rest, without continuing now.
         body = (
             <>
                 <h2 id="fx-finish-heading">{tr('focus.checkin.howMuchLeft', 'How much is left?')}</h2>

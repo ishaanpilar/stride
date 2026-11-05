@@ -62,6 +62,11 @@ import { SomedaySectionMoveDialog } from './list/SomedaySectionMoveDialog';
 import { DeferredProjectRow } from './list/DeferredProjectRow';
 import { TokenPickerModal } from '../TokenPickerModal';
 import { InboxProcessor } from './InboxProcessor';
+import { InboxHub } from './inbox/InboxHub';
+import { InboxProcessReview } from './inbox/InboxProcessReview';
+import { InboxRowMeta } from './inbox/InboxRowMeta';
+import { useInboxAiProcess } from './inbox/useInboxAiProcess';
+import { useCaptureText } from '../capture/useCaptureText';
 import { MindSweepModal, MindSweepTrigger } from '../MindSweepModal';
 import { QuickCaptureTrigger } from '../QuickCaptureTrigger';
 import { TaskBulkOrganizeModal } from './list/TaskBulkOrganizeModal';
@@ -231,6 +236,8 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
     const [collapsedProjectLists, setCollapsedProjectLists] = useState<Partial<Record<TaskStatus, boolean>>>({});
     const [quickAddSyntaxOpen, setQuickAddSyntaxOpen] = useState(false);
     const [mindSweepOpen, setMindSweepOpen] = useState(false);
+    const [inboxViewOptionsOpen, setInboxViewOptionsOpen] = useState(false);
+    const manualProcessStartRef = useRef<(() => void) | null>(null);
     const [somedayMoveTargetIds, setSomedayMoveTargetIds] = useState<string[] | null>(null);
     const [somedayMoveProjectId, setSomedayMoveProjectId] = useState<string | null>(null);
     const [newSomedaySectionOpen, setNewSomedaySectionOpen] = useState(false);
@@ -1134,7 +1141,20 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         return { leftText, rightText, value: todayProgress.fraction, max: 1, label: leftText };
     }, [todayProgress, t]);
     const isWaitingView = statusFilter === 'waiting';
-    const showQuickAdd = isInbox;
+    const captureText = useCaptureText();
+    const inboxProjectNames = useMemo(() => projects
+        .filter((project) => !project.deletedAt && !project.archivedAt && project.status !== 'archived')
+        .map((project) => project.title), [projects]);
+    const inboxAreaNames = useMemo(() => areas.filter((area) => !area.deletedAt).map((area) => area.name), [areas]);
+    const startManualInboxProcess = useCallback(() => manualProcessStartRef.current?.(), []);
+    const inboxAi = useInboxAiProcess({ t: captureText, language, onManualProcess: startManualInboxProcess });
+    const inboxReviewing = isInbox && (inboxAi.phase === 'review' || inboxAi.phase === 'applying');
+    // Inbox = capture hub: the composer replaces the quick-add row and the list toolbar is tucked
+    // behind the "…" menu (view options), so the page stays calm.
+    const showInboxHub = isInbox && !isProcessing;
+    const showListHeader = !isInbox || inboxViewOptionsOpen || isProcessing;
+    // The legacy inline quick-add row is replaced by the Inbox composer (InboxHub).
+    const showQuickAdd = false;
 
 
     const quickAddPreviewEntries = useMemo(() => {
@@ -1189,6 +1209,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
 
 
     const hasFilters = filterSummary.length > 0;
+    const inboxHero = showInboxHub && showEmptyState && !hasFilters && !inboxReviewing;
 
 
     const hasFilterChips = activeFilterChips.length > 0;
@@ -1299,7 +1320,15 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 onMoveToTop={siblingIds && task.status !== 'done' ? handleMoveToTop : undefined}
             />
         );
-        if (!siblingIds || task.status === 'done') return item;
+        const row = statusFilter === 'inbox'
+            ? (
+                <div key={task.id}>
+                    {item}
+                    <InboxRowMeta taskId={task.id} />
+                </div>
+            )
+            : item;
+        if (!siblingIds || task.status === 'done') return row;
         return (
             <ReorderableTaskRow
                 key={task.id}
@@ -1308,7 +1337,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 siblingIds={siblingIds}
                 dragLabel={tFallback(t, 'list.reorder.drag', 'Drag to reorder')}
             >
-                {item}
+                {row}
             </ReorderableTaskRow>
         );
     }, [
@@ -1341,7 +1370,22 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         <ErrorBoundary>
             <div className="flex h-full flex-col">
                 <div className="space-y-6">
-                    <ListHeader
+                    {showInboxHub && !inboxHero && (
+                        <InboxHub
+                            t={captureText}
+                            title={title}
+                            count={filteredTasks.length}
+                            variant="docked"
+                            ai={inboxAi}
+                            manualProcessing={isProcessing}
+                            onManualProcess={startManualInboxProcess}
+                            onGuidedSweep={openMindSweep}
+                            viewOptionsOpen={inboxViewOptionsOpen}
+                            onToggleViewOptions={() => setInboxViewOptionsOpen((open) => !open)}
+                        />
+                    )}
+                    {showListHeader && !inboxHero && !inboxReviewing && <ListHeader
+                        controlsOnly={showInboxHub}
                         title={title}
                         showNextCount={isNextView}
                         nextCount={nextCount}
@@ -1395,7 +1439,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                             setNewSomedaySectionOpen(true);
                         } : undefined}
                         t={t}
-                    />
+                    />}
 
                     {isBatchDeleting && (
                         <div className="rounded-control bg-well px-3 py-2 text-xs text-muted-foreground">
@@ -1496,6 +1540,8 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         isProcessing={isProcessing}
                         setIsProcessing={setIsProcessing}
                         onOpenMindSweep={openMindSweep}
+                        hideStartRow
+                        startRef={manualProcessStartRef}
                     />
 
                     {showViewFilterInput && !isProcessing && (
@@ -1681,7 +1727,28 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         {tFallback(t, 'list.filtering', 'Filtering...')}
                     </div>
                 )}
-                {showEmptyState ? (
+                {inboxReviewing ? (
+                    <InboxProcessReview
+                        t={captureText}
+                        controller={inboxAi}
+                        projectNames={inboxProjectNames}
+                        areaNames={inboxAreaNames}
+                        titleFor={(taskId) => tasksById.get(taskId)?.title}
+                    />
+                ) : inboxHero ? (
+                    <InboxHub
+                        t={captureText}
+                        title={title}
+                        count={0}
+                        variant="hero"
+                        ai={inboxAi}
+                        manualProcessing={isProcessing}
+                        onManualProcess={startManualInboxProcess}
+                        onGuidedSweep={openMindSweep}
+                        viewOptionsOpen={inboxViewOptionsOpen}
+                        onToggleViewOptions={() => setInboxViewOptionsOpen((open) => !open)}
+                    />
+                ) : showEmptyState ? (
                     <ListEmptyState
                         hasFilters={hasFilters}
                         emptyState={emptyState}

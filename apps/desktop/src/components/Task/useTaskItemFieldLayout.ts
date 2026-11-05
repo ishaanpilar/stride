@@ -18,7 +18,12 @@ type UseTaskItemFieldLayoutParams = {
     timeEstimatesEnabled: boolean;
     hasProjectSections: boolean;
     visibleEditAttachmentsLength: number;
+    /** Fields the user showed for this edit through "Add field", even though the layout hides them. */
+    revealedFields?: ReadonlySet<TaskEditorFieldId>;
 };
+
+const EMPTY_REVEALED: ReadonlySet<TaskEditorFieldId> = new Set();
+const NEVER_ADDABLE = new Set<TaskEditorFieldId>(['status', 'project', 'section', 'area', 'textDirection']);
 
 export function useTaskItemFieldLayout({
     settings,
@@ -28,6 +33,7 @@ export function useTaskItemFieldLayout({
     timeEstimatesEnabled,
     hasProjectSections,
     visibleEditAttachmentsLength,
+    revealedFields = EMPTY_REVEALED,
 }: UseTaskItemFieldLayoutParams) {
     const {
         status: editStatus,
@@ -158,9 +164,17 @@ export function useTaskItemFieldLayout({
         (fieldId: TaskEditorFieldId) => {
             if (isReference && referenceHiddenFields.has(fieldId)) return false;
             if (fieldId === 'assignedTo' && editStatus === 'waiting' && !isAssignedToExplicitlyHidden) return true;
+            if (revealedFields.has(fieldId) && !disabledFields.has(fieldId)) return true;
             return !hiddenSet.has(fieldId) || hasValue(fieldId);
         },
-        [editStatus, hasValue, hiddenSet, isAssignedToExplicitlyHidden, isReference, referenceHiddenFields]
+        [disabledFields, editStatus, hasValue, hiddenSet, isAssignedToExplicitlyHidden, isReference, referenceHiddenFields, revealedFields]
+    );
+    const addableFields = useMemo(
+        () => taskEditorOrder.filter((fieldId) => (
+            !NEVER_ADDABLE.has(fieldId) && !disabledFields.has(fieldId) && !isFieldVisible(fieldId)
+            && !(isReference && referenceHiddenFields.has(fieldId))
+        )),
+        [disabledFields, isFieldVisible, isReference, referenceHiddenFields, taskEditorOrder]
     );
     const showProjectField = isFieldVisible('project');
     const showAreaField = isFieldVisible('area') && !editProjectId;
@@ -240,5 +254,6 @@ export function useTaskItemFieldLayout({
         detailsFields,
         sectionCounts,
         sectionOpenDefaults,
+        addableFields,
     };
 }

@@ -1322,6 +1322,10 @@ html.menubar-panel-window #root {
 .fx-clock .d { display: inline-block; min-width: 0.56em; text-align: center; }
 .fx-clock .c { display: inline-block; width: 0.26em; text-align: center; opacity: 0.75; transform: translateY(-0.07em); }
 .fx-stage[data-paused='true'] .fx-clock { opacity: 0.72; }
+/* Overtime ("Keep going"): counting up past 0:00 in a calmer, dimmer tone. */
+.fx-clock[data-overtime='true'] { color: hsl(var(--muted-foreground)); }
+.fx-clock .p { display: inline-block; align-self: center; margin-right: 0.06em; font-size: 0.55em; line-height: 1; opacity: 0.55; }
+.fx-stage[data-overtime='true'] .fx-hair > i { opacity: 0.45; }
 .fx-stage[data-paused='true'] .fx-clock .c { animation: fx-blink 1600ms ease-in-out infinite; }
 @keyframes fx-blink { 50% { opacity: 0.1; } }
 .fx-digit-in { animation: fx-digit 560ms var(--fx-spring); }

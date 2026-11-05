@@ -48,6 +48,88 @@
   animation: motion-check-draw 260ms var(--ease-out-quart) 60ms backwards;
 }
 
+/*
+ * Completion sequence (lib/completion-sequence.ts). A ticked row carries [data-completing] for the
+ * whole sequence and [data-done] from the click on; the click, strike and flash are CSS from that
+ * moment, the leaving collapse is WAAPI (lib/completion-motion.ts). Done rows that are not animating
+ * look exactly like the last frame.
+ */
+@keyframes completion-check-pop {
+  0% { transform: scale(0.85); }
+  45% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+@keyframes completion-ripple {
+  0% { box-shadow: 0 0 0 0 hsl(var(--success-fill) / 0.5); }
+  100% { box-shadow: 0 0 0 11px hsl(var(--success-fill) / 0); }
+}
+@keyframes completion-check-draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+@keyframes completion-strike-draw {
+  from { background-size: 0% var(--completion-strike-thickness); }
+  to { background-size: 100% var(--completion-strike-thickness); }
+}
+@keyframes completion-row-press {
+  0% { scale: 1; }
+  30% { scale: 0.99; }
+  100% { scale: 1; }
+}
+@keyframes completion-row-flash {
+  0% { background-color: hsl(var(--card)); }
+  28% { background-color: var(--completion-flash-bg); }
+  100% { background-color: var(--completion-done-bg); }
+}
+@keyframes completion-fade-meta { from { opacity: 1; } }
+
+:root {
+  --completion-strike-thickness: 1.5px;
+  --completion-flash-bg: color-mix(in srgb, hsl(var(--success-fill)) 14%, hsl(var(--card)));
+  /* Done rows recede: a flat, faintly inset card between the surface and the well. */
+  --completion-done-bg: color-mix(in srgb, hsl(var(--card)) 45%, hsl(var(--well)));
+}
+
+.completion-strike {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 58%;
+  background-size: 100% var(--completion-strike-thickness);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+[dir='rtl'] .completion-strike, .completion-strike:dir(rtl) { background-position: 100% 58%; }
+
+.task-row[data-done] .metadata-badge { opacity: 0.65; }
+.task-row[data-done] .task-item-display__title { transition: color 320ms var(--ease-out-quart) 120ms; }
+
+.task-row[data-completing] {
+  animation:
+    completion-row-press 240ms var(--ease-out-quart),
+    completion-row-flash 900ms var(--ease-out-quart) 80ms backwards;
+}
+.task-row[data-completing] .metadata-badge { animation: completion-fade-meta 360ms var(--ease-out-quart) 140ms backwards; }
+@keyframes completion-row-flash-clear {
+  0% { background-color: transparent; }
+  28% { background-color: hsl(var(--success-fill) / 0.14); }
+  100% { background-color: transparent; }
+}
+.menubar-row[data-completing] {
+  animation:
+    completion-row-press 240ms var(--ease-out-quart),
+    completion-row-flash-clear 900ms var(--ease-out-quart) 80ms backwards;
+}
+[data-completing] .completion-check {
+  animation:
+    completion-check-pop 380ms var(--ease-spring),
+    completion-ripple 560ms var(--ease-out-quart) 40ms;
+}
+[data-completing] .completion-check-mark path,
+[data-completing] .completion-check-mark polyline {
+  stroke-dasharray: 24;
+  animation: completion-check-draw 200ms var(--ease-out-quart) 70ms backwards;
+}
+[data-completing] .completion-strike {
+  animation: completion-strike-draw 330ms cubic-bezier(0.65, 0, 0.35, 1) 130ms backwards;
+}
+
 .motion-chevron { transition: transform var(--motion-base) var(--ease-out-quart); }
 
 .motion-press:active:not(:disabled):not([aria-disabled='true']) { scale: 0.97; }
@@ -68,13 +150,15 @@
 
 .motion-collapse {
   display: grid;
+  /* minmax(0, 1fr): long one-line content (truncated rows) must never widen the column. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 1fr;
   opacity: 1;
   transition:
     grid-template-rows var(--motion-collapse) var(--ease-out-quart),
     opacity var(--motion-collapse) var(--ease-out-quart);
 }
-.motion-collapse > .motion-collapse__inner { min-height: 0; }
+.motion-collapse > .motion-collapse__inner { min-height: 0; min-width: 0; }
 .motion-collapse[data-state='closed'],
 .motion-collapse[data-state='entering'],
 .motion-collapse[data-state='closing'] {
@@ -92,6 +176,11 @@
     width 260ms var(--ease-spring);
 }
 
+/* Main sidebar width: animates on collapse/expand and keyboard steps, instant while dragging. */
+.motion-sidebar { transition: width var(--motion-base) var(--ease-out-quart); }
+.motion-sidebar[data-resizing] { transition: none; }
+html.sidebar-resizing, html.sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }
+
 .motion-dock[data-state='opening'],
 .motion-dock[data-state='closing'] {
   transition: width 260ms var(--ease-out-quart), opacity 260ms var(--ease-out-quart);
@@ -106,8 +195,12 @@
   .motion-overlay, .motion-dialog, .motion-popover, .motion-sheet-right, .motion-toast, .motion-view,
   .motion-row-in, .motion-expand-in, .motion-strike, .motion-check-pop, .motion-skeleton,
   .motion-check-draw path, .motion-check-draw polyline { animation: none; }
-  .motion-collapse, .motion-chevron, .motion-segmented-thumb, .motion-dock { transition: none; }
+  .motion-collapse, .motion-chevron, .motion-segmented-thumb, .motion-dock, .motion-sidebar { transition: none; }
   .motion-press:active:not(:disabled):not([aria-disabled='true']) { scale: none; }
+  .task-row[data-completing], .menubar-row[data-completing], .task-row[data-completing] .metadata-badge, [data-completing] .completion-check,
+  [data-completing] .completion-check-mark path, [data-completing] .completion-check-mark polyline,
+  [data-completing] .completion-strike { animation: none; }
+  .task-row[data-done] .task-item-display__title { transition: none; }
 }
 
 html[data-motion='off'] *,
@@ -125,6 +218,10 @@ html[data-motion='off'] .animate-spin {
   animation-iteration-count: infinite !important;
 }
 html[data-motion='off'] .motion-press:active { scale: none; }
+html[data-motion='off'] :is(.task-row[data-completing], .menubar-row[data-completing], .task-row[data-completing] .metadata-badge),
+html[data-motion='off'] [data-completing] :is(.completion-check, .completion-strike, .completion-check-mark path, .completion-check-mark polyline) {
+  animation: none !important;
+}
 html[data-motion='off'] .motion-skeleton { animation: none !important; }
 html[data-motion='off'] :is(
   .motion-overlay, .motion-dialog, .motion-popover, .motion-sheet-right, .motion-toast, .motion-view,

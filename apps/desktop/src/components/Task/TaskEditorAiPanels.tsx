@@ -1,5 +1,5 @@
 import { Check, Loader2, Sparkles } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { useTaskItemAi } from './useTaskItemAi';
 
 type TaskEditorAi = ReturnType<typeof useTaskItemAi>;
@@ -89,10 +89,12 @@ type TaskEditorAiPanelsProps = {
     ai: TaskEditorAi;
     timeEstimatesEnabled: boolean;
     t: (key: string) => string;
+    /** Rendered at the end of the "Suggested" row (or on its own when there is no suggestion). */
+    fillAction?: ReactNode;
 };
 
 
-export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAiPanelsProps) {
+export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t, fillAction }: TaskEditorAiPanelsProps) {
     const {
         aiEnabled,
         aiError,
@@ -138,7 +140,11 @@ export function TaskEditorAiPanels({ ai, timeEstimatesEnabled, t }: TaskEditorAi
                         </button>
                     )}
                     <span className="text-muted-foreground/70">{t('copilot.applyHint')}</span>
+                    {fillAction && <span className="ml-auto">{fillAction}</span>}
                 </div>
+            )}
+            {fillAction && pendingCopilotParts.length === 0 && (
+                <div className="flex items-center">{fillAction}</div>
             )}
             {hasAppliedCopilot && (
                 <div className="text-xs px-2 py-1 rounded-control bg-well text-muted-foreground">

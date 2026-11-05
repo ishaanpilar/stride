@@ -63,6 +63,13 @@ const renderListView = (statusFilter: 'inbox' | 'next' | 'waiting' | 'someday' |
     </LanguageProvider>
   );
 
+/** The Inbox tucks sort/filter/group behind its "…" menu. */
+const openInboxViewOptions = (view: ReturnType<typeof render>) => {
+  fireEvent.click(view.getByRole('button', { name: 'More Inbox options' }));
+  fireEvent.click(view.getByRole('menuitem', { name: 'Sort, filter and group…' }));
+};
+const inboxComposer = (view: ReturnType<typeof render>) => view.getByRole('textbox', { name: 'What’s on your mind?' }) as HTMLTextAreaElement;
+
 describe('ListView', () => {
   it('opens a Waiting task when double-clicking the bottom of its row', () => {
     useTaskStore.setState({
@@ -130,14 +137,14 @@ describe('ListView', () => {
     });
 
     const inbox = renderListView('inbox', 'Inbox');
-    expect(inbox.getByText('All areas')).toBeInTheDocument();
+    expect(inbox.getByText('4 to process')).toBeInTheDocument();
     expect(inbox.getByText('Work inbox')).toBeInTheDocument();
     expect(inbox.getByText('Personal inbox')).toBeInTheDocument();
     expect(inbox.getByText('Inherited inbox')).toBeInTheDocument();
     expect(inbox.getByText('Unassigned inbox')).toBeInTheDocument();
     expect(inbox.queryByText('Parked inbox')).not.toBeInTheDocument();
     expect(inbox.queryByText('Deleted inbox')).not.toBeInTheDocument();
-    expect(inbox.getByRole('button', { name: /Process Inbox \(4\)/i })).toBeInTheDocument();
+    expect(inbox.getByRole('button', { name: 'Process Inbox' })).toBeInTheDocument();
     expect(useTaskStore.getState().settings.filters).toEqual(filters);
     inbox.unmount();
 
@@ -276,52 +283,28 @@ describe('ListView', () => {
     expect(html).not.toContain('data-view-filter-input');
   });
 
-  it('uses a compact one-line quick-add hint in the inbox list footer', () => {
-    const { getByRole, getByText, queryByPlaceholderText, queryByText } = renderListView('inbox', 'Inbox');
-
-    expect(queryByPlaceholderText(/Add Task/i)).toBeInTheDocument();
-    expect(getByText('Try: Call mom /due:tomorrow 5pm @phone #family')).toBeInTheDocument();
-    expect(getByRole('button', { name: 'Quick Add syntax help' })).toHaveAttribute(
-      'title',
-      expect.stringContaining('/start:<when>')
-    );
-    expect(queryByText(/Quick add supports/)).not.toBeInTheDocument();
-  });
-
-  it('trades the syntax hint for a live read-out of what the draft parses to', () => {
-    const { getByPlaceholderText, getByTestId, queryByText } = renderListView('inbox', 'Inbox');
-
-    act(() => {
-      fireEvent.change(getByPlaceholderText(/Add Task/i), {
-        target: { value: 'call mom @phone #family' },
-      });
-    });
-
-    const preview = getByTestId('quick-add-preview');
-    expect(preview).toHaveTextContent('@phone');
-    expect(preview).toHaveTextContent('#family');
-    expect(queryByText('Try: Call mom /due:tomorrow 5pm @phone #family')).not.toBeInTheDocument();
-  });
-
-  it('finds an archived bare context in Inbox Quick Add while blank choices stay visible-only', () => {
-    useTaskStore.setState({
-      _allTasks: [
-        makeTask('active', { status: 'inbox', contexts: ['@active-only'] }),
-        makeTask('archived', { status: 'archived', contexts: ['Seasonal Planning'] }),
-        makeTask('deleted', { status: 'next', contexts: ['@deleted-only'], deletedAt: now }),
-      ],
-      lastDataChangeAt: 1,
-    });
+  it('replaces the Inbox toolbar and quick-add row with a calm capture composer', () => {
+    useTaskStore.setState({ _allTasks: [makeTask('1', { title: 'Loose thought', status: 'inbox' })], lastDataChangeAt: 1 });
     const view = renderListView('inbox', 'Inbox');
-    const input = view.getByPlaceholderText(/Add Task/i);
-    fireEvent.change(input, { target: { value: '@' } });
-    expect(view.queryByRole('option', { name: '@Seasonal Planning' })).not.toBeInTheDocument();
-    fireEvent.change(input, { target: { value: '@Seas' } });
-    expect(view.getByRole('option', { name: '@Seasonal Planning' })).toBeInTheDocument();
-    fireEvent.change(input, { target: { value: 'Plan @Seasonal Planning' } });
-    expect(view.getByTestId('quick-add-preview')).toHaveTextContent('@Seasonal Planning');
-    fireEvent.change(input, { target: { value: '@dele' } });
-    expect(view.queryByRole('option', { name: '@deleted-only' })).not.toBeInTheDocument();
+
+    expect(inboxComposer(view)).toBeInTheDocument();
+    expect(view.getByText('Enter to add · Shift+Enter for a new line')).toBeInTheDocument();
+    expect(view.queryByRole('combobox', { name: 'Group' })).not.toBeInTheDocument();
+    expect(view.queryByRole('button', { name: 'Filters' })).not.toBeInTheDocument();
+    expect(view.getByText('Captured just now')).toBeInTheDocument();
+
+    openInboxViewOptions(view);
+    expect(view.getByRole('combobox', { name: 'Group' })).toBeInTheDocument();
+    expect(view.getByRole('button', { name: 'Filters' })).toBeInTheDocument();
+  });
+
+  it('centres the composer as a hero when the Inbox is empty', () => {
+    useTaskStore.setState({ _allTasks: [], lastDataChangeAt: 1 });
+    const view = renderListView('inbox', 'Inbox');
+    expect(view.container.querySelector('[data-inbox-hero] [data-capture-composer="hero"]')).not.toBeNull();
+    expect(view.queryByRole('button', { name: 'Process Inbox' })).not.toBeInTheDocument();
+    expect(view.getByRole('button', { name: /Brain dump/ })).toBeInTheDocument();
+    expect(view.getByRole('button', { name: /Guided sweep/ })).toBeInTheDocument();
   });
 
   it('keeps Mind Sweep open when the first capture populates an empty inbox', async () => {
@@ -1143,7 +1126,9 @@ describe('ListView', () => {
       },
     }));
 
-    const { getAllByText, getByRole, queryByText } = renderListView('inbox', 'Inbox');
+    const inboxView = renderListView('inbox', 'Inbox');
+    const { getAllByText, getByRole, queryByText } = inboxView;
+    openInboxViewOptions(inboxView);
 
     expect(getByRole('combobox', { name: 'Group' })).toHaveTextContent('Tags');
     expect(queryByText('#alpha')).toBeInTheDocument();
@@ -1159,6 +1144,7 @@ describe('ListView', () => {
     });
 
     const inbox = renderListView('inbox', 'Inbox');
+    openInboxViewOptions(inbox);
     selectToolbarOption('Group', 'Context', inbox);
 
     expect(useUiStore.getState().listOptions.inboxGroupBy).toBe('context');
@@ -1629,14 +1615,14 @@ describe('ListView', () => {
     });
     useTaskStore.setState({ addTask, settings: { quickAddAutoClean: true } });
 
-    const { container, getByRole, queryByText } = renderListView('inbox', 'Inbox');
-    const input = getByRole('combobox', { name: 'Add Task' });
+    const view = renderListView('inbox', 'Inbox');
+    const { queryByText } = view;
+    const input = inboxComposer(view);
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Buried inbox task' } });
     });
-    const form = container.querySelector('form');
     await act(async () => {
-      fireEvent.submit(form!);
+      fireEvent.keyDown(input, { key: 'Enter' });
     });
 
     await waitFor(() => {
@@ -1675,20 +1661,20 @@ describe('ListView', () => {
       useUiStore.getState().setListFilters({ criteria: { contexts: ['@work'] } });
     });
 
-    const { container, getByRole, queryByText } = renderListView('inbox', 'Inbox');
+    const view = renderListView('inbox', 'Inbox');
+    const { queryByText } = view;
     await waitFor(() => {
       expect(queryByText('Filtered visible task')).toBeInTheDocument();
     });
 
     scrollIntoViewMock.mockClear();
 
-    const input = getByRole('combobox', { name: 'Add Task' });
+    const input = inboxComposer(view);
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Task without the filtered context' } });
     });
-    const form = container.querySelector('form');
     await act(async () => {
-      fireEvent.submit(form!);
+      fireEvent.keyDown(input, { key: 'Enter' });
     });
 
     await waitFor(() => {
@@ -1700,23 +1686,20 @@ describe('ListView', () => {
 
   it('keeps the typed in-list capture text when the write is rejected', async () => {
     const addTask = vi.fn(async () => ({ success: false, error: 'Archived project' }));
-    const showToast = vi.fn();
     useTaskStore.setState({ addTask });
-    useUiStore.setState({ showToast });
 
-    const { container, getByRole } = renderListView('inbox', 'Inbox');
-    const input = getByRole('combobox', { name: 'Add Task' }) as HTMLInputElement;
+    const view = renderListView('inbox', 'Inbox');
+    const input = inboxComposer(view);
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Rejected capture' } });
     });
-    const form = container.querySelector('form');
     await act(async () => {
-      fireEvent.submit(form!);
+      fireEvent.keyDown(input, { key: 'Enter' });
     });
 
-    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask).toHaveBeenCalled();
     expect(input.value).toBe('Rejected capture');
-    expect(showToast).toHaveBeenCalledWith('Failed to add task', 'error');
+    expect(view.getByRole('alert')).toHaveTextContent('couldn’t be added');
   });
 
   it('shows an error toast when loading archived tasks fails', () => {
@@ -1789,17 +1772,14 @@ describe('ListView', () => {
       },
     });
 
-    const { container, getByRole } = renderListView('inbox', 'Inbox');
-    const input = getByRole('combobox', { name: 'Add Task' });
+    const view = renderListView('inbox', 'Inbox');
+    const input = inboxComposer(view);
 
     await act(async () => {
       fireEvent.change(input, { target: { value: 'Area filtered task' } });
     });
-
-    const form = container.querySelector('form');
-    expect(form).not.toBeNull();
     await act(async () => {
-      fireEvent.submit(form!);
+      fireEvent.keyDown(input, { key: 'Enter' });
     });
 
     expect(addTask).toHaveBeenCalledWith('Area filtered task', expect.objectContaining({
@@ -1820,17 +1800,14 @@ describe('ListView', () => {
         settings: { quickAddAutoClean: true },
       });
 
-      const { container, getByRole } = renderListView('inbox', 'Inbox');
+      const view = renderListView('inbox', 'Inbox');
 
-      const input = getByRole('combobox', { name: 'Add Task' });
+      const input = inboxComposer(view);
       await act(async () => {
         fireEvent.change(input, { target: { value: 'Tax deadline — April 15' } });
       });
-
-      const form = container.querySelector('form');
-      expect(form).not.toBeNull();
       await act(async () => {
-        fireEvent.submit(form!);
+        fireEvent.keyDown(input, { key: 'Enter' });
       });
 
       expect(addTask).toHaveBeenCalledWith('Tax deadline', expect.objectContaining({
@@ -1853,13 +1830,19 @@ describe('ListView', () => {
     ['waiting', 'Waiting'],
     ['someday', 'Someday'],
 
-    ['inbox', 'Inbox'],
 
     ['reference', 'Reference'],
   ] as const)('offers a Filters toggle in the %s toolbar', (statusFilter, title) => {
     const { getByRole } = renderListView(statusFilter, title);
 
     expect(getByRole('button', { name: 'Filters' })).toBeInTheDocument();
+  });
+
+  it('offers a Filters toggle in the Inbox view options', () => {
+    useTaskStore.setState({ _allTasks: [makeTask('1', { title: 'Loose thought', status: 'inbox' })], lastDataChangeAt: 1 });
+    const view = renderListView('inbox', 'Inbox');
+    openInboxViewOptions(view);
+    expect(view.getByRole('button', { name: 'Filters' })).toBeInTheDocument();
   });
 
   it('toggles the completed-list filter panel from the toolbar button', async () => {

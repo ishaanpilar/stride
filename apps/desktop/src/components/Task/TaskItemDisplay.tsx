@@ -1,4 +1,4 @@
-import { AlertTriangle, AlignLeft, Folder, Calendar as CalendarIcon, Tag, Trash2, ArrowRight, Repeat, Check, Clock, Timer, Link2, ListChecks, Paperclip, RotateCcw, Copy, MapPin, History, Hourglass, Play, Zap, MoreHorizontal, XCircle } from 'lucide-react';
+import { AlertTriangle, AlignLeft, ChevronRight, Folder, Calendar as CalendarIcon, Tag, Trash2, ArrowRight, Repeat, Check, Clock, Timer, Link2, ListChecks, Paperclip, RotateCcw, Copy, MapPin, History, Hourglass, Play, Zap, MoreHorizontal, XCircle } from 'lucide-react';
 import type { Area, Attachment, Project, RangeSelectionOptions, Section, Task, TaskStatus, RecurrenceRule, RecurrenceStrategy, Language } from '@stride/core';
 import { DEFAULT_AREA_COLOR, formatRecurrenceLabel, formatTimeEstimateLabel, formatTimeSpentLabel, getChecklistProgress, getContextColor, getInlineMarkdownPreview, getRecurringTaskPreviewDate, getTaskAgeLabel, getTaskDateCoherenceIssues, getTaskStaleness, getTaskUrgency, hasTimeComponent, isTaskActionable, isTaskCancelled, isTaskCompleted, isTaskFinished, safeFormatDate, safeParseDate, resolveTaskTextDirection, tFallback } from '@stride/core';
 import { cn } from '../../lib/utils';
@@ -11,7 +11,7 @@ import { AttachmentProgressIndicator } from '../AttachmentProgressIndicator';
 import { RichMarkdown } from '../RichMarkdown';
 import { InlineMarkdown } from '../Markdown';
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { isImageAttachment } from './task-item-attachment-utils';
 import { AttachmentImage } from './AttachmentImage';
 import { FocusStarIcon } from '../FocusStarIcon';
@@ -20,6 +20,7 @@ import { useTaskDisplayClock } from '../../hooks/useTaskDisplayClock';
 import { copyTaskReference } from '../../lib/task-clipboard';
 import { formatTaskDateChipLabel } from './task-item-helpers';
 import type { PillTone } from '../ui/Pill';
+import { isActivePhase, useCompletionPhase } from '../../lib/completion-sequence';
 
 interface TaskItemDisplayActions {
     onToggleSelect?: (options?: RangeSelectionOptions) => void;
@@ -181,6 +182,12 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
     const ageLabel = getTaskAgeLabel(task.createdAt, language);
     const isBareFileReference = useBareFileReferenceCheck();
     const showCompactMeta = compactMetaEnabled && !isViewOpen;
+    // Rows with something to reveal (steps, notes, attachments) get a visible expand chevron.
+    const hasExpandableContent = (task.checklist?.length ?? 0) > 0
+        || Boolean(task.description?.trim())
+        || visibleAttachments.length > 0;
+    const showExpandToggle = hasExpandableContent && !selectionMode;
+    const expandedDetailsId = useId();
     const collapsedPriorityAccessibilityLabel = !isReference
         && !compactMetaEnabled
         && !isViewOpen
@@ -200,8 +207,11 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
         && Boolean(ageLabel);
     const taskIsCancelled = isTaskCancelled(task);
     const taskIsCompleted = isTaskCompleted(task);
-    const completedAtMount = useRef(taskIsCompleted);
-    const completedThisMount = taskIsCompleted && !completedAtMount.current;
+    // The completion sequence (lib/completion-sequence.ts) owns the tick animation: while it runs the
+    // row already looks done, even in the few ms before the store reports the new status.
+    const completionPhase = useCompletionPhase(task.id);
+    const completingNow = isActivePhase(completionPhase);
+    const looksCompleted = taskIsCompleted || completingNow;
     const completionTimestamp = taskIsCancelled
         ? task.cancelledAt || task.updatedAt
         : taskIsCompleted
@@ -252,7 +262,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
             || recurrencePreviewLabel
             || (prioritiesEnabled && task.priority)
             || (task.contexts?.length ?? 0) > 0
-            || checklistProgress
+            || (checklistProgress && !showExpandToggle)
             || waitingAssignee
             || (timeEstimatesEnabled && task.timeEstimate)
         );
@@ -442,7 +452,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
         && !selectionMode
         && !readOnly
         && isTaskActionable(task);
-    const showCompletedIndicator = showQuickDone && taskIsCompleted && !selectionMode;
+    const showCompletedIndicator = showQuickDone && looksCompleted && !selectionMode;
     const canEditCompletedAt = Boolean(taskIsCompleted && completionLabel && onEditCompletedAt)
         && !selectionMode
         && !interactionDisabled;
@@ -635,7 +645,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                     </div>
                 </div>
             )}
-            {!expanded && checklistProgress && (
+            {!expanded && checklistProgress && !showExpandToggle && (
                 <MetadataBadge
                     variant="info"
                     icon={ListChecks}
@@ -717,11 +727,8 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
     );
     // Only rows ticked this session (restoreStatus known) get the untick button; others stay read-only.
     const canUntick = task.status === 'done' && !interactionDisabled && restoreStatus !== undefined;
-    const completedIndicatorClass = cn(
-        "inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-accent-gradient text-on-accent",
-        completedThisMount && "motion-check-pop",
-    );
-    const completedCheckClass = cn("h-3 w-3", completedThisMount && "motion-check-draw");
+    const completedIndicatorClass = "completion-check inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-success-fill text-success-foreground";
+    const completedCheckClass = "completion-check-mark h-3 w-3";
     const completionControl = showCompletedIndicator
         ? (canUntick
             ? (
@@ -859,13 +866,12 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                             className={cn(
                                 "task-item-display__title font-semibold leading-5 whitespace-normal break-words text-foreground transition-colors",
                                 dense ? "text-sm" : "text-[15px]",
-                                taskIsCompleted && "line-through text-muted-foreground",
-                                completedThisMount && "motion-strike",
+                                looksCompleted && "text-muted-foreground",
                                 actionsOverlay && "pr-28",
                                 (overlayDragHandle || overlayQuickDone) && "pl-12"
                             )}
                         >
-                            {task.title}
+                            {looksCompleted ? <span className="completion-strike" data-task-title-struck>{task.title}</span> : task.title}
                             {!isViewOpen && !showCompactMeta && !isReference && recurrenceLabel && (
                                 <span title={recurrenceLabel} className="ms-1 inline-block align-[-2px]">
                                     <Repeat aria-hidden="true" className="h-3.5 w-3.5" />
@@ -931,7 +937,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                     )}
 
                     {isViewOpen && (
-                        <div data-task-row-ignore-double-click className="motion-expand-in" onClick={(e) => e.stopPropagation()}>
+                        <div id={expandedDetailsId} data-task-row-ignore-double-click className="motion-expand-in" onClick={(e) => e.stopPropagation()}>
                             {task.description && (
                                 <div
                                     className={cn(
@@ -1073,6 +1079,46 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                         </div>
                     )}
                 </div>
+                {showExpandToggle && (
+                    <div
+                        data-task-row-ignore-double-click
+                        className="task-item-display__expand flex shrink-0 items-center"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            data-task-expand-toggle
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                onToggleView();
+                            }}
+                            aria-expanded={isViewOpen}
+                            aria-controls={isViewOpen ? expandedDetailsId : undefined}
+                            aria-label={[
+                                `${isViewOpen ? tFallback(t, 'markdown.collapse', 'Collapse') : tFallback(t, 'markdown.expand', 'Expand')}: ${task.title}`,
+                                checklistProgress
+                                    ? `${tFallback(t, 'checklist.progress', 'Checklist progress')}: ${checklistProgress.completed}/${checklistProgress.total}`
+                                    : null,
+                            ].filter(Boolean).join('. ')}
+                            title={isViewOpen ? tFallback(t, 'markdown.collapse', 'Collapse') : tFallback(t, 'markdown.expand', 'Expand')}
+                            className={cn(
+                                "focus-ring inline-flex h-6 shrink-0 items-center gap-1 rounded-pill px-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground motion-reduce:transition-none",
+                                isViewOpen && "text-foreground",
+                            )}
+                        >
+                            {checklistProgress && (
+                                <span className="tabular-nums font-medium" aria-hidden="true">
+                                    {checklistProgress.completed}/{checklistProgress.total}
+                                </span>
+                            )}
+                            <ChevronRight
+                                aria-hidden="true"
+                                className={cn("motion-chevron h-3.5 w-3.5 shrink-0", isViewOpen && "rotate-90")}
+                            />
+                        </button>
+                    </div>
+                )}
             </div>
 
             {showPriorityPill && task.priority && (

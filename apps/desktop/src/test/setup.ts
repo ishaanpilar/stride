@@ -3,10 +3,14 @@ import '@testing-library/jest-dom';
 import { cleanup } from '@testing-library/react';
 import * as matchers from 'vitest-axe/matchers';
 import 'vitest-axe/extend-expect';
+import { resetCompletionSequenceForTests } from '../lib/completion-sequence';
 expect.extend(matchers);
 
 afterEach(() => {
     cleanup();
+    // The completion sequence is per window (module state): a tick in one test must not leave the next
+    // test's same task id "already completing".
+    resetCompletionSequenceForTests();
 });
 
 if (typeof window.requestAnimationFrame !== 'function') {

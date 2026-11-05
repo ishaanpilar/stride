@@ -6,6 +6,7 @@ import { getEnglishSettingsLabels } from './labels';
 import { SettingsGtdPage } from './SettingsGtdPage';
 import { useUiStore } from '../../../store/ui-store';
 import { holdSyncSave } from '../../../test/hold-sync-save';
+import { CAPTURE_PREFERENCES_STORAGE_KEY, getCapturePreferences, resetCapturePreferencesForTests } from '../../../lib/capture-preferences';
 
 const initialTaskState = useTaskStore.getState();
 
@@ -262,5 +263,37 @@ describe('SettingsGtdPage', () => {
                 },
             });
         });
+    });
+    it('saves the capture voice toggles: start recording (synced) and auto-save (this device)', async () => {
+        localStorage.clear();
+        resetCapturePreferencesForTests();
+        const updateSettings = vi.fn().mockResolvedValue(undefined);
+        const showSaved = vi.fn();
+        const { getByRole } = render(
+            <SettingsGtdPage
+                t={getEnglishSettingsLabels()}
+                language="en"
+                settings={{ gtd: {} }}
+                updateSettings={updateSettings}
+                showSaved={showSaved}
+                autoArchiveDays={7}
+                areas={[]}
+            />
+        );
+
+        fireEvent.click(getByRole('button', { name: /default capture method/i }));
+        const startVoice = getByRole('switch', { name: 'Start voice recording when capture opens' });
+        expect(startVoice).toHaveAttribute('aria-checked', 'false');
+        fireEvent.click(startVoice);
+        await waitFor(() => {
+            expect(updateSettings).toHaveBeenCalledWith({ gtd: { defaultCaptureMethod: 'audio' } });
+        });
+
+        const autoSave = getByRole('switch', { name: 'Save automatically after transcription' });
+        expect(autoSave).toHaveAttribute('aria-checked', 'false');
+        fireEvent.click(autoSave);
+        expect(getCapturePreferences().autoSaveAfterTranscription).toBe(true);
+        expect(JSON.parse(localStorage.getItem(CAPTURE_PREFERENCES_STORAGE_KEY)!)).toEqual({ autoSaveAfterTranscription: true });
+        await waitFor(() => expect(getByRole('switch', { name: 'Save automatically after transcription' })).toHaveAttribute('aria-checked', 'true'));
     });
 });

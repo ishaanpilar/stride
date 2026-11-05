@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { createPomodoroState, DEFAULT_POMODORO_DURATIONS, sanitizePomodoroSessionHistory, useTaskStore } from '@stride/core';
 import { LanguageProvider } from '../contexts/language-context';
-import { DESKTOP_POMODORO_SESSION_STORAGE_KEY, usePomodoroStore } from '../store/pomodoro-store';
+import { DESKTOP_POMODORO_SESSION_STORAGE_KEY, togglePomodoroSnapshot, usePomodoroStore } from '../store/pomodoro-store';
 import { usePomodoroAlerts } from './usePomodoroAlerts';
 
 const sendAlert = vi.fn();
@@ -136,6 +136,26 @@ describe('usePomodoroAlerts', () => {
             vi.advanceTimersByTime(3000);
         });
 
+        expect(sendAlert).toHaveBeenCalledTimes(1);
+    });
+
+    it('keep going: chimes once at 0:00, not every second of overtime, and not when the user pauses it', () => {
+        const task = { id: 't1', title: 'Write it', status: 'next' as const, tags: [], contexts: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+        useTaskStore.setState({ tasks: [task], _allTasks: [task] } as never);
+        usePomodoroStore.setState({
+            hasHydrated: true,
+            quietFinish: false,
+            snapshot: { ...runningSnapshot('focus', 2), selectedTaskId: 't1', timerState: { ...runningSnapshot('focus', 2).timerState, keepGoing: true } },
+        });
+        render(<LanguageProvider><Harness /></LanguageProvider>);
+        act(() => { vi.advanceTimersByTime(10_000); });
+        expect(usePomodoroStore.getState().snapshot.timerState.overtimeSeconds).toBeGreaterThan(5);
+        expect(sendAlert).toHaveBeenCalledTimes(1);
+        expect(sendAlert.mock.calls[0][1]).toContain('Keep going');
+        act(() => {
+            usePomodoroStore.getState().commitPomodoro((prev) => togglePomodoroSnapshot(prev, Date.now(), {}));
+        });
+        expect(usePomodoroStore.getState().snapshot.lastEvent).toBe('focus-finished');
         expect(sendAlert).toHaveBeenCalledTimes(1);
     });
 });

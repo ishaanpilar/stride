@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { KeyboardSensor } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { BoardView } from './BoardView';
@@ -7,6 +7,7 @@ import { LanguageProvider } from '../../contexts/language-context';
 import { useTaskStore, type AppData, type Area, type Project, type Task } from '@stride/core';
 import { useUiStore } from '../../store/ui-store';
 import { expectScrolledEndGap } from '../../test/list-end-gap';
+import { resetCompletionSequenceForTests } from '../../lib/completion-sequence';
 
 const { dndSensorCalls } = vi.hoisted(() => ({
     dndSensorCalls: [] as Array<{ sensor: unknown; options: unknown }>,
@@ -628,7 +629,7 @@ describe('BoardView', () => {
             }],
         });
         const { getByText } = renderWithProviders();
-        expect(getByText('Finished thing').className).toContain('line-through');
+        expect(getByText('Finished thing').className).toContain('completion-strike');
     });
 
     it('moves a card across columns with Alt+Arrow and reorders it with Alt+Up/Down', () => {
@@ -793,6 +794,8 @@ describe('BoardView', () => {
             fireEvent.keyDown(utils.getByRole('group', { name: 'Waiting card' }), { key: 'Enter' });
             expect(useUiStore.getState().editingTaskId).toBe('w');
             useUiStore.setState({ editingTaskId: null });
+            // The tick's sequence has finished (a reopen straight after the tick is a double click).
+            act(() => resetCompletionSequenceForTests());
             fireEvent.click(within(utils.getByRole('group', { name: 'Waiting card' })).getByRole('button', { name: /reopen/i }));
             expect(moveTask).toHaveBeenLastCalledWith('w', 'waiting');
         });

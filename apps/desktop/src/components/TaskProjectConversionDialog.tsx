@@ -3,6 +3,7 @@ import { checklistProjectBlockReason, useTaskStore, type Task } from '@stride/co
 import { useLanguage } from '../contexts/language-context';
 import { Dialog, DialogBody, DialogFooter } from './ui/Dialog';
 import { Button } from './ui/Button';
+import { ProjectTitleLengthHint } from './views/projects/ShortenProjectTitleDialog';
 
 export function TaskProjectConversionDialog({ task, onConfirm, onClose }: {
     task: Task; onConfirm: (title: string, expand: boolean) => Promise<void>; onClose: () => void;
@@ -20,6 +21,7 @@ export function TaskProjectConversionDialog({ task, onConfirm, onClose }: {
                 <input autoFocus value={title} onChange={event => setTitle(event.target.value)} disabled={busy}
                     className="mt-2 w-full rounded-control bg-well shadow-soft-inset px-3 py-2 focus-ring" />
             </label>
+            <ProjectTitleLengthHint title={title} t={t} className="-mt-2" />
             <label className="flex items-center gap-3 min-h-11">
                 <input type="checkbox" checked={expand} disabled={busy || (!!blocked && !expand)}
                     onChange={event => setExpand(event.target.checked)} />{t('task.expandChecklist')}

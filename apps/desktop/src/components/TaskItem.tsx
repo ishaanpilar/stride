@@ -54,11 +54,13 @@ import { deleteTaskWithUndo, duplicateTaskAndReveal, TaskQuickActionMenuHost } f
 import {
     getRecurrenceRuleValue,
     getRecurrenceStrategyValue,
+    TASK_EDITOR_FIELD_LABEL_KEYS,
     toDateTimeLocalValue,
 } from './Task/task-item-helpers';
 import { useTaskItemAttachments } from './Task/useTaskItemAttachments';
 import { useTaskItemRecurrence } from './Task/useTaskItemRecurrence';
 import { useTaskItemAi } from './Task/useTaskItemAi';
+import { useTaskFillAi } from './Task/useTaskFillAi';
 import { useTaskItemEditState } from './Task/useTaskItemEditState';
 import { useTaskItemProjectContext } from './Task/useTaskItemProjectContext';
 import { useTaskItemFieldLayout } from './Task/useTaskItemFieldLayout';
@@ -77,6 +79,8 @@ import { createSomedaySection } from '../lib/someday-section-actions';
 import { resolveNativeDateInputLocale } from '../lib/native-date-input-locale';
 import { setCalendarTaskDragData } from '../lib/calendar-task-drag';
 import { useRetainedPreviousStatus } from '../lib/completion-retention';
+import { beginCompletion, cancelCompletion, isActivePhase, isWithinDoubleClickGuard, useCompletionPhase } from '../lib/completion-sequence';
+import { useCompletionRowMotion } from '../lib/completion-motion';
 import { useTaskItemStoreState, useTaskItemUiState } from './Task/useTaskItemStoreState';
 import type { TaskInputAcceptedSuggestion } from './Task/TaskInput';
 import { TASK_ROW_ACTION_EVENT, type TaskRowAction } from '../lib/task-row-actions';
@@ -310,6 +314,8 @@ export const TaskItem = memo(function TaskItem({
     const recurrenceStrategy = getRecurrenceStrategyValue(task.recurrence);
     const isStagnant = (task.pushCount ?? 0) > 3;
     const retainedPreviousStatus = useRetainedPreviousStatus(task.id);
+    const completionPhase = useCompletionPhase(task.id);
+    useCompletionRowMotion(taskRootRef, completionPhase);
     const effectiveReadOnly = interactionDisabled || readOnly || task.status === 'done';
     const mutationOwnerRef = useRef({
         taskId: task.id,
@@ -660,6 +666,13 @@ export const TaskItem = memo(function TaskItem({
         draft.projectId && (sectionsByProject.get(draft.projectId)?.length ?? 0) > 0
     );
     const wasEditingRef = useRef(false);
+    const [revealedFields, setRevealedFields] = useState<ReadonlySet<TaskEditorFieldId>>(() => new Set());
+    useEffect(() => {
+        if (!isEditing) setRevealedFields((prev) => (prev.size ? new Set() : prev));
+    }, [isEditing]);
+    const revealEditorField = useCallback((fieldId: TaskEditorFieldId) => {
+        setRevealedFields((prev) => (prev.has(fieldId) ? prev : new Set([...prev, fieldId])));
+    }, []);
 
     const {
         organizerFields,
@@ -671,6 +684,7 @@ export const TaskItem = memo(function TaskItem({
         detailsFields,
         sectionCounts,
         sectionOpenDefaults,
+        addableFields: addableFieldIds,
     } = useTaskItemFieldLayout({
         settings,
         task,
@@ -679,6 +693,20 @@ export const TaskItem = memo(function TaskItem({
         timeEstimatesEnabled,
         hasProjectSections: selectedProjectHasSections,
         visibleEditAttachmentsLength: visibleEditAttachments.length,
+        revealedFields,
+    });
+    const addableFields = useMemo(
+        () => (isEditing ? addableFieldIds.map((id) => ({ id, label: tFallback(t, TASK_EDITOR_FIELD_LABEL_KEYS[id], id) })) : []),
+        [addableFieldIds, isEditing, t],
+    );
+    const fill = useTaskFillAi({
+        task,
+        draft,
+        setField: setDraftField,
+        enabled: isEditing && settings?.ai?.enabled === true && !effectiveReadOnly,
+        knownContexts: allContexts,
+        knownTags: tagOptions,
+        language,
     });
     const activeProjectId = draft.projectId || task.projectId || '';
     const projectSections = activeProjectId ? (sectionsByProject.get(activeProjectId) ?? []) : [];
@@ -1325,9 +1353,17 @@ export const TaskItem = memo(function TaskItem({
         }
         const previousStatus = task.status;
         const wasFocusedToday = task.isFocusedToday === true;
+        const completing = nextStatus === 'done' && previousStatus !== 'done';
+        if (completing) {
+            // A second click while the first one is still playing is a double click, not a second completion.
+            if (!beginCompletion(task.id, { sound: true })) return;
+        } else if (previousStatus === 'done' && isWithinDoubleClickGuard(task.id)) {
+            return;
+        }
         void moveTask(task.id, nextStatus)
             .then((result) => {
                 if (!result.success) {
+                    if (completing) cancelCompletion(task.id);
                     throw new Error(result.error || 'Failed to change task status');
                 }
                 if (nextStatus === 'done' && previousStatus !== 'done') {
@@ -1692,6 +1728,9 @@ export const TaskItem = memo(function TaskItem({
             isImportingFiles={isImportingFiles}
             onSubmit={handleSubmit}
             onFilesDropped={(files) => void addDroppedFileAttachments(files)}
+            fill={fill}
+            addableFields={addableFields}
+            onRevealField={revealEditorField}
         />
     );
 
@@ -1757,6 +1796,9 @@ export const TaskItem = memo(function TaskItem({
             <div
                 ref={taskRootRef}
                 data-task-id={task.id}
+                data-completion={completionPhase}
+                data-completing={isActivePhase(completionPhase) ? '' : undefined}
+                data-done={task.status === 'done' || isActivePhase(completionPhase) ? '' : undefined}
                 draggable={canCalendarDrag}
                 tabIndex={-1}
                 onPointerDownCapture={canCalendarDrag ? handleDragPressStart : undefined}
@@ -1785,7 +1827,8 @@ export const TaskItem = memo(function TaskItem({
                 }}
                 onContextMenu={interactionDisabled ? undefined : handleOpenQuickActionMenu}
                 className={cn(
-                    "group rounded-card bg-card text-card-foreground shadow-soft-sm hover:shadow-soft transition-[box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
+                    "task-row group rounded-card text-card-foreground shadow-soft-sm hover:shadow-soft transition-[box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
+                    task.status === 'done' || isActivePhase(completionPhase) ? "bg-[var(--completion-done-bg)] shadow-none hover:shadow-soft-sm" : "bg-card",
                     isCondensed ? "px-3 py-2" : isCompact ? "p-3" : "p-4",
                     "focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:bg-primary/5",
                     canCalendarDrag && "cursor-grab active:cursor-grabbing",

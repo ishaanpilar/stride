@@ -2,6 +2,8 @@ import { resolveAnthropicModel } from '../catalog';
 import { ANTHROPIC_BASE_URL, buildAnthropicError, isAdaptiveThinkingModel } from '../providers/anthropic';
 import type { AIProviderConfig } from '../types';
 import { AIRequestStopError, fetchTextWithTimeout, isAIRequestStopError, waitForAIRequestRetry } from '../utils';
+import { handleRateLimitedResponse } from '../provider-rate-limit';
+import { ASSISTANT_MAX_OUTPUT_TOKENS, ASSISTANT_THINKING_ALLOWANCE_TOKENS } from './guardrails';
 import type {
     AssistantMessage,
     AssistantModelClient,
@@ -13,9 +15,27 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_RETRIES = 2;
-const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
-// Room for adaptive thinking plus a reply and several tool calls; non-streaming, so kept moderate.
-const MAX_TOKENS = 16_000;
+const RETRYABLE = new Set([408, 500, 502, 503, 504, 529]);
+
+/**
+ * Output cap for one Assistant call. Thinking tokens count against max_tokens, and current Claude
+ * models think by default, so they get a bounded thinking allowance on top of the reply cap.
+ * Older models without thinking get just the reply cap. Keeps a misused turn cheap.
+ */
+export function anthropicAssistantTokenLimits(model: string, thinkingBudget: number): { maxTokens: number; thinking?: Record<string, unknown> } {
+    const adaptive = isAdaptiveThinkingModel(model);
+    if (thinkingBudget > 0 && !adaptive) {
+        const budget = Math.max(1024, Math.min(thinkingBudget, ASSISTANT_THINKING_ALLOWANCE_TOKENS));
+        return { maxTokens: budget + ASSISTANT_MAX_OUTPUT_TOKENS, thinking: { type: 'enabled', budget_tokens: budget } };
+    }
+    if (adaptive) {
+        return {
+            maxTokens: ASSISTANT_MAX_OUTPUT_TOKENS + ASSISTANT_THINKING_ALLOWANCE_TOKENS,
+            ...(thinkingBudget > 0 ? { thinking: { type: 'adaptive' } } : {}),
+        };
+    }
+    return { maxTokens: ASSISTANT_MAX_OUTPUT_TOKENS };
+}
 
 type AnthropicBlock = { type?: string; [key: string]: unknown };
 type AnthropicWireMessage = { role: 'user' | 'assistant'; content: string | AnthropicBlock[] };
@@ -174,19 +194,14 @@ export function createAnthropicChatClient(config: AIProviderConfig): AssistantMo
     // Current Claude models think adaptively by default, so `thinking` is only sent when the user
     // turned thinking on. Older models that predate adaptive thinking take a token budget instead.
     // No sampling parameters: current models reject non-default temperature.
-    let thinking: Record<string, unknown> | undefined;
-    if (thinkingBudget > 0) {
-        thinking = isAdaptiveThinkingModel(model)
-            ? { type: 'adaptive' }
-            : { type: 'enabled', budget_tokens: Math.min(thinkingBudget, MAX_TOKENS - 1024) };
-    }
+    const { maxTokens, thinking } = anthropicAssistantTokenLimits(model, thinkingBudget);
 
     return {
         async complete(request: AssistantModelRequest): Promise<AssistantModelResponse> {
             const { system, messages } = toAnthropicRequestParts(request.messages);
             const body: Record<string, unknown> = {
                 model,
-                max_tokens: MAX_TOKENS,
+                max_tokens: maxTokens,
                 ...(system ? { system } : {}),
                 messages,
                 tools: request.tools.map((t) => ({
@@ -205,6 +220,7 @@ export function createAnthropicChatClient(config: AIProviderConfig): AssistantMo
                 'anthropic-dangerous-direct-browser-access': 'true',
             };
 
+            let rateLimitRetried = false;
             for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
                 let response;
                 try {
@@ -223,6 +239,11 @@ export function createAnthropicChatClient(config: AIProviderConfig): AssistantMo
                         continue;
                     }
                     throw error;
+                }
+                if (response.status === 429) {
+                    await handleRateLimitedResponse(response, { canRetry: !rateLimitRetried && attempt < MAX_RETRIES, signal: request.signal, label: 'Assistant' });
+                    rateLimitRetried = true;
+                    continue;
                 }
                 if (!response.ok && RETRYABLE.has(response.status) && attempt < MAX_RETRIES) {
                     await waitForAIRequestRetry(400 * 2 ** attempt, request.signal, 'Assistant');

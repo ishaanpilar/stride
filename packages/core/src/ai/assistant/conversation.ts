@@ -1,6 +1,7 @@
 import type { ChangeEntry, PendingConfirmation } from './types';
 import type { HistoryMessage } from './agent';
 import { toLocalDay as localDayKey } from './dates';
+import { parseDeclineArgs, type OutOfScopeDecline } from './guardrails';
 
 // LEGACY: pre-Stride-rename value, kept so existing stored user data stays readable.
 export const ASSISTANT_THREAD_KEY_PREFIX = 'mindwtr:assistant:thread:';
@@ -16,7 +17,17 @@ export interface ThreadMessage {
     suggestions?: string[];
     /** Change entries / pending confirmations caused by this (user) message's turn are keyed by messageId. */
     turnId?: string;
+    /** Assistant message that declined an off-topic request; `captured` once the user saved it as a task. */
+    outOfScope?: OutOfScopeDecline & { captured?: boolean };
 }
+
+/** Stored data is re-validated: only a clean decline survives a reload. */
+const restoreMessage = (m: ThreadMessage): ThreadMessage => {
+    if (!m.outOfScope) return m;
+    const { outOfScope, ...rest } = m;
+    if (m.role !== 'assistant' || typeof outOfScope !== 'object') return rest;
+    return { ...rest, outOfScope: { ...parseDeclineArgs(outOfScope), ...(outOfScope.captured === true ? { captured: true } : {}) } };
+};
 
 export interface AssistantThread {
     day: string;
@@ -43,7 +54,7 @@ export function loadThread(storage: ThreadStorage | null | undefined, now: Date 
         if (!parsed || parsed.day !== day || !Array.isArray(parsed.messages)) return emptyThread(day);
         return {
             day,
-            messages: parsed.messages.filter((m) => m && typeof m.text === 'string' && (m.role === 'user' || m.role === 'assistant')),
+            messages: parsed.messages.filter((m) => m && typeof m.text === 'string' && (m.role === 'user' || m.role === 'assistant')).map(restoreMessage),
             changes: Array.isArray(parsed.changes) ? parsed.changes : [],
             pending: Array.isArray(parsed.pending) ? parsed.pending : [],
         };

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChangeEntry, PendingConfirmation } from '@stride/core';
-import { ChangesCard, ConfirmCard, SuggestionChips } from './AssistantParts';
+import { ChangesCard, ConfirmCard, DeclineCard, SuggestionChips } from './AssistantParts';
 
 const entry = (id: string, label: string, over: Partial<ChangeEntry> = {}): ChangeEntry => ({
     id, messageId: 't1', toolName: 'update_task', label, at: '', undone: false, undoOps: [], changes: [], ...over,
@@ -82,5 +82,25 @@ describe('SuggestionChips', () => {
         render(<SuggestionChips suggestions={['Plan my day', 'Find duplicates']} onPick={onPick} />);
         fireEvent.click(screen.getByText('Find duplicates'));
         expect(onPick).toHaveBeenCalledWith('Find duplicates');
+    });
+});
+
+describe('DeclineCard', () => {
+    const text = "I'm here for your tasks and plans, so I'll skip that one. Want me to capture 'Build a calculator app' as a task instead?";
+
+    it('shows the one-line decline and a Capture as task chip', () => {
+        const onCapture = vi.fn();
+        render(<DeclineCard text={text} decline={{ reason: 'calculator code', suggestedTask: 'Build a calculator app' }} onCapture={onCapture} />);
+        expect(screen.getByTestId('assistant-decline-card').textContent).toContain(text);
+        fireEvent.click(screen.getByRole('button', { name: 'Capture as task: Build a calculator app' }));
+        expect(onCapture).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows Added to Inbox once captured, and no chip without a suggested task', () => {
+        const { rerender } = render(<DeclineCard text={text} decline={{ reason: 'x', suggestedTask: 'Build a calculator app', captured: true }} onCapture={vi.fn()} />);
+        expect(screen.getByTestId('assistant-decline-captured').textContent).toBe('Added to Inbox');
+        expect(screen.queryByRole('button')).toBeNull();
+        rerender(<DeclineCard text="I'm here for your tasks and plans, so I'll skip that one." decline={{ reason: 'jailbreak' }} onCapture={vi.fn()} />);
+        expect(screen.queryByRole('button')).toBeNull();
     });
 });

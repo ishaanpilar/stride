@@ -6,7 +6,8 @@ import {
     getMenuBarReorderIds,
     isMenuBarTaskReorderable,
     selectMenuBarPanelSections,
-    selectMenuBarPanelTabs,
+    filterMenuBarAllGroups,
+    selectMenuBarPanelView,
 } from './menubar-panel';
 import type { Project, Task } from './types';
 
@@ -85,46 +86,81 @@ describe('countMenuBarPanelTasks', () => {
     });
 });
 
-describe('selectMenuBarPanelTabs', () => {
-    const tabs = (list: Task[]) => selectMenuBarPanelTabs(list, { now: NOW });
+describe('selectMenuBarPanelView', () => {
+    const view = (list: Task[], manualToday = false) => selectMenuBarPanelView(list, { now: NOW, manualOrder: { today: manualToday } });
 
-    it('groups upcoming tasks by day within the next seven days', () => {
-        const result = tabs([
-            task('d1b', { dueDate: at(1, 15) }),
-            task('d1a', { dueDate: at(1, 9) }),
-            task('d3', { startTime: at(3, 10) }),
-            task('d7', { dueDate: at(7, 12) }),
-            task('d8', { dueDate: at(8, 12) }),
+    it('puts overdue, focus and due/starting today in one Now list, overdue first', () => {
+        const result = view([
             task('today', { dueDate: at(0, 15) }),
+            task('focus', { isFocusedToday: true }),
+            task('late', { dueDate: at(-2) }),
+            task('starts', { startTime: at(0, 9) }),
+            task('plain'),
         ]);
-        expect(result.upcoming.map((d) => d.key)).toEqual(['2026-11-05', '2026-11-07', '2026-11-11']);
-        expect(ids(result.upcoming[0].tasks)).toEqual(['d1a', 'd1b']);
-        expect(result.counts.upcoming).toBe(4);
+        expect(ids(result.now)).toEqual(['late', 'focus', 'starts', 'today']);
+        expect(ids(result.nowParts.overdue)).toEqual(['late']);
+        expect(ids(result.nowParts.focus)).toEqual(['focus']);
+        expect(result.counts.now).toBe(4);
     });
 
-    it('collects inbox items newest first and all next actions', () => {
-        const result = tabs([
-            task('old', { status: 'inbox', createdAt: at(-5) }),
-            task('new', { status: 'inbox', createdAt: at(-1) }),
-            task('n1'),
-            task('n2', { dueDate: at(0, 15) }),
-            task('w', { status: 'waiting' }),
-            task('gone', { status: 'inbox', deletedAt: at(-1) }),
+    it('keeps a focused overdue task with the focus rows, in Focus order', () => {
+        const result = view([
+            task('f2', { isFocusedToday: true, focusOrder: 2000 }),
+            task('f-late', { dueDate: at(-1), isFocusedToday: true, focusOrder: 1000 }),
+            task('late', { dueDate: at(-3) }),
         ]);
-        expect(ids(result.inbox)).toEqual(['new', 'old']);
-        expect(ids(result.next).sort()).toEqual(['n1', 'n2']);
-        expect(result.counts).toMatchObject({ inbox: 2, next: 2, today: 1 });
+        expect(ids(result.now)).toEqual(['late', 'f-late', 'f2']);
     });
 
-    it('counts overdue plus today for the Today tab', () => {
-        const result = tabs([task('late', { dueDate: at(-1) }), task('now', { dueDate: at(0, 15) })]);
-        expect(result.counts.today).toBe(2);
-        expect(ids(result.overdue)).toEqual(['late']);
+    it('groups every other open task Tomorrow / This week / Later / No date, priority first', () => {
+        const result = view([
+            task('t-low', { dueDate: at(1, 9), priority: 'low' }),
+            task('t-urgent', { dueDate: at(1, 15), priority: 'urgent' }),
+            task('week', { startTime: at(4, 10) }),
+            task('week-edge', { dueDate: at(7, 20) }),
+            task('later', { dueDate: at(20) }),
+            task('none-high', { priority: 'high' }),
+            task('none'),
+            task('someday', { status: 'someday' }),
+            task('today', { dueDate: at(0, 15) }),
+            task('inbox', { status: 'inbox' }),
+            task('waiting', { status: 'waiting' }),
+            task('done', { status: 'done' }),
+            task('gone', { deletedAt: at(-1) }),
+        ]);
+        expect(result.all.map((group) => group.key)).toEqual(['tomorrow', 'week', 'later', 'none']);
+        expect(ids(result.all[0].tasks)).toEqual(['t-urgent', 't-low']);
+        expect(ids(result.all[1].tasks)).toEqual(['week', 'week-edge']);
+        expect(ids(result.all[2].tasks)).toEqual(['later']);
+        expect(ids(result.all[3].tasks)).toEqual(['none-high', 'none', 'someday']);
+        expect(result.counts.all).toBe(8);
+        expect(result.inboxCount).toBe(1);
+    });
+
+    it('leaves out tasks of inactive projects and drops empty groups', () => {
+        const projects = [{ id: 'p', title: 'Old', status: 'archived', color: '#000', order: 0, tagIds: [], createdAt: at(-9), updatedAt: at(-9) } as Project];
+        const result = selectMenuBarPanelView([task('x', { projectId: 'p' }), task('y', { dueDate: at(30) })], { now: NOW, projects });
+        expect(result.all.map((group) => group.key)).toEqual(['later']);
+    });
+
+    it('filters All tasks by title, project, area, context and tag', () => {
+        const projects = [{ id: 'p', title: 'Garden', status: 'active', color: '#000', order: 0, tagIds: [], createdAt: at(-9), updatedAt: at(-9) } as Project];
+        const result = selectMenuBarPanelView([
+            task('a', { title: 'Mow the lawn', projectId: 'p' }),
+            task('b', { title: 'Call mum', contexts: ['@phone'], dueDate: at(1) }),
+            task('c', { title: 'Taxes', tags: ['#money'], areaId: 'ar' }),
+        ], { now: NOW, projects });
+        const lookup = { projects, areas: [{ id: 'ar', name: 'Admin' }] };
+        expect(filterMenuBarAllGroups(result.all, 'garden', lookup).flatMap((group) => ids(group.tasks))).toEqual(['a']);
+        expect(filterMenuBarAllGroups(result.all, 'PHONE', lookup).map((group) => group.key)).toEqual(['tomorrow']);
+        expect(filterMenuBarAllGroups(result.all, 'admin', lookup).flatMap((group) => ids(group.tasks))).toEqual(['c']);
+        expect(filterMenuBarAllGroups(result.all, '  ', lookup)).toHaveLength(result.all.length);
+        expect(filterMenuBarAllGroups(result.all, 'zzz', lookup)).toEqual([]);
     });
 });
 
 describe('menu bar manual order', () => {
-    const tabs = (list: Task[]) => selectMenuBarPanelTabs(list, { now: NOW });
+    const tabs = (list: Task[]) => selectMenuBarPanelView(list, { now: NOW });
 
     it('orders Today by focusOrder first, then the urgency/due-time order', () => {
         const result = tabs([
@@ -133,7 +169,7 @@ describe('menu bar manual order', () => {
             task('f1', { isFocusedToday: true, focusOrder: 1000 }),
             task('f3', { dueDate: at(0, 8), isFocusedToday: true }),
         ]);
-        expect(ids(result.today)).toEqual(['f1', 'f2', 'f3', 'plain']);
+        expect(ids(result.now)).toEqual(['f1', 'f2', 'f3', 'plain']);
     });
 
     it('ignores a stale focusOrder on a task that is no longer focused today', () => {
@@ -141,28 +177,12 @@ describe('menu bar manual order', () => {
             task('a', { dueDate: at(0, 9) }),
             task('stale', { dueDate: at(0, 15), focusOrder: 1 }),
         ]);
-        expect(ids(result.today)).toEqual(['a', 'stale']);
+        expect(ids(result.now)).toEqual(['a', 'stale']);
     });
 
     it('keeps the incoming order when nothing has a manual focus order', () => {
         const list = [task('a'), task('b')];
         expect(applyMenuBarFocusOrder(list, NOW)).toBe(list);
-    });
-
-    it('orders Inbox and Next by boardOrder in manual order, unordered tasks after', () => {
-        const list = [
-            task('i-new', { status: 'inbox', createdAt: at(-1) }),
-            task('i2', { status: 'inbox', createdAt: at(-5), boardOrder: 2000 }),
-            task('i1', { status: 'inbox', createdAt: at(-9), boardOrder: 1000 }),
-            task('n2', { boardOrder: 20 }),
-            task('n1', { boardOrder: 10 }),
-            task('n-free'),
-        ];
-        const manual = selectMenuBarPanelTabs(list, { now: NOW, manualOrder: { inbox: true, next: true } });
-        expect(ids(manual.inbox)).toEqual(['i1', 'i2', 'i-new']);
-        expect(ids(manual.next).slice(0, 2)).toEqual(['n1', 'n2']);
-        expect(ids(manual.next)[2]).toBe('n-free');
-        expect(ids(tabs(list).inbox)).toEqual(['i-new', 'i2', 'i1']);
     });
 
     it('orders the other Today rows by boardOrder in manual order, after the focused rows', () => {
@@ -173,21 +193,11 @@ describe('menu bar manual order', () => {
             task('overdue-a', { dueDate: at(-2) }),
             task('overdue-b', { dueDate: at(-1), boardOrder: 5 }),
         ];
-        expect(ids(tabs(list).today)).toEqual(['f', 'early', 'late']);
-        const manual = selectMenuBarPanelTabs(list, { now: NOW, manualOrder: { today: true } });
-        expect(ids(manual.today)).toEqual(['f', 'late', 'early']);
-        expect(ids(manual.overdue)).toEqual(['overdue-b', 'overdue-a']);
-    });
-
-    it('orders an Upcoming day by boardOrder in manual order and keeps the day groups', () => {
-        const list = [
-            task('d1-early', { dueDate: at(1, 9) }),
-            task('d1-late', { dueDate: at(1, 15), boardOrder: 1 }),
-            task('d2', { dueDate: at(2, 9), boardOrder: 0 }),
-        ];
-        expect(ids(tabs(list).upcoming[0].tasks)).toEqual(['d1-early', 'd1-late']);
-        const manual = selectMenuBarPanelTabs(list, { now: NOW, manualOrder: { upcoming: true } });
-        expect(manual.upcoming.map((day) => ids(day.tasks))).toEqual([['d1-late', 'd1-early'], ['d2']]);
+        expect(ids(tabs(list).now)).toEqual(['overdue-a', 'overdue-b', 'f', 'early', 'late']);
+        const manual = selectMenuBarPanelView(list, { now: NOW, manualOrder: { today: true } });
+        expect(ids(manual.nowParts.today)).toEqual(['late', 'early']);
+        expect(ids(manual.nowParts.overdue)).toEqual(['overdue-b', 'overdue-a']);
+        expect(ids(manual.now)).toEqual(['overdue-b', 'overdue-a', 'f', 'late', 'early']);
     });
 
     it('limits reordering to open tasks and splits Today into focused and other rows', () => {

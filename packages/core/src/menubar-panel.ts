@@ -10,7 +10,8 @@ import type { Project, Task } from './types';
 /**
  * Pure selection logic for the macOS menu bar panel (and the tray count badge).
  * Sections: overdue, today (due today, starting today, or added to today's focus) and a short
- * "next up" list. Every task appears in at most one section.
+ * "next up" list. Every task appears in at most one section. The panel's two tabs (Now, All tasks)
+ * come from `selectMenuBarPanelView`.
  */
 
 export const MENUBAR_PANEL_NEXT_LIMIT = 5;
@@ -64,10 +65,8 @@ export function applyMenuBarFocusOrder(tasks: Task[], now: Date = new Date(), ma
 export type MenuBarReorderKind = 'focus' | 'today' | 'board';
 
 export interface MenuBarManualOrder {
+    /** The Today view (and the panel's Now tab) is in manual order: non-focused rows follow boardOrder. */
     today?: boolean;
-    upcoming?: boolean;
-    inbox?: boolean;
-    next?: boolean;
 }
 
 export function isMenuBarTaskReorderable(task: Task, kind: MenuBarReorderKind, now: Date = new Date()): boolean {
@@ -123,96 +122,104 @@ export function countMenuBarPanelTasks(tasks: Task[], options: MenuBarPanelOptio
     return overdue.length + today.length;
 }
 
-/** Days after today covered by the Upcoming tab. */
-export const MENUBAR_PANEL_UPCOMING_DAYS = 7;
-export const MENUBAR_PANEL_LIST_LIMIT = 100;
+/** Days after today (tomorrow included) that count as "This week" in the All tasks tab. */
+export const MENUBAR_PANEL_WEEK_DAYS = 7;
 
-export interface MenuBarPanelUpcomingDay {
-    /** Local calendar day as yyyy-MM-dd. */
-    key: string;
-    /** Local midnight of that day. */
-    date: Date;
+export type MenuBarAllGroupKey = 'tomorrow' | 'week' | 'later' | 'none';
+export const MENUBAR_ALL_GROUP_ORDER: readonly MenuBarAllGroupKey[] = ['tomorrow', 'week', 'later', 'none'];
+
+export interface MenuBarAllGroup {
+    key: MenuBarAllGroupKey;
     tasks: Task[];
 }
 
-export interface MenuBarPanelTabs {
-    overdue: Task[];
-    today: Task[];
-    upcoming: MenuBarPanelUpcomingDay[];
-    inbox: Task[];
-    next: Task[];
-    counts: { today: number; upcoming: number; inbox: number; next: number };
+export interface MenuBarPanelView {
+    /** Everything for today in one list: overdue, then today's focus, then due/starting today. */
+    now: Task[];
+    /** The three contiguous runs of `now` (each reorders on its own). */
+    nowParts: { overdue: Task[]; focus: Task[]; today: Task[] };
+    /** Every other open actionable task, tomorrow to someday, grouped by date (empty groups dropped). */
+    all: MenuBarAllGroup[];
+    counts: { now: number; all: number };
+    /** Live Inbox items (shown as a chip, not as a tab). */
+    inboxCount: number;
 }
 
-const dayKey = (date: Date): string => (
-    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-);
-
 /**
- * Four-tab view model for the panel. Today = overdue + due/starting today + today's focus;
- * Upcoming = the next seven days grouped by day; Inbox = every inbox item; Next = all next
- * actions (a task may appear in both Today and Next).
+ * Two-tab view model for the menu bar panel.
+ * - Now: overdue + today's focus + due or starting today. Focused rows keep their Focus order; the
+ *   others follow the urgency/due-time order, or the board order when Today is in manual order.
+ * - All tasks: open next/someday tasks that are not in Now, grouped Tomorrow / This week / Later /
+ *   No date, priority first within a group. Inbox items and Waiting are not here (Inbox has its chip).
  */
-export function selectMenuBarPanelTabs(tasks: Task[], options: MenuBarPanelOptions = {}): MenuBarPanelTabs {
+export function selectMenuBarPanelView(tasks: Task[], options: MenuBarPanelOptions = {}): MenuBarPanelView {
     const now = options.now ?? new Date();
     const projects = options.projects ?? [];
     const projectMap = new Map(projects.map((project) => [project.id, project]));
     const { overdue, today } = selectMenuBarPanelSections(tasks, { ...options, now, nextLimit: 0 });
+    const manualToday = options.manualOrder?.today === true;
+    const byBoard = (list: Task[]) => (manualToday ? sortTasksByManualOrder(list, 'boardOrder') : list);
+
+    const focus = sortTasksByManualOrder(
+        sortUrgentFirst([...overdue, ...today].filter((task) => isTaskFocusedNow(task, now))),
+        'focusOrder',
+    );
+    const otherOverdue = byBoard(sortUrgentFirst(overdue.filter((task) => !isTaskFocusedNow(task, now))));
+    const otherToday = byBoard(sortUrgentFirst(today.filter((task) => !isTaskFocusedNow(task, now))));
+    const nowIds = new Set([...overdue, ...today].map((task) => task.id));
 
     const todayStart = startOfDay(now);
-    const rangeStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + 1).getTime();
-    const rangeEnd = endOfDay(new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + MENUBAR_PANEL_UPCOMING_DAYS)).getTime();
+    const tomorrowStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + 1).getTime();
+    const tomorrowEnd = endOfDay(new Date(tomorrowStart)).getTime();
+    const weekEnd = endOfDay(new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + MENUBAR_PANEL_WEEK_DAYS)).getTime();
 
-    const byDay = new Map<string, MenuBarPanelUpcomingDay>();
-    const inbox: Task[] = [];
-    const nextCandidates: Task[] = [];
-
+    const buckets: Record<MenuBarAllGroupKey, Task[]> = { tomorrow: [], week: [], later: [], none: [] };
+    let inboxCount = 0;
     for (const task of tasks) {
         if (task.deletedAt || !isTaskActionable(task)) continue;
-        if (task.status === 'someday') continue;
         if (!isTaskInActiveProject(task, projectMap)) continue;
-
-        if (task.status === 'inbox') inbox.push(task);
-        if (task.status === 'next' && shouldShowTaskForStart(task, { now, granularity: 'time' })) nextCandidates.push(task);
-
+        if (task.status === 'inbox') { inboxCount += 1; continue; }
+        if (task.status !== 'next' && task.status !== 'someday') continue;
+        if (nowIds.has(task.id)) continue;
         const when = safeParseDueDate(task.dueDate) ?? safeParseDate(task.startTime);
         const ms = when?.getTime();
-        if (when && ms !== undefined && ms >= rangeStart && ms <= rangeEnd) {
-            const date = startOfDay(when);
-            const key = dayKey(date);
-            const bucket = byDay.get(key) ?? { key, date, tasks: [] };
-            bucket.tasks.push(task);
-            byDay.set(key, bucket);
-        }
+        if (ms === undefined || !Number.isFinite(ms)) buckets.none.push(task);
+        else if (ms <= tomorrowEnd) buckets.tomorrow.push(task);
+        else if (ms <= weekEnd) buckets.week.push(task);
+        else buckets.later.push(task);
     }
 
-    const manual = options.manualOrder ?? {};
-    const byManual = (list: Task[], enabled: boolean | undefined) => (enabled ? sortTasksByManualOrder(list, 'boardOrder') : list);
-    const upcoming = [...byDay.values()]
-        .sort((a, b) => a.date.getTime() - b.date.getTime())
-        .map((day) => ({ ...day, tasks: byManual(sortUrgentFirst(day.tasks), manual.upcoming) }));
-    const sortedInbox = byManual(
-        [...inbox].sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? ''))),
-        manual.inbox,
-    );
-    const next = byManual(
-        sortFocusNextActions(nextCandidates, { now, prioritizeByPriority: true, projects }),
-        manual.next,
-    ).slice(0, MENUBAR_PANEL_LIST_LIMIT);
-
-    const sortedOverdue = applyMenuBarFocusOrder(sortUrgentFirst(overdue), now, manual.today);
-    const sortedToday = applyMenuBarFocusOrder(sortUrgentFirst(today), now, manual.today);
+    const all = MENUBAR_ALL_GROUP_ORDER
+        .map((key) => ({ key, tasks: sortUrgentFirst(buckets[key]) }))
+        .filter((group) => group.tasks.length > 0);
+    const nowList = [...otherOverdue, ...focus, ...otherToday];
     return {
-        overdue: sortedOverdue,
-        today: sortedToday,
-        upcoming,
-        inbox: sortedInbox,
-        next,
-        counts: {
-            today: sortedOverdue.length + sortedToday.length,
-            upcoming: upcoming.reduce((sum, day) => sum + day.tasks.length, 0),
-            inbox: sortedInbox.length,
-            next: next.length,
-        },
+        now: nowList,
+        nowParts: { overdue: otherOverdue, focus, today: otherToday },
+        all,
+        counts: { now: nowList.length, all: all.reduce((sum, group) => sum + group.tasks.length, 0) },
+        inboxCount,
     };
+}
+
+/** Case-insensitive title / project / area / context / tag match for the All tasks search field. */
+export function filterMenuBarAllGroups(
+    groups: readonly MenuBarAllGroup[],
+    query: string,
+    lookup: { projects?: readonly Pick<Project, 'id' | 'title'>[]; areas?: readonly { id: string; name: string }[] } = {},
+): MenuBarAllGroup[] {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [...groups];
+    const projectTitle = new Map((lookup.projects ?? []).map((project) => [project.id, project.title]));
+    const areaName = new Map((lookup.areas ?? []).map((area) => [area.id, area.name]));
+    const matches = (task: Task) => [
+        task.title,
+        task.projectId ? projectTitle.get(task.projectId) : undefined,
+        task.areaId ? areaName.get(task.areaId) : undefined,
+        ...(task.contexts ?? []),
+        ...(task.tags ?? []),
+    ].some((value) => typeof value === 'string' && value.toLowerCase().includes(needle));
+    return groups
+        .map((group) => ({ ...group, tasks: group.tasks.filter(matches) }))
+        .filter((group) => group.tasks.length > 0);
 }

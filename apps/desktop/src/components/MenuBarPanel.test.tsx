@@ -1,9 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as panelWindow from '../lib/menubar-panel-window';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useTaskStore, type Task } from '@stride/core';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useTaskStore, type InboxProcessSuggestion, type Task } from '@stride/core';
 import { LanguageProvider } from '../contexts/language-context';
-import { MenuBarPanel } from './MenuBarPanel';
+import { MenuBarPanel, readStoredTab } from './MenuBarPanel';
+import { resetCompletionRetentionForTests } from '../lib/completion-retention';
+import { COMPLETION_TIMELINE, resetCompletionSequenceForTests } from '../lib/completion-sequence';
+import { usePomodoroStore } from '../store/pomodoro-store';
+
+const sortService = vi.hoisted(() => ({
+    generate: vi.fn(),
+    apply: vi.fn(),
+    undo: vi.fn(),
+    remember: vi.fn(),
+}));
+vi.mock('../lib/inbox-process-service', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../lib/inbox-process-service')>()),
+    generateInboxProcessing: sortService.generate,
+    applyInboxProcessing: sortService.apply,
+    undoInboxProcessing: sortService.undo,
+    rememberInboxSuggestions: sortService.remember,
+}));
 
 const at = (offsetDays: number, hour = 12) => new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + offsetDays, hour).toISOString();
 const makeTask = (id: string, extra: Partial<Task> = {}): Task => ({
@@ -16,10 +33,18 @@ const renderPanel = () => render(
         <MenuBarPanel />
     </LanguageProvider>,
 );
+const rowTitles = () => screen.getAllByTestId('menubar-row').map((row) => row.querySelector('[data-row-main] span')?.textContent);
+const suggestion = (taskId: string, extra: Partial<InboxProcessSuggestion> = {}): InboxProcessSuggestion => ({
+    taskId, originalTitle: taskId, kind: 'next', title: taskId, needsYou: false, ...extra,
+});
 
 describe('MenuBarPanel', () => {
     beforeEach(() => {
         window.localStorage.clear();
+        sortService.generate.mockReset();
+        sortService.apply.mockReset();
+        sortService.undo.mockReset();
+        sortService.remember.mockReset();
         const tasks = [
             makeTask('late', { title: 'Pay invoice', dueDate: at(-2) }),
             makeTask('today', { title: 'Call dentist', dueDate: at(0, 23) }),
@@ -31,51 +56,197 @@ describe('MenuBarPanel', () => {
         } as never);
     });
 
-    it('shows overdue and today sections on the default Today tab', () => {
+    it('has only two tabs, Now and All tasks, and no Add task, AI Capture or Assistant', () => {
         renderPanel();
-        expect(screen.getByRole('tab', { name: /Today/ })).toHaveAttribute('aria-selected', 'true');
-        expect(screen.getByText('Overdue')).toBeInTheDocument();
-        expect(screen.getByText('Pay invoice')).toBeInTheDocument();
-        expect(screen.getByText('Call dentist')).toBeInTheDocument();
-        expect(screen.queryByText('Plan trip')).not.toBeInTheDocument();
+        expect(screen.getAllByRole('tab').map((tab) => tab.textContent?.replace(/\d+$/, ''))).toEqual(['Now', 'All tasks']);
+        expect(screen.getByRole('tab', { name: /Now/ })).toHaveAttribute('aria-selected', 'true');
+        expect(screen.queryByRole('button', { name: /AI Capture/ })).toBeNull();
+        expect(screen.queryByLabelText(/Ask the Assistant/)).toBeNull();
+        expect(screen.queryByLabelText(/^Add task$/)).toBeNull();
+        expect(screen.getByLabelText('Jot something down…')).toBeInTheDocument();
     });
 
-    it('shows counts on every tab', () => {
+    it('Now is one list for today: overdue, focus and due today, without section headers', () => {
+        const tasks = [
+            makeTask('late', { title: 'Pay invoice', dueDate: at(-2) }),
+            makeTask('focus', { title: 'Send the reel edit', isFocusedToday: true }),
+            makeTask('today', { title: 'Call dentist', dueDate: at(0, 23) }),
+            makeTask('later', { title: 'Plan trip' }),
+        ];
+        useTaskStore.setState({ tasks, _allTasks: tasks } as never);
         renderPanel();
-        expect(screen.getByTestId('menubar-tab-count-today')).toHaveTextContent('2');
-        expect(screen.getByTestId('menubar-tab-count-upcoming')).toHaveTextContent('0');
-        expect(screen.getByTestId('menubar-tab-count-inbox')).toHaveTextContent('0');
-        expect(screen.getByTestId('menubar-tab-count-next')).toHaveTextContent('3');
+        expect(rowTitles()).toEqual(['Pay invoice', 'Send the reel edit', 'Call dentist']);
+        expect(screen.queryByRole('heading', { name: /Overdue/ })).toBeNull();
+        const late = screen.getAllByTestId('menubar-row')[0]!;
+        expect(within(late).getByTestId('menubar-row-date')).toHaveTextContent(/^Overdue · /);
+        expect(within(screen.getAllByTestId('menubar-row')[1]!).getByTestId('menubar-row-focus')).toHaveTextContent('Focus');
+        expect(within(screen.getAllByTestId('menubar-row')[2]!).getByTestId('menubar-row-date')).toHaveTextContent(/^Today/);
+    });
+
+    it('counts open tasks on both tabs', () => {
+        renderPanel();
+        expect(screen.getByTestId('menubar-tab-count-now')).toHaveTextContent('2');
+        expect(screen.getByTestId('menubar-tab-count-all')).toHaveTextContent('1');
     });
 
     it('switches tabs and remembers the last one', () => {
         renderPanel();
-        fireEvent.click(screen.getByRole('tab', { name: /Next/ }));
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
         expect(screen.getByText('Plan trip')).toBeInTheDocument();
-        expect(window.localStorage.getItem('stride-menubar-tab')).toBe('next');
+        expect(window.localStorage.getItem('stride-menubar-tab')).toBe('all');
+        fireEvent.keyDown(screen.getByRole('tab', { name: /All tasks/ }), { key: 'ArrowLeft' });
+        expect(screen.getByRole('tab', { name: /Now/ })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('restores the stored tab', () => {
-        window.localStorage.setItem('stride-menubar-tab', 'next');
+    it('restores the stored tab, and opens on Now when the stored tab no longer exists', () => {
+        window.localStorage.setItem('stride-menubar-tab', 'all');
+        const view = renderPanel();
+        expect(screen.getByRole('tab', { name: /All tasks/ })).toHaveAttribute('aria-selected', 'true');
+        view.unmount();
+        for (const legacy of ['today', 'upcoming', 'inbox', 'next', 'garbage']) {
+            window.localStorage.setItem('stride-menubar-tab', legacy);
+            expect(readStoredTab()).toBe('now');
+        }
         renderPanel();
-        expect(screen.getByRole('tab', { name: /Next/ })).toHaveAttribute('aria-selected', 'true');
+        expect(screen.getByRole('tab', { name: /Now/ })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('groups upcoming tasks by day', () => {
-        const tasks = [makeTask('soon', { title: 'Book flights', dueDate: at(2) })];
+    it('All tasks groups Tomorrow / This week / Later / No date, priority first, with search', () => {
+        const tasks = [
+            makeTask('t1', { title: 'Post two reels', dueDate: at(1, 10) }),
+            makeTask('t2', { title: 'Holiday poster', dueDate: at(1, 15), priority: 'urgent' }),
+            makeTask('w', { title: 'Visit the bank', dueDate: at(4) }),
+            makeTask('l', { title: 'Renew passport', dueDate: at(30) }),
+            makeTask('n', { title: 'Fix the washing machine', contexts: ['@home'] }),
+            makeTask('s', { title: 'Learn Spanish', status: 'someday' }),
+            makeTask('in', { title: 'Inbox note', status: 'inbox' }),
+            makeTask('today', { title: 'Due today', dueDate: at(0, 23) }),
+        ];
         useTaskStore.setState({ tasks, _allTasks: tasks } as never);
         renderPanel();
-        fireEvent.click(screen.getByRole('tab', { name: /Upcoming/ }));
-        expect(screen.getByText('Book flights')).toBeInTheDocument();
-        expect(screen.getByTestId('menubar-tab-count-upcoming')).toHaveTextContent('1');
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+        expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['Tomorrow2', 'This week1', 'Later1', 'No date2']);
+        expect(within(screen.getByTestId('menubar-group-tomorrow')).getAllByTestId('menubar-row').map((r) => r.getAttribute('data-task-id'))).toEqual(['t2', 't1']);
+        expect(screen.queryByText('Inbox note')).toBeNull();
+        expect(screen.queryByText('Due today')).toBeNull();
+        expect(within(screen.getByTestId('menubar-group-none')).getByText('@home')).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Search tasks'), { target: { value: 'wash' } });
+        expect(rowTitles()).toEqual(['Fix the washing machine']);
+        fireEvent.change(screen.getByLabelText('Search tasks'), { target: { value: 'zzz' } });
+        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent('No matches');
     });
 
-    it('lists inbox items', () => {
-        const tasks = [makeTask('in1', { title: 'Sort receipts', status: 'inbox' })];
-        useTaskStore.setState({ tasks, _allTasks: tasks } as never);
+    it('＋ adds a task to Now (today\'s focus); a future start is cleared so it shows today', async () => {
+        const tasks = [makeTask('soon', { title: 'Book flights', startTime: at(3, 9) })];
+        const updateTask = vi.fn(async (id: string, patch: Partial<Task>) => {
+            const next = useTaskStore.getState().tasks.map((task) => (task.id === id ? { ...task, ...patch } : task));
+            useTaskStore.setState({ tasks: next, _allTasks: next } as never);
+            return { success: true };
+        });
+        useTaskStore.setState({ tasks, _allTasks: tasks, updateTask } as never);
         renderPanel();
-        fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-        expect(screen.getByText('Sort receipts')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to Now: Book flights' })); });
+        expect(updateTask).toHaveBeenCalledWith('soon', { isFocusedToday: true, startTime: undefined });
+        expect(screen.getByTestId('menubar-tab-count-now')).toHaveTextContent('1');
+        fireEvent.click(screen.getByRole('tab', { name: /Now/ }));
+        expect(rowTitles()).toEqual(['Book flights']);
+    });
+
+    it('▶ on a Now row starts a focus session on that task; ▶ in All tasks adds it to Now first', async () => {
+        const tasks = [makeTask('today', { title: 'Call dentist', dueDate: at(0, 23) }), makeTask('later', { title: 'Plan trip' })];
+        const updateTask = vi.fn().mockResolvedValue({ success: true });
+        useTaskStore.setState({ tasks, _allTasks: tasks, settings: { features: { pomodoro: true } }, updateTask } as never);
+        const notify = vi.spyOn(panelWindow, 'notifyMainWindow').mockResolvedValue(undefined);
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: 'Start a focus timer: Call dentist' }));
+        let snapshot = usePomodoroStore.getState().snapshot;
+        expect(snapshot.selectedTaskId).toBe('today');
+        expect(snapshot.timerState).toMatchObject({ phase: 'focus', isRunning: true });
+        expect(screen.getByTestId('panel-pomodoro')).toHaveAttribute('data-running', 'true');
+        void notify;
+
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start a focus timer: Plan trip' })); });
+        expect(updateTask).toHaveBeenCalledWith('later', { isFocusedToday: true });
+        snapshot = usePomodoroStore.getState().snapshot;
+        expect(snapshot.selectedTaskId).toBe('later');
+    });
+
+    it('hides ▶ when the Pomodoro feature is off', () => {
+        useTaskStore.setState({ settings: { features: { pomodoro: false } } } as never);
+        renderPanel();
+        expect(screen.queryByTestId('menubar-row-start')).toBeNull();
+        expect(screen.queryByTestId('panel-pomodoro')).toBeNull();
+    });
+
+    it('the note box saves straight to the Inbox on Enter, one item per line, without AI', async () => {
+        const addTask = vi.fn().mockResolvedValue({ success: true, id: 'new' });
+        useTaskStore.setState({ addTask } as never);
+        renderPanel();
+        const box = screen.getByLabelText('Jot something down…');
+        fireEvent.change(box, { target: { value: 'Buy milk\nCall Rhea' } });
+        await act(async () => { fireEvent.keyDown(box, { key: 'Enter' }); });
+        expect(addTask).toHaveBeenCalledTimes(2);
+        expect(addTask.mock.calls.map(([title, props]) => [title, props.status])).toEqual([['Buy milk', 'inbox'], ['Call Rhea', 'inbox']]);
+        expect(sortService.generate).not.toHaveBeenCalled();
+        expect(box).toHaveValue('');
+    });
+
+    it('shows the Inbox chip only when the Inbox has items, and ✨ Sort only when AI is on', () => {
+        const view = renderPanel();
+        expect(screen.queryByTestId('menubar-inbox-chip')).toBeNull();
+        view.unmount();
+        const tasks = [makeTask('a', { status: 'inbox' }), makeTask('b', { status: 'inbox' })];
+        useTaskStore.setState({ tasks, _allTasks: tasks } as never);
+        const second = renderPanel();
+        expect(screen.getByTestId('menubar-inbox-chip')).toHaveTextContent('2 notes in Inbox');
+        expect(screen.getByRole('button', { name: 'Review in Stride' })).toBeInTheDocument();
+        expect(screen.queryByTestId('menubar-inbox-sort')).toBeNull();
+        second.unmount();
+        useTaskStore.setState({ settings: { ai: { enabled: true } } } as never);
+        renderPanel();
+        expect(screen.getByTestId('menubar-inbox-sort')).toHaveTextContent('Sort');
+    });
+
+    it('✨ Sort applies only the confident suggestions as one undoable batch and leaves the rest', async () => {
+        const tasks = [makeTask('a', { status: 'inbox' }), makeTask('b', { status: 'inbox' }), makeTask('c', { status: 'inbox' }), makeTask('d', { status: 'inbox' })];
+        useTaskStore.setState({ tasks, _allTasks: tasks, settings: { ai: { enabled: true } } } as never);
+        sortService.generate.mockResolvedValue({
+            status: 'ok',
+            proposal: {
+                summary: '', skippedTaskIds: [], source: 'ai',
+                items: [
+                    suggestion('a'),
+                    suggestion('b', { needsYou: true, needsYouReason: 'low-confidence' }),
+                    suggestion('c', { newProjectTitle: 'Brand new' }),
+                    suggestion('d', { kind: 'delete', duplicateOf: 'a' }),
+                ],
+            },
+        });
+        sortService.apply.mockResolvedValue({ updatedTaskIds: ['a'], deletedTaskIds: [], createdProjectIds: [], createdAreaIds: [], failed: [], undoOps: [], changes: [], changeId: 'chg-1' });
+        sortService.undo.mockResolvedValue(true);
+        renderPanel();
+        await act(async () => { fireEvent.click(screen.getByTestId('menubar-inbox-sort')); });
+        expect(sortService.apply).toHaveBeenCalledTimes(1);
+        expect(sortService.apply.mock.calls[0]![0].map((item: InboxProcessSuggestion) => item.taskId)).toEqual(['a']);
+        expect(sortService.remember.mock.calls[0]![0].map((item: InboxProcessSuggestion) => item.taskId)).toEqual(['b', 'c', 'd']);
+        const result = screen.getByTestId('menubar-sort-result');
+        expect(result).toHaveTextContent('Sorted 1');
+        expect(result).toHaveTextContent('3 need you');
+        await act(async () => { fireEvent.click(screen.getByTestId('menubar-sort-undo')); });
+        expect(sortService.undo).toHaveBeenCalledWith('chg-1');
+        expect(screen.queryByTestId('menubar-sort-result')).toBeNull();
+    });
+
+    it('✨ Sort reports the usage limit instead of sorting', async () => {
+        const tasks = [makeTask('a', { status: 'inbox' })];
+        useTaskStore.setState({ tasks, _allTasks: tasks, settings: { ai: { enabled: true } } } as never);
+        sortService.generate.mockResolvedValue({ status: 'unavailable', reason: 'limited' });
+        renderPanel();
+        await act(async () => { fireEvent.click(screen.getByTestId('menubar-inbox-sort')); });
+        expect(sortService.apply).not.toHaveBeenCalled();
+        expect(screen.getByTestId('menubar-sort-notice')).toHaveTextContent('AI limit reached');
     });
 
     it('completes a task through the store and offers undo', async () => {
@@ -86,47 +257,82 @@ describe('MenuBarPanel', () => {
             fireEvent.click(screen.getByRole('button', { name: /Mark done: Pay invoice/ }));
         });
         await waitFor(() => expect(moveTask).toHaveBeenCalledWith('late', 'done'));
-        await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Pay invoice'));
+        await waitFor(() => expect(screen.getAllByRole('status').some((node) => node.textContent?.includes('Pay invoice'))).toBe(true));
     });
 
-    it('shows a friendly empty state per tab', () => {
-        const tasks = [makeTask('only-next')];
+    it('completes from All tasks too', async () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        useTaskStore.setState({ moveTask } as never);
+        renderPanel();
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Mark done: Plan trip/ })); });
+        await waitFor(() => expect(moveTask).toHaveBeenCalledWith('later', 'done'));
+    });
+
+    it('keeps a ticked row on screen through its completion sequence, then moves it to the bottom', async () => {
+        resetCompletionRetentionForTests();
+        resetCompletionSequenceForTests();
+        const moveTask = vi.fn(async (id: string, status: Task['status']) => {
+            const next = useTaskStore.getState().tasks.map((task) => (task.id === id ? { ...task, status } : task));
+            useTaskStore.setState({ tasks: next, _allTasks: next } as never);
+            return { success: true };
+        });
+        useTaskStore.setState({ moveTask } as never);
+        renderPanel();
+        const order = () => screen.getAllByTestId('menubar-row').map((row) => row.getAttribute('data-task-id'));
+        const first = order()[0]!;
+        const title = useTaskStore.getState().tasks.find((task) => task.id === first)!.title;
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: `Mark done: ${title}` }));
+                // A fast second click is ignored (no double completion, no untick).
+                fireEvent.click(screen.getAllByTestId('menubar-row')[0]!.querySelector('button')!);
+                await Promise.resolve();
+            });
+            expect(moveTask).toHaveBeenCalledTimes(1);
+            expect(order()[0]).toBe(first);
+            const row = () => screen.getAllByTestId('menubar-row').find((element) => element.getAttribute('data-task-id') === first);
+            expect(row()).toHaveAttribute('data-completion', 'popping');
+            await act(async () => { vi.advanceTimersByTime(COMPLETION_TIMELINE.leaving + 10); });
+            expect(row()).toHaveAttribute('data-completion', 'leaving');
+            expect(order()[0]).toBe(first);
+            await act(async () => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone - COMPLETION_TIMELINE.leaving); });
+            expect(order()[order().length - 1]).toBe(first);
+            expect(row()?.querySelector('[data-task-title-struck]')).not.toBeNull();
+        } finally {
+            resetCompletionSequenceForTests();
+            vi.useRealTimers();
+        }
+    });
+
+    it('shows a friendly empty state on each tab', () => {
+        useTaskStore.setState({ tasks: [], _allTasks: [] } as never);
+        renderPanel();
+        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent(/Nothing for today yet/);
+        fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent(/Nothing else on your list/);
+    });
+
+    it('"Review in Stride" opens the main window on the Inbox', async () => {
+        const open = vi.spyOn(panelWindow, 'openMainFromMenuBarPanel').mockResolvedValue(undefined);
+        const notify = vi.spyOn(panelWindow, 'notifyMainWindow').mockResolvedValue(undefined);
+        const runtime = await import('../lib/runtime');
+        const tasks = [makeTask('a', { status: 'inbox' })];
         useTaskStore.setState({ tasks, _allTasks: tasks } as never);
         renderPanel();
-        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent(/Nothing due today/);
-        fireEvent.click(screen.getByRole('tab', { name: /Upcoming/ }));
-        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent(/next 7 days/);
-        fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-        expect(screen.getByTestId('menubar-panel-empty')).toHaveTextContent(/Inbox zero/);
+        // Only the click runs "in the app" (mounting would try to listen for native events).
+        const tauri = vi.spyOn(runtime, 'isTauriRuntime').mockReturnValue(true);
+        try {
+            await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Review in Stride' })); });
+            expect(open).toHaveBeenCalledWith();
+            await waitFor(() => expect(notify).toHaveBeenCalledWith(panelWindow.MENUBAR_NAVIGATE_EVENT, { view: 'inbox' }));
+        } finally {
+            tauri.mockRestore();
+        }
     });
 
-    it('opens the main window with Quick Capture from the AI Capture button', () => {
-        const spy = vi.spyOn(panelWindow, 'openMainFromMenuBarPanel').mockResolvedValue(undefined);
-        renderPanel();
-        fireEvent.click(screen.getByRole('button', { name: /AI Capture/ }));
-        expect(spy).toHaveBeenCalledWith({ openCapture: true });
-    });
-
-    it('adds a parsed task to the inbox from the quick add input', async () => {
-        const addTask = vi.fn().mockResolvedValue({ success: true, id: 'new' });
-        useTaskStore.setState({ addTask } as never);
-        renderPanel();
-        const input = screen.getByLabelText(/Add task|nav.addTask/i);
-        fireEvent.change(input, { target: { value: 'Buy milk /due:tomorrow' } });
-        await act(async () => {
-            fireEvent.submit(input.closest('form')!);
-        });
-        expect(addTask).toHaveBeenCalledTimes(1);
-        const [title, props] = addTask.mock.calls[0];
-        expect(title).toContain('Buy milk');
-        expect(props.dueDate).toBeTruthy();
-    });
-    describe('reordering', () => {
-        const inboxTasks = () => [
-            makeTask('i1', { title: 'First thing', status: 'inbox', boardOrder: 1000 }),
-            makeTask('i2', { title: 'Second thing', status: 'inbox', boardOrder: 2000 }),
-            makeTask('i3', { title: 'Third thing', status: 'inbox', boardOrder: 3000 }),
-        ];
+    describe('reordering (Now)', () => {
         const setup = (tasks: Task[]) => {
             const reorderBoardTasks = vi.fn().mockResolvedValue(undefined);
             const reorderFocusedTasks = vi.fn().mockResolvedValue({ success: true });
@@ -134,120 +340,30 @@ describe('MenuBarPanel', () => {
             vi.spyOn(panelWindow, 'notifyMainWindow').mockResolvedValue(undefined);
             return { reorderBoardTasks, reorderFocusedTasks };
         };
-        const titles = () => screen.getAllByTestId('menubar-row').map((row) => row.querySelector('[data-row-main] span')?.textContent);
-
+        const dueToday = () => [
+            makeTask('d1', { title: 'First thing', dueDate: at(0, 20), boardOrder: 1000 }),
+            makeTask('d2', { title: 'Second thing', dueDate: at(0, 21), boardOrder: 2000 }),
+            makeTask('d3', { title: 'Third thing', dueDate: at(0, 22), boardOrder: 3000 }),
+        ];
         const manualKey = (key: string) => `stride:view:manual-order:${key}:v1`;
 
-        it('lists inbox in manual (boardOrder) order once the Inbox is in manual order', () => {
-            window.localStorage.setItem(manualKey('inbox'), '1');
-            setup([...inboxTasks()].reverse());
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            expect(titles()).toEqual(['First thing', 'Second thing', 'Third thing']);
-        });
-
-        it('switches the Inbox from newest first to manual order on the first move, with Undo', async () => {
+        it('persists reorders of focused rows through the Focus order', async () => {
             const tasks = [
-                makeTask('old', { title: 'Old', status: 'inbox', createdAt: at(-5) }),
-                makeTask('mid', { title: 'Mid', status: 'inbox', createdAt: at(-3) }),
-                makeTask('new', { title: 'New', status: 'inbox', createdAt: at(-1) }),
-            ];
-            const { reorderBoardTasks } = setup(tasks);
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            expect(titles()).toEqual(['New', 'Mid', 'Old']);
-            const last = screen.getAllByTestId('menubar-row')[2].querySelector('[data-row-main]') as HTMLElement;
-            await act(async () => {
-                fireEvent.keyDown(last, { key: 'ArrowUp', altKey: true });
-            });
-            expect(reorderBoardTasks).toHaveBeenCalledWith('inbox', ['new', 'old', 'mid'], 'old');
-            expect(window.localStorage.getItem(manualKey('inbox'))).toBe('1');
-            expect(screen.getByTestId('menubar-manual-order-undo')).toHaveTextContent('Switched to manual order');
-            await act(async () => {
-                fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-            });
-            expect(window.localStorage.getItem(manualKey('inbox'))).toBeNull();
-            expect(reorderBoardTasks).toHaveBeenLastCalledWith('inbox', expect.arrayContaining(['old', 'mid', 'new']));
-        });
-
-        it('reorders the Next tab through the board order', async () => {
-            window.localStorage.setItem(manualKey('next'), '1');
-            const { reorderBoardTasks } = setup([
-                makeTask('n1', { title: 'Next one', boardOrder: 0 }),
-                makeTask('n2', { title: 'Next two', boardOrder: 1024 }),
-            ]);
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Next/ }));
-            const first = screen.getAllByTestId('menubar-row')[0].querySelector('[data-row-main]') as HTMLElement;
-            await act(async () => {
-                fireEvent.keyDown(first, { key: 'ArrowDown', altKey: true });
-            });
-            expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['n2', 'n1'], 'n1');
-            expect(screen.queryByTestId('menubar-manual-order-undo')).toBeNull();
-        });
-
-        it('moves a row down with Alt+ArrowDown and announces its position', async () => {
-            const { reorderBoardTasks } = setup(inboxTasks());
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            const first = screen.getAllByTestId('menubar-row')[0].querySelector('[data-row-main]') as HTMLElement;
-            await act(async () => {
-                fireEvent.keyDown(first, { key: 'ArrowDown', altKey: true });
-            });
-            expect(reorderBoardTasks).toHaveBeenCalledWith('inbox', ['i2', 'i1', 'i3'], 'i1');
-            await waitFor(() => expect(screen.getByTestId('menubar-reorder-announcement')).toHaveTextContent('Moved down, position 2 of 3'));
-        });
-
-        it('does nothing for Alt+ArrowUp on the first row', async () => {
-            const { reorderBoardTasks } = setup(inboxTasks());
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            const first = screen.getAllByTestId('menubar-row')[0].querySelector('[data-row-main]') as HTMLElement;
-            await act(async () => {
-                fireEvent.keyDown(first, { key: 'ArrowUp', altKey: true });
-            });
-            expect(reorderBoardTasks).not.toHaveBeenCalled();
-        });
-
-        it('moves a row to the top from its actions menu', async () => {
-            const { reorderBoardTasks } = setup(inboxTasks());
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            fireEvent.click(screen.getByRole('button', { name: /More actions: Third thing/ }));
-            expect(screen.getByRole('menuitem', { name: 'Move down' })).toBeDisabled();
-            await act(async () => {
-                fireEvent.click(screen.getByRole('menuitem', { name: 'Move to top' }));
-            });
-            expect(reorderBoardTasks).toHaveBeenCalledWith('inbox', ['i3', 'i1', 'i2'], 'i3');
-            await waitFor(() => expect(screen.getByTestId('menubar-reorder-announcement')).toHaveTextContent('Moved to top, position 1 of 3'));
-        });
-
-        it('opens the same menu from a right click', () => {
-            setup(inboxTasks());
-            renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            fireEvent.contextMenu(screen.getAllByTestId('menubar-row')[1]);
-            expect(screen.getByRole('menu')).toBeInTheDocument();
-            expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeEnabled();
-        });
-
-        it('persists Today reorders of focused rows through the Focus order', async () => {
-            const tasks = [
-                makeTask('f1', { title: 'Focus one', dueDate: at(0, 23), isFocusedToday: true, focusOrder: 1000 }),
-                makeTask('f2', { title: 'Focus two', dueDate: at(0, 23), isFocusedToday: true, focusOrder: 2000 }),
+                makeTask('f1', { title: 'Focus one', isFocusedToday: true, focusOrder: 1000 }),
+                makeTask('f2', { title: 'Focus two', isFocusedToday: true, focusOrder: 2000 }),
                 makeTask('plain', { title: 'Just due', dueDate: at(0, 23) }),
             ];
             const { reorderFocusedTasks } = setup(tasks);
             renderPanel();
-            expect(titles()).toEqual(['Focus one', 'Focus two', 'Just due']);
-            const first = screen.getAllByTestId('menubar-row')[0].querySelector('[data-row-main]') as HTMLElement;
+            expect(rowTitles()).toEqual(['Focus one', 'Focus two', 'Just due']);
+            const first = screen.getAllByTestId('menubar-row')[0]!.querySelector('[data-row-main]') as HTMLElement;
             await act(async () => {
                 fireEvent.keyDown(first, { key: 'ArrowDown', altKey: true });
             });
             expect(reorderFocusedTasks).toHaveBeenCalledWith(['f2', 'f1']);
         });
 
-        it('lets every other Today row move within its group through the board order', async () => {
+        it('lets the other rows move within their run through the board order, switching Today to manual order with Undo', async () => {
             const tasks = [
                 makeTask('f1', { title: 'Focus one', isFocusedToday: true, focusOrder: 0 }),
                 makeTask('early', { title: 'Due early', dueDate: at(0, 20) }),
@@ -256,6 +372,7 @@ describe('MenuBarPanel', () => {
             ];
             const { reorderBoardTasks, reorderFocusedTasks } = setup(tasks);
             renderPanel();
+            expect(rowTitles()).toEqual(['Overdue', 'Focus one', 'Due early', 'Due late']);
             const lateRow = screen.getAllByTestId('menubar-row').find((row) => row.textContent?.includes('Due late'))!;
             expect(lateRow).toHaveAttribute('data-reorder-group', 'today:today');
             const overdueRow = screen.getAllByTestId('menubar-row').find((row) => row.textContent?.includes('Overdue'))!;
@@ -266,64 +383,80 @@ describe('MenuBarPanel', () => {
             expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['late', 'early'], 'late');
             expect(reorderFocusedTasks).not.toHaveBeenCalled();
             expect(window.localStorage.getItem(manualKey('focus-today'))).toBe('1');
-            expect(screen.getByTestId('menubar-manual-order-undo')).toBeInTheDocument();
+            expect(screen.getByTestId('menubar-manual-order-undo')).toHaveTextContent('Switched to manual order');
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+            });
+            expect(window.localStorage.getItem(manualKey('focus-today'))).toBeNull();
         });
 
-        it('reorders Upcoming rows within the same day only', async () => {
-            const { reorderBoardTasks } = setup([
-                makeTask('u1', { title: 'Later', dueDate: at(2, 9) }),
-                makeTask('u2', { title: 'Later two', dueDate: at(2, 15) }),
-                makeTask('u3', { title: 'Another day', dueDate: at(3, 9) }),
-            ]);
+        it('moves a row down with Alt+ArrowDown and announces its position', async () => {
+            window.localStorage.setItem(manualKey('focus-today'), '1');
+            const { reorderBoardTasks } = setup(dueToday());
             renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Upcoming/ }));
-            const rows = screen.getAllByTestId('menubar-row');
-            expect(rows[0].getAttribute('data-reorder-group')).toBe(rows[1].getAttribute('data-reorder-group'));
-            expect(rows[2].getAttribute('data-reorder-group')).not.toBe(rows[0].getAttribute('data-reorder-group'));
+            const first = screen.getAllByTestId('menubar-row')[0]!.querySelector('[data-row-main]') as HTMLElement;
             await act(async () => {
-                fireEvent.keyDown(rows[1].querySelector('[data-row-main]')!, { key: 'ArrowUp', altKey: true });
+                fireEvent.keyDown(first, { key: 'ArrowDown', altKey: true });
             });
-            expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['u2', 'u1'], 'u2');
-            await act(async () => {
-                fireEvent.keyDown(screen.getAllByTestId('menubar-row')[2].querySelector('[data-row-main]')!, { key: 'ArrowUp', altKey: true });
-            });
-            expect(reorderBoardTasks).toHaveBeenCalledTimes(1);
+            expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['d2', 'd1', 'd3'], 'd1');
+            await waitFor(() => expect(screen.getByTestId('menubar-reorder-announcement')).toHaveTextContent('Moved down, position 2 of 3'));
         });
 
-        it('does not make completed rows movable', async () => {
-            const tasks = [...inboxTasks()];
-            setup(tasks);
-            tasks[1] = { ...tasks[1], status: 'done' };
+        it('does nothing for Alt+ArrowUp on the first row', async () => {
+            const { reorderBoardTasks } = setup(dueToday());
             renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            // Done tasks drop out of the list unless ticked this session; nothing done is draggable either way.
-            screen.getAllByTestId('menubar-row').forEach((row) => {
-                if (row.querySelector('[aria-label^="Mark not done"]')) expect(row).not.toHaveAttribute('data-reorder-id');
+            const first = screen.getAllByTestId('menubar-row')[0]!.querySelector('[data-row-main]') as HTMLElement;
+            await act(async () => {
+                fireEvent.keyDown(first, { key: 'ArrowUp', altKey: true });
             });
+            expect(reorderBoardTasks).not.toHaveBeenCalled();
+        });
+
+        it('moves a row to the top from its actions menu', async () => {
+            window.localStorage.setItem(manualKey('focus-today'), '1');
+            const { reorderBoardTasks } = setup(dueToday());
+            renderPanel();
+            fireEvent.click(screen.getByRole('button', { name: /More actions: Third thing/ }));
+            expect(screen.getByRole('menuitem', { name: 'Move down' })).toBeDisabled();
+            await act(async () => {
+                fireEvent.click(screen.getByRole('menuitem', { name: 'Move to top' }));
+            });
+            expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['d3', 'd1', 'd2'], 'd3');
+            await waitFor(() => expect(screen.getByTestId('menubar-reorder-announcement')).toHaveTextContent('Moved to top, position 1 of 3'));
+        });
+
+        it('opens the same menu from a right click', () => {
+            setup(dueToday());
+            renderPanel();
+            fireEvent.contextMenu(screen.getAllByTestId('menubar-row')[1]!);
+            expect(screen.getByRole('menu')).toBeInTheDocument();
+            expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeEnabled();
+        });
+
+        it('All tasks rows are not reorderable (they follow date and priority)', () => {
+            setup([makeTask('n1', { title: 'No date one' }), makeTask('n2', { title: 'No date two' })]);
+            renderPanel();
+            fireEvent.click(screen.getByRole('tab', { name: /All tasks/ }));
+            screen.getAllByTestId('menubar-row').forEach((row) => expect(row).not.toHaveAttribute('data-reorder-id'));
         });
 
         it('re-reads the data file when the panel regains focus and shows the new order', async () => {
-            const tasks = inboxTasks();
-            const reordered = [
-                { ...tasks[0], boardOrder: 3500 },
-                tasks[1],
-                tasks[2],
-            ];
+            window.localStorage.setItem(manualKey('focus-today'), '1');
+            const tasks = dueToday();
+            const reordered = [{ ...tasks[0]!, boardOrder: 3500 }, tasks[1]!, tasks[2]!];
             let mainWindowReordered = false;
             const fetchData = vi.fn().mockImplementation(async () => {
                 if (mainWindowReordered) useTaskStore.setState({ tasks: reordered, _allTasks: reordered } as never);
             });
-            window.localStorage.setItem(manualKey('inbox'), '1');
             setup(tasks);
             useTaskStore.setState({ fetchData } as never);
             renderPanel();
-            fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
-            expect(titles()).toEqual(['First thing', 'Second thing', 'Third thing']);
+            expect(rowTitles()).toEqual(['First thing', 'Second thing', 'Third thing']);
             mainWindowReordered = true;
             await act(async () => {
                 window.dispatchEvent(new Event('focus'));
             });
-            await waitFor(() => expect(titles()).toEqual(['Second thing', 'Third thing', 'First thing']));
+            await waitFor(() => expect(rowTitles()).toEqual(['Second thing', 'Third thing', 'First thing']));
         });
 
         describe('dragging', () => {
@@ -334,9 +467,9 @@ describe('MenuBarPanel', () => {
                 act(() => { target.dispatchEvent(event); });
             };
             const setupDrag = () => {
-                const result = setup(inboxTasks());
+                window.localStorage.setItem(manualKey('focus-today'), '1');
+                const result = setup(dueToday());
                 renderPanel();
-                fireEvent.click(screen.getByRole('tab', { name: /Inbox/ }));
                 const rows = screen.getAllByTestId('menubar-row');
                 rows.forEach((row, index) => { row.getBoundingClientRect = () => rect(index * 44) as DOMRect; });
                 return { ...result, rows };
@@ -344,20 +477,20 @@ describe('MenuBarPanel', () => {
 
             it('drops a dragged row at the line and saves the new order', async () => {
                 const { rows, reorderBoardTasks } = setupDrag();
-                pointer('pointerdown', 20, rows[0].querySelector('[data-row-main]')!);
+                pointer('pointerdown', 20, rows[0]!.querySelector('[data-row-main]')!);
                 pointer('pointermove', 30, document);
                 pointer('pointermove', 90, document);
                 expect(rows[0]).toHaveAttribute('data-dragging', 'true');
                 expect(screen.getByTestId('menubar-drag-ghost')).toBeInTheDocument();
-                expect(rows[2].querySelector('[data-testid="menubar-drop-line"]')).toHaveAttribute('data-placement', 'before');
+                expect(rows[2]!.querySelector('[data-testid="menubar-drop-line"]')).toHaveAttribute('data-placement', 'before');
                 await act(async () => { pointer('pointerup', 90, document); });
-                expect(reorderBoardTasks).toHaveBeenCalledWith('inbox', ['i2', 'i1', 'i3'], 'i1');
+                expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['d2', 'd1', 'd3'], 'd1');
                 expect(screen.queryByTestId('menubar-drag-ghost')).toBeNull();
             });
 
             it('treats a press without travel as a normal click, not a drag', () => {
                 const { rows, reorderBoardTasks } = setupDrag();
-                pointer('pointerdown', 20, rows[0].querySelector('[data-row-main]')!);
+                pointer('pointerdown', 20, rows[0]!.querySelector('[data-row-main]')!);
                 pointer('pointermove', 21, document);
                 pointer('pointerup', 21, document);
                 expect(screen.queryByTestId('menubar-drag-ghost')).toBeNull();
@@ -366,7 +499,7 @@ describe('MenuBarPanel', () => {
 
             it('cancels the drag on Escape without hiding the panel or saving', () => {
                 const { rows, reorderBoardTasks } = setupDrag();
-                pointer('pointerdown', 20, rows[0].querySelector('[data-row-main]')!);
+                pointer('pointerdown', 20, rows[0]!.querySelector('[data-row-main]')!);
                 pointer('pointermove', 90, document);
                 const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
                 act(() => { document.dispatchEvent(escape); });

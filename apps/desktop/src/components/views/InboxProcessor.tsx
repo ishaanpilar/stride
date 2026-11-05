@@ -1,3 +1,4 @@
+import { useEffect, type MutableRefObject } from 'react';
 import { Play } from 'lucide-react';
 import type { AppData, Area, Project, StoreActionResult, Task } from '@stride/core';
 
@@ -26,6 +27,10 @@ type InboxProcessorProps = {
     isProcessing: boolean;
     setIsProcessing: (value: boolean) => void;
     onOpenMindSweep?: () => void;
+    /** The Inbox capture hub renders its own actions: hide the legacy start row. */
+    hideStartRow?: boolean;
+    /** Receives the manual (one-by-one) start function, for the hub's menu and the AI fallback. */
+    startRef?: MutableRefObject<(() => void) | null>;
 };
 
 export function InboxProcessor({
@@ -44,6 +49,8 @@ export function InboxProcessor({
     isProcessing,
     setIsProcessing,
     onOpenMindSweep,
+    hideStartRow = false,
+    startRef,
 }: InboxProcessorProps) {
     const {
         inboxCount,
@@ -67,11 +74,20 @@ export function InboxProcessor({
         setIsProcessing,
     });
 
+    useEffect(() => {
+        if (!startRef) return undefined;
+        startRef.current = () => {
+            dismissDesktopOnboardingHint('inbox-project');
+            startProcessing();
+        };
+        return () => { startRef.current = null; };
+    }, [startProcessing, startRef]);
+
     if (!isInbox) return null;
 
     return (
         <>
-            {showStartButton && (
+            {showStartButton && !hideStartRow && (
                 <div className="flex flex-wrap items-stretch gap-2">
                     <QuickCaptureTrigger t={t} variant="primary" />
                     <button

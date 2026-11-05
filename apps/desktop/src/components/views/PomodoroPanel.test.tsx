@@ -230,7 +230,10 @@ describe('PomodoroPanel desktop persistence', () => {
             expect(screen.getByRole('option', { name: 'Timer only' })).toHaveAttribute('aria-selected', 'true');
             expect(screen.queryByRole('option', { name: task.title })).toBeNull();
             expect(screen.queryByLabelText('Mark task done')).toBeNull();
-            expect(usePomodoroStore.getState().snapshot).toEqual({ ...before, selectedTaskId: undefined });
+            // Only the link changes; with no open task linked, the phase may no longer run into overtime.
+            const { keepGoing: _keepGoing, ...timerWithoutKeepGoing } = before.timerState;
+            expect(before.timerState.keepGoing).toBe(true);
+            expect(usePomodoroStore.getState().snapshot).toEqual({ ...before, selectedTaskId: undefined, timerState: timerWithoutKeepGoing });
         }
     );
 
@@ -318,6 +321,39 @@ describe('PomodoroPanel desktop persistence', () => {
         fireEvent.click(screen.getByRole('radio', { name: /Deep/ }));
         expect(screen.queryByRole('radiogroup')).toBeNull();
         expect(screen.getByTestId('pomodoro-clock').textContent).toBe('50:00');
+    });
+
+    it('shows the session length under the time ("25 min ⌄"), which opens the presets with a one-line explainer', () => {
+        renderPanel();
+        const label = screen.getByTestId('pomodoro-preset-label');
+        expect(label).toHaveTextContent('25 min');
+        fireEvent.click(label);
+        expect(screen.getByTestId('pomodoro-preset-hint')).toHaveTextContent('Focus minutes / break minutes');
+        expect(screen.getByRole('radio', { name: /Classic\s*25\/5/ })).toHaveAttribute('aria-checked', 'true');
+        // A second click on the same label closes it (it is not an "outside" click).
+        fireEvent.mouseDown(label);
+        fireEvent.click(label);
+        expect(screen.queryByRole('radiogroup')).toBeNull();
+        fireEvent.click(label);
+        fireEvent.click(screen.getByRole('radio', { name: /Quick/ }));
+        expect(screen.getByTestId('pomodoro-clock').textContent).toBe('15:00');
+        expect(screen.getByTestId('pomodoro-preset-label')).toHaveTextContent('15 min');
+    });
+
+    it('overtime on the Today card: "+M:SS" in a calmer tone, a faint second lap, "Over time"', () => {
+        storeSession(task.id);
+        renderPanel();
+        act(() => {
+            usePomodoroStore.getState().commitPomodoro((prev) => ({
+                ...prev,
+                timerState: { ...prev.timerState, isRunning: true, remainingSeconds: 0, overtimeSeconds: 300, keepGoing: true },
+                updatedAtMs: Date.now(),
+            }));
+        });
+        expect(screen.getByTestId('pomodoro-clock')).toHaveTextContent('+5:00');
+        expect(screen.getByTestId('pomodoro-clock')).toHaveAttribute('data-overtime', 'true');
+        expect(screen.getByTestId('pomodoro-overtime')).toHaveTextContent('Over time');
+        expect(screen.getByTestId('pomodoro-ring-overtime')).toBeInTheDocument();
     });
 
     it('when running hides everything but the ring, task title and a pause button', () => {

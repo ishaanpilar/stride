@@ -7,7 +7,7 @@ import { isImeComposing } from '../../../lib/ime';
 import { FocusStarIcon } from '../../FocusStarIcon';
 import { SortableProjectRow } from './SortableRows';
 import { LIST_END_GAP } from '../list/list-toolbar';
-import { isFocusedProjectMissingNextAction, tFallback, type Area, type Project, type ProjectTaskSummary } from '@stride/core';
+import { isFocusedProjectMissingNextAction, isProjectTitleLong, tFallback, type Area, type Project, type ProjectTaskSummary } from '@stride/core';
 import { ProjectAreaDropZone } from './project-area-dnd';
 import {
     isProjectAreaCollapsed,
@@ -19,6 +19,7 @@ import {
     type ProjectListScope,
 } from '../../../contexts/keybinding-context';
 import { ExitGhost } from '../../ui/ExitGhost';
+import { ProjectTitleLengthHint } from './ShortenProjectTitleDialog';
 
 const PROJECT_SELECTION_IGNORE_SELECTOR = '[data-project-selection-ignore="true"]';
 
@@ -472,14 +473,14 @@ export function ProjectsSidebar({
                         areaId={target.id}
                         className="rounded-lg border border-dashed border-border/60 px-2 py-1.5"
                     >
-                        <span className="flex items-center gap-2 text-[13px] font-semibold text-muted-foreground ">
+                        <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-muted-foreground ">
                             {target.color && (
                                 <span
-                                    className="w-2 h-2 rounded-full border border-border/50"
+                                    className="w-2 h-2 shrink-0 rounded-full border border-border/50"
                                     style={{ backgroundColor: target.color }}
                                 />
                             )}
-                            {target.name}
+                            <span className="truncate" title={target.name}>{target.name}</span>
                         </span>
                     </ProjectAreaDropZone>
                 ))}
@@ -496,13 +497,13 @@ export function ProjectsSidebar({
         <div
             ref={projectNavigationRootRef}
             data-project-navigation-root
-            className={cn("w-full min-h-0 flex flex-col gap-4", !embedded && "h-full pr-5 xl:pr-6")}
+            className={cn("w-full min-w-0 min-h-0 flex flex-col gap-4", !embedded && "h-full pr-5 xl:pr-6")}
         >
             <div data-projects-sidebar-header className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                    <h2 className={embedded ? "text-[13px] font-semibold text-muted-foreground " : "text-[30px] font-bold leading-9 tracking-[-0.02em]"}>{t(embedded ? 'projects.activeSection' : 'projects.title')}</h2>
-                    {areaFilterLabel && (
-                        <span className="text-xs bg-well text-muted-foreground rounded-full px-2.5 py-0.5 truncate max-w-[180px]">
+                    <h2 className={embedded ? "min-w-0 truncate text-[13px] font-semibold text-muted-foreground" : "shrink-0 whitespace-nowrap text-[30px] font-bold leading-9 tracking-[-0.02em]"}>{t(embedded ? 'projects.activeSection' : 'projects.title')}</h2>
+                    {areaFilterLabel && !embedded && (
+                        <span className="min-w-0 text-xs bg-well text-muted-foreground rounded-full px-2.5 py-0.5 truncate max-w-[180px]" title={`${t('projects.areaLabel')}: ${areaFilterLabel}`}>
                             {t('projects.areaLabel')}: {areaFilterLabel}
                         </span>
                     )}
@@ -601,6 +602,7 @@ export function ProjectsSidebar({
                             disabled={isCreatingProject}
                             aria-busy={isCreatingProject}
                             aria-label={t('projects.projectName')}
+                            aria-describedby={isProjectTitleLong(newProjectTitle) ? 'new-project-title-hint' : undefined}
                         />
                         <button
                             type="submit"
@@ -612,6 +614,7 @@ export function ProjectsSidebar({
                             <Plus className="h-4 w-4" />
                         </button>
                     </div>
+                    <ProjectTitleLengthHint id="new-project-title-hint" title={newProjectTitle} t={t} />
                     {areaOptions.length > 0 && (
                         <select
                             aria-label={t('projects.areaLabel')}
@@ -641,7 +644,7 @@ export function ProjectsSidebar({
                 </form>
             )}
 
-            <div className={embedded ? "space-y-3" : "space-y-3 overflow-y-auto flex-1"}>
+            <div className={embedded ? "min-w-0 space-y-3" : "min-w-0 space-y-3 overflow-y-auto overflow-x-hidden flex-1"}>
                 {!embedded && groupedActiveProjects.length > 0 && (
                     <div className="pt-2 text-[13px] font-semibold text-muted-foreground ">
                         {t('projects.activeSection')}
@@ -659,19 +662,19 @@ export function ProjectsSidebar({
                                     <button
                                         type="button"
                                         onClick={() => onToggleAreaCollapse('active', areaId)}
-                                        className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                                        className="w-full min-w-0 flex items-center justify-between gap-2 px-2 py-1.5 text-left text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                     >
-                                        <span className="flex items-center gap-2">
+                                        <span className="flex min-w-0 items-center gap-2">
                                             {area?.color && (
                                                 <span
-                                                    className="w-2 h-2 rounded-full border border-border/50"
+                                                    className="w-2 h-2 shrink-0 rounded-full border border-border/50"
                                                     style={{ backgroundColor: area.color }}
                                                 />
                                             )}
                                             {area?.icon && <span className="text-[10px]">{area.icon}</span>}
-                                            {areaLabel}
+                                            <span className="truncate" title={areaLabel}>{areaLabel}</span>
                                         </span>
-                                        <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
+                                        <ChevronRight className={cn('motion-chevron w-4 h-4 shrink-0', !isCollapsed && 'rotate-90')} />
                                     </button>
                                     <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                             <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
@@ -713,7 +716,7 @@ export function ProjectsSidebar({
                                                                 });
                                                             }}
                                                         >
-                                                    <div className="flex items-center gap-2 px-2 py-2">
+                                                    <div className="flex min-w-0 items-center gap-2 px-2 py-2">
                                                                 <div data-project-leading-icon className="relative flex h-8 w-8 flex-none items-center justify-center">
                                                                     <Folder
                                                                         className="h-4 w-4 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0 [@media(hover:none)]:opacity-0"
@@ -723,7 +726,7 @@ export function ProjectsSidebar({
                                                                         {handle}
                                                                     </span>
                                                                 </div>
-                                                                <span className="flex-1 truncate font-medium" title={project.title}>
+                                                                <span className="min-w-0 flex-1 truncate font-medium" title={project.title} data-project-title>
                                                                     {project.title}
                                                                     {isTaskOver && <span className="ml-2 text-xs text-primary">{t('task.moveTo')}</span>}
                                                                 </span>
@@ -736,7 +739,7 @@ export function ProjectsSidebar({
                                                                     className={cn(
                                                                         "inline-flex h-8 w-8 flex-none items-center justify-center rounded-md text-sm transition-[color,opacity] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
                                                                         project.isFocused ? "text-warning" : "text-muted-foreground hover:text-warning",
-                                                                        !project.isFocused && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
+                                                                        !project.isFocused && "w-0 overflow-hidden opacity-0 group-hover:w-8 group-hover:opacity-100 group-focus-within:w-8 group-focus-within:opacity-100 focus-visible:w-8 [@media(hover:none)]:w-8 [@media(hover:none)]:opacity-100",
                                                                         !project.isFocused && focusedCount >= 5 && "opacity-30 cursor-not-allowed",
                                                                     )}
                                                                     title={project.isFocused ? removeFromFocusLabel : focusedCount >= 5 ? maxFocusedProjectsLabel : addToFocusLabel}
@@ -744,7 +747,7 @@ export function ProjectsSidebar({
                                                                 >
                                                                     <FocusStarIcon className="h-4 w-4" filled={project.isFocused} />
                                                                 </button>
-                                                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted/60 text-muted-foreground min-w-5 text-center">
+                                                                <span className="flex-none text-[10px] px-1.5 py-0.5 rounded-full bg-muted/60 text-muted-foreground min-w-5 text-center tabular-nums">
                                                                     {activeTaskCount}
                                                                 </span>
                                                             </div>
@@ -778,7 +781,7 @@ export function ProjectsSidebar({
                             className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{t('projects.deferredSection')}</span>
-                            <ChevronRight className={cn('motion-chevron w-4 h-4', showDeferredProjects && 'rotate-90')} />
+                            <ChevronRight className={cn('motion-chevron w-4 h-4 shrink-0', showDeferredProjects && 'rotate-90')} />
                         </button>
                         {showDeferredProjects && (
                             <div className="motion-expand-in space-y-3">
@@ -792,19 +795,19 @@ export function ProjectsSidebar({
                                                 <button
                                                     type="button"
                                                     onClick={() => onToggleAreaCollapse('deferred', areaId)}
-                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                                                    className="w-full min-w-0 flex items-center justify-between gap-2 px-2 py-1.5 text-left text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                                 >
-                                                    <span className="flex items-center gap-2">
+                                                    <span className="flex min-w-0 items-center gap-2">
                                                         {area?.color && (
                                                             <span
-                                                                className="w-2 h-2 rounded-full border border-border/50"
+                                                                className="w-2 h-2 shrink-0 rounded-full border border-border/50"
                                                                 style={{ backgroundColor: area.color }}
                                                             />
                                                         )}
                                                         {area?.icon && <span className="text-[10px]">{area.icon}</span>}
-                                                        {areaLabel}
+                                                        <span className="truncate" title={areaLabel}>{areaLabel}</span>
                                                     </span>
-                                                    <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
+                                                    <ChevronRight className={cn('motion-chevron w-4 h-4 shrink-0', !isCollapsed && 'rotate-90')} />
                                                 </button>
                                                 <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                                         <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
@@ -840,7 +843,7 @@ export function ProjectsSidebar({
                                                                             });
                                                                         }}
                                                                     >
-                                                                        <div className="flex items-center gap-2 px-2 py-2">
+                                                                        <div className="flex min-w-0 items-center gap-2 px-2 py-2">
                                                                             <div data-project-leading-icon className="relative flex h-8 w-8 flex-none items-center justify-center">
                                                                                 <Folder
                                                                                     className="h-4 w-4 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0 [@media(hover:none)]:opacity-0"
@@ -850,11 +853,11 @@ export function ProjectsSidebar({
                                                                                     {handle}
                                                                                 </span>
                                                                             </div>
-                                                                            <span className="flex-1 truncate font-medium" title={project.title}>
+                                                                            <span className="min-w-0 flex-1 truncate font-medium" title={project.title} data-project-title>
                                                                                 {project.title}
                                                                     {isTaskOver && <span className="ml-2 text-xs text-primary">{t('task.moveTo')}</span>}
                                                                             </span>
-                                                                            <span className="text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
+                                                                            <span className="flex-none text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
                                                                                 {tFallback(t, `status.${project.status}`, project.status)}
                                                                             </span>
                                                                         </div>
@@ -881,7 +884,7 @@ export function ProjectsSidebar({
                             className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{tFallback(t, 'projects.closed', 'Closed')}</span>
-                            <ChevronRight className={cn('motion-chevron w-4 h-4', showArchivedProjects && 'rotate-90')} />
+                            <ChevronRight className={cn('motion-chevron w-4 h-4 shrink-0', showArchivedProjects && 'rotate-90')} />
                         </button>
                         {showArchivedProjects && (
                             <div className="motion-expand-in space-y-3">
@@ -895,19 +898,19 @@ export function ProjectsSidebar({
                                                 <button
                                                     type="button"
                                                     onClick={() => onToggleAreaCollapse('archived', areaId)}
-                                                    className="w-full flex items-center justify-between px-2 py-1.5 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                                                    className="w-full min-w-0 flex items-center justify-between gap-2 px-2 py-1.5 text-left text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                                                 >
-                                                    <span className="flex items-center gap-2">
+                                                    <span className="flex min-w-0 items-center gap-2">
                                                         {area?.color && (
                                                             <span
-                                                                className="w-2 h-2 rounded-full border border-border/50"
+                                                                className="w-2 h-2 shrink-0 rounded-full border border-border/50"
                                                                 style={{ backgroundColor: area.color }}
                                                             />
                                                         )}
                                                         {area?.icon && <span className="text-[10px]">{area.icon}</span>}
-                                                        {areaLabel}
+                                                        <span className="truncate" title={areaLabel}>{areaLabel}</span>
                                                     </span>
-                                                    <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
+                                                    <ChevronRight className={cn('motion-chevron w-4 h-4 shrink-0', !isCollapsed && 'rotate-90')} />
                                                 </button>
                                                 <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                                         <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
@@ -942,7 +945,7 @@ export function ProjectsSidebar({
                                                                                 });
                                                                             }}
                                                                         >
-                                                                            <div className="flex items-center gap-2 px-2 py-2">
+                                                                            <div className="flex min-w-0 items-center gap-2 px-2 py-2">
                                                                                 <div data-project-leading-icon className="relative flex h-8 w-8 flex-none items-center justify-center">
                                                                                     <Folder
                                                                                         className="h-4 w-4 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0 [@media(hover:none)]:opacity-0"
@@ -952,10 +955,10 @@ export function ProjectsSidebar({
                                                                                         {handle}
                                                                                     </span>
                                                                                 </div>
-                                                                                <span className="flex-1 truncate font-medium" title={project.title}>
+                                                                                <span className="min-w-0 flex-1 truncate font-medium" title={project.title} data-project-title>
                                                                                     {project.title}
                                                                                 </span>
-                                                                                <span className="text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
+                                                                                <span className="flex-none text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground ">
                                                                                     {project.cancelledAt
                                                                                         ? tFallback(t, 'projects.cancelled', 'Cancelled')
                                                                                         : tFallback(t, 'list.done', 'Completed')}

@@ -318,7 +318,7 @@ describe('TaskItem', () => {
         fireEvent.click(view.getByRole('button', { name: 'Reference' }));
         expect(view.queryByRole('button', { name: /add to.*focus/i })).toBeNull();
         expect(view.getByDisplayValue('Reusable step')).toBeInTheDocument();
-        fireEvent.click(view.getByRole('button', { name: 'Save' }));
+        fireEvent.click(view.getByRole('button', { name: 'Done editing' }));
         await waitFor(() => expect(useTaskStore.getState()._allTasks.find((task) => task.id === referenceTask.id))
             .toMatchObject({ status: 'reference', checklist: [{ title: 'Reusable step', isCompleted: false }] }));
     });
@@ -353,7 +353,7 @@ describe('TaskItem', () => {
         fireEvent.change(view.getByDisplayValue('Vendor notes'), {
             target: { value: 'Updated vendor notes' },
         });
-        fireEvent.click(view.getByRole('button', { name: 'Save' }));
+        fireEvent.click(view.getByRole('button', { name: 'Done editing' }));
 
         await waitFor(() => {
             const saved = useTaskStore.getState()._allTasks.find((task) => task.id === referenceTask.id);
@@ -513,7 +513,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(getByDisplayValue('Test Task')).toBeInTheDocument());
 
         await act(async () => {
-            fireEvent.click(getAllByRole('button', { name: 'Done' })[0]);
+            fireEvent.click(getAllByRole('checkbox', { name: 'Mark as done' })[0]);
         });
 
         await waitFor(() => {
@@ -521,6 +521,56 @@ describe('TaskItem', () => {
             expect(updatedTask?.status).toBe('done');
             expect(updatedTask?.completedAt).toBeTruthy();
         });
+        const { toasts } = useUiStore.getState();
+        const toast = toasts[toasts.length - 1];
+        expect(toast?.action?.label).toBe('Undo');
+    });
+
+    it('finishes editing with Done without completing the task', async () => {
+        const editableTask: Task = {
+            ...mockTask,
+            id: 'editor-finish-task',
+            status: 'next',
+        };
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                tasks: [editableTask],
+                _allTasks: [editableTask],
+                _tasksById: new Map([[editableTask.id, editableTask]]),
+                projects: [],
+                _allProjects: [],
+                _projectsById: new Map(),
+                sections: [],
+                _allSections: [],
+                _sectionsById: new Map(),
+                areas: [],
+                _allAreas: [],
+                _areasById: new Map(),
+            }));
+        });
+        const view = render(
+            <LanguageProvider>
+                <TaskItem task={editableTask} />
+            </LanguageProvider>
+        );
+
+        await act(async () => {
+            fireEvent.click(view.getAllByRole('button', { name: /edit/i })[0]);
+        });
+        const title = await waitFor(() => view.getByDisplayValue('Test Task'));
+        fireEvent.change(title, { target: { value: 'Test Task, renamed' } });
+        await act(async () => {
+            fireEvent.click(view.getByRole('button', { name: 'Done editing' }));
+        });
+
+        await waitFor(() => {
+            const updatedTask = useTaskStore.getState()._tasksById.get('editor-finish-task');
+            expect(updatedTask?.title).toBe('Test Task, renamed');
+            expect(updatedTask?.status).toBe('next');
+            expect(updatedTask?.completedAt).toBeFalsy();
+        });
+        await waitFor(() => expect(view.queryByRole('button', { name: 'Done editing' })).not.toBeInTheDocument());
     });
 
     it('marks the task done at a chosen time when the edit title action is right-clicked', async () => {
@@ -558,7 +608,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(getByDisplayValue('Test Task')).toBeInTheDocument());
         fireEvent.change(getByDisplayValue('Test Task'), { target: { value: 'Edited before completion' } });
 
-        fireEvent.contextMenu(getAllByRole('button', { name: 'Done' })[0]);
+        fireEvent.contextMenu(getAllByRole('checkbox', { name: 'Mark as done' })[0]);
 
         const dialog = getByRole('dialog', { name: 'Completion time' });
         const completedAtInput = '2026-07-20T09:30';
@@ -847,7 +897,7 @@ describe('TaskItem', () => {
         expect(useTaskStore.getState()._tasksById.get('editor-star-task')?.isFocusedToday).not.toBe(true);
 
         await act(async () => {
-            fireEvent.click(getAllByRole('button', { name: 'Save' })[0]);
+            fireEvent.click(getAllByRole('button', { name: 'Done editing' })[0]);
         });
 
         await waitFor(() => {
@@ -913,7 +963,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Email today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -980,7 +1030,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Call today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -1037,7 +1087,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Email today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -1088,7 +1138,7 @@ describe('TaskItem', () => {
         expect(useTaskStore.getState()._tasksById.get(editableTask.id)?.timeEstimate).toBe('15min');
 
         await act(async () => {
-            fireEvent.click(view.getByRole('button', { name: 'Save' }));
+            fireEvent.click(view.getByRole('button', { name: 'Done editing' }));
         });
         await waitFor(() => {
             expect(useTaskStore.getState()._tasksById.get(editableTask.id)).toMatchObject({
@@ -1146,7 +1196,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Email today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -1203,7 +1253,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Email today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -1267,7 +1317,7 @@ describe('TaskItem', () => {
         await waitFor(() => expect(titleInput.value).toBe('Email today'));
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {
@@ -1328,7 +1378,7 @@ describe('TaskItem', () => {
         fireEvent.change(titleInput, { target: { value: literalTitle } });
 
         await act(async () => {
-            fireEvent.click(getByRole('button', { name: 'Save' }));
+            fireEvent.click(getByRole('button', { name: 'Done editing' }));
         });
 
         await waitFor(() => {

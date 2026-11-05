@@ -55,6 +55,7 @@ import { appendProjectAttachments, useProjectAttachmentActions } from './useProj
 import { useProjectSectionActions } from './useProjectSectionActions';
 import { useProjectWorkspaceStore } from './useProjectWorkspaceStore';
 import { ProjectDetailsHeader } from './ProjectDetailsHeader';
+import { useProjectTitleShortener } from './ShortenProjectTitleDialog';
 import { ProjectDetailsFields } from './ProjectDetailsFields';
 import { ProjectNotesSection } from './ProjectNotesSection';
 import { ProjectSectionActionsMenu } from './ProjectSectionActionsMenu';
@@ -1598,6 +1599,13 @@ export function ProjectWorkspace({
         setEditProjectTitle(selectedProject.title);
     };
 
+    const titleShortener = useProjectTitleShortener({
+        project: isArchivedProject ? null : selectedProject,
+        t,
+        updateProject,
+        onApplied: setEditProjectTitle,
+    });
+
 
     const handleArchiveProject = async () => {
         const current = getMutableSelectedProject();
@@ -1870,8 +1878,11 @@ export function ProjectWorkspace({
                                 readOnly={isArchivedProject}
                                 readOnlyHint={archivedReadOnlyHint}
                                 projectProgress={selectedProject.cancelledAt ? null : projectProgress}
+                                onShortenTitle={isArchivedProject ? undefined : titleShortener.open}
+                                shortenWithAi={titleShortener.aiEnabled}
                                 t={t}
                             />
+                            {titleShortener.dialog}
                             {isGettingStartedProject(selectedProject, allTasks) && <GettingStartedActions t={t} />}
 
                             {projectDetailsExpanded && (

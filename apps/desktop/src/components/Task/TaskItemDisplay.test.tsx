@@ -2033,3 +2033,84 @@ describe('TaskItemDisplay', () => {
         });
     });
 });
+
+describe('TaskItemDisplay expand chevron', () => {
+    const row = (task: Task, options: { isViewOpen?: boolean; onToggleView?: () => void; selectionMode?: boolean; attachments?: Task['attachments'] } = {}) => (
+        <LanguageProvider>
+            <TaskItemDisplay
+                task={task}
+                language="en"
+                selectionMode={options.selectionMode ?? false}
+                isViewOpen={options.isViewOpen ?? false}
+                actions={{
+                    onToggleView: options.onToggleView ?? vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(),
+                    onDuplicate: vi.fn(), onStatusChange: vi.fn(), openAttachment: vi.fn(),
+                }}
+                visibleAttachments={options.attachments ?? []}
+                recurrenceRule=""
+                recurrenceStrategy="strict"
+                prioritiesEnabled={false}
+                timeEstimatesEnabled={false}
+                isStagnant={false}
+                showQuickDone
+                readOnly={false}
+                t={(key) => key}
+            />
+        </LanguageProvider>
+    );
+    const plain: Task = { ...baseTask, id: 'plain', title: 'Plain task', status: 'next' };
+    const withSteps: Task = {
+        ...plain,
+        id: 'steps',
+        title: 'Dentist',
+        checklist: [
+            { id: 'c1', title: 'Book', isCompleted: true },
+            { id: 'c2', title: 'Go', isCompleted: false },
+            { id: 'c3', title: 'Pay', isCompleted: false },
+            { id: 'c4', title: 'Floss', isCompleted: true },
+            { id: 'c5', title: 'Rest', isCompleted: false },
+        ],
+    };
+
+    it('adds no chevron to rows with nothing to expand', () => {
+        const view = render(row(plain));
+        expect(view.container.querySelector('[data-task-expand-toggle]')).toBeNull();
+    });
+
+    it('shows a chevron with the steps count when the task has a checklist, and toggles on click', () => {
+        const onToggleView = vi.fn();
+        const view = render(row(withSteps, { onToggleView }));
+        const toggle = view.getByRole('button', { name: /^Expand: Dentist/ });
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        expect(toggle).not.toHaveAttribute('aria-controls');
+        expect(toggle).toHaveTextContent('2/5');
+        expect(toggle.querySelector('svg')).toHaveClass('motion-chevron');
+        expect(toggle.querySelector('svg')).not.toHaveClass('rotate-90');
+        fireEvent.click(toggle);
+        expect(onToggleView).toHaveBeenCalledTimes(1);
+    });
+
+    it('rotates and points at the expanded details when open', () => {
+        const view = render(row(withSteps, { isViewOpen: true }));
+        const toggle = view.getByRole('button', { name: /^Collapse: Dentist/ });
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        const controls = toggle.getAttribute('aria-controls');
+        expect(controls).toBeTruthy();
+        expect(view.container.querySelector(`[id="${controls}"]`)).toHaveTextContent('Floss');
+        expect(toggle.querySelector('svg')).toHaveClass('rotate-90');
+    });
+
+    it('shows a chevron for notes or attachments, without a count', () => {
+        const notes = render(row({ ...plain, id: 'notes', title: 'Notes task', description: 'Bring the card' }));
+        expect(notes.getByRole('button', { name: /^Expand: Notes task$/ })).not.toHaveTextContent(/\d/);
+        notes.unmount();
+        const attachment = { id: 'a1', kind: 'link' as const, title: 'Spec', uri: 'https://example.com', createdAt: plain.createdAt, updatedAt: plain.updatedAt };
+        const files = render(row({ ...plain, id: 'files', title: 'Files task', attachments: [attachment] }, { attachments: [attachment] }));
+        expect(files.getByRole('button', { name: /^Expand: Files task$/ })).toBeInTheDocument();
+    });
+
+    it('hides the chevron in selection mode', () => {
+        const view = render(row(withSteps, { selectionMode: true }));
+        expect(view.container.querySelector('[data-task-expand-toggle]')).toBeNull();
+    });
+});

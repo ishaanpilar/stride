@@ -10,6 +10,10 @@ export const MENUBAR_OPEN_EVENT = 'menubar-open';
 export const MENUBAR_POMODORO_CHANGED_EVENT = 'menubar-pomodoro-changed';
 /** Emitted by the panel to the main window to bring Focus mode back to its full stage. */
 export const MENUBAR_FOCUS_EXPAND_EVENT = 'menubar-focus-expand';
+/** Emitted by the panel to the main window to show a view ("Review in Stride" opens the Inbox). */
+export const MENUBAR_NAVIGATE_EVENT = 'menubar-navigate';
+
+export type MenuBarNavigatePayload = { view: 'inbox' };
 
 export type MenuBarOpenPayload = { taskId?: string | null; ask?: string | null; openCapture?: boolean };
 

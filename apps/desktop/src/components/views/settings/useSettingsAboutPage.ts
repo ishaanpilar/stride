@@ -29,6 +29,8 @@ import {
     type LinuxDistroInfo,
 } from '../../../lib/runtime';
 import { isAutoUpdateCheckAllowed } from '../../../lib/desktop-update-targets';
+import { supportsInAppUpdates } from '../../../lib/app-updater';
+import { useAppUpdaterStore } from '../../../lib/app-updater-store';
 import { reportError } from '../../../lib/report-error';
 import { resolveDesktopAnalyticsVersion } from '../../../lib/analytics-heartbeat';
 import { version as pkgVersion } from '../../../../package.json';
@@ -74,6 +76,8 @@ export function useSettingsAboutPage({
     const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
     const [linuxDistro, setLinuxDistro] = useState<LinuxDistroInfo | null>(null);
     const [hasUpdateBadge, setHasUpdateBadge] = useState(false);
+    const inAppUpdates = isTauri && installSourceResolved && supportsInAppUpdates(installSource);
+    const inAppUpdateVersion = useAppUpdaterStore((state) => state.update?.version ?? null);
 
     const persistUpdateBadge = useCallback((next: boolean, latestVersion?: string) => {
         setHasUpdateBadge(next);
@@ -195,6 +199,7 @@ export function useSettingsAboutPage({
 
 
         if (!installSourceResolved) return;
+        if (inAppUpdates) return;
         if (!isAutoUpdateCheckAllowed(installSource)) return;
         let lastCheck = 0;
         try {
@@ -230,7 +235,7 @@ export function useSettingsAboutPage({
         return () => {
             cancelled = true;
         };
-    }, [appVersion, installSource, installSourceResolved, isTauri, persistUpdateBadge]);
+    }, [appVersion, inAppUpdates, installSource, installSourceResolved, isTauri, persistUpdateBadge]);
 
     const openLink = useCallback(async (url: string): Promise<boolean> => {
         const nextUrl = url.trim();
@@ -293,6 +298,18 @@ export function useSettingsAboutPage({
             }),
         [installSource, isArchLinuxUpdate, preferredDownloadUrl],
     );
+
+    const handleCheckInAppUpdates = useCallback(async () => {
+        setIsCheckingUpdate(true);
+        setUpdateError(null);
+        setUpdateNotice(null);
+        try {
+            const result = await useAppUpdaterStore.getState().checkNow({ manual: true });
+            if (result === 'up-to-date') setUpdateNotice(t.upToDate);
+        } finally {
+            setIsCheckingUpdate(false);
+        }
+    }, [t.upToDate]);
 
     const handleCheckUpdates = useCallback(async () => {
         setIsCheckingUpdate(true);
@@ -465,13 +482,14 @@ export function useSettingsAboutPage({
             updatesSupported: isTauri,
             installChannel: installChannelDisplay,
             isCheckingUpdate,
-            onCheckUpdates: handleCheckUpdates,
+            onCheckUpdates: inAppUpdates ? handleCheckInAppUpdates : handleCheckUpdates,
+            inAppUpdates,
             onOpenLink: openLink,
             updateActionLabel,
             updateError,
             updateNotice,
         },
-        hasUpdateBadge,
+        hasUpdateBadge: hasUpdateBadge || (inAppUpdates && inAppUpdateVersion !== null),
         logPath,
         updateModalProps: {
             canDownload: canDownloadUpdate,

@@ -15,6 +15,11 @@ interface PomodoroRingProps {
     running?: boolean;
     /** Change this number to play one quiet completion burst. 0 = none. */
     burstKey?: number;
+    /**
+     * Overtime ("Keep going"): 0 to 1 of a faint second lap. The first lap stays full but recedes;
+     * no glow, so the ring reads calmer than the countdown.
+     */
+    overtime?: number;
     className?: string;
     children?: ReactNode;
 }
@@ -23,11 +28,13 @@ interface PomodoroRingProps {
  * Circular progress ring: soft inset well track, accent gradient stroke with a soft glow (calm green
  * on a break). All motion is CSS and switches off under prefers-reduced-motion.
  */
-export function PomodoroRing({ progress, phase, size, stroke, well = true, running = false, burstKey = 0, className, children }: PomodoroRingProps) {
+export function PomodoroRing({ progress, phase, size, stroke, well = true, running = false, burstKey = 0, overtime, className, children }: PomodoroRingProps) {
     const gradientId = useId();
     const radius = (size - stroke) / 2 - (well ? stroke * 0.5 : 0);
     const circumference = 2 * Math.PI * radius;
-    const clamped = Math.min(1, Math.max(0, progress));
+    const inOvertime = typeof overtime === 'number';
+    const clamped = inOvertime ? 1 : Math.min(1, Math.max(0, progress));
+    const lap = inOvertime ? Math.min(1, Math.max(0, overtime)) : 0;
     const isFocus = phase === 'focus';
     const arc = (extra?: string) => (
         <circle
@@ -40,8 +47,24 @@ export function PomodoroRing({ progress, phase, size, stroke, well = true, runni
             stroke={`url(#${gradientId})`}
             strokeDasharray={circumference}
             strokeDashoffset={circumference * (1 - clamped)}
-            opacity={clamped === 0 ? 0 : 1}
+            opacity={clamped === 0 ? 0 : inOvertime ? 0.22 : 1}
             className={cn('pomo-arc', extra)}
+        />
+    );
+    const secondLap = (
+        <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            stroke={`url(#${gradientId})`}
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - lap)}
+            opacity={lap === 0 ? 0 : 0.5}
+            className="pomo-arc"
+            data-testid="pomodoro-ring-overtime"
         />
     );
     return (
@@ -49,6 +72,7 @@ export function PomodoroRing({ progress, phase, size, stroke, well = true, runni
             data-testid="pomodoro-ring"
             data-phase={phase}
             data-running={running ? 'true' : 'false'}
+            data-overtime={inOvertime ? 'true' : undefined}
             className={cn(
                 'pomo-ring relative inline-flex shrink-0 items-center justify-center rounded-full',
                 well && 'bg-well shadow-soft-inset',
@@ -67,11 +91,14 @@ export function PomodoroRing({ progress, phase, size, stroke, well = true, runni
                     <circle cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={stroke} className="stroke-foreground/10" />
                 )}
                 {arc()}
+                {inOvertime && secondLap}
             </svg>
-            {/* The same arc, blurred: a soft glow that breathes while the timer runs. */}
-            <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="pomo-glow pointer-events-none absolute inset-0 -rotate-90" aria-hidden focusable="false">
-                {arc()}
-            </svg>
+            {/* The same arc, blurred: a soft glow that breathes while the timer runs (not in overtime). */}
+            {!inOvertime && (
+                <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="pomo-glow pointer-events-none absolute inset-0 -rotate-90" aria-hidden focusable="false">
+                    {arc()}
+                </svg>
+            )}
             {burstKey > 0 && <span key={burstKey} className="pomo-burst" aria-hidden />}
             <div className="relative flex flex-col items-center justify-center text-center">{children}</div>
         </div>

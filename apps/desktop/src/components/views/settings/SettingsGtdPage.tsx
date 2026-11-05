@@ -28,7 +28,10 @@ import { dispatchDesktopOnboardingEvent } from '../../../lib/desktop-onboarding-
 import { useUiStore } from '../../../store/ui-store';
 import type { Language } from '../../../contexts/language-context';
 import { Switch } from '../../ui/Switch';
+import { setCapturePreferences, useCapturePreferences } from '../../../lib/capture-preferences';
 import { SettingField, SettingRow, SettingsDisclosureCard } from './SettingRow';
+import { FocusFloatSettingRow } from './FocusFloatSettingRow';
+import { PomodoroKeepGoingSettingRow } from './PomodoroKeepGoingSettingRow';
 
 type Labels = {
     gtdDesc: string;
@@ -73,6 +76,10 @@ type Labels = {
     captureDefaultAudio: string;
     captureSaveAudio: string;
     captureSaveAudioDesc: string;
+    captureStartVoice: string;
+    captureStartVoiceDesc: string;
+    captureAutoSave: string;
+    captureAutoSaveDesc: string;
     quickAddAutoClean: string;
     quickAddAutoCleanDesc: string;
     naturalLanguageDates: string;
@@ -135,6 +142,8 @@ type Labels = {
     pomodoroAutoStartFocusDesc: string;
     pomodoroCompletionAlert: string;
     pomodoroCompletionAlertDesc: string;
+    pomodoroKeepGoing: string;
+    pomodoroKeepGoingDesc: string;
     weeklyReviewConfig: string;
     weeklyReviewConfigDesc: string;
     weeklyReviewIncludeContextsStep: string;
@@ -212,6 +221,7 @@ export function SettingsGtdPage({
         ? 'modal'
         : 'inline';
     const defaultCaptureMethod = safeSettings.gtd?.defaultCaptureMethod ?? 'text';
+    const capturePreferences = useCapturePreferences();
     const defaultAreaMode = getDefaultTaskAreaMode(safeSettings);
     const sortedAreas = [...areas]
         .filter((area) => !area.deletedAt)
@@ -716,6 +726,8 @@ export function SettingsGtdPage({
                                     onCheckedChange={() => updatePomodoroSettings({ completionAlert: !pomodoroCompletionAlert })}
                                 />
                             </SettingRow>
+                            <PomodoroKeepGoingSettingRow title={t.pomodoroKeepGoing} description={t.pomodoroKeepGoingDesc} onSaved={showSaved} />
+                            <FocusFloatSettingRow onSaved={showSaved} />
                         </div>
                     </SettingField>
                 )}
@@ -727,38 +739,28 @@ export function SettingsGtdPage({
                 open={captureOpen}
                 onToggle={() => setCaptureOpen((prev) => !prev)}
             >
-                <div className="p-4 space-y-3">
-                    <div className="inline-flex p-1 bg-well shadow-soft-inset rounded-control">
-                        <button
-                            type="button"
-                            onClick={() => {
-                                saveGtdFromLatest(() => ({ defaultCaptureMethod: 'text' }), 'Failed to update capture defaults');
-                            }}
-                            className={cn(
-                                'px-3 py-1 text-xs rounded-md transition-colors',
-                                defaultCaptureMethod === 'text'
-                                    ? 'btn-gradient'
-                                    : 'text-muted-foreground hover:text-foreground'
-                            )}
-                        >
-                            {t.captureDefaultText}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                saveGtdFromLatest(() => ({ defaultCaptureMethod: 'audio' }), 'Failed to update capture defaults');
-                            }}
-                            className={cn(
-                                'px-3 py-1 text-xs rounded-md transition-colors',
-                                defaultCaptureMethod === 'audio'
-                                    ? 'btn-gradient'
-                                    : 'text-muted-foreground hover:text-foreground'
-                            )}
-                        >
-                            {t.captureDefaultAudio}
-                        </button>
-                    </div>
-                </div>
+                <SettingRow padded settingsKey={null} title={t.captureStartVoice} description={t.captureStartVoiceDesc}>
+                    <Switch
+                        aria-label={t.captureStartVoice}
+                        checked={defaultCaptureMethod === 'audio'}
+                        onCheckedChange={() => {
+                            saveGtdFromLatest(
+                                () => ({ defaultCaptureMethod: defaultCaptureMethod === 'audio' ? 'text' : 'audio' }),
+                                'Failed to update capture defaults',
+                            );
+                        }}
+                    />
+                </SettingRow>
+                <SettingRow padded settingsKey={null} title={t.captureAutoSave} description={t.captureAutoSaveDesc}>
+                    <Switch
+                        aria-label={t.captureAutoSave}
+                        checked={capturePreferences.autoSaveAfterTranscription}
+                        onCheckedChange={() => {
+                            setCapturePreferences({ autoSaveAfterTranscription: !capturePreferences.autoSaveAfterTranscription });
+                            showSaved();
+                        }}
+                    />
+                </SettingRow>
                 <SettingRow padded settingsKey="defaultArea" title={t.defaultArea} description={t.defaultAreaDesc}>
                     <select
                         value={defaultAreaSelectValue}

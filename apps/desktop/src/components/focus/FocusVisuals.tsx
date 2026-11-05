@@ -46,13 +46,15 @@ interface ClockProps {
     /** Digits rise in one by one (the start of a session). */
     intro?: boolean;
     label: string;
+    /** Counting up past 0:00 ("Keep going"): a calmer, dimmer tone. */
+    overtime?: boolean;
 }
 
 /**
  * Large thin clock. Each character is its own span keyed by its value, so a changing digit
  * re-mounts and plays a short rise (CSS, off when animations are off).
  */
-export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusClock({ value, intro = false, label }, ref) {
+export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusClock({ value, intro = false, label, overtime = false }, ref) {
     const innerRef = useRef<HTMLDivElement>(null);
     const first = useRef(true);
     useEffect(() => {
@@ -67,12 +69,12 @@ export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusC
     }, [intro]);
     useEffect(() => { first.current = false; }, []);
     return (
-        <div ref={ref} role="timer" aria-label={label} aria-live="off" className="fx-clock">
+        <div ref={ref} role="timer" aria-label={label} aria-live="off" className="fx-clock" data-overtime={overtime ? 'true' : undefined}>
             <div ref={innerRef} className="flex" aria-hidden>
                 {Array.from(value).map((char, index) => (
                     <span
                         key={`${index}:${char}`}
-                        className={char === ':' ? 'c' : `d${first.current ? '' : ' fx-digit-in'}`}
+                        className={char === ':' ? 'c' : char === '+' ? 'p' : `d${first.current ? '' : ' fx-digit-in'}`}
                     >
                         {char}
                     </span>

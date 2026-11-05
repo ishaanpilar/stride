@@ -5,6 +5,9 @@ import {
     getFallbackEncouragement,
     getFocusMilestone,
     getPomodoroFocusSessionsCompletedToday,
+    getPomodoroOvertimeSeconds,
+    isPomodoroInOvertime,
+    getPomodoroPhaseTotalSeconds,
     buildFocusCoachInput,
     isTaskActionable,
     resetPomodoroState,
@@ -22,12 +25,16 @@ import { requestFocusCoachReply, requestFocusEncouragement } from '../../lib/foc
 import { applyFocusCoachAction, markFocusTaskDone, readFocusCoachFeedbackSummary, writeFocusNow, type FocusUndo } from '../../lib/focus-coach-store';
 import { getFocusStreak, recordFocusDay } from '../../lib/focus-streak';
 import { useUiStore } from '../../store/ui-store';
-import { reconcilePomodoroSnapshot, usePomodoroStore } from '../../store/pomodoro-store';
+import { reconcilePomodoroSnapshot, togglePomodoroSnapshot, usePomodoroStore } from '../../store/pomodoro-store';
 import { useFocusSessionStore } from '../../store/focus-session-store';
+import { useFocusFloatStore } from '../../store/focus-float-store';
+import type { FocusFloatState } from '../../lib/focus-float-window';
 import { FocusStage, type FocusView, type StageEnter } from './FocusStage';
 import { FocusMini, FocusPill } from './FocusMini';
 import { useFocusCoach } from './useFocusCoach';
 import { useFocusSteps } from './useFocusSteps';
+import { isFocusFloatSupported, useFocusFloatBridge } from './useFocusFloatBridge';
+import { beginCompletion, cancelCompletion } from '../../lib/completion-sequence';
 
 const NOTE_MS = 3200;
 const BREAK_IDEAS = 4;
@@ -173,9 +180,10 @@ export function FocusSessionHost() {
         }));
     }, [updateSnapshot]);
 
+    /** Pause / resume. In overtime, pausing ends the session and the check-in follows. */
     const toggleRun = useCallback(() => {
-        updateSnapshot((p) => ({ ...p, timerState: { ...p.timerState, isRunning: !p.timerState.isRunning }, updatedAtMs: Date.now() }));
-    }, [updateSnapshot]);
+        commit((prev) => togglePomodoroSnapshot(prev, Date.now(), autoStart));
+    }, [autoStart, commit]);
 
     const finishView = lastEvent === 'focus-finished'
         || (timerState.phase === 'focus' && total > 0 && done === total && !celebrationAck);
@@ -200,6 +208,8 @@ export function FocusSessionHost() {
         if (!session.open) return;
         leaveFullscreen();
         if (session.presentation === 'full' && canAnimate()) setExiting(to);
+        // Minimise (button or Esc) pops the timer out into the floating window where it exists.
+        if (to === 'mini' && isFocusFloatSupported()) useFocusFloatStore.getState().request();
         if (to === 'mini') session.minimise(); else session.hide();
     }, [session, leaveFullscreen]);
 
@@ -231,19 +241,57 @@ export function FocusSessionHost() {
         return () => window.removeEventListener('keydown', onKey, true);
     }, [session, active, leave, closeSession, fullscreen, leaveFullscreen]);
 
+    // Floating timer (native always-on-top window): fed from this session, driven by its buttons.
+    const floatTotalSeconds = Math.max(1, getPomodoroPhaseTotalSeconds(timerState, durations));
+    const floatLive = session.open && (timerState.isRunning || view !== 'focus' || timerState.remainingSeconds < floatTotalSeconds);
+    const currentStepIndex = steps.findIndex((s) => !s.isCompleted);
+    const floatNextStep = currentStepIndex >= 0 ? steps.slice(currentStepIndex + 1).find((s) => !s.isCompleted)?.title ?? null : null;
+    const floatState: FocusFloatState | null = floatLive ? {
+        timer: timerState,
+        durations,
+        updatedAtMs: snapshot.updatedAtMs,
+        autoStart,
+        view,
+        taskTitle: task?.title ?? null,
+        currentStep: timerState.phase === 'focus' ? (currentStepTitle ?? coachLead ?? null) : null,
+        nextStep: timerState.phase === 'focus' ? floatNextStep : null,
+    } : null;
+    useFocusFloatBridge({
+        state: floatState,
+        live: floatLive,
+        presentation: session.presentation,
+        handlers: {
+            toggle: toggleRun,
+            open: () => { if (session.open && session.presentation !== 'full') expand(); },
+            startNext: () => { setNote(null); setBreakSkipped(false); setPhase('focus', true); },
+            tick: () => updateSnapshot((p) => p),
+        },
+    });
+    const floatVisible = useFocusFloatStore((s) => s.visible);
+    const floatRequested = useFocusFloatStore((s) => s.requested);
+    // The float replaces the in-window mini card (the pill stays as the way back inside the app).
+    const floatTakesMini = isFocusFloatSupported() && (floatVisible || floatRequested);
+
     if (!session.open || typeof document === 'undefined') return null;
 
     const project = task?.projectId ? projects.find((p) => p.id === task.projectId) : undefined;
     const pickTask = (id: string | undefined) => {
         updateSnapshot((p) => ({ ...p, selectedTaskId: id, updatedAtMs: Date.now() }));
     };
-    const totalSeconds = Math.max(1, (timerState.phase === 'focus' ? durations.focusMinutes : durations.breakMinutes) * 60);
+    const totalSeconds = Math.max(1, getPomodoroPhaseTotalSeconds(timerState, durations));
+    const inOvertime = isPomodoroInOvertime(timerState);
+    const overtimeSeconds = inOvertime ? getPomodoroOvertimeSeconds(timerState) : undefined;
+    // How long the session that just ended really was (with added time and overtime).
+    const finishedMinutes = timerState.lastFocusSeconds ? Math.max(1, Math.round(timerState.lastFocusSeconds / 60)) : durations.focusMinutes;
     const elapsedMinutes = Math.max(1, Math.round((totalSeconds - timerState.remainingSeconds) / 60));
 
     const markDone = async (): Promise<FocusUndo | null> => {
         if (!task) return null;
+        // The task's row in the list behind plays the completion sequence; this click owns the sound.
+        if (task.status !== 'done') beginCompletion(task.id, { sound: true });
         const undo = await markFocusTaskDone(task.id);
         if (!undo) {
+            cancelCompletion(task.id);
             const message = tr('task.updateFailed', 'Could not update the task');
             useUiStore.getState().showToast(message, 'error');
             return null;
@@ -274,6 +322,12 @@ export function FocusSessionHost() {
             updatedAtMs: Date.now(),
         }));
     };
+    /** Check-in "Almost": keep going on this task for that long, back on the running stage. */
+    const extendFromCheckIn = (minutes: number) => {
+        setCelebrationAck(true);
+        setSentence(null);
+        usePomodoroStore.getState().resumePomodoroFocus(minutes, autoStart);
+    };
     const closeFromCheckIn = () => {
         const done = taskIsDone();
         leaveFullscreen();
@@ -298,6 +352,7 @@ export function FocusSessionHost() {
             project={project}
             remainingSeconds={timerState.remainingSeconds}
             totalSeconds={totalSeconds}
+            overtimeSeconds={overtimeSeconds}
             isRunning={timerState.isRunning}
             active={active}
             confirmingEnd={session.confirmingEnd}
@@ -309,7 +364,7 @@ export function FocusSessionHost() {
             breakIdea={tr(`focus.breakIdea.${breakIdea}`, 'Stand up and stretch your shoulders.')}
             announcement={announcement}
             summary={{
-                minutes: finishKind === 'session' ? durations.focusMinutes : elapsedMinutes,
+                minutes: finishKind === 'session' ? finishedMinutes : elapsedMinutes,
                 stepsDone: done,
                 stepsTotal: total,
                 sessionsToday: getPomodoroFocusSessionsCompletedToday(snapshot.sessionHistory),
@@ -322,7 +377,11 @@ export function FocusSessionHost() {
             onExited={() => setExiting(null)}
             tr={tr}
             onToggleRun={toggleRun}
-            onEnd={() => { if (session.requestEnd(timerState.isRunning)) { leaveFullscreen(); setPhase('focus', false); } }}
+            onEnd={() => {
+                // Stopping in overtime ends the session with the check-in, like Pause.
+                if (inOvertime) { toggleRun(); return; }
+                if (session.requestEnd(timerState.isRunning)) { leaveFullscreen(); setPhase('focus', false); }
+            }}
             onConfirmEnd={() => { leaveFullscreen(); setPhase(timerState.phase, false); session.close(); }}
             onCancelEnd={session.cancelEnd}
             onMinimise={() => leave('mini')}
@@ -338,6 +397,7 @@ export function FocusSessionHost() {
             onAskCoach={askCoach}
             onCheckInBreak={checkInBreak}
             onCloseSession={closeFromCheckIn}
+            onExtend={extendFromCheckIn}
             pickerTasks={pickerTasks}
             onPickTask={pickTask}
             fullscreen={fullscreen}
@@ -354,12 +414,13 @@ export function FocusSessionHost() {
     return createPortal(
         <>
             {stage}
-            {session.presentation === 'mini' && (
+            {session.presentation === 'mini' && !floatTakesMini && (
                 <FocusMini
                     task={task}
                     phase={timerState.phase}
                     remainingSeconds={timerState.remainingSeconds}
                     totalSeconds={totalSeconds}
+                    overtimeSeconds={overtimeSeconds}
                     isRunning={timerState.isRunning}
                     steps={steps}
                     position={session.miniPosition}
@@ -371,14 +432,16 @@ export function FocusSessionHost() {
                     onHide={session.hide}
                     onToggleStep={stepsApi.toggle}
                     onMove={session.setMiniPosition}
+                    onFloat={isFocusFloatSupported() ? () => useFocusFloatStore.getState().request() : undefined}
                 />
             )}
-            {session.presentation === 'hidden' && (
+            {(session.presentation === 'hidden' || (session.presentation === 'mini' && floatTakesMini)) && (
                 <FocusPill
                     takeFocus={session.previous !== null}
                     phase={timerState.phase}
                     remainingSeconds={timerState.remainingSeconds}
                     totalSeconds={totalSeconds}
+                    overtimeSeconds={overtimeSeconds}
                     isRunning={timerState.isRunning}
                     tr={tr}
                     onExpand={expand}

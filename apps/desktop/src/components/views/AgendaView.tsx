@@ -306,7 +306,7 @@ function AgendaTaskList({
     const rowVirtualizer = useVirtualizer({
         count: shouldVirtualize ? tasks.length : 0,
         getScrollElement: () => scrollElement,
-        estimateSize: () => (showListDetails ? 96 : 82),
+        estimateSize: () => (showListDetails ? 106 : 92),
         overscan: 4,
         scrollMargin,
         getItemKey: (index) => tasks[index]?.id ?? index,
@@ -371,7 +371,11 @@ function AgendaTaskList({
                         key={virtualRow.key}
                         ref={rowVirtualizer.measureElement}
                         data-index={virtualRow.index}
-                        className={cn(!isLast && 'border-b border-border/30')}
+                        // A completing row collapses this wrapper (height and gap), so the virtualizer
+                        // re-measures it every frame and the rows below rise with it.
+                        data-completion-collapse=""
+                        // Same 10px gap as the non-virtualised list (gap-2.5); measured with the row.
+                        className={cn(!isLast && 'pb-2.5')}
                         style={{
                             position: 'absolute',
                             top: 0,
@@ -858,7 +862,8 @@ export function AgendaView() {
     const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
     const sectionMembershipRef = useRef<SectionMembership>(new Map());
     const sections = useMemo(() => {
-        if (sessionCompletions.size === 0 && sectionMembershipRef.current.size === 0) return baseSections;
+        // Always run it, even before anything was ticked: it records which section each open task is in,
+        // and without that record the very first tick of the session had nowhere to keep the task.
         const lists = retainCompletedInSections(
             {
                 focusedTasks: baseSections.focusedTasks,
@@ -876,7 +881,6 @@ export function AgendaView() {
     }, [baseSections, sessionCompletions, settledCompletionIds, tasksById]);
     const focusedTasks = sections.focusedTasks;
     const focusedOpenTasks = useMemo(() => focusedTasks.filter((task) => task.status !== 'done'), [focusedTasks]);
-    const focusedDoneTasks = useMemo(() => focusedTasks.filter((task) => task.status === 'done'), [focusedTasks]);
     const nextActionGroups = useMemo(() => (
         groupTasks(effectiveNextGroupBy, { tasks: sections.nextActions, areas, projectMap, t, theme: settings?.theme })
     ), [areas, effectiveNextGroupBy, projectMap, sections.nextActions, settings?.theme, t]);
@@ -1148,33 +1152,26 @@ export function AgendaView() {
 
     const focusListBody = (
         <div className="flex flex-col gap-2.5">
-            {focusedOpenTasks.map((task) => (
+            {/* One list in display order (done rows are already last once settled), and the same element
+                type for open and done rows, so a ticked row stays mounted and in place while it animates. */}
+            {focusedTasks.map((task) => (
                 <ReorderableTaskRow
                     key={task.id}
                     taskId={task.id}
                     groupKey={FOCUS_REORDER_GROUP}
                     siblingIds={focusOpenIds}
+                    enabled={task.status !== 'done'}
                     dragLabel={reorderDragLabel}
                 >
                     <StoreTaskItem
                         taskId={task.id}
-                        onMoveToTop={handleFocusMoveToTop}
+                        onMoveToTop={task.status !== 'done' ? handleFocusMoveToTop : undefined}
                         buildFocusToggle={buildFocusToggle}
                         showProjectBadgeInActions={false}
                         compactMetaEnabled={showListDetails}
                         enableDoubleClickEdit
                     />
                 </ReorderableTaskRow>
-            ))}
-            {focusedDoneTasks.map((task) => (
-                <StoreTaskItem
-                    key={task.id}
-                    taskId={task.id}
-                    buildFocusToggle={buildFocusToggle}
-                    showProjectBadgeInActions={false}
-                    compactMetaEnabled={showListDetails}
-                    enableDoubleClickEdit
-                />
             ))}
         </div>
     );

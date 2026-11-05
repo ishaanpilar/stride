@@ -13,6 +13,7 @@ import {
     type Language,
 } from '@stride/core';
 import { buildAIConfig, loadAIKey } from './ai-config';
+import { consumeAiUsage } from './ai-usage';
 import { logWarn } from './app-log';
 
 type Listener = () => void;
@@ -76,6 +77,7 @@ export function ensureDailyBriefing(options: { force?: boolean; language?: Langu
             const provider = settings.ai?.provider ?? 'openai';
             const apiKey = await loadAIKey(provider);
             if (!apiKey && isAIKeyRequired(settings)) return null;
+            if (!consumeAiUsage('briefing').allowed) return null;
             const config = await buildAIConfig(settings, apiKey, options.language ?? 'en');
             // One quick attempt: no multi-minute retries for a background briefing.
             const aiProvider = createAIProvider({ ...config, timeoutMs: Math.min(config.timeoutMs ?? 20_000, 20_000) });

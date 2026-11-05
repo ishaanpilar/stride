@@ -579,16 +579,16 @@ export function ContextsView() {
                 onDrop={marker === '@' ? (event) => { void handleContextDrop(event, context); } : undefined}
                 aria-label={`${token} (${taskCount})`}
                 aria-pressed={selectedContexts.includes(token)}
-                title={depth > 0 ? token : undefined}
+                title={token}
                 className={cn(
-                    "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
+                    "flex w-full min-w-0 items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
                     selectedContexts.includes(token) || isHovered ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground",
                     isHovered && "ring-2 ring-primary"
                 )}
             >
-                <span className="w-4 text-center text-muted-foreground">{marker}</span>
-                <span className="flex-1 truncate" style={depth > 0 ? { paddingLeft: `${depth * 0.75}rem` } : undefined}>{isHovered ? contextDropLabel('contexts.dropAdd', context) : label.replace(marker === '@' ? /^@/ : /^#/, '')}</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="w-4 shrink-0 text-center text-muted-foreground">{marker}</span>
+                <span className="min-w-0 flex-1 truncate" style={depth > 0 ? { paddingLeft: `${depth * 0.75}rem` } : undefined}>{isHovered ? contextDropLabel('contexts.dropAdd', context) : label.replace(marker === '@' ? /^@/ : /^#/, '')}</span>
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {taskCount}
                 </span>
             </button>
@@ -622,7 +622,7 @@ export function ContextsView() {
                 >
                     <ToggleIcon className="h-3.5 w-3.5" aria-hidden="true" />
                     <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="flex-1 text-left">{label}</span>
+                    <span className="min-w-0 flex-1 truncate text-left">{label}</span>
                     <span>{tokens.length}</span>
                 </button>
                 {!collapsed && (
@@ -648,7 +648,7 @@ export function ContextsView() {
     };
 
     const contextNavigation = (
-        <div data-context-navigation-root className={sidebarSlot ? "flex flex-col gap-3" : "hidden min-w-[13.5rem] w-[clamp(13.5rem,16vw,15.5rem)] flex-shrink-0 flex-col gap-4 pr-5 lg:flex xl:pr-6"}>
+        <div data-context-navigation-root className={sidebarSlot ? "flex min-w-0 flex-col gap-3" : "hidden min-w-[13.5rem] w-[clamp(13.5rem,16vw,15.5rem)] flex-shrink-0 flex-col gap-4 pr-5 lg:flex xl:pr-6"}>
                         <div className="flex items-center justify-between">
                             <h2 className={sidebarSlot ? "text-[13px] font-semibold text-muted-foreground" : "text-xl font-bold tracking-tight"}>{t('contexts.title')}</h2>
                             <Filter className="w-5 h-5 text-muted-foreground" />
@@ -660,7 +660,7 @@ export function ContextsView() {
                                 onClick={() => setSelectedContext(null)}
                                 aria-label={`${allTokensLabel} (${scopedTasks.filter((t) => hasContext(t)).length})`}
                                 className={cn(
-                                    "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
+                                    "flex w-full min-w-0 items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
                                     selectedContexts.length === 0 ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground"
                                 )}
                             >
@@ -676,7 +676,7 @@ export function ContextsView() {
                                 onClick={() => pressContextToken(NO_CONTEXT_TOKEN, false)}
                                 aria-label={`${t('contexts.none')} (${scopedTasks.filter((t) => !hasContext(t)).length})`}
                                 className={cn(
-                                    "flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
+                                    "flex w-full min-w-0 items-center gap-2 rounded-lg p-2 text-left text-sm transition-colors",
                                     noContextSelected ? "bg-accent-soft text-accent-text font-semibold" : "hover:bg-muted/40 text-foreground"
                                 )}
                             >

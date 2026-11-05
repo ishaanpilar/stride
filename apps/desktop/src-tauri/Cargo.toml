@@ -1,6 +1,6 @@
 [package]
 name = "stride"
-version = "1.4.1"
+version = "1.5.0"
 description = "A complete Getting Things Done (GTD) productivity system - Mind Like Water"
 authors = ["DongDong"]
 license = "AGPL-3.0-only"
@@ -66,6 +66,8 @@ sha2 = "0.10"
 notify = "8.2"
 tempfile = "3.23"
 tauri-plugin-autostart = "2.5.1"
+tauri-plugin-updater = "=2.9.0"
+tauri-plugin-process = "=2.3.1"
 
 
 tar = "0.4"

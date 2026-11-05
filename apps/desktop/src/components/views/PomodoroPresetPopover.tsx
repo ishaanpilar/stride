@@ -16,14 +16,18 @@ interface PomodoroPresetPopoverProps {
     activeId?: string;
     onPick: (id: string) => void;
     ariaLabel: string;
-    /** Element that toggles the popover; clicks on it are not "outside". */
+    /** Element that toggles the popover (or wraps every trigger); clicks on it are not "outside". */
     anchorRef: RefObject<HTMLElement | null>;
+    /** Where focus returns on Esc (defaults to `anchorRef`). */
+    focusRef?: RefObject<HTMLElement | null>;
+    /** One quiet line above the choices, e.g. "Focus minutes / break minutes". */
+    hint?: string;
     /** Positioning classes for the absolutely placed wrapper. */
     className?: string;
 }
 
 /** Small preset list that opens from the timer's clock. Esc and outside clicks close it. */
-export function PomodoroPresetPopover({ open, onClose, presets, activeId, onPick, ariaLabel, anchorRef, className }: PomodoroPresetPopoverProps) {
+export function PomodoroPresetPopover({ open, onClose, presets, activeId, onPick, ariaLabel, anchorRef, focusRef, hint, className }: PomodoroPresetPopoverProps) {
     const ref = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -42,7 +46,7 @@ export function PomodoroPresetPopover({ open, onClose, presets, activeId, onPick
             event.stopPropagation();
             event.preventDefault();
             onClose();
-            anchorRef.current?.focus();
+            (focusRef ?? anchorRef).current?.focus();
         };
         document.addEventListener('mousedown', onPointerDown);
         window.addEventListener('keydown', onKeyDown, true);
@@ -50,7 +54,7 @@ export function PomodoroPresetPopover({ open, onClose, presets, activeId, onPick
             document.removeEventListener('mousedown', onPointerDown);
             window.removeEventListener('keydown', onKeyDown, true);
         };
-    }, [anchorRef, onClose, open]);
+    }, [anchorRef, focusRef, onClose, open]);
 
     if (!open) return null;
     return (
@@ -61,6 +65,9 @@ export function PomodoroPresetPopover({ open, onClose, presets, activeId, onPick
                 aria-label={ariaLabel}
                 className="pomo-pop min-w-[11rem] rounded-card bg-popover p-1 text-popover-foreground shadow-soft"
             >
+                {hint && (
+                    <p className="px-2.5 pb-1 pt-1.5 text-[12px] leading-4 text-muted-foreground" data-testid="pomodoro-preset-hint">{hint}</p>
+                )}
                 {presets.map((preset) => {
                     const selected = preset.id === activeId;
                     return (

@@ -327,13 +327,77 @@ describe('TaskItemEditor', () => {
             />
         );
 
-        const doneButton = getByRole('button', { name: 'Done' });
-        expect(doneButton).toHaveAttribute('aria-pressed', 'false');
-        expect(doneButton).toHaveClass('focus-ring');
-        expect(doneButton).not.toHaveClass('focus:ring-2');
-        fireEvent.click(doneButton);
+        const checkbox = getByRole('checkbox', { name: 'Mark as done' });
+        expect(checkbox).toHaveAttribute('aria-checked', 'false');
+        expect(checkbox).toHaveClass('focus-ring', 'rounded-full');
+        expect(checkbox).not.toHaveClass('focus:ring-2');
+        fireEvent.click(checkbox);
 
         expect(onMarkDone).toHaveBeenCalledTimes(1);
+        expect(checkbox).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('finishes editing with the Done button without completing the task', () => {
+        const onMarkDone = vi.fn();
+        const onSubmit = vi.fn((event: { preventDefault: () => void }) => event.preventDefault());
+        const { getByRole } = render(
+            <TaskItemEditor
+                {...baseProps}
+                onMarkDone={onMarkDone}
+                onSubmit={onSubmit}
+            />
+        );
+
+        const doneButton = getByRole('button', { name: 'Done editing' });
+        expect(doneButton).toHaveTextContent('Done');
+        expect(doneButton).toHaveAttribute('type', 'submit');
+        expect(doneButton).toHaveClass('btn-gradient');
+        fireEvent.click(doneButton);
+
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        expect(onMarkDone).not.toHaveBeenCalled();
+        expect(getByRole('checkbox', { name: 'Mark as done' })).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('saves with Cmd+Enter and cancels with Escape', () => {
+        const onSubmit = vi.fn((event: { preventDefault: () => void }) => event.preventDefault());
+        const onCancel = vi.fn();
+        const onMarkDone = vi.fn();
+        const { getByRole } = render(
+            <TaskItemEditor {...baseProps} onSubmit={onSubmit} onCancel={onCancel} onMarkDone={onMarkDone} />
+        );
+        const title = getByRole('combobox', { name: 'Task title' });
+
+        fireEvent.keyDown(title, { key: 'Enter', metaKey: true });
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(title, { key: 'Escape' });
+        expect(onCancel).toHaveBeenCalledTimes(1);
+        expect(onMarkDone).not.toHaveBeenCalled();
+    });
+
+    it('offers hidden fields through Add field and reveals the chosen one', async () => {
+        const onRevealField = vi.fn();
+        const { getByRole, queryByRole } = render(
+            <TaskItemEditor
+                {...baseProps}
+                addableFields={[{ id: 'priority', label: 'Priority' }, { id: 'timeEstimate', label: 'Time Estimate' }]}
+                onRevealField={onRevealField}
+            />
+        );
+
+        const trigger = getByRole('button', { name: 'Add field' });
+        expect(trigger).toHaveAttribute('aria-expanded', 'false');
+        fireEvent.click(trigger);
+        expect(getByRole('menu', { name: 'Add field' })).toBeInTheDocument();
+        fireEvent.click(getByRole('menuitem', { name: 'Priority' }));
+
+        expect(onRevealField).toHaveBeenCalledWith('priority');
+        expect(queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('hides Add field when every field is already shown', () => {
+        const { queryByRole } = render(<TaskItemEditor {...baseProps} addableFields={[]} onRevealField={vi.fn()} />);
+        expect(queryByRole('button', { name: 'Add field' })).not.toBeInTheDocument();
     });
 
     it('keeps the secondary Convert to action shortcut for Reference', () => {
@@ -366,7 +430,7 @@ describe('TaskItemEditor', () => {
             />
         );
 
-        fireEvent.contextMenu(getByRole('button', { name: 'Done' }));
+        fireEvent.contextMenu(getByRole('checkbox', { name: 'Mark as done' }));
 
         expect(onRequestBackdatedComplete).toHaveBeenCalledTimes(1);
         expect(onMarkDone).not.toHaveBeenCalled();

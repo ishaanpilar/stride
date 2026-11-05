@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import {
     AssistantChangeLog,
+    captureDeclinedAsTask,
     clearThread,
+    formatAIUsageBlockMessage,
     executeConfirmed,
     generateUUID,
     loadThread,
@@ -14,6 +16,7 @@ import {
 import type { Language } from '@stride/core';
 import { createAssistantClient, createStoreAssistantPort } from '../lib/assistant-service';
 import { syncAssistantPlacements } from '../lib/ai-routing';
+import { consumeAiUsage } from '../lib/ai-usage';
 
 const storage = () => {
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -35,6 +38,8 @@ interface AssistantState {
     send: (text: string, language?: Language) => Promise<void>;
     stop: () => void;
     confirm: (pendingId: string) => Promise<void>;
+    /** Decline card "Capture as task": adds the suggested task to the Inbox (logged, undoable). */
+    captureDeclined: (messageId: string) => Promise<string | null>;
     reject: (pendingId: string) => void;
     undoEntry: (entryId: string) => Promise<string | null>;
     undoTurn: (turnId: string) => Promise<string | null>;
@@ -77,6 +82,12 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
             const history = toModelHistory(get().thread);
             const now = new Date().toISOString();
             append([{ id: generateUUID(), role: 'user', text: userText, createdAt: now, turnId }]);
+            // Local usage guard: a blocked turn never reaches the provider.
+            const usage = consumeAiUsage('assistant');
+            if (!usage.allowed) {
+                append([{ id: generateUUID(), role: 'assistant', text: formatAIUsageBlockMessage(usage), createdAt: new Date().toISOString(), isError: true, turnId }]);
+                return;
+            }
             set({ busy: true });
             inFlight = new AbortController();
             try {
@@ -90,6 +101,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
                         id: generateUUID(), role: 'assistant', text: result.reply || 'Done.', createdAt: new Date().toISOString(), turnId,
                         ...(result.status === 'error' ? { isError: true } : {}),
                         ...(result.status !== 'error' && result.suggestions?.length ? { suggestions: result.suggestions } : {}),
+                        ...(result.outOfScope ? { outOfScope: result.outOfScope } : {}),
                     }],
                     { pending: [...get().thread.pending, ...result.pending], changes: changeLog.list() },
                 );
@@ -110,6 +122,20 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
                 [{ id: generateUUID(), role: 'assistant', text: res.ok ? `Done: ${res.entry?.label ?? p.summary}.` : `Could not do that: ${res.error}`, createdAt: new Date().toISOString(), isError: !res.ok, turnId: p.messageId }],
                 { pending, changes: changeLog.list() },
             );
+        },
+        captureDeclined: async (messageId) => {
+            const message = get().thread.messages.find((m) => m.id === messageId);
+            const title = message?.outOfScope?.suggestedTask;
+            if (!message || !title || message.outOfScope?.captured) return null;
+            const res = await captureDeclinedAsTask(title, {
+                port: createStoreAssistantPort(), changeLog, messageId: message.turnId ?? message.id, timeZone: timeZone(),
+            });
+            if (!res.ok) return res.error ?? 'Could not add the task';
+            const messages = get().thread.messages.map((m) => (m.id === messageId && m.outOfScope ? { ...m, outOfScope: { ...m.outOfScope, captured: true } } : m));
+            const thread = { ...get().thread, messages, changes: changeLog.list() };
+            set({ thread });
+            persist(thread);
+            return null;
         },
         reject: (pendingId) => {
             const pending = get().thread.pending.map((x) => (x.id === pendingId ? { ...x, status: 'rejected' as const } : x));

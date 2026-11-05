@@ -24,6 +24,7 @@ import {
     waitForAIRequestRetry,
     withAIRequestStopNotifications,
 } from '../utils';
+import { handleRateLimitedResponse } from '../provider-rate-limit';
 import { isBreakdownResponse, isClarifyResponse, isCopilotResponse, isReviewAnalysisResponse } from '../validators';
 import { resolveAnthropicModel } from '../catalog';
 
@@ -164,6 +165,7 @@ async function requestAnthropic(
     await rateLimit('anthropic', 250, options?.signal, 'Anthropic');
 
     let response: BufferedAIResponse | null = null;
+    let rateLimitRetried = false;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         throwIfAIRequestAborted(options?.signal, 'Anthropic');
         try {
@@ -195,6 +197,12 @@ async function requestAnthropic(
             throw error;
         }
 
+        if (response.status === 429) {
+            await handleRateLimitedResponse(response, { canRetry: !rateLimitRetried && attempt < MAX_RETRIES, signal: options?.signal, label: 'Anthropic' });
+            rateLimitRetried = true;
+            response = null;
+            continue;
+        }
         if (!response.ok) {
             if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
                 await waitForAIRequestRetry(400 * Math.pow(2, attempt), options?.signal, 'Anthropic');

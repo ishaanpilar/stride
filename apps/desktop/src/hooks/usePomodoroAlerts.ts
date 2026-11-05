@@ -14,6 +14,7 @@ export function usePomodoroAlerts(): void {
     const isRunning = usePomodoroStore((state) => state.snapshot.timerState.isRunning);
     const lastEvent = usePomodoroStore((state) => state.snapshot.lastEvent);
     const hasHydrated = usePomodoroStore((state) => state.hasHydrated);
+    const quietFinish = usePomodoroStore((state) => state.quietFinish);
     const commitSnapshot = usePomodoroStore((state) => state.commitPomodoro);
     const { t } = useLanguage();
 
@@ -41,12 +42,17 @@ export function usePomodoroAlerts(): void {
 
         if (previous === undefined) return;
         if (!lastEvent || lastEvent === previous || !completionAlertEnabled) return;
-        const message = lastEvent === 'focus-finished'
-            ? translateWithFallback(t, 'pomodoro.focusComplete', 'Focus session complete. Take a short break.')
-            : translateWithFallback(t, 'pomodoro.breakComplete', 'Break complete. Ready for the next focus session.');
+        // The user ended it themselves (Pause in overtime, task ticked done): nothing to announce.
+        if (lastEvent === 'focus-finished' && quietFinish) return;
+        // 'focus-overtime' is the one chime at 0:00 when the session keeps going.
+        const message = lastEvent === 'focus-overtime'
+            ? translateWithFallback(t, 'pomodoro.overtimeStarted', 'Time’s up. Keep going, or pause to check in.')
+            : lastEvent === 'focus-finished'
+                ? translateWithFallback(t, 'pomodoro.focusComplete', 'Focus session complete. Take a short break.')
+                : translateWithFallback(t, 'pomodoro.breakComplete', 'Break complete. Ready for the next focus session.');
         void sendDesktopPomodoroCompletionAlert(
             translateWithFallback(t, 'pomodoro.title', 'Pomodoro Focus'),
             message
         );
-    }, [completionAlertEnabled, hasHydrated, lastEvent, personalServicesAllowed, t]);
+    }, [completionAlertEnabled, hasHydrated, lastEvent, personalServicesAllowed, quietFinish, t]);
 }

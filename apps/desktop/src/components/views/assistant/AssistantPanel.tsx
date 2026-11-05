@@ -10,7 +10,7 @@ import { useAssistantStore } from '../../../store/assistant-store';
 import { useAssistantDockStore } from '../../../store/assistant-dock-store';
 import { getAssistantReadiness, type AssistantReadiness } from '../../../lib/assistant-service';
 import { AssistantMarkdown } from './AssistantMarkdown';
-import { ChangesCard, ConfirmCard, FALLBACK_SUGGESTIONS, STARTER_SUGGESTIONS, SuggestionChips } from './AssistantParts';
+import { ChangesCard, ConfirmCard, DeclineCard, FALLBACK_SUGGESTIONS, STARTER_SUGGESTIONS, SuggestionChips } from './AssistantParts';
 
 const DISABLED_COPY: Record<'disabled' | 'no-key' | 'unsupported-provider', string> = {
     disabled: 'Turn on AI in settings to use the Assistant.',
@@ -32,7 +32,7 @@ export function AssistantPanel({ onOpenAiSettings, variant = 'page', padForTitle
     const isDock = variant === 'dock';
     const { language } = useLanguage();
     const aiSettings = useTaskStore((state) => state.settings.ai, shallow);
-    const { thread, busy, send, stop, confirm, reject, undoEntry, undoTurn, newChat, hydrate } = useAssistantStore();
+    const { thread, busy, send, stop, confirm, reject, undoEntry, undoTurn, newChat, hydrate, captureDeclined } = useAssistantStore();
     // Re-render when the change log mutates (undo state).
     useAssistantStore((s) => s.logVersion);
     const [readiness, setReadiness] = useState<AssistantReadiness | null>(null);
@@ -140,7 +140,14 @@ export function AssistantPanel({ onOpenAiSettings, variant = 'page', padForTitle
                             : [];
                         return (
                             <div key={m.id} className={`flex flex-col gap-2 ${isAssistant ? 'items-start' : 'items-end'}`}>
-                                {isAssistant ? (
+                                {isAssistant && m.outOfScope && !m.isError ? (
+                                    <DeclineCard
+                                        text={m.text}
+                                        decline={m.outOfScope}
+                                        disabled={busy}
+                                        onCapture={() => void captureDeclined(m.id).then((error) => setNotice(error ? `Could not add the task: ${error}` : null))}
+                                    />
+                                ) : isAssistant ? (
                                     <div className={cn(
                                         'w-full max-w-[85%] rounded-card px-3.5 py-3',
                                         m.isError ? 'bg-destructive/10 text-danger-text ring-1 ring-danger/30' : 'soft-surface',

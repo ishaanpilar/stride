@@ -11,3 +11,4 @@ export * from './conversation';
 export * from './chat-client';
 export * from './anthropic-chat-client';
 export * from './suggestions';
+export * from './guardrails';

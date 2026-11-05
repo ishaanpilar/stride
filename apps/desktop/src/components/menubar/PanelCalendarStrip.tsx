@@ -2,17 +2,18 @@ import { useEffect, useState } from 'react';
 import { safeFormatDate, type ExternalCalendarEvent } from '@stride/core';
 import { fetchExternalCalendarEvents } from '../../lib/external-calendar-events';
 import { isTauriRuntime } from '../../lib/runtime';
-import { cn } from '../../lib/utils';
 
 const MAX_VISIBLE = 3;
 
 type StripEvent = ExternalCalendarEvent & { color?: string };
 
-/** Today's calendar events (device + subscribed calendars), read-only, same source as Calendar. */
-export function PanelCalendarStrip({ refreshKey, allDayLabel, moreLabel }: {
+/** Today's calendar events (device + subscribed calendars) as a slim horizontal strip, read-only. */
+export function PanelCalendarStrip({ refreshKey, allDayLabel, moreLabel, label }: {
     refreshKey: number;
     allDayLabel: string;
     moreLabel: (count: number) => string;
+    /** Accessible name of the strip ("Today's calendar"). */
+    label: string;
 }) {
     const [events, setEvents] = useState<StripEvent[]>([]);
 
@@ -47,25 +48,30 @@ export function PanelCalendarStrip({ refreshKey, allDayLabel, moreLabel }: {
     if (events.length === 0) return null;
     const visible = events.slice(0, MAX_VISIBLE);
     return (
-        <ul className="mb-2 space-y-1 px-1" data-testid="menubar-calendar-strip" aria-label="Calendar">
+        <ul
+            className="-mx-1 mb-2 flex gap-1.5 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            data-testid="menubar-calendar-strip"
+            aria-label={label}
+        >
             {visible.map((event) => (
                 <li
                     key={event.id}
-                    className="flex items-center gap-2 rounded-control bg-foreground/[0.05] py-1.5 pl-2 pr-2.5"
+                    className="flex max-w-[240px] shrink-0 items-center gap-1.5 rounded-control bg-well px-2 py-1 text-xs shadow-soft-inset"
+                    title={event.title}
                 >
                     <span
                         aria-hidden
-                        className={cn('h-5 w-[3px] shrink-0 rounded-full bg-primary')}
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
                         style={event.color ? { backgroundColor: event.color } : undefined}
                     />
-                    <span className="w-[68px] shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
+                    <span className="shrink-0 font-semibold tabular-nums text-foreground">
                         {event.allDay ? allDayLabel : safeFormatDate(event.start, 'p')}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-foreground">{event.title}</span>
+                    <span className="min-w-0 truncate text-muted-foreground">{event.title}</span>
                 </li>
             ))}
             {events.length > visible.length && (
-                <li className="px-2 text-xs text-muted-foreground">{moreLabel(events.length - visible.length)}</li>
+                <li className="flex shrink-0 items-center px-1 text-xs text-muted-foreground">{moreLabel(events.length - visible.length)}</li>
             )}
         </ul>
     );

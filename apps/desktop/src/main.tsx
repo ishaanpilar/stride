@@ -43,6 +43,7 @@ import { loadStoredFullscreen } from './lib/window-state';
 import { restoreStoredWebviewZoom } from './lib/webview-zoom';
 import { isQuickAddWindowLocation } from './lib/quick-add-window';
 import { isMenuBarPanelLocation } from './lib/menubar-panel-window';
+import { isFocusFloatLocation } from './lib/focus-float-window';
 import { consumeDesktopSandboxBootRequest } from './lib/sandbox-session';
 import { installAppLockKeyboardGuard, loadAppLockState } from './lib/app-lock';
 import { AppLockGate } from './components/AppLockGate';
@@ -102,9 +103,12 @@ installCoreLoggerBridge();
 // The menu bar panel is another secondary webview: it shares the quick-add boot path (no app
 // shell, sandbox, fullscreen or lock gate) and only differs in the root component below.
 const isMenuBarPanelWindow = isMenuBarPanelLocation();
-const isQuickAddWindow = isQuickAddWindowLocation() || isMenuBarPanelWindow;
+// The floating focus timer is one more secondary webview on the same boot path.
+const isFocusFloatWindow = isFocusFloatLocation();
+const isQuickAddWindow = isQuickAddWindowLocation() || isMenuBarPanelWindow || isFocusFloatWindow;
 if (isMenuBarPanelWindow) document.documentElement.classList.add('menubar-panel-window');
-if (isQuickAddWindow && !isMenuBarPanelWindow) {
+if (isFocusFloatWindow) document.documentElement.classList.add('focus-float-window');
+if (isQuickAddWindow && !isMenuBarPanelWindow && !isFocusFloatWindow) {
     document.documentElement.dataset.quickAddWindow = 'true';
 }
 
@@ -294,6 +298,8 @@ async function bootstrap() {
     if (!isQuickAddWindow) await loadAppLockState();
     const RootApp = isMenuBarPanelWindow
         ? (await import('./MenuBarPanelApp.tsx')).MenuBarPanelApp
+        : isFocusFloatWindow
+            ? (await import('./FocusFloatApp.tsx')).FocusFloatApp
         : isQuickAddWindow
             ? (await import('./QuickAddWindowApp.tsx')).QuickAddWindowApp
             : (await import('./App.tsx')).default;

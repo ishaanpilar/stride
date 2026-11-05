@@ -16,6 +16,7 @@ import { useConfirmDialog } from '../../../hooks/useConfirmDialog';
 import { cn } from '../../../lib/utils';
 import { Switch } from '../../ui/Switch';
 import { SettingField, SettingRow } from './SettingRow';
+import { AiUsageSection } from './AiUsageSection';
 
 type Labels = {
     aiEnable: string;
@@ -560,6 +561,8 @@ export function SettingsAiPage({
                             />
                             <div className="text-xs text-muted-foreground">{t.aiApiKeyHint}</div>
                         </SettingField>
+
+                        <AiUsageSection />
 
                         <div className="border-t border-border">
                             <button

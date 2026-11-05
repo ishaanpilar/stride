@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     formatPomodoroClock,
-    getPomodoroPhaseSeconds,
+    formatPomodoroOvertime,
+    getPomodoroOvertimeProgress,
+    isPomodoroInOvertime,
     getPomodoroFocusSessionsCompletedToday,
+    getPomodoroPhaseTotalSeconds,
     getPomodoroPresetOptions,
     isTaskActionable,
     PomodoroAutoStartOptions,
@@ -11,18 +14,21 @@ import {
     translateWithFallback,
     useTaskStore,
 } from '@stride/core';
-import { Play, Pause, RotateCcw, Check, ChevronDown, ChevronUp, Flame, Maximize2 } from 'lucide-react';
+import { Play, Pause, RotateCcw, Check, ChevronDown, ChevronUp, Flame, Maximize2, PictureInPicture2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useLanguage } from '../../contexts/language-context';
-import { reconcilePomodoroSnapshot, usePomodoroStore } from '../../store/pomodoro-store';
+import { reconcilePomodoroSnapshot, togglePomodoroSnapshot, usePomodoroStore } from '../../store/pomodoro-store';
 import { useUiStore } from '../../store/ui-store';
 import { useFocusSessionStore } from '../../store/focus-session-store';
+import { useFocusFloatStore } from '../../store/focus-float-store';
+import { isFocusFloatSupported } from '../focus/useFocusFloatBridge';
 import { rectOf } from '../focus/focus-anchors';
 import { getFocusStreak } from '../../lib/focus-streak';
 import { Reveal } from '../ui/Reveal';
 import { PomodoroRing } from './PomodoroRing';
 import { PomodoroPresetPopover } from './PomodoroPresetPopover';
 import { PomodoroTaskPicker } from './PomodoroTaskPicker';
+import { beginCompletion, cancelCompletion } from '../../lib/completion-sequence';
 
 export { DESKTOP_POMODORO_SESSION_STORAGE_KEY } from '../../store/pomodoro-store';
 
@@ -123,20 +129,15 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     const sessionOpen = useFocusSessionStore((state) => state.open);
     const sessionPresentation = useFocusSessionStore((state) => state.presentation);
     const expandSession = useFocusSessionStore((state) => state.expand);
+    const floatVisible = useFocusFloatStore((state) => state.visible);
 
     const handleToggleRun = () => {
         // Every Start opens the focus stage, which grows out of this card.
         if (!timerState.isRunning) {
             useFocusSessionStore.getState().setOrigin(rectOf(sectionRef.current));
         }
-        commitSnapshot((prev) => {
-            const reconciled = reconcilePomodoroSnapshot(prev, Date.now(), autoStartOptions);
-            return {
-                ...reconciled,
-                timerState: { ...reconciled.timerState, isRunning: !reconciled.timerState.isRunning },
-                updatedAtMs: Date.now(),
-            };
-        });
+        // In overtime, Pause ends the session and the check-in follows.
+        commitSnapshot((prev) => togglePomodoroSnapshot(prev, Date.now(), autoStartOptions));
     };
 
     const handleReset = () => {
@@ -169,8 +170,10 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
 
     const handleMarkTaskDone = async () => {
         if (!selectedTask) return;
+        if (selectedTask.status !== 'done' && !beginCompletion(selectedTask.id, { sound: true })) return;
         const result = await updateTask(selectedTask.id, { status: 'done', isFocusedToday: false });
         if (result?.success === false) {
+            cancelCompletion(selectedTask.id);
             useUiStore.getState().showToast(result.error || t('task.updateFailed'), 'error');
             return;
         }
@@ -181,7 +184,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     const isRunning = timerState.isRunning;
     const sessionsToday = getPomodoroFocusSessionsCompletedToday(snapshot.sessionHistory);
     const streak = useMemo(() => getFocusStreak(), [sessionsToday]);
-    const totalSeconds = Math.max(1, getPomodoroPhaseSeconds(timerState.phase, durations));
+    const totalSeconds = Math.max(1, getPomodoroPhaseTotalSeconds(timerState, durations));
     const progress = 1 - timerState.remainingSeconds / totalSeconds;
     // Paused part-way through a phase: the only time Reset matters.
     const inProgress = !isRunning && timerState.remainingSeconds < totalSeconds;
@@ -201,6 +204,16 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     const [presetsOpen, setPresetsOpen] = useState(false);
     const closePresets = useCallback(() => setPresetsOpen(false), []);
     const clockRef = useRef<HTMLButtonElement>(null);
+    /** Wraps both triggers (the clock and the "25 min ⌄" label) so clicks on either are not "outside". */
+    const presetAnchorRef = useRef<HTMLDivElement>(null);
+    /** Whichever trigger opened the presets gets focus back on Esc. */
+    const presetTriggerRef = useRef<HTMLButtonElement | null>(null);
+    const togglePresets = (trigger: HTMLButtonElement) => {
+        presetTriggerRef.current = trigger;
+        setPresetsOpen((open) => !open);
+    };
+    const phaseMinutes = timerState.phase === 'focus' ? durations.focusMinutes : durations.breakMinutes;
+    const presetHint = resolveText('pomodoro.presetHint', 'Focus minutes / break minutes');
     useEffect(() => { if (isRunning) setPresetsOpen(false); }, [isRunning]);
 
     // One quiet burst on the ring when a phase finishes.
@@ -211,7 +224,9 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
         seenEvent.current = lastEvent;
     }, [lastEvent]);
 
-    const clock = formatPomodoroClock(timerState.remainingSeconds);
+    const inOvertime = isPomodoroInOvertime(timerState);
+    const clock = inOvertime ? formatPomodoroOvertime(timerState.overtimeSeconds ?? 0) : formatPomodoroClock(timerState.remainingSeconds);
+    const overtimeLap = inOvertime ? getPomodoroOvertimeProgress(timerState, durations) : undefined;
     const phaseTextClass = isFocus ? 'text-accent-text' : 'text-success-text';
     const iconButtonClass = 'inline-flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-well hover:text-foreground focus-ring';
     const statusLine = lastEvent === 'focus-finished' ? focusDoneLabel : lastEvent === 'break-finished' ? breakDoneLabel : '';
@@ -221,8 +236,8 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
             <section className="rounded-card bg-card px-3 py-2 shadow-soft-sm" aria-label={cardTitle}>
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
-                        <PomodoroRing progress={progress} phase={timerState.phase} size={32} stroke={3.5} well={false} running={isRunning} />
-                        <p className="fx-display text-xl font-light leading-none tracking-tight tabular-nums">{clock}</p>
+                        <PomodoroRing progress={progress} phase={timerState.phase} size={32} stroke={3.5} well={false} running={isRunning} overtime={overtimeLap} />
+                        <p className={cn('fx-display text-xl font-light leading-none tracking-tight tabular-nums', inOvertime && 'text-muted-foreground')}>{clock}</p>
                         <span className={cn('text-[13px] font-medium', phaseTextClass)}>{phaseLabel}</span>
                     </div>
                     <button
@@ -263,17 +278,21 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
             )}
 
             <div className="flex flex-col items-center gap-4 [@container_(min-width:30rem)]:flex-row [@container_(min-width:30rem)]:gap-8 [@container_(min-width:30rem)]:pl-2">
-                <div className="relative shrink-0">
-                    <PomodoroRing progress={progress} phase={timerState.phase} size={148} stroke={5} well={false} running={isRunning} burstKey={burstKey}>
+                <div ref={presetAnchorRef} className="relative shrink-0">
+                    <PomodoroRing progress={progress} phase={timerState.phase} size={148} stroke={5} well={false} running={isRunning} burstKey={burstKey} overtime={overtimeLap}>
                         {isRunning ? (
-                            <p className="fx-display text-[44px] font-extralight leading-none tracking-[-0.04em] tabular-nums" data-testid="pomodoro-clock">
+                            <p
+                                className={cn('fx-display text-[44px] font-extralight leading-none tracking-[-0.04em] tabular-nums', inOvertime && 'text-muted-foreground')}
+                                data-testid="pomodoro-clock"
+                                data-overtime={inOvertime ? 'true' : undefined}
+                            >
                                 {clock}
                             </p>
                         ) : (
                             <button
                                 ref={clockRef}
                                 type="button"
-                                onClick={() => setPresetsOpen((open) => !open)}
+                                onClick={(event) => togglePresets(event.currentTarget)}
                                 aria-label={presetsLabel}
                                 aria-haspopup="true"
                                 aria-expanded={presetsOpen}
@@ -297,12 +316,33 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                             </button>
                         ) : !isFocus ? (
                             <span className={cn('mt-1.5 text-[12px] font-medium', phaseTextClass)}>{phaseLabel}</span>
+                        ) : inOvertime ? (
+                            <span className="mt-1.5 text-[12px] font-medium text-muted-foreground" data-testid="pomodoro-overtime">
+                                {resolveText('focus.overtimeShort', 'Over time')}
+                            </span>
                         ) : null}
+                        {!isRunning && (
+                            <button
+                                type="button"
+                                onClick={(event) => togglePresets(event.currentTarget)}
+                                aria-haspopup="true"
+                                aria-expanded={presetsOpen}
+                                title={`${presetsLabel}: ${presetHint}`}
+                                data-testid="pomodoro-preset-label"
+                                className="mt-0.5 inline-flex items-center gap-0.5 rounded-pill px-2 py-0.5 text-[12px] font-medium tabular-nums text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-ring"
+                            >
+                                {resolveText('pomodoro.presetMinutes', '{{count}} min').replace('{{count}}', String(phaseMinutes))}
+                                <ChevronDown className="h-3 w-3" aria-hidden />
+                                <span className="sr-only">, {presetsLabel}</span>
+                            </button>
+                        )}
                     </PomodoroRing>
                     <PomodoroPresetPopover
                         open={presetsOpen && !isRunning}
                         onClose={closePresets}
-                        anchorRef={clockRef}
+                        anchorRef={presetAnchorRef}
+                        focusRef={presetTriggerRef}
+                        hint={presetHint}
                         ariaLabel={presetsLabel}
                         activeId={activePreset?.id}
                         presets={presetOptions.map((preset) => ({ id: preset.id, name: presetNames[preset.id] ?? preset.label, value: preset.label }))}
@@ -416,8 +456,8 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                         <button
                             type="button"
                             onClick={handleToggleRun}
-                            aria-label={pauseLabel}
-                            title={pauseLabel}
+                            aria-label={inOvertime ? resolveText('focus.pauseCheckIn', 'Pause and check in') : pauseLabel}
+                            title={inOvertime ? resolveText('focus.pauseCheckIn', 'Pause and check in') : pauseLabel}
                             className={cn(iconButtonClass, 'h-11 w-11 bg-well shadow-soft-inset')}
                         >
                             <Pause className="h-4 w-4" aria-hidden />
@@ -434,6 +474,17 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                     >
                         <Maximize2 className="h-4 w-4" aria-hidden />
                         {resolveText('focus.backToFocus', 'Back to focus')}
+                    </button>
+                )}
+                {sessionOpen && sessionPresentation !== 'full' && !floatVisible && isFocusFloatSupported() && (
+                    <button
+                        type="button"
+                        onClick={() => useFocusFloatStore.getState().request()}
+                        className="pomo-in mt-1 inline-flex h-9 items-center gap-2 rounded-control px-3 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-well hover:text-foreground focus-ring"
+                        data-testid="pomodoro-float-timer"
+                    >
+                        <PictureInPicture2 className="h-4 w-4" aria-hidden />
+                        {resolveText('focus.floatShort', 'Float timer')}
                     </button>
                 )}
                 </div>

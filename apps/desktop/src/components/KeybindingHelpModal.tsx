@@ -39,6 +39,8 @@ export function KeybindingHelpModal({
     const sharedGlobal: HelpItem[] = [
         { keys: quickAddShortcutDisplay, labelKey: 'keybindings.globalQuickAdd', fallbackLabel: 'Global quick add' },
         { keys: 'a', labelKey: 'keybindings.inAppQuickAdd', fallbackLabel: 'In-app quick add' },
+        { keys: `${primary}+K`, labelKey: 'inboxHub.captureShortcut', fallbackLabel: 'Capture to Inbox' },
+        { keys: `${primary}+F`, labelKey: 'keybindings.openSearch' },
         { keys: isMac ? 'Cmd+Option+S' : 'Ctrl+Alt+S', labelKey: 'settings.syncNow', fallbackLabel: 'Sync now' },
         { keys: `${primary}+,`, labelKey: 'keybindings.openSettings' },
         { keys: `${primary}+B / ${primary}+\\`, labelKey: 'keybindings.toggleSidebar' },

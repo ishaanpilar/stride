@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { formatPomodoroClock, type ChecklistItem, type PomodoroPhase, type Task } from '@stride/core';
-import { Maximize2, Pause, Play, X } from 'lucide-react';
+import { formatPomodoroClock, formatPomodoroOvertime, type ChecklistItem, type PomodoroPhase, type Task } from '@stride/core';
+import { Maximize2, Pause, PictureInPicture2, Play, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useAssistantDockStore } from '../../store/assistant-dock-store';
 import { clampMiniPosition, type FocusMiniPosition } from '../../store/focus-session-store';
@@ -37,6 +37,8 @@ interface FocusMiniProps {
     phase: PomodoroPhase;
     remainingSeconds: number;
     totalSeconds: number;
+    /** Present while counting up past 0:00 ("Keep going"). */
+    overtimeSeconds?: number;
     isRunning: boolean;
     steps: ChecklistItem[];
     position: FocusMiniPosition;
@@ -50,6 +52,8 @@ interface FocusMiniProps {
     onHide: () => void;
     onToggleStep: (id: string) => void;
     onMove: (position: FocusMiniPosition) => void;
+    /** Pop the timer out into the floating window (over every app). Absent where unsupported. */
+    onFloat?: () => void;
 }
 
 /** Minimised focus: a small floating card over the normal app. Drag it anywhere; it remembers. */
@@ -63,11 +67,17 @@ export function FocusMini(props: FocusMiniProps) {
     const isBreak = phase === 'break';
     const done = steps.filter((s) => s.isCompleted).length;
     const current = steps.find((s) => !s.isCompleted);
-    const progress = props.totalSeconds > 0 ? Math.min(1, Math.max(0, 1 - props.remainingSeconds / props.totalSeconds)) : 0;
-    const clock = formatPomodoroClock(props.remainingSeconds);
-    const runLabel = isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start');
+    const inOvertime = props.overtimeSeconds !== undefined && !isBreak;
+    const progress = inOvertime
+        ? Math.min(1, (props.overtimeSeconds ?? 0) / Math.max(1, props.totalSeconds))
+        : props.totalSeconds > 0 ? Math.min(1, Math.max(0, 1 - props.remainingSeconds / props.totalSeconds)) : 0;
+    const clock = inOvertime ? formatPomodoroOvertime(props.overtimeSeconds ?? 0) : formatPomodoroClock(props.remainingSeconds);
+    const runLabel = inOvertime && isRunning
+        ? tr('focus.pauseCheckIn', 'Pause and check in')
+        : isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start');
     const expandLabel = tr('focus.backToFocus', 'Back to focus');
     const hideLabel = tr('focus.hide', 'Hide, keep timer running');
+    const floatLabel = tr('focus.float', 'Float timer over other apps');
 
     useLayoutEffect(() => { focusAnchors.mini = rectOf(ref.current); });
     useEffect(() => {
@@ -117,6 +127,7 @@ export function FocusMini(props: FocusMiniProps) {
             data-testid="focus-mini"
             data-phase={phase}
             data-paused={isRunning ? undefined : 'true'}
+            data-overtime={inOvertime ? 'true' : undefined}
             data-dragging={drag ? 'true' : undefined}
             className={cn('fx-mini cursor-grab touch-none select-none', props.delayed ? 'fx-pop-in [animation-delay:240ms]' : 'fx-pop-in')}
             style={{ right, bottom: position.bottom }}
@@ -128,16 +139,29 @@ export function FocusMini(props: FocusMiniProps) {
             <FocusTint kind={isBreak ? 'break' : 'focus'} progress={progress} />
             <div className="relative px-4 pb-3.5 pt-3">
                 <div className="flex items-center gap-2">
-                    <span className="fx-mini-clock" role="timer" aria-label={tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)}>{clock}</span>
-                    {(isBreak || !isRunning) && (
+                    <span
+                        className={cn('fx-mini-clock', inOvertime && 'text-muted-foreground')}
+                        role="timer"
+                        aria-label={inOvertime
+                            ? tr('focus.overtimeLabel', '{{time}} over time').replace('{{time}}', clock.slice(1))
+                            : tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)}
+                    >
+                        {clock}
+                    </span>
+                    {(isBreak || !isRunning || inOvertime) && (
                         <span className={cn('text-[13px] font-medium', isBreak ? 'text-success-text' : 'text-muted-foreground')}>
-                            {isBreak ? tr('pomodoro.phaseBreakShort', 'Break') : tr('pomodoro.paused', 'Paused')}
+                            {isBreak ? tr('pomodoro.phaseBreakShort', 'Break') : inOvertime ? tr('focus.overtimeShort', 'Over time') : tr('pomodoro.paused', 'Paused')}
                         </span>
                     )}
                     <div className="ml-auto flex items-center gap-0.5">
                         <button type="button" onClick={props.onToggleRun} aria-label={runLabel} title={runLabel} className={iconButton}>
                             {isRunning ? <Pause className="h-4 w-4" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
                         </button>
+                        {props.onFloat && (
+                            <button type="button" onClick={props.onFloat} aria-label={floatLabel} title={floatLabel} className={iconButton} data-testid="focus-mini-float">
+                                <PictureInPicture2 className="h-4 w-4" aria-hidden />
+                            </button>
+                        )}
                         <button type="button" onClick={props.onExpand} aria-label={expandLabel} title={expandLabel} className={iconButton} data-testid="focus-mini-expand">
                             <Maximize2 className="h-4 w-4" aria-hidden />
                         </button>
@@ -164,7 +188,7 @@ export function FocusMini(props: FocusMiniProps) {
                     </div>
                 )}
             </div>
-            <div className="fx-hair" aria-hidden><i style={{ width: `${progress * 100}%` }} /></div>
+            <div className="fx-hair" aria-hidden><i style={{ width: `${progress * 100}%`, opacity: inOvertime ? 0.45 : undefined }} /></div>
         </section>
     );
 }
@@ -174,16 +198,19 @@ interface FocusPillProps {
     phase: PomodoroPhase;
     remainingSeconds: number;
     totalSeconds: number;
+    /** Present while counting up past 0:00 ("Keep going"). */
+    overtimeSeconds?: number;
     isRunning: boolean;
     tr: (key: string, fallback: string) => string;
     onExpand: () => void;
 }
 
 /** Hidden focus: just the time in a corner. The timer keeps running; one click goes back. */
-export function FocusPill({ takeFocus, phase, remainingSeconds, totalSeconds, isRunning, tr, onExpand }: FocusPillProps) {
+export function FocusPill({ takeFocus, phase, remainingSeconds, totalSeconds, overtimeSeconds, isRunning, tr, onExpand }: FocusPillProps) {
     const ref = useRef<HTMLButtonElement>(null);
     const dock = useAssistantDockInset();
-    const clock = formatPomodoroClock(remainingSeconds);
+    const inOvertime = overtimeSeconds !== undefined && phase === 'focus';
+    const clock = inOvertime ? formatPomodoroOvertime(overtimeSeconds) : formatPomodoroClock(remainingSeconds);
     const progress = totalSeconds > 0 ? Math.min(1, Math.max(0, 1 - remainingSeconds / totalSeconds)) : 0;
     const label = `${tr('focus.backToFocus', 'Back to focus')}, ${clock}`;
     useLayoutEffect(() => { focusAnchors.pill = rectOf(ref.current); });
@@ -200,8 +227,16 @@ export function FocusPill({ takeFocus, phase, remainingSeconds, totalSeconds, is
             className="fx-pill fx-pop-in [animation-delay:200ms] focus-ring"
             style={{ right: GAP + 4 + dock, bottom: GAP + 4 }}
         >
-            <PomodoroRing progress={progress} phase={phase} size={24} stroke={3} well={false} running={isRunning} />
-            <span className={cn(!isRunning && 'text-muted-foreground')}>{clock}</span>
+            <PomodoroRing
+                progress={progress}
+                phase={phase}
+                size={24}
+                stroke={3}
+                well={false}
+                running={isRunning}
+                overtime={inOvertime ? Math.min(1, (overtimeSeconds ?? 0) / Math.max(1, totalSeconds)) : undefined}
+            />
+            <span className={cn((!isRunning || inOvertime) && 'text-muted-foreground')} data-overtime={inOvertime ? 'true' : undefined}>{clock}</span>
         </button>
     );
 }

@@ -6,6 +6,7 @@ import { LanguageProvider } from '../contexts/language-context';
 import { KeybindingProvider } from '../contexts/keybinding-context';
 import { useUiStore } from '../store/ui-store';
 import { useAssistantDockStore } from '../store/assistant-dock-store';
+import { SIDEBAR_WIDTH_STORAGE_KEY, useSidebarWidthStore } from '../store/sidebar-width-store';
 import { useObsidianStore } from '../store/obsidian-store';
 import { SyncService } from '../lib/sync-service';
 import { CALENDAR_TASK_DRAG_MIME } from '../lib/calendar-task-drag';
@@ -129,6 +130,7 @@ beforeEach(() => {
     });
     window.localStorage.clear();
     useAssistantDockStore.getState().reload();
+    useSidebarWidthStore.getState().reload();
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 256, 800));
     resetStores();
 
@@ -189,9 +191,9 @@ afterEach(() => {
 describe('Layout content width', () => {
     it('keeps navigation usable when resize observation is unavailable', () => {
         vi.stubGlobal('ResizeObserver', undefined);
-        const { container, getByRole } = renderLayout('projects');
+        const { container } = renderLayout('projects');
         expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
-        expect(getByRole('button', { name: 'Add Task (Inbox)' })).toBeInTheDocument();
+        expect(document.querySelector('button.btn-gradient[title="Capture (Ctrl+K)"]')).not.toBeNull();
     });
 
     it.each(['projects', 'contexts'])('keeps the %s submenu standalone when the sidebar cannot fit both panes', (view) => {
@@ -239,10 +241,10 @@ describe('Layout content width', () => {
     it.each(['projects', 'contexts'])('preserves navigation sections and capture while hosting the %s submenu', (view) => {
         const { container, rerender, getByRole } = renderLayout(view);
         expect(container.querySelector('[data-view-sidebar-slot]')).not.toBeNull();
-        expect(container.querySelector('aside')).toHaveClass('w-64');
+        expect(container.querySelector('aside')).toHaveStyle({ width: '256px' });
         expect(container.querySelectorAll('[data-sidebar-section-toggle]')).toHaveLength(4);
         expect(getByRole('button', { name: 'More' })).toBeInTheDocument();
-        expect(getByRole('button', { name: 'Add Task (Inbox)' })).toBeInTheDocument();
+        expect(document.querySelector('button.btn-gradient[title="Capture (Ctrl+K)"]')).not.toBeNull();
         rerender(<LanguageProvider><KeybindingProvider currentView="inbox" onNavigate={onNavigate}><Layout currentView="inbox" onViewChange={vi.fn()}><div /></Layout></KeybindingProvider></LanguageProvider>);
         expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
     });
@@ -352,23 +354,21 @@ describe('Layout secondary history navigation', () => {
 });
 
 describe('Layout Obsidian nav visibility', () => {
-    it('opens global inbox capture from the visible Add Task button', () => {
-        const quickAddListener = vi.fn();
-        window.addEventListener('stride:quick-add', quickAddListener);
-        const { getByRole } = renderLayout();
-        const addTaskButton = getByRole('button', { name: 'Add Task (Inbox)' });
+    it('opens the inline capture bar from the toolbar Capture button', () => {
+        const captureListener = vi.fn();
+        window.addEventListener('stride:capture-bar', captureListener);
+        const { getAllByRole } = renderLayout();
+        const captureButtons = getAllByRole('button', { name: 'Capture (Ctrl+K)' });
+        const toolbarButton = captureButtons.find((button) => button.classList.contains('btn-gradient'))!;
 
-        expect(addTaskButton).toHaveAttribute('title', 'Add Task (Inbox)');
-        expect(addTaskButton).toHaveClass('btn-gradient');
+        expect(toolbarButton).toHaveAttribute('title', 'Capture (Ctrl+K)');
 
-        fireEvent.click(addTaskButton);
+        fireEvent.click(toolbarButton);
 
-        expect(quickAddListener).toHaveBeenCalledTimes(1);
-        expect(quickAddListener.mock.calls[0][0]).toMatchObject({
-            detail: { initialProps: { status: 'inbox' } },
-        });
+        expect(captureListener).toHaveBeenCalledTimes(1);
+        expect(captureListener.mock.calls[0][0]).toMatchObject({ detail: { fromTrigger: true } });
 
-        window.removeEventListener('stride:quick-add', quickAddListener);
+        window.removeEventListener('stride:capture-bar', captureListener);
     });
 
     it('hides Obsidian when the integration is disabled', () => {
@@ -1444,5 +1444,119 @@ describe('Layout assistant dock', () => {
         expect(queryByTestId('assistant-dock')).not.toBeInTheDocument();
         fireEvent.click(getByRole('button', { name: 'Open assistant' }));
         expect(getByTestId('assistant-dock')).toBeInTheDocument();
+    });
+});
+
+describe('Layout resizable sidebar', () => {
+    const getHandle = () => screen.getByRole('separator', { name: 'Resize sidebar' }) as HTMLDivElement;
+
+    it('exposes an accessible vertical separator with the current bounds', () => {
+        renderLayout('inbox');
+        const handle = getHandle();
+        expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+        expect(handle).toHaveAttribute('aria-valuenow', '256');
+        expect(handle).toHaveAttribute('aria-valuemin', '200');
+        // jsdom's window is 1024px wide: 40% caps the sidebar at 409px.
+        expect(handle).toHaveAttribute('aria-valuemax', '409');
+        expect(handle).toHaveAttribute('tabindex', '0');
+    });
+
+    it('resizes with the keyboard (Shift for bigger steps), persists, and double-click resets', () => {
+        const { container } = renderLayout('inbox');
+        const aside = container.querySelector('aside')!;
+        fireEvent.keyDown(getHandle(), { key: 'ArrowRight' });
+        expect(aside).toHaveStyle({ width: '272px' });
+        fireEvent.keyDown(getHandle(), { key: 'ArrowRight', shiftKey: true });
+        expect(aside).toHaveStyle({ width: '336px' });
+        expect(getHandle()).toHaveAttribute('aria-valuenow', '336');
+        expect(JSON.parse(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) ?? '{}')).toEqual({ width: 336 });
+        fireEvent.keyDown(getHandle(), { key: 'End' });
+        expect(aside).toHaveStyle({ width: '409px' });
+        fireEvent.keyDown(getHandle(), { key: 'Home' });
+        fireEvent.keyDown(getHandle(), { key: 'ArrowLeft' });
+        expect(aside).toHaveStyle({ width: '200px' });
+        fireEvent.doubleClick(getHandle());
+        expect(aside).toHaveStyle({ width: '256px' });
+    });
+
+    it('drags without re-rendering per move, clamps, and commits on release', () => {
+        const { container } = renderLayout('inbox');
+        const aside = container.querySelector('aside')!;
+        const handle = getHandle();
+        handle.setPointerCapture = vi.fn();
+        handle.hasPointerCapture = vi.fn(() => true);
+        handle.releasePointerCapture = vi.fn();
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 256 });
+        expect(aside).toHaveAttribute('data-resizing', 'true');
+        fireEvent.pointerMove(handle, { pointerId: 7, clientX: 2000 });
+        fireEvent.pointerUp(handle, { pointerId: 7, clientX: 2000 });
+        expect(aside).not.toHaveAttribute('data-resizing');
+        expect(aside).toHaveStyle({ width: '409px' });
+        expect(useSidebarWidthStore.getState().width).toBe(409);
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 8, clientX: 409 });
+        fireEvent.pointerMove(handle, { pointerId: 8, clientX: 0 });
+        fireEvent.pointerUp(handle, { pointerId: 8, clientX: 0 });
+        expect(useSidebarWidthStore.getState().width).toBe(200);
+    });
+
+    it('restores the stored width and hides the handle while collapsed', () => {
+        window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, JSON.stringify({ width: 300 }));
+        useSidebarWidthStore.getState().reload();
+        const { container } = renderLayout('inbox');
+        expect(container.querySelector('aside')).toHaveStyle({ width: '300px' });
+        cleanup();
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, settings: { ...state.settings, sidebarCollapsed: true } }));
+        });
+        const collapsed = renderLayout('inbox');
+        expect(collapsed.container.querySelector('aside')).toHaveStyle({ width: '64px' });
+        expect(screen.queryByRole('separator', { name: 'Resize sidebar' })).not.toBeInTheDocument();
+    });
+
+    it('never scrolls the sidebar horizontally: long labels truncate and counts stay pinned', () => {
+        const longName = 'Packaging requirement for Frackly Works including box inserts, printed manuals and the retail sleeve for Printstick v2';
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: { ...state.settings, savedSearches: [{ id: 's1', name: longName, query: 'box' }] },
+            }));
+        });
+        const { container } = renderLayout('projects');
+        const nav = container.querySelector('#sidebar-navigation-panel')!;
+        expect(nav).toHaveClass('overflow-x-hidden', 'min-w-0');
+        expect(container.querySelector('[data-view-sidebar-slot]')).toHaveClass('overflow-x-hidden', 'min-w-0');
+        expect(container.querySelector('[data-sidebar-split]')).toHaveClass('grid-cols-[minmax(0,1fr)]');
+        const saved = container.querySelector('[data-sidebar-saved-search]')!;
+        expect(saved).toHaveAttribute('title', longName);
+        expect(saved.querySelector('span')).toHaveClass('truncate', 'min-w-0');
+        for (const label of Array.from(container.querySelectorAll('[data-sidebar-item] span.truncate'))) {
+            expect(label.parentElement).toHaveClass('min-w-0');
+        }
+        for (const count of Array.from(container.querySelectorAll('[data-sidebar-item] .tabular-nums'))) {
+            expect(count).toHaveClass('shrink-0');
+        }
+    });
+});
+
+describe('Layout area switcher', () => {
+    it('expands the area switcher inside the sidebar without pushing the projects submenu out', () => {
+        const { container } = renderLayout('projects');
+        const split = container.querySelector('[data-sidebar-split]') as HTMLElement;
+        expect(split.style.gridTemplateRows).toContain('minmax(12rem');
+        fireEvent.click(container.querySelector('[data-area-filter-trigger]')!);
+        expect(screen.getByRole('listbox', { name: 'Area filter' })).toBeInTheDocument();
+        expect(container.querySelector('aside')).toContainElement(screen.getByRole('listbox', { name: 'Area filter' }));
+        expect(container.querySelector('[data-view-sidebar-slot]')).not.toBeNull();
+        expect(split.style.gridTemplateRows).toContain('minmax(0');
+        fireEvent.keyDown(screen.getByRole('listbox', { name: 'Area filter' }), { key: 'Escape' });
+        expect(split.style.gridTemplateRows).toContain('minmax(12rem');
+    });
+
+    it('opens area management in Projects from the switcher', () => {
+        const onViewChange = vi.fn();
+        const { container } = renderLayout('inbox', onViewChange);
+        fireEvent.click(container.querySelector('[data-area-filter-trigger]')!);
+        fireEvent.click(screen.getByRole('button', { name: 'Manage areas' }));
+        expect(onViewChange).toHaveBeenCalledWith('projects');
     });
 });

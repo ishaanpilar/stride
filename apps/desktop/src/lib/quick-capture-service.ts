@@ -11,6 +11,7 @@ import {
     type MindSweepProposal,
 } from '@stride/core';
 import { buildAIConfig, loadAIKey } from './ai-config';
+import { consumeAiUsage } from './ai-usage';
 import { logWarn } from './app-log';
 import { createStoreAssistantPort } from './assistant-service';
 import { buildDesktopRoutingContext, trackAiPlacement } from './ai-routing';
@@ -42,6 +43,8 @@ export async function generateQuickCaptureProposal(text: string, language: Langu
     const fallback = (reason: 'disabled' | 'failed') => buildFallbackMindSweepProposal(text, reason, now, activeProjects, areas, people);
     try {
         if (!(await isQuickCaptureAIReady())) return fallback('disabled');
+        // Local usage guard: over the per-minute limit, organise without AI.
+        if (!consumeAiUsage('capture').allowed) return fallback('failed');
         const provider = settings.ai?.provider ?? 'openai';
         const apiKey = await loadAIKey(provider);
         const config = await buildAIConfig(settings, apiKey, language);

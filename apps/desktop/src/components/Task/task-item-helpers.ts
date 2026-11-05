@@ -98,3 +98,26 @@ export function formatTaskDateChipLabel(
     else day = safeFormatDate(parsed, parsed.getFullYear() === now.getFullYear() ? 'EEE, d MMM' : 'EEE, d MMM yyyy');
     return hasTimeComponent(value) ? `${day}, ${safeFormatDate(value, 'p')}` : day;
 }
+
+/** i18n keys for task editor field names (same wording as Settings → Task Editor Layout). */
+export const TASK_EDITOR_FIELD_LABEL_KEYS: Record<TaskEditorFieldId, string> = {
+    status: 'taskEdit.statusLabel',
+    project: 'taskEdit.projectLabel',
+    section: 'taskEdit.sectionLabel',
+    area: 'taskEdit.areaLabel',
+    priority: 'taskEdit.priorityLabel',
+    energyLevel: 'taskEdit.energyLevel',
+    assignedTo: 'taskEdit.assignedTo',
+    contexts: 'taskEdit.contextsLabel',
+    tags: 'taskEdit.tagsLabel',
+    location: 'taskEdit.locationLabel',
+    timeEstimate: 'taskEdit.timeEstimateLabel',
+    recurrence: 'taskEdit.recurrenceLabel',
+    startTime: 'taskEdit.startDateLabel',
+    dueDate: 'taskEdit.dueDateLabel',
+    reviewAt: 'taskEdit.reviewDateLabel',
+    description: 'taskEdit.descriptionLabel',
+    textDirection: 'taskEdit.textDirectionLabel',
+    attachments: 'attachments.title',
+    checklist: 'taskEdit.checklist',
+};

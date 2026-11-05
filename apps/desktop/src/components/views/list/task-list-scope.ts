@@ -8,6 +8,7 @@ import { showUndoToast } from '../../../lib/undo-registry';
 import { undoTaskCompletion } from '../../../lib/undo-task-completion';
 import { requestTaskRowAction, type TaskRowAction } from '../../../lib/task-row-actions';
 import { copyTaskTitles } from '../../../lib/task-clipboard';
+import { beginCompletion, cancelCompletion, isWithinDoubleClickGuard } from '../../../lib/completion-sequence';
 
 type TranslateFn = (key: string) => string;
 
@@ -174,8 +175,14 @@ export function createTaskListScope(deps: TaskListScopeDeps): TaskListScope {
             const previousStatus = task.status;
             const nextStatus: TaskStatus = previousStatus === 'done' ? 'inbox' : 'done';
             const wasFocusedToday = task.isFocusedToday === true;
+            const completing = nextStatus === 'done';
+            // Same completion sequence (and sound) as clicking the checkbox; a repeat key press while it
+            // plays is ignored rather than unticking.
+            if (completing && !beginCompletion(task.id, { sound: true })) return;
+            if (!completing && isWithinDoubleClickGuard(task.id)) return;
             void Promise.resolve(useTaskStore.getState().moveTask(task.id, nextStatus))
                 .then((result) => {
+                    if (completing && result && (result as { success?: boolean }).success === false) cancelCompletion(task.id);
                     assertStoreActionSucceeded(result, 'Failed to change task status');
                     if (nextStatus !== 'done' || previousStatus === 'done') return;
                     showUndoToast(formatTaskMarkedDoneMessage(deps.t, task.title), () => {

@@ -63,6 +63,8 @@ import { KeybindingProvider } from './contexts/keybinding-context';
 import { QuickAddModal } from './components/QuickAddModal';
 import { QuickCaptureModal } from './components/QuickCaptureModal';
 import { useQuickCaptureShortcut } from './hooks/useQuickCaptureShortcut';
+import { useCaptureShortcut } from './hooks/useCaptureShortcut';
+import { CaptureBar } from './components/capture/CaptureBar';
 import { runAfterTaskEditExit } from './components/Task/task-edit-session';
 import { CloseBehaviorModal } from './components/CloseBehaviorModal';
 import { PersistenceFailureBanner } from './components/PersistenceFailureBanner';
@@ -142,6 +144,7 @@ import {
     recordLocalPromptActivity,
     updateLocalUserPromptState,
 } from './lib/user-prompt-state';
+import { enablePomodoroByDefault } from './lib/pomodoro-default';
 import {
     checkForUpdates,
     normalizeInstallSource,
@@ -161,6 +164,8 @@ import { useObsidianStore } from './store/obsidian-store';
 import type { SettingsOnboardingHintPage, SettingsPage } from './components/views/SettingsView';
 import { SandboxSettingsView } from './components/views/SandboxSettingsView';
 import { installKeyringFallbackWarningListener } from './lib/keyring-fallback-warning';
+import { AppUpdaterHost } from './components/updater/AppUpdaterHost';
+import { supportsInAppUpdates } from './lib/app-updater';
 
 const ProjectsView = import.meta.env.DEV
     ? ProjectsViewEager
@@ -422,6 +427,7 @@ function App() {
             isEligible: () => {
                 if (!desktopInstallSource) return false;
                 if (!isDesktopUpdateReminderAllowed(desktopInstallSource)) return false;
+                if (supportsInAppUpdates(desktopInstallSource)) return false;
                 if (ACTIVE_APP_ANNOUNCEMENT) return false;
                 const promptState = readLocalUserPromptState();
                 return shouldCheckUpdateReminder({ nowMs: Date.now(), promptState, updateReminderAllowed: true });
@@ -801,6 +807,7 @@ function App() {
                 if (!cancelled && !useTaskStore.getState().error) {
                     markDesktopStartup('local_data_ready');
                     setStartupDataReady(true);
+                    void enablePomodoroByDefault().catch((error) => reportError('Enable Pomodoro by default', error));
                 }
                 if (!sandboxMode && !disposed && isTauriRuntime()) {
                     void migratePortableAttachments();
@@ -1464,6 +1471,7 @@ function App() {
     }, [handleViewChange]);
 
     useQuickCaptureShortcut();
+    useCaptureShortcut();
 
     const openSyncSettings = useCallback(() => {
         setSettingsInitialPage('sync');
@@ -1761,6 +1769,7 @@ function App() {
                     defaultIncludeCompleted={currentView === 'history' || currentView === 'done' || currentView === 'archived'}
                     />
                     <QuickAddModal />
+                    <CaptureBar />
                     <QuickCaptureModal onOpenAiSettings={() => { setSettingsInitialPage('ai'); handleViewChange('settings'); }} />
                     {confirmModal}
                     <CloseBehaviorModal
@@ -1823,6 +1832,11 @@ function App() {
                         openId={startupPromptOpenId}
                         blocked={startupPromptsBlocked}
                         prompts={startupPrompts}
+                    />
+                    <AppUpdaterHost
+                        enabled={startupPromptsEnabled}
+                        installSource={desktopInstallSource}
+                        blocked={!startupPromptGateOpen || startupPromptOpenId !== null}
                     />
                     <CalendarOpenTaskModal controller={taskLinkController} readOnly={taskLinkController.openTask?.status === 'archived'} />
                     {externalSyncChange && (

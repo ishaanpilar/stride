@@ -40,6 +40,8 @@ type ListHeaderProps = {
     onNewSomedaySection?: () => void;
     /** Optional "Today: X of Y done" progress line and bar under the title. */
     progress?: ViewHeaderProgress;
+    /** Controls only, no title row (the Inbox shows its own header and tucks these behind "…"). */
+    controlsOnly?: boolean;
     t: (key: string) => string;
 };
 
@@ -72,6 +74,7 @@ export function ListHeader({
     onToggleDetails,
     onNewSomedaySection,
     progress,
+    controlsOnly = false,
     t,
 }: ListHeaderProps) {
     const [overflowOpen, setOverflowOpen] = useState(false);
@@ -178,6 +181,14 @@ export function ListHeader({
             )}
         </div>
     );
+
+    if (controlsOnly) {
+        return (
+            <div className="motion-expand-in flex flex-wrap items-center justify-end gap-2" data-list-view-options>
+                <ViewHeaderActions>{controls}</ViewHeaderActions>
+            </div>
+        );
+    }
 
     return (
         <div className="flex flex-col gap-4">

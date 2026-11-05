@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type DragEvent, type FormEvent, type ReactNode } from 'react';
 import { ContextualHelp } from '../ContextualHelp';
-import { ArrowRight, Check, FolderPlus, HelpCircle, Layers, MapPin, Rows3, Trash2 } from 'lucide-react';
+import { ArrowRight, Check, FolderPlus, HelpCircle, Layers, MapPin, Plus, Rows3, Trash2 } from 'lucide-react';
 import {
     buildTaskMovePatch,
     resolveAutoTextDirection,
@@ -32,6 +32,8 @@ import { findAttachmentsSection } from './task-item-helpers';
 import { FocusStarIcon } from '../FocusStarIcon';
 import { TaskEditorAiMenu, TaskEditorAiPanels } from './TaskEditorAiPanels';
 import type { useTaskItemAi } from './useTaskItemAi';
+import type { TaskFillAi } from './useTaskFillAi';
+import { TaskFillAiButton, TaskFillAiProposals } from './TaskFillAiPanel';
 import { TaskEditorSection } from './TaskEditorSection';
 
 interface TaskItemEditorProps {
@@ -85,6 +87,11 @@ interface TaskItemEditorProps {
     onSubmit: (e: FormEvent) => void;
     isImportingFiles?: boolean;
     onFilesDropped?: (files: File[]) => void;
+    /** "Fill with AI": proposals for the empty fields (hidden when AI is off). */
+    fill?: TaskFillAi;
+    /** Fields hidden by the editor layout that can be shown for this task ("Add field"). */
+    addableFields?: { id: TaskEditorFieldId; label: string }[];
+    onRevealField?: (fieldId: TaskEditorFieldId) => void;
 }
 
 function appendCommaToken(value: string, token: string): string {
@@ -146,6 +153,9 @@ export function TaskItemEditor({
     onSubmit,
     isImportingFiles = false,
     onFilesDropped,
+    fill,
+    addableFields = [],
+    onRevealField,
 }: TaskItemEditorProps) {
 
 
@@ -228,6 +238,45 @@ export function TaskItemEditor({
     };
 
 
+    const [completing, setCompleting] = useState(false);
+    const markDoneLabel = tFallback(t, 'task.markAsDone', 'Mark as done');
+    const [addFieldOpen, setAddFieldOpen] = useState(false);
+    const addFieldRef = useRef<HTMLDivElement | null>(null);
+    const [pendingRevealField, setPendingRevealField] = useState<TaskEditorFieldId | null>(null);
+    const fieldRefs = useRef(new Map<TaskEditorFieldId, HTMLDivElement>());
+    const registerFieldRef = (fieldId: TaskEditorFieldId) => (node: HTMLDivElement | null) => {
+        if (node) fieldRefs.current.set(fieldId, node);
+        else fieldRefs.current.delete(fieldId);
+        if (fieldId === 'attachments') attachmentsFieldRef.current = node;
+    };
+
+    useEffect(() => {
+        if (!addFieldOpen) return;
+        const handlePointer = (event: MouseEvent) => {
+            if (addFieldRef.current?.contains(event.target as Node)) return;
+            setAddFieldOpen(false);
+        };
+        document.addEventListener('mousedown', handlePointer);
+        return () => document.removeEventListener('mousedown', handlePointer);
+    }, [addFieldOpen]);
+
+    // A field revealed through "Add field" lands in its configured section: open that section,
+    // then bring the field into view and focus its first control.
+    useEffect(() => {
+        if (!pendingRevealField) return;
+        if (schedulingFields.includes(pendingRevealField)) setSchedulingOpen(true);
+        else if (organizationFields.includes(pendingRevealField)) setOrganizationOpen(true);
+        else if (detailsFields.includes(pendingRevealField)) setDetailsOpen(true);
+        const raf = requestAnimationFrame(() => {
+            const node = fieldRefs.current.get(pendingRevealField);
+            if (!node) return;
+            setPendingRevealField(null);
+            node.scrollIntoView({ block: 'nearest' });
+            node.querySelector<HTMLElement>('input, select, textarea, button')?.focus();
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [detailsFields, organizationFields, pendingRevealField, schedulingFields]);
+
     useEffect(() => {
         if (revealAttachmentsToken === 0) return;
         const raf = requestAnimationFrame(() => {
@@ -288,7 +337,7 @@ export function TaskItemEditor({
                 onToggle={() => setDetailsOpen((prev) => !prev)}
             >
                 {detailsFields.map((fieldId) => (
-                    <div key={fieldId} ref={fieldId === 'attachments' ? attachmentsFieldRef : undefined}>{renderField(fieldId)}</div>
+                    <div key={fieldId} ref={registerFieldRef(fieldId)}>{renderField(fieldId)}</div>
                 ))}
             </TaskEditorSection>
         </div>
@@ -335,25 +384,35 @@ export function TaskItemEditor({
                     {onMarkDone && (
                         <button
                             type="button"
-                            onClick={onMarkDone}
+                            role="checkbox"
+                            aria-checked={isDoneActionActive || completing}
+                            data-task-editor-complete
+                            onClick={() => {
+                                setCompleting(true);
+                                onMarkDone();
+                            }}
                             onContextMenu={onRequestBackdatedComplete ? (event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 onRequestBackdatedComplete();
                             } : undefined}
-                            aria-label={t('status.done')}
-                            aria-pressed={isDoneActionActive}
+                            aria-label={markDoneLabel}
                             title={onRequestBackdatedComplete
-                                ? tFallback(t, 'task.completeBackdateHint', 'Right-click to complete with a different time')
-                                : t('status.done')}
+                                ? `${markDoneLabel} · ${tFallback(t, 'task.completeBackdateHint', 'Right-click to complete with a different time')}`
+                                : markDoneLabel}
                             className={cn(
-                                'focus-ring mt-0.5 inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border transition-colors motion-reduce:transition-none',
-                                isDoneActionActive
-                                    ? 'border-success bg-success text-success-foreground shadow-sm'
-                                    : 'border-border bg-muted/30 text-muted-foreground hover:border-success/50 hover:bg-success/10 hover:text-success'
+                                'motion-press focus-ring mr-1 shrink-0 inline-flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-full transition-[color,background-color,border-color] duration-200 ease-out motion-reduce:transition-none',
+                                isModalEditor ? 'mt-2' : 'mt-[9px]',
+                                isDoneActionActive || completing
+                                    ? 'bg-accent-gradient text-on-accent motion-check-pop'
+                                    : 'border-[1.5px] border-solid border-tertiary text-transparent hover:border-accent-fill hover:bg-accent-soft hover:text-accent-text',
                             )}
                         >
-                            <Check className="h-4 w-4" aria-hidden="true" />
+                            <Check
+                                className={cn('h-3 w-3', (isDoneActionActive || completing) && 'motion-check-draw')}
+                                strokeWidth={3}
+                                aria-hidden="true"
+                            />
                         </button>
                     )}
                     <TaskInput
@@ -397,7 +456,13 @@ export function TaskItemEditor({
                     )}
                     <TaskEditorAiMenu ai={ai} t={t} />
                 </div>
-            <TaskEditorAiPanels ai={ai} timeEstimatesEnabled={timeEstimatesEnabled} t={t} />
+            <TaskEditorAiPanels
+                ai={ai}
+                timeEstimatesEnabled={timeEstimatesEnabled}
+                t={t}
+                fillAction={fill?.available ? <TaskFillAiButton fill={fill} t={t} /> : undefined}
+            />
+            {fill && <TaskFillAiProposals fill={fill} t={t} />}
             <div className={cn(
                 'flex flex-col gap-3',
                 isModalEditor && detailsFields.length > 0 && 'lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6',
@@ -410,7 +475,7 @@ export function TaskItemEditor({
             {basicFieldsBeforeOrganizers.length > 0 && (
                 <div className="space-y-3">
                     {basicFieldsBeforeOrganizers.map((fieldId) => (
-                        <div key={fieldId}>{renderField(fieldId)}</div>
+                        <div key={fieldId} ref={registerFieldRef(fieldId)}>{renderField(fieldId)}</div>
                     ))}
                 </div>
             )}
@@ -496,8 +561,61 @@ export function TaskItemEditor({
             {basicFieldsAfterOrganizers.length > 0 && (
                 <div className="space-y-3">
                     {basicFieldsAfterOrganizers.map((fieldId) => (
-                        <div key={fieldId}>{renderField(fieldId)}</div>
+                        <div key={fieldId} ref={registerFieldRef(fieldId)}>{renderField(fieldId)}</div>
                     ))}
+                </div>
+            )}
+            {addableFields.length > 0 && onRevealField && (
+                <div className="relative" ref={addFieldRef}>
+                    <button
+                        type="button"
+                        onClick={() => setAddFieldOpen((open) => !open)}
+                        aria-haspopup="menu"
+                        aria-expanded={addFieldOpen}
+                        data-task-editor-add-field
+                        className="focus-ring inline-flex items-center gap-1.5 rounded-control px-2 py-1 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground motion-reduce:transition-none"
+                    >
+                        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                        {tFallback(t, 'taskEdit.addField', 'Add field')}
+                    </button>
+                    {addFieldOpen && (
+                        <div
+                            role="menu"
+                            aria-label={tFallback(t, 'taskEdit.addField', 'Add field')}
+                            className="motion-popover mt-1 w-56 overflow-hidden rounded-control border border-border bg-popover py-1 text-sm text-popover-foreground shadow-soft"
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setAddFieldOpen(false);
+                                    addFieldRef.current?.querySelector<HTMLElement>('[data-task-editor-add-field]')?.focus();
+                                    return;
+                                }
+                                if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+                                event.preventDefault();
+                                const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+                                const index = items.indexOf(document.activeElement as HTMLElement);
+                                const next = event.key === 'ArrowDown' ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
+                                items[next]?.focus();
+                            }}
+                        >
+                            {addableFields.map((field) => (
+                                <button
+                                    key={field.id}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                        setAddFieldOpen(false);
+                                        onRevealField(field.id);
+                                        setPendingRevealField(field.id);
+                                    }}
+                                    className="block w-full px-3 py-1.5 text-left hover:bg-muted/60 focus:bg-muted/60 focus:outline-none"
+                                >
+                                    {field.label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
             <div className="space-y-3">
@@ -513,7 +631,7 @@ export function TaskItemEditor({
                             onToggle={() => setSchedulingOpen((prev) => !prev)}
                         >
                             {schedulingFields.map((fieldId) => (
-                                <div key={fieldId} ref={fieldId === 'attachments' ? attachmentsFieldRef : undefined}>{renderField(fieldId)}</div>
+                                <div key={fieldId} ref={registerFieldRef(fieldId)}>{renderField(fieldId)}</div>
                             ))}
                         </TaskEditorSection>
                     )}
@@ -525,7 +643,7 @@ export function TaskItemEditor({
                             onToggle={() => setOrganizationOpen((prev) => !prev)}
                         >
                             {organizationFields.map((fieldId) => (
-                                <div key={fieldId} ref={fieldId === 'attachments' ? attachmentsFieldRef : undefined}>{renderField(fieldId)}</div>
+                                <div key={fieldId} ref={registerFieldRef(fieldId)}>{renderField(fieldId)}</div>
                             ))}
                         </TaskEditorSection>
                     )}
@@ -603,12 +721,15 @@ export function TaskItemEditor({
                     <button
                         disabled={isImportingFiles}
                         type="submit"
+                        data-task-editor-done
+                        aria-label={tFallback(t, 'taskEdit.doneEditing', 'Done editing')}
+                        title={`${tFallback(t, 'common.save', 'Save')} (${typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl+'}↩)`}
                         className={cn(
                             'btn-gradient focus-ring font-semibold disabled:opacity-50',
                             isModalEditor ? 'min-h-10 rounded-control px-4 py-2 text-sm' : 'min-h-8 rounded-control px-3 py-1.5 text-[13px]',
                         )}
                     >
-                        {t('common.save')}
+                        {tFallback(t, 'common.done', 'Done')}
                     </button>
                     <button
                         type="button"

@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
     comparePromptVersions,
     recordDonationPromptShown,
+    recordDirectUpdateLater,
+    recordDirectUpdatePrompted,
+    recordDirectUpdateSkipped,
+    shouldShowDirectUpdatePrompt,
+    DIRECT_UPDATE_CHECK_INTERVAL_MS,
     getPromptLocalDayKey,
     recordPromptActivity,
     recordStoreReviewPromptAttempt,
@@ -362,5 +367,68 @@ describe('user prompt state', () => {
             latestVersion: '0.10.0',
             latestReleasedAt: new Date(baseMs - dayMs).toISOString(),
         })).toBe(false);
+    });
+
+    describe('direct (GitHub) install update prompts', () => {
+        const fresh: UserPromptState = {};
+
+        it('prompts on a brand-new install with no first-seen, active-day or patch-grace delay', () => {
+            expect(shouldShowDirectUpdatePrompt({
+                nowMs: baseMs,
+                promptState: fresh,
+                currentVersion: '1.5.0',
+                latestVersion: '1.5.1',
+            })).toBe(true);
+            expect(shouldShowUpdateReminder({
+                nowMs: baseMs,
+                promptState: fresh,
+                updateReminderAllowed: true,
+                currentVersion: '1.5.0',
+                latestVersion: '1.5.1',
+                latestReleasedAt: new Date(baseMs - dayMs).toISOString(),
+            })).toBe(false);
+        });
+
+        it('ignores the 7-day coordinator cooldown from other prompts', () => {
+            const recentDonation = recordDonationPromptShown(fresh, baseMs - 60 * 1000);
+            expect(shouldShowDirectUpdatePrompt({
+                nowMs: baseMs,
+                promptState: recentDonation,
+                currentVersion: '1.5.0',
+                latestVersion: '1.6.0',
+            })).toBe(true);
+        });
+
+        it('never prompts when current or ahead', () => {
+            expect(shouldShowDirectUpdatePrompt({ nowMs: baseMs, promptState: fresh, currentVersion: '1.5.0', latestVersion: '1.5.0' })).toBe(false);
+            expect(shouldShowDirectUpdatePrompt({ nowMs: baseMs, promptState: fresh, currentVersion: 'v1.6.0', latestVersion: '1.5.9' })).toBe(false);
+            expect(shouldShowDirectUpdatePrompt({ nowMs: baseMs, promptState: fresh, currentVersion: '1.5.0', latestVersion: '1.5.0', manual: true })).toBe(false);
+        });
+
+        it('prompts at most once per version per day', () => {
+            const prompted = recordDirectUpdatePrompted(fresh, '1.5.1', baseMs);
+            expect(prompted.lastInterruptivePromptAt).toBe(new Date(baseMs).toISOString());
+            const input = { promptState: prompted, currentVersion: '1.5.0', latestVersion: '1.5.1' };
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs + DIRECT_UPDATE_CHECK_INTERVAL_MS })).toBe(false);
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs + dayMs })).toBe(true);
+            expect(shouldShowDirectUpdatePrompt({ ...input, latestVersion: '1.5.2', nowMs: baseMs + 1000 })).toBe(true);
+        });
+
+        it('snoozes a version for 24 hours on Later', () => {
+            const later = recordDirectUpdateLater(fresh, '1.5.1', baseMs);
+            expect(later.update?.snoozedUntil).toBe(new Date(baseMs + dayMs).toISOString());
+            const input = { promptState: later, currentVersion: '1.5.0', latestVersion: '1.5.1' };
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs + dayMs - 1 })).toBe(false);
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs + dayMs })).toBe(true);
+            expect(shouldShowDirectUpdatePrompt({ ...input, latestVersion: '1.6.0', nowMs: baseMs + 1 })).toBe(true);
+        });
+
+        it('hides a skipped version until a newer one ships, but a manual check still shows it', () => {
+            const skipped = recordDirectUpdateSkipped(fresh, 'v1.5.1');
+            const input = { promptState: skipped, currentVersion: '1.5.0', latestVersion: '1.5.1' };
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs + 30 * dayMs })).toBe(false);
+            expect(shouldShowDirectUpdatePrompt({ ...input, nowMs: baseMs, manual: true })).toBe(true);
+            expect(shouldShowDirectUpdatePrompt({ ...input, latestVersion: '1.5.2', nowMs: baseMs })).toBe(true);
+        });
     });
 });

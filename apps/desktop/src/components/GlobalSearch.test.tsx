@@ -555,7 +555,7 @@ describe('GlobalSearch', () => {
         fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
         expect(screen.getByRole('dialog')).toBeInTheDocument();
 
-        fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+        fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
         await act(async () => {

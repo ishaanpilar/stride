@@ -8,9 +8,11 @@ import { resolveTaskNavigationView } from '../lib/task-navigation';
 import { dispatchNavigateEvent, type DesktopViewId } from '../lib/navigation-events';
 import {
     MENUBAR_FOCUS_EXPAND_EVENT,
+    MENUBAR_NAVIGATE_EVENT,
     MENUBAR_OPEN_EVENT,
     MENUBAR_POMODORO_CHANGED_EVENT,
     setTrayTitle,
+    type MenuBarNavigatePayload,
     type MenuBarOpenPayload,
 } from '../lib/menubar-panel-window';
 import { openQuickCapture } from '../lib/quick-capture-service';
@@ -65,13 +67,17 @@ export function useMenuBarPanelBridge({ enabled, language }: { enabled: boolean;
             const offFocus = await listen(MENUBAR_FOCUS_EXPAND_EVENT, () => {
                 useFocusSessionStore.getState().expand();
             });
+            const offNavigate = await listen<MenuBarNavigatePayload>(MENUBAR_NAVIGATE_EVENT, (event) => {
+                if (event.payload?.view === 'inbox') dispatchNavigateEvent('inbox');
+            });
             if (disposed) {
                 offOpen();
                 offPomodoro();
                 offFocus();
+                offNavigate();
                 return;
             }
-            unlisteners.push(offOpen, offPomodoro, offFocus);
+            unlisteners.push(offOpen, offPomodoro, offFocus, offNavigate);
         };
         setup().catch((error) => void logError(error, { scope: 'menubar', step: 'listen' }));
         return () => {

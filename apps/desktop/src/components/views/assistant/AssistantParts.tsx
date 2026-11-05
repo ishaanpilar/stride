@@ -1,5 +1,5 @@
-import { CheckCircle2, FolderKanban, GitMerge, Layers, ListChecks, Pencil, Plus, Tag, Trash2, Undo2, X } from 'lucide-react';
-import type { ChangeEntry, PendingConfirmation } from '@stride/core';
+import { Ban, CheckCircle2, FolderKanban, GitMerge, Inbox, Layers, ListChecks, Pencil, Plus, Tag, Trash2, Undo2, X } from 'lucide-react';
+import type { ChangeEntry, OutOfScopeDecline, PendingConfirmation } from '@stride/core';
 import { Button } from '../../ui/Button';
 import { Pill } from '../../ui/Pill';
 import { cn } from '../../../lib/utils';
@@ -137,5 +137,50 @@ export function SuggestionChips({ suggestions, onPick, disabled }: { suggestions
                 </button>
             ))}
         </div>
+    );
+}
+
+/**
+ * Compact card for an off-topic request the Assistant declined: one line, plus a chip that captures
+ * the suggested task in the Inbox without another AI call.
+ */
+export function DeclineCard({
+    text,
+    decline,
+    onCapture,
+    disabled,
+}: {
+    text: string;
+    decline: OutOfScopeDecline & { captured?: boolean };
+    onCapture?: () => void;
+    disabled?: boolean;
+}) {
+    return (
+        <section className="soft-surface w-full max-w-[85%] rounded-card px-3.5 py-2.5 text-sm" data-testid="assistant-decline-card" aria-label="Outside what the Assistant does">
+            <p className="flex items-start gap-2 leading-5 [overflow-wrap:anywhere]">
+                <Ban className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <span>{text}</span>
+            </p>
+            {decline.suggestedTask && (
+                <div className="mt-2 pl-[22px]">
+                    {decline.captured ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-success-text" data-testid="assistant-decline-captured">
+                            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />Added to Inbox
+                        </span>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={onCapture}
+                            disabled={disabled || !onCapture}
+                            aria-label={`Capture as task: ${decline.suggestedTask}`}
+                            className="focus-ring inline-flex min-h-[28px] max-w-full items-center gap-1.5 rounded-pill bg-card px-3 py-1 text-left text-xs font-medium text-accent-text shadow-soft-sm transition-colors hover:bg-accent-soft disabled:opacity-50"
+                        >
+                            <Inbox className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                            <span className="[overflow-wrap:anywhere]">Capture as task</span>
+                        </button>
+                    )}
+                </div>
+            )}
+        </section>
     );
 }

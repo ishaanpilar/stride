@@ -9,6 +9,7 @@ import {
     type Language,
 } from '@stride/core';
 import { buildAIConfig, loadAIKey } from './ai-config';
+import { consumeAiUsage } from './ai-usage';
 import { logWarn } from './app-log';
 
 /**
@@ -23,6 +24,7 @@ export async function describeArea(areaName: string, text: string, language: Lan
         const providerId = settings.ai?.provider ?? 'openai';
         const apiKey = await loadAIKey(providerId);
         if (!apiKey && isAIKeyRequired(settings)) return buildFallbackAreaDescription(text);
+        if (!consumeAiUsage('area').allowed) return buildFallbackAreaDescription(text);
         const config = await buildAIConfig(settings, apiKey, language);
         const provider = createAIProvider({ ...config, timeoutMs: AREA_DESCRIBE_TIMEOUT_MS });
         return await describeAreaWithAI(provider, { areaName, text, knownPeople }, { timeoutMs: AREA_DESCRIBE_TIMEOUT_MS });

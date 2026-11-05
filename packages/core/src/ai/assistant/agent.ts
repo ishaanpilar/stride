@@ -2,6 +2,18 @@ import { generateUUID } from '../../uuid';
 import { AssistantChangeLog } from './change-log';
 import { buildSystemPrompt } from './prompt';
 import { parseAssistantReply } from './suggestions';
+import {
+    DECLINE_TOOL_NAME,
+    DEFAULT_TURN_TIMEOUT_MS,
+    LENGTH_RETRY_NOTE,
+    MAX_LENGTH_RETRIES,
+    buildDeclineReply,
+    buildScopeReminder,
+    checkAssistantScope,
+    parseDeclineArgs,
+    sanitizeAssistantReply,
+    type OutOfScopeDecline,
+} from './guardrails';
 import { parseToolArguments, validateAgainstSchema } from './schema';
 import { ASSISTANT_TOOLS, getToolDefinitions } from './registry';
 import type {
@@ -38,6 +50,10 @@ export interface RunTurnOptions {
     timeZone?: string;
     maxSteps?: number;
     callTimeoutMs?: number;
+    /** Wall-clock budget for the whole turn (default 120 s). */
+    turnTimeoutMs?: number;
+    /** Local out-of-scope pre-check that adds a reminder to flagged messages (default on). */
+    scopeCheck?: boolean;
     signal?: AbortSignal;
     tools?: AssistantTool[];
     onToolEvent?: (event: { name: string; status: 'ok' | 'error' | 'pending'; label?: string }) => void;
@@ -49,6 +65,8 @@ export interface TurnResult {
     suggestions?: string[];
     entries: ChangeEntry[];
     pending: PendingConfirmation[];
+    /** Set when the model declined an off-topic request via decline_out_of_scope. */
+    outOfScope?: OutOfScopeDecline;
     status: 'ok' | 'max_steps' | 'error' | 'aborted';
     error?: string;
     steps: number;
@@ -152,9 +170,36 @@ export async function executeConfirmed(
     return { ok: true, entry: result.entry };
 }
 
-async function completeWithTimeout(options: RunTurnOptions, messages: AssistantMessage[], tools: AssistantTool[]) {
+/**
+ * "Capture as task" on a decline card: adds the suggested title to the Inbox through the normal
+ * add_task tool, so it is validated, logged in the Changes card and undoable. No AI call.
+ */
+export async function captureDeclinedAsTask(
+    title: string,
+    deps: { port: AssistantStorePort; changeLog: AssistantChangeLog; messageId: string; now?: Date; timeZone?: string },
+): Promise<{ ok: boolean; entry?: ChangeEntry; error?: string }> {
+    const clean = parseDeclineArgs({ reason: 'capture', suggestedTask: title }).suggestedTask;
+    if (!clean) return { ok: false, error: 'Nothing to capture' };
+    const result = await runToolCall({
+        name: 'add_task',
+        rawArguments: JSON.stringify({ title: clean, status: 'inbox' }),
+        tools: ASSISTANT_TOOLS,
+        ctx: { port: deps.port, now: deps.now ?? new Date(), timeZone: deps.timeZone },
+        changeLog: deps.changeLog,
+        messageId: deps.messageId,
+        skipConfirmation: true,
+    });
+    if (!result.ok) {
+        let error = 'Could not add the task';
+        try { error = JSON.parse(result.content).error ?? error; } catch { /* keep default */ }
+        return { ok: false, error };
+    }
+    return { ok: true, entry: result.entry };
+}
+
+async function completeWithTimeout(options: RunTurnOptions, messages: AssistantMessage[], tools: AssistantTool[], remainingMs: number) {
     const controller = new AbortController();
-    const timeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    const timeoutMs = Math.max(1, Math.min(options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, remainingMs));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -176,14 +221,19 @@ export async function runAssistantTurn(options: RunTurnOptions): Promise<TurnRes
     const now = options.now ?? new Date();
     const ctx: ToolContext = { port: options.port, now, timeZone: options.timeZone };
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
+    const deadline = Date.now() + (options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+    // Obvious off-topic patterns get a one-turn reminder; the request itself is never blocked here.
+    const scope = options.scopeCheck === false ? null : checkAssistantScope(options.userText);
+    const reminder = scope ? buildScopeReminder(scope) : '';
     const messages: AssistantMessage[] = [
         { role: 'system', content: buildSystemPrompt(options.port, now, options.timeZone) },
         ...capHistory(options.history ?? []).map((m) => ({ role: m.role, content: m.content }) as AssistantMessage),
-        { role: 'user', content: options.userText },
+        { role: 'user', content: reminder ? `${options.userText}\n\n${reminder}` : options.userText },
     ];
     const entries: ChangeEntry[] = [];
     const pending: PendingConfirmation[] = [];
     let failures = 0;
+    let lengthRetries = 0;
 
     const summarize = (prefix: string) => {
         const parts = entries.map((e) => e.label);
@@ -193,19 +243,47 @@ export async function runAssistantTurn(options: RunTurnOptions): Promise<TurnRes
 
     for (let step = 1; step <= maxSteps; step += 1) {
         if (options.signal?.aborted) return { reply: summarize(''), entries, pending, status: 'aborted', steps: step - 1 };
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+            return { reply: summarize('That took too long, so I stopped. '), entries, pending, status: 'error', error: 'The assistant turn timed out.', steps: step - 1 };
+        }
         let response;
         try {
-            response = await completeWithTimeout(options, messages, tools);
+            response = await completeWithTimeout(options, messages, tools, remainingMs);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { reply: summarize('Something went wrong. '), entries, pending, status: options.signal?.aborted ? 'aborted' : 'error', error: message, steps: step };
+        }
+        // A call cut off by the output cap is never applied; ask the model to redo it in smaller steps.
+        if (response.finishReason === 'length' || response.finishReason === 'max_tokens') {
+            lengthRetries += 1;
+            if (lengthRetries > MAX_LENGTH_RETRIES) {
+                const prefix = entries.length || pending.length ? 'I got part of the way. ' : '';
+                return {
+                    reply: summarize(`${prefix}That was too much to do in one go. Try splitting it into smaller requests, or use Brain dump for long lists. `),
+                    entries, pending, status: 'error', error: 'Reply exceeded the output limit', steps: step,
+                };
+            }
+            messages.push({ role: 'user', content: LENGTH_RETRY_NOTE });
+            continue;
         }
         const assistant = response.message;
         messages.push(assistant);
         const calls = assistant.toolCalls ?? [];
         if (calls.length === 0) {
             const parsed = parseAssistantReply((assistant.content ?? '').trim());
-            return { reply: parsed.text || summarize('Done. ') || 'Done.', suggestions: parsed.suggestions, entries, pending, status: 'ok', steps: step };
+            const clean = sanitizeAssistantReply(parsed.text);
+            return { reply: clean.text || summarize('Done. ') || 'Done.', suggestions: parsed.suggestions, entries, pending, status: 'ok', steps: step };
+        }
+        // A decline ends the turn at once (no further model call); other calls in this step are dropped.
+        const decline = calls.find((c) => c.name === DECLINE_TOOL_NAME);
+        if (decline) {
+            let args: unknown = {};
+            try { args = JSON.parse(decline.arguments); } catch { /* defaults */ }
+            const outOfScope = parseDeclineArgs(args);
+            options.onToolEvent?.({ name: DECLINE_TOOL_NAME, status: 'ok' });
+            const reply = entries.length || pending.length ? `${summarize('')} ${buildDeclineReply(outOfScope)}`.trim() : buildDeclineReply(outOfScope);
+            return { reply, outOfScope, entries, pending, status: 'ok', steps: step };
         }
         for (const call of calls.slice(0, MAX_TOOL_CALLS_PER_STEP)) {
             const result = await runToolCall({

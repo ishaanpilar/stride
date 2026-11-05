@@ -31,7 +31,7 @@ import { Collapse } from './ui/Collapse';
 import { useEnterOnChange } from '../hooks/useEnterOnChange';
 import { isSandboxMode, shallow, useTaskStore, resolveFeatureFlags, safeFormatDate, tFallback, formatTaskMovedMessage, isSyncFileLockUnavailableError } from '@stride/core';
 import type { StoreActionResult, TaskStatus } from '@stride/core';
-import { openQuickCapture } from '../lib/quick-capture-service';
+import { openCapture } from '../lib/inline-capture';
 import { showUndoToast } from '../lib/undo-registry';
 import { addTaskToFocusFromDrop } from '../lib/focus-drop';
 import { undoTaskCompletion } from '../lib/undo-task-completion';
@@ -41,7 +41,8 @@ import { useObsidianStore } from '../store/obsidian-store';
 import { reportError } from '../lib/report-error';
 import { showSyncErrorToast } from '../lib/sync-error-toast';
 import { ToastHost } from './ToastHost';
-import { areaFilterSelectionToFilters, isTaskVisibleInInbox, resolveAreaFilterSelection, type AreaFilterSelection } from '@stride/core';
+import { AREA_FILTER_NONE, areaFilterSelectionToFilters, getTaskAreaId, isTaskVisibleInInbox, resolveAreaFilterSelection, type AreaFilterSelection } from '@stride/core';
+import { requestAreaManager } from '../lib/area-manager-request';
 import { SyncService } from '../lib/sync-service';
 import { Button } from './ui/Button';
 import { IconButton } from './ui/IconButton';
@@ -52,6 +53,8 @@ import { getCalendarTaskDragTaskId, hasCalendarTaskDragData } from '../lib/calen
 import { stageCalendarDropLanding } from '../lib/calendar-view-params';
 import { AssistantDock, useAssistantNarrow } from './AssistantDock';
 import { useAssistantDockStore } from '../store/assistant-dock-store';
+import { SIDEBAR_COLLAPSED_WIDTH, clampSidebarWidth, useSidebarWidthStore, useWindowWidth } from '../store/sidebar-width-store';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useAssistantShortcut } from '../hooks/useAssistantShortcut';
 import { SandboxBanner } from './sandbox/SandboxBanner';
 import { getWorkspaceCache } from '../lib/workspace-cache';
@@ -168,6 +171,10 @@ export function Layout({
         && window.matchMedia('(max-width: 1023px)').matches
     ));
     const isCollapsed = userSidebarCollapsed || compactViewport;
+    const sidebarRef = useRef<HTMLElement | null>(null);
+    const storedSidebarWidth = useSidebarWidthStore((state) => state.width);
+    const windowWidth = useWindowWidth();
+    const sidebarWidth = clampSidebarWidth(storedSidebarWidth, windowWidth);
     const calendarDragNavTimeoutRef = useRef<number | null>(null);
     const sidebarSplitRef = useRef<HTMLDivElement | null>(null);
     const [sidebarNavigationHeight, setSidebarNavigationHeight] = usePersistedViewState(
@@ -180,6 +187,11 @@ export function Layout({
     };
     const [viewSidebarSlot, setViewSidebarSlot] = useState<HTMLDivElement | null>(null);
     const [sidebarHasRoom, setSidebarHasRoom] = useState(false);
+    // While the area switcher is expanded, keep the split steady (no jump of the submenu out of
+    // the sidebar); both panes scroll, so they can shrink for the moment.
+    const [areaSwitcherOpen, setAreaSwitcherOpen] = useState(false);
+    const areaSwitcherOpenRef = useRef(false);
+    areaSwitcherOpenRef.current = areaSwitcherOpen;
     const hasViewSidebar = (contentView === 'projects' || contentView === 'contexts') && !isCollapsed && sidebarHasRoom;
     const isFocusMode = useUiStore((state) => state.isFocusMode);
     const focusShell = useFocusShell();
@@ -187,6 +199,7 @@ export function Layout({
         const sidebar = sidebarSplitRef.current;
         if (!sidebar || typeof ResizeObserver !== 'function') return;
         const measure = () => {
+            if (areaSwitcherOpenRef.current) return;
             const textSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
             setSidebarHasRoom(sidebar.getBoundingClientRect().height >= textSize * 30 + 12);
         };
@@ -207,7 +220,7 @@ export function Layout({
     const [cleartextSyncWarning, setCleartextSyncWarning] = useState<{ destination: string; message: string } | null>(null);
     const dismissedCleartextDestinations = useRef(new Set<string>());
     const searchShortcutHint = useMemo(() => (
-        typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl+K'
+        typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? '⌘F' : 'Ctrl+F'
     ), []);
     const lastSyncAt = settings?.lastSyncAt;
     const lastSyncStatus = settings?.lastSyncStatus;
@@ -352,6 +365,15 @@ export function Layout({
         [settings?.filters, areas],
     );
     const sortedAreas = useMemo(() => [...areas].sort((a, b) => a.order - b.order), [areas]);
+    const openTaskCountsByArea = useMemo(() => {
+        const counts: Record<string, number> = {};
+        for (const task of tasks) {
+            if (task.deletedAt || task.status === 'done' || task.status === 'archived' || task.status === 'reference') continue;
+            const areaId = getTaskAreaId(task, projectMap) ?? AREA_FILTER_NONE;
+            counts[areaId] = (counts[areaId] ?? 0) + 1;
+        }
+        return counts;
+    }, [tasks, projectMap]);
     const inboxCount = useMemo(() => {
         let count = 0;
         for (const task of tasks) {
@@ -404,6 +426,7 @@ export function Layout({
             label: tFallback(t, 'nav.sectionLists', 'Lists'),
             items: [
                 { id: 'projects', labelKey: 'nav.projects', icon: Folder, tone: 'primary' },
+                { id: 'next', labelKey: 'nav.next', fallbackLabel: 'Next Actions', icon: TASK_STATUS_ICONS.next },
                 { id: 'someday', labelKey: 'nav.someday', icon: TASK_STATUS_ICONS.someday },
                 { id: 'waiting', labelKey: 'nav.waiting', icon: TASK_STATUS_ICONS.waiting },
             ],
@@ -619,16 +642,12 @@ export function Layout({
         window.dispatchEvent(new CustomEvent('stride:open-search'));
     };
 
-    const triggerInboxCapture = () => {
-        window.dispatchEvent(new CustomEvent('stride:quick-add', {
-            detail: { initialProps: { status: 'inbox' } },
-        }));
-    };
-    const addTaskLabel = tFallback(t, 'nav.addTask', 'Add Task');
-    const captureShortcutLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent) ? '⌘⇧K' : 'Ctrl+Shift+K';
+    // Capture is inline: the Inbox composer when it is on screen, otherwise the compact capture bar.
+    const triggerInboxCapture = () => { openCapture({ fromTrigger: true }); };
+    const addTaskLabel = tFallback(t, 'quickCapture.button', 'Capture');
+    const captureShortcutLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent) ? '⌘K' : 'Ctrl+K';
     const captureLabel = `${tFallback(t, 'quickCapture.button', 'Capture')} (${captureShortcutLabel})`;
-    const inboxLabel = tFallback(t, 'nav.inbox', 'Inbox');
-    const inboxCaptureLabel = `${addTaskLabel} (${inboxLabel})`;
+    const inboxCaptureLabel = captureLabel;
     const searchTitleLabel = tFallback(t, 'search.title', 'Search');
     const searchPlaceholder = tFallback(t, 'search.placeholder', 'Search tasks, projects, or tags...');
 
@@ -843,14 +862,29 @@ export function Layout({
             {             }
             {!isFocusMode && (
                 <aside
+                    ref={sidebarRef}
+                    data-sidebar
                     className={cn(
-                        "relative isolate flex flex-col overflow-hidden",
+                        "motion-sidebar relative isolate flex shrink-0 flex-col overflow-hidden",
                         isCollapsed
-                            ? "w-16 shrink-0 px-2 pb-2 pt-[calc(var(--titlebar-inset)+0.5rem)]"
-                            : "w-64 shrink-0 px-3 pb-3 pt-[calc(var(--titlebar-inset)+0.75rem)]"
+                            ? "px-2 pb-2 pt-[calc(var(--titlebar-inset)+0.5rem)]"
+                            : "px-3 pb-3 pt-[calc(var(--titlebar-inset)+0.75rem)]"
                     )}
-                    style={{ backgroundColor: 'hsl(var(--sidebar) / var(--sidebar-opacity, 1))' }}
+                    style={{
+                        width: isCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth,
+                        backgroundColor: 'hsl(var(--sidebar) / var(--sidebar-opacity, 1))',
+                    }}
                 >
+                {!isCollapsed && (
+                    <SidebarResizeHandle
+                        targetRef={sidebarRef}
+                        width={sidebarWidth}
+                        windowWidth={windowWidth}
+                        label={tFallback(t, 'nav.resizeSidebar', 'Resize sidebar')}
+                        onCommit={(width) => useSidebarWidthStore.getState().setWidth(width)}
+                        onReset={() => useSidebarWidthStore.getState().reset()}
+                    />
+                )}
                 <div
                     aria-hidden="true"
                     className="pointer-events-none absolute -bottom-20 -left-20 -z-10 h-72 w-72 rounded-full"
@@ -886,7 +920,7 @@ export function Layout({
 
                 <button
                     type="button"
-                    onClick={openQuickCapture}
+                    onClick={triggerInboxCapture}
                     className={cn(
                         "focus-ring mb-5 flex w-full items-center gap-2.5 rounded-control border border-border bg-card text-sm font-medium text-foreground shadow-soft-sm transition-[background-color,box-shadow] duration-200 ease-out hover:bg-accent active:shadow-soft-inset motion-reduce:transition-none",
                         isCollapsed ? "h-10 justify-center px-2" : "h-11 px-2.5"
@@ -903,9 +937,13 @@ export function Layout({
                     )}
                 </button>
 
-                <div ref={sidebarSplitRef} data-sidebar-split className={cn("flex-1 min-h-0", hasViewSidebar && "grid")}
-                    style={hasViewSidebar ? { gridTemplateRows: `minmax(12rem, ${sidebarNavigationHeight}fr) 12px minmax(18rem, ${100 - sidebarNavigationHeight}fr)` } : undefined}>
-                <div id="sidebar-navigation-panel" className={cn("min-h-0 overflow-y-auto pr-1", !hasViewSidebar && "h-full")}>
+                <div ref={sidebarSplitRef} data-sidebar-split className={cn("flex-1 min-h-0 min-w-0", hasViewSidebar && "grid grid-cols-[minmax(0,1fr)]")}
+                    style={hasViewSidebar ? {
+                        gridTemplateRows: areaSwitcherOpen
+                            ? `minmax(0, ${sidebarNavigationHeight}fr) 12px minmax(0, ${100 - sidebarNavigationHeight}fr)`
+                            : `minmax(12rem, ${sidebarNavigationHeight}fr) 12px minmax(18rem, ${100 - sidebarNavigationHeight}fr)`,
+                    } : undefined}>
+                <div id="sidebar-navigation-panel" className={cn("min-h-0 min-w-0 overflow-y-auto overflow-x-hidden pr-1", !hasViewSidebar && "h-full")}>
                     {savedSearches.length > 0 && (
                         <div className={cn("mb-2 space-y-1", isCollapsed && "mb-2")}>
                             {!isCollapsed && (
@@ -925,9 +963,10 @@ export function Layout({
                                         isCollapsed && "justify-center px-2"
                                     )}
                                     title={search.name}
+                                    data-sidebar-saved-search
                                 >
-                                    <Search className="w-4 h-4" />
-                                    {!isCollapsed && <span className="truncate">{search.name}</span>}
+                                    <Search className="w-4 h-4 shrink-0" aria-hidden="true" />
+                                    {!isCollapsed && <span className="min-w-0 flex-1 truncate text-left">{search.name}</span>}
                                 </button>
                             ))}
                         </div>
@@ -956,11 +995,11 @@ export function Layout({
                                     >
                                         <ChevronDown
                                             className={cn(
-                                                "motion-chevron w-3 h-3 opacity-70",
+                                                "motion-chevron w-3 h-3 shrink-0 opacity-70",
                                                 isSectionCollapsed && "-rotate-90"
                                             )}
                                         />
-                                        <span>{section.label}</span>
+                                        <span className="min-w-0 truncate">{section.label}</span>
                                     </button>
                                 )}
                                 <Collapse open={!isSectionCollapsed} id={sectionId} innerClassName="space-y-1">
@@ -984,7 +1023,7 @@ export function Layout({
                                         data-view={item.id}
                                         data-active-views={item.activeIds?.join(' ')}
                                         className={cn(
-                                            "focus-ring-inset w-full flex items-center rounded-control text-sm transition-colors",
+                                            "focus-ring-inset w-full min-w-0 flex items-center rounded-control text-sm transition-colors",
                                             itemWeightClass,
                                             isActiveItem ? "bg-accent-soft text-foreground" : inactiveItemClass,
                                             isCollapsed ? "h-10 justify-center px-2" : "h-9 justify-between px-2.5",
@@ -1002,7 +1041,7 @@ export function Layout({
                                             {!isCollapsed && <span className="truncate">{itemLabel}</span>}
                                         </div>
                                         {!isCollapsed && item.count !== undefined && item.count > 0 && (
-                                            <span className="text-[13px] font-normal tabular-nums text-muted-foreground">
+                                            <span className="ml-2 shrink-0 text-[13px] font-normal tabular-nums text-muted-foreground">
                                                 {item.count}
                                             </span>
                                         )}
@@ -1044,11 +1083,11 @@ export function Layout({
                             }}>
                             <span aria-hidden="true" className="h-1 w-10 rounded-full bg-border transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary/60" />
                         </div>
-                        <div ref={setViewSidebarSlot} id="view-sidebar-panel" data-view-sidebar-slot className="min-h-0 overflow-y-auto pr-1 pt-2" />
+                        <div ref={setViewSidebarSlot} id="view-sidebar-panel" data-view-sidebar-slot className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden pr-1 pt-2" />
                     </>}
                 </div>
 
-                <div className="mt-auto px-2 py-1.5" data-sidebar-footer>
+                <div className="mt-auto min-w-0 px-2 py-1.5" data-sidebar-footer>
                     <div className={cn("pb-1.5", isCollapsed && "flex flex-col items-center")}>
                         <SidebarWorkspaceSwitcher collapsed={isCollapsed} />
                         <SidebarAreaFilter
@@ -1060,6 +1099,13 @@ export function Layout({
                             noAreaLabel={t('projects.noArea')}
                             excludedLabel={tFallback(t, 'filters.excluded', 'Excluded')}
                             collapsed={isCollapsed}
+                            counts={openTaskCountsByArea}
+                            onOpenChange={setAreaSwitcherOpen}
+                            manageAreasLabel={tFallback(t, 'projects.manageAreas', 'Manage areas')}
+                            onManageAreas={() => {
+                                onViewChange('projects');
+                                requestAreaManager();
+                            }}
                         />
                     </div>
                     <div className={cn(!isCollapsed && "pt-1.5")}>

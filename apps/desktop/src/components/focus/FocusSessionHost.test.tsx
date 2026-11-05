@@ -281,6 +281,8 @@ describe('FocusSessionHost', () => {
         expect(screen.queryByRole('button', { name: 'Minimise' })).toBeNull();
         fireEvent.click(within(checkIn).getByRole('button', { name: 'Almost' }));
         expect(within(checkIn).getByRole('heading', { name: 'How much is left?' })).toBeInTheDocument();
+        // Planning the rest (estimate / schedule) is the secondary path.
+        fireEvent.click(screen.getByTestId('focus-checkin-plan'));
         fireEvent.click(within(checkIn).getByRole('button', { name: '~25 min' }));
         expect(within(checkIn).getByRole('heading', { name: 'About 25 min to go' })).toBeInTheDocument();
         // Nothing changes until the user confirms.
@@ -294,6 +296,74 @@ describe('FocusSessionHost', () => {
         fireEvent.click(within(checkIn).getByRole('button', { name: 'Start another session' }));
         expect(running()).toBe(true);
         expect(screen.queryByTestId('focus-checkin')).toBeNull();
+    });
+
+    it('Almost → "~10 min" extends the same session on the same task and returns to the running stage', () => {
+        renderHost();
+        act(() => setSnapshot({}));
+        act(() => setSnapshot({
+            lastEvent: 'focus-finished',
+            running: false,
+            timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS, 'break'), isRunning: false },
+        }));
+        fireEvent.click(within(screen.getByTestId('focus-checkin')).getByRole('button', { name: 'Almost' }));
+        fireEvent.click(screen.getByTestId('focus-checkin-keep-10'));
+        const snapshot = usePomodoroStore.getState().snapshot;
+        expect(snapshot.selectedTaskId).toBe('t1');
+        expect(snapshot.lastEvent).toBeNull();
+        expect(snapshot.timerState).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 600, phaseTotalSeconds: 600 });
+        expect(screen.queryByTestId('focus-checkin')).toBeNull();
+        expect(screen.getByRole('timer')).toHaveAccessibleName('10:00 remaining');
+        // Nothing was estimated or scheduled on the way.
+        expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBeUndefined();
+    });
+
+    it('Almost → "Another session" starts a fresh focus phase on the same task', () => {
+        renderHost();
+        act(() => setSnapshot({}));
+        act(() => setSnapshot({ lastEvent: 'focus-finished', running: false, timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS, 'break'), isRunning: false } }));
+        fireEvent.click(within(screen.getByTestId('focus-checkin')).getByRole('button', { name: 'Almost' }));
+        fireEvent.click(screen.getByTestId('focus-checkin-keep-session'));
+        expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 1500 });
+        expect(usePomodoroStore.getState().snapshot.selectedTaskId).toBe('t1');
+    });
+
+    it('overtime: the stage counts up in a calmer tone; Pause ends it with the check-in', () => {
+        renderHost();
+        act(() => setSnapshot({ timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS), isRunning: true, remainingSeconds: 0, overtimeSeconds: 75, keepGoing: true } }));
+        const clock = screen.getByRole('timer');
+        expect(clock).toHaveAccessibleName('1:15 over time');
+        expect(clock).toHaveAttribute('data-overtime', 'true');
+        expect(stage()).toHaveAttribute('data-overtime', 'true');
+        expect(screen.getByTestId('focus-sub')).toHaveTextContent('Over time');
+        fireEvent.click(within(stage()).getByRole('button', { name: 'Pause and check in' }));
+        const snapshot = usePomodoroStore.getState().snapshot;
+        expect(snapshot.lastEvent).toBe('focus-finished');
+        expect(snapshot.timerState.lastFocusSeconds).toBe(1500 + 75);
+        expect(screen.getByTestId('focus-checkin')).toBeInTheDocument();
+        expect(screen.getByTestId('focus-checkin-stats')).toHaveTextContent('26 min focused');
+    });
+
+    it('overtime: the minimised card and pill show the count-up too', () => {
+        renderHost();
+        act(() => setSnapshot({ timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS), isRunning: true, remainingSeconds: 0, overtimeSeconds: 125, keepGoing: true } }));
+        fireEvent.click(screen.getByRole('button', { name: 'Minimise' }));
+        const mini = screen.getByTestId('focus-mini');
+        expect(mini).toHaveAttribute('data-overtime', 'true');
+        expect(within(mini).getByRole('timer')).toHaveTextContent('+2:05');
+        expect(mini).toHaveTextContent('Over time');
+    });
+
+    it('a task ticked done during overtime opens the check-in on "Done"', () => {
+        renderHost();
+        act(() => setSnapshot({ timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS), isRunning: true, remainingSeconds: 0, overtimeSeconds: 30, keepGoing: true } }));
+        act(() => {
+            const done = { ...useTaskStore.getState()._allTasks[0]!, status: 'done' as const };
+            useTaskStore.setState({ tasks: [done], _allTasks: [done] } as never);
+            usePomodoroStore.getState().commitPomodoro((prev) => prev);
+        });
+        expect(usePomodoroStore.getState().snapshot.lastEvent).toBe('focus-finished');
+        expect(screen.getByTestId('focus-checkin')).toHaveAttribute('data-stage', 'done');
     });
 
     it('Not yet > Waiting on someone moves the task to Waiting For (confirmed, undoable)', async () => {
@@ -381,8 +451,11 @@ describe('FocusSessionHost', () => {
         expect(screen.queryByRole('button', { name: 'Suggest steps' })).toBeNull();
         const coach = screen.getByTestId('focus-coach');
         expect(coach).toHaveAttribute('data-source', 'fallback');
-        expect(coach).toHaveTextContent('How long do you think this needs?');
-        expect(within(coach).getAllByRole('button').map((b) => b.textContent)).toEqual(expect.arrayContaining(['15 min', '25 min', '45 min']));
+        // One short line: no question about time, no chips, no reply box.
+        expect(coach).not.toHaveTextContent(/how long/i);
+        expect(within(coach).queryAllByRole('button')).toHaveLength(0);
+        expect(within(coach).queryByRole('textbox')).toBeNull();
+        expect(screen.getByTestId('focus-coach-lead').textContent?.length).toBeGreaterThan(0);
         fireEvent.click(screen.getByRole('button', { name: 'Add a step' }));
         const input = screen.getByRole('textbox', { name: 'Add a step' });
         fireEvent.change(input, { target: { value: 'Call the repair service' } });

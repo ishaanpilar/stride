@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { formatPomodoroClock, type ChecklistItem, type FocusCoachAction, type FocusCoachReply, type PomodoroPhase, type Project, type Task } from '@stride/core';
+import { formatPomodoroClock, formatPomodoroOvertime, type ChecklistItem, type FocusCoachAction, type FocusCoachReply, type PomodoroPhase, type Project, type Task } from '@stride/core';
 import { ArrowRight, Maximize, Minimize, Minimize2, Pause, Play, Square, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { canAnimate } from '../../lib/motion';
@@ -26,6 +26,8 @@ export interface FocusStageProps {
     project?: Project;
     remainingSeconds: number;
     totalSeconds: number;
+    /** Present while counting up past 0:00 ("Keep going"). */
+    overtimeSeconds?: number;
     isRunning: boolean;
     /** The session still has a live phase (so it can be minimised or hidden instead of closed). */
     active: boolean;
@@ -62,6 +64,8 @@ export interface FocusStageProps {
     onAskCoach: (text: string) => Promise<FocusCoachReply>;
     onCheckInBreak: (afterDone: boolean) => void;
     onCloseSession: () => void;
+    /** Check-in "Almost": keep working on this task for that many more minutes. */
+    onExtend: (minutes: number) => void;
     onTakeBreak: () => void;
     onKeepGoing: () => void;
     pickerTasks: Task[];
@@ -87,10 +91,13 @@ export function FocusStage(props: FocusStageProps) {
     const [intro, setIntro] = useState(true);
     const done = steps.filter((s) => s.isCompleted).length;
     const total = steps.length;
-    const progress = props.totalSeconds > 0 ? Math.min(1, Math.max(0, 1 - props.remainingSeconds / props.totalSeconds)) : 0;
+    const inOvertime = props.overtimeSeconds !== undefined && view === 'focus';
+    const progress = inOvertime
+        ? Math.min(1, (props.overtimeSeconds ?? 0) / Math.max(1, props.totalSeconds))
+        : props.totalSeconds > 0 ? Math.min(1, Math.max(0, 1 - props.remainingSeconds / props.totalSeconds)) : 0;
     const isBreak = view === 'break';
     const paused = !isRunning && (view === 'focus' || view === 'break');
-    const clock = formatPomodoroClock(props.remainingSeconds);
+    const clock = inOvertime ? formatPomodoroOvertime(props.overtimeSeconds ?? 0) : formatPomodoroClock(props.remainingSeconds);
 
     // Enter: light up, and grow the card out of where the session came from.
     useLayoutEffect(() => {
@@ -197,7 +204,9 @@ export function FocusStage(props: FocusStageProps) {
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
 
-    const runLabel = isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start');
+    const runLabel = inOvertime && isRunning
+        ? tr('focus.pauseCheckIn', 'Pause and check in')
+        : isRunning ? tr('common.pause', 'Pause') : tr('common.start', 'Start');
     const runButton = (
         <button
             type="button"
@@ -213,6 +222,7 @@ export function FocusStage(props: FocusStageProps) {
 
     let sub = '';
     if (view === 'ready') sub = tr('focus.readyBody', 'Ready for another round when you are.');
+    else if (inOvertime) sub = tr('focus.overtimeSub', 'Over time. Keep going, or pause to check in.');
     else if (paused) sub = tr('pomodoro.paused', 'Paused');
     else if (isBreak) sub = tr('pomodoro.phaseBreakShort', 'Break');
     else if (intro) sub = tr('focus.oneThing', 'One thing at a time.');
@@ -279,6 +289,7 @@ export function FocusStage(props: FocusStageProps) {
             data-paused={paused ? 'true' : undefined}
             data-idle={idle ? 'true' : undefined}
             data-view={view}
+            data-overtime={inOvertime ? 'true' : undefined}
             aria-hidden={exiting ? true : undefined}
             inert={exiting ? true : undefined}
             className="fx-stage fixed inset-0 focus:outline-none"
@@ -315,7 +326,14 @@ export function FocusStage(props: FocusStageProps) {
                 <div ref={columnRef} className="fx-column">
                     {view !== 'finish' && (
                         <div className="fx-top-area">
-                            <FocusClock value={clock} intro={props.enter === 'origin' || props.enter === 'none'} label={tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)} />
+                            <FocusClock
+                                value={clock}
+                                overtime={inOvertime}
+                                intro={props.enter === 'origin' || props.enter === 'none'}
+                                label={inOvertime
+                                    ? tr('focus.overtimeLabel', '{{time}} over time').replace('{{time}}', clock.slice(1))
+                                    : tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)}
+                            />
                             <p className="fx-sub" data-show={sub ? 'true' : 'false'} data-testid="focus-sub">{sub}</p>
                         </div>
                     )}
@@ -334,6 +352,7 @@ export function FocusStage(props: FocusStageProps) {
                             onStartAnother={props.onKeepGoing}
                             onTakeBreak={props.onCheckInBreak}
                             onClose={props.onCloseSession}
+                            onExtend={props.onExtend}
                         />
                     ) : view === 'finish' ? (
                         <FocusFinish

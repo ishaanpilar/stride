@@ -216,7 +216,7 @@ const fetchForUpdates = async (
 };
 
 
-function detectPlatform(): string {
+export function detectPlatform(): string {
   const userAgent = navigator.userAgent.toLowerCase();
   if (userAgent.includes("win")) return "windows";
   if (userAgent.includes("mac")) return "macos";

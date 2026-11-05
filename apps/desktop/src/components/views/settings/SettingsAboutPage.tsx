@@ -3,6 +3,7 @@ import { getDocsGuideUrl } from '@stride/core';
 import { useDocumentationLanguage } from '../../../contexts/language-context';
 
 import { cn } from '../../../lib/utils';
+import { AutoUpdateSettings } from '../../updater/AutoUpdateSettings';
 
 type Labels = {
     version: string;
@@ -68,6 +69,7 @@ export type SettingsAboutPageProps = {
     appVersion: string;
 
     updatesSupported?: boolean;
+    inAppUpdates?: boolean;
     installChannel?: string | null;
     onOpenLink: (url: string) => void;
     onCheckUpdates: () => void;
@@ -81,6 +83,7 @@ export function SettingsAboutPage({
     t,
     appVersion,
     updatesSupported = true,
+    inAppUpdates = false,
     installChannel,
     onOpenLink,
     onCheckUpdates,
@@ -127,6 +130,7 @@ export function SettingsAboutPage({
                     </button>
                 </div>
                 </>)}
+                {updatesSupported && inAppUpdates && <AutoUpdateSettings onOpenLink={onOpenLink} />}
                 {updateError && (
                     <div className="text-danger-text text-sm">{t.checkFailed}</div>
                 )}

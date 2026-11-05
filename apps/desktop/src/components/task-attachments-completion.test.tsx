@@ -141,7 +141,7 @@ describe('task attachments survive completion (#836)', () => {
 
 
         await act(async () => {
-            fireEvent.click(getAllByRole('button', { name: 'Done' })[0]);
+            fireEvent.click(getAllByRole('checkbox', { name: 'Mark as done' })[0]);
         });
 
         await waitFor(() => {
@@ -214,7 +214,7 @@ describe('task attachments survive completion (#836)', () => {
         fireEvent.change(view.getByDisplayValue('Repro Task'), {
             target: { value: 'Edited after Keep' },
         });
-        await act(async () => fireEvent.click(view.getByRole('button', { name: 'Save' })));
+        await act(async () => fireEvent.click(view.getByRole('button', { name: 'Done editing' })));
         await waitFor(() => expect(updateTask).toHaveBeenCalledTimes(2));
 
         const retryPatch = updateTask.mock.calls[1]?.[1] as Partial<Task>;

@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, MoreHorizontal } from 'lucide-react';
-import { hasTimeComponent, safeFormatDate, type DropPlacement, type Project, type Task } from '@stride/core';
+import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, MoreHorizontal, Play, Plus } from 'lucide-react';
+import { hasTimeComponent, safeFormatDate, type Area, type DropPlacement, type Project, type Task } from '@stride/core';
 import { cn } from '../../lib/utils';
+import { Pill } from '../ui/Pill';
+import { FocusStarIcon } from '../FocusStarIcon';
 import { REORDER_IGNORE_ATTR } from './usePanelReorder';
+import { isActivePhase, useCompletionPhase } from '../../lib/completion-sequence';
+import { useCompletionRowMotion } from '../../lib/completion-motion';
 
 export type PanelMoveAction = 'top' | 'up' | 'down';
 
-/** Present only for rows that can be moved (open rows of Today's focused tasks, Inbox and Next). */
+/** Present only for rows that can be moved (open rows of the Now tab, within their run). */
 export interface PanelRowReorder {
     groupKey: string;
     siblingIds: readonly string[];
@@ -25,18 +29,40 @@ export interface PanelRowReorderLabels {
 
 export type PanelRowTone = 'overdue' | 'today' | 'default';
 
+export interface PanelRowLabels {
+    complete: string;
+    markNotDone: string;
+    today: string;
+    overdue: string;
+    focus: string;
+    /** ▶: start a focus timer on this task. */
+    start: string;
+    /** ＋ (All tasks): add to Now, i.e. today's focus. */
+    addToNow: string;
+}
+
 interface PanelTaskRowProps {
     task: Task;
     project?: Project;
+    /** Shown when the task has no project. */
+    area?: Pick<Area, 'id' | 'name' | 'color'>;
     tone: PanelRowTone;
-    completing: boolean;
-    completeLabel: string;
-    todayLabel: string;
+    /** In today's focus (★). */
+    focused?: boolean;
+    /** The task is done (ticked this session and kept in the list, struck through). */
+    done: boolean;
+    labels: PanelRowLabels;
     /** Translated priority name; shown only for high and urgent tasks (as text, never colour alone). */
     priorityLabel?: string;
+    /** Date format for the date pill on non-today rows (All tasks). */
+    dateFormat?: string;
     onComplete: (task: Task) => void;
     onOpen: (task: Task) => void;
     onRowKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>, task: Task) => void;
+    /** ▶ Start (absent when the Pomodoro feature is off). */
+    onStart?: (task: Task) => void;
+    /** ＋ Add to Now (All tasks only). */
+    onAddToNow?: (task: Task) => void;
     reorder?: PanelRowReorder | null;
     reorderLabels?: PanelRowReorderLabels;
     /** This row is the one being dragged (dimmed to 40%). */
@@ -49,14 +75,17 @@ interface PanelTaskRowProps {
     onMove?: (task: Task, action: PanelMoveAction) => void;
 }
 
-export function metaLabel(task: Task, tone: PanelRowTone, todayLabel: string): string {
+export function metaLabel(task: Task, tone: PanelRowTone, todayLabel: string, dateFormat = 'MMM d'): string {
     const value = task.dueDate ?? task.startTime;
     if (!value) return '';
     const timed = hasTimeComponent(value);
-    if (tone === 'today') return timed ? safeFormatDate(value, 'p') : todayLabel;
+    if (tone === 'today') return timed ? `${todayLabel} ${safeFormatDate(value, 'p')}` : todayLabel;
     if (tone === 'overdue') return safeFormatDate(value, timed ? 'MMM d, p' : 'MMM d');
-    return safeFormatDate(value, timed ? 'p' : 'MMM d');
+    return safeFormatDate(value, dateFormat);
 }
+
+/** Compact 22px pill for the panel's dense rows (the 26px Pill, tightened). */
+const pillClass = 'h-[22px] gap-1 px-2 text-xs';
 
 function RowMenu({
     task, reorder, labels, anchor, onClose, onMove,
@@ -133,12 +162,17 @@ function RowMenu({
 }
 
 export function PanelTaskRow({
-    task, project, tone, completing, completeLabel, todayLabel, priorityLabel, onComplete, onOpen, onRowKeyDown,
-    reorder, reorderLabels, dragging, dropPlacement, onReorderPointerDown, consumeSuppressedClick, onMove,
+    task, project, area, tone, focused = false, done, labels, priorityLabel, dateFormat, onComplete, onOpen, onRowKeyDown,
+    onStart, onAddToNow, reorder, reorderLabels, dragging, dropPlacement, onReorderPointerDown, consumeSuppressedClick, onMove,
 }: PanelTaskRowProps) {
     const canReorder = Boolean(reorder && reorderLabels && onMove) && task.status !== 'done';
     const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
     const rowRef = useRef<HTMLLIElement>(null);
+    // Same completion sequence as the main window's rows, compact (lib/completion-sequence.ts).
+    const phase = useCompletionPhase(task.id);
+    const completingNow = isActivePhase(phase);
+    const completing = done || completingNow;
+    useCompletionRowMotion(rowRef, phase);
     const moreRef = useRef<HTMLButtonElement>(null);
     const closeMenu = (restoreFocus: boolean) => {
         setMenu(null);
@@ -160,9 +194,15 @@ export function PanelTaskRow({
         const more = moreRef.current?.getBoundingClientRect();
         if (rect && more) setMenu({ x: Math.max(4, more.right - rect.left - 148), y: more.bottom - rect.top + 2 });
     };
-    const meta = metaLabel(task, tone, todayLabel);
+    const meta = metaLabel(task, tone, labels.today, dateFormat);
     const projectColor = project ? (project.colorOverride || project.color) : undefined;
+    const place = project ? { name: project.title, color: projectColor } : area ? { name: area.name, color: area.color } : null;
     const showPriority = Boolean(priorityLabel) && (task.priority === 'high' || task.priority === 'urgent');
+    // A task with no date, project or area still says something useful: its first context.
+    const context = !meta && !place ? task.contexts?.[0] : undefined;
+    const hasMeta = Boolean(meta || place || showPriority || focused || context);
+    const open = !completing;
+    const actionClass = 'motion-press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control transition-[color,background-color,scale] duration-200 ease-out motion-reduce:transition-none focus-ring';
     return (
         <li
             ref={rowRef}
@@ -171,16 +211,20 @@ export function PanelTaskRow({
             data-reorder-id={canReorder ? task.id : undefined}
             data-reorder-group={canReorder ? reorder?.groupKey : undefined}
             data-dragging={dragging ? 'true' : undefined}
+            data-completion={phase}
+            data-completing={completingNow ? '' : undefined}
+            data-done={completing ? '' : undefined}
             onPointerDown={canReorder && reorder && onReorderPointerDown ? (event) => onReorderPointerDown(event, task, reorder) : undefined}
             onClickCapture={(event) => {
                 if (consumeSuppressedClick?.()) { event.preventDefault(); event.stopPropagation(); }
             }}
             onContextMenu={onContextMenu}
             className={cn(
-                'group relative mb-1 flex select-none items-start gap-2.5 rounded-card px-3 py-2.5 transition-[background-color,opacity] duration-200 hover:bg-foreground/[0.06] focus-within:bg-foreground/[0.06] motion-reduce:transition-none',
+                'menubar-row group relative flex select-none items-center gap-2.5 rounded-card bg-card py-2.5 pl-3 pr-2 shadow-soft-sm',
+                'transition-[background-color,opacity,box-shadow] duration-200 hover:bg-accent focus-within:bg-accent motion-reduce:transition-none',
                 'motion-safe:animate-[menubar-row-in_160ms_ease-out]',
                 canReorder && 'cursor-grab',
-                completing && 'opacity-60',
+                completing && !completingNow && 'opacity-70 shadow-none',
                 dragging && 'opacity-40',
             )}
         >
@@ -191,7 +235,7 @@ export function PanelTaskRow({
                     data-placement={dropPlacement}
                     className={cn(
                         'pointer-events-none absolute inset-x-3 z-20 h-0.5 rounded-full bg-accent-fill',
-                        dropPlacement === 'before' ? '-top-[3px]' : '-bottom-[3px]',
+                        dropPlacement === 'before' ? '-top-[4px]' : '-bottom-[4px]',
                     )}
                 >
                     <span className="absolute -left-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-accent-fill" />
@@ -209,24 +253,24 @@ export function PanelTaskRow({
             <button
                 type="button"
                 {...{ [REORDER_IGNORE_ATTR]: '' }}
-                aria-label={`${completeLabel}: ${task.title}`}
+                aria-label={`${completing ? labels.markNotDone : labels.complete}: ${task.title}`}
                 onClick={() => onComplete(task)}
                 className={cn(
-                    'mt-px flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-[1.5px] transition-all duration-150 active:scale-90 motion-reduce:transition-none motion-reduce:active:scale-100',
+                    'completion-check flex h-[18px] w-[18px] shrink-0 items-center justify-center self-start rounded-full border-[1.5px] transition-all duration-150 active:scale-90 motion-reduce:transition-none motion-reduce:active:scale-100',
+                    hasMeta ? 'mt-[2px]' : 'mt-px',
                     'focus-ring',
                     completing
-                        ? 'border-primary bg-primary text-on-accent'
+                        ? 'border-success-fill bg-success-fill text-success-foreground'
                         : tone === 'overdue'
                             ? 'border-danger hover:bg-destructive/10'
-                            : 'border-muted-foreground/50 hover:border-primary hover:bg-accent-soft',
+                            : 'border-tertiary hover:border-primary hover:bg-accent-soft',
                 )}
             >
-                <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <svg viewBox="0 0 12 12" className="completion-check-mark h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path
                         d="M2.5 6.2 5 8.6 9.6 3.6"
-                        strokeDasharray="18"
-                        strokeDashoffset={completing ? 0 : 18}
-                        className={cn(completing && 'motion-safe:animate-[menubar-check-draw_220ms_ease-out]')}
+                        strokeDasharray="24"
+                        strokeDashoffset={completing ? 0 : 24}
                         style={{ opacity: completing ? 1 : 0 }}
                     />
                 </svg>
@@ -242,69 +286,88 @@ export function PanelTaskRow({
             >
                 <span
                     className={cn(
-                        'line-clamp-2 text-sm font-semibold leading-snug text-foreground transition-colors',
-                        completing && 'text-muted-foreground line-through',
+                        'block truncate text-sm font-semibold leading-5 text-foreground transition-colors duration-300 motion-reduce:transition-none',
+                        completing && 'text-muted-foreground',
                     )}
+                    title={task.title}
                 >
-                    {task.title}
+                    {completing ? <span className="completion-strike" data-task-title-struck>{task.title}</span> : task.title}
                 </span>
-                {(meta || project || showPriority) && (
-                    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs leading-none">
+                {hasMeta && (
+                    <span className="mt-1 flex flex-wrap items-center gap-1.5 leading-none" data-testid="menubar-row-meta">
                         {meta && (
-                            <span
-                                className={cn(
-                                    'rounded-pill px-2 py-[4px] font-medium tabular-nums',
-                                    tone === 'overdue' && 'bg-destructive/10 text-danger-text',
-                                    tone === 'today' && 'bg-accent-soft text-accent-text',
-                                    tone === 'default' && 'bg-well text-muted-foreground',
-                                )}
+                            <Pill
+                                tone={tone === 'overdue' ? 'danger' : tone === 'today' ? 'today' : 'neutral'}
+                                className={cn(pillClass, 'tabular-nums')}
+                                data-testid="menubar-row-date"
                             >
-                                {meta}
-                            </span>
+                                {tone === 'overdue' ? `${labels.overdue} · ${meta}` : meta}
+                            </Pill>
                         )}
+                        {focused && (
+                            <Pill tone="neutral" className={cn(pillClass, 'text-foreground')} icon={<FocusStarIcon filled />} data-testid="menubar-row-focus">
+                                {labels.focus}
+                            </Pill>
+                        )}
+                        {place && (
+                            <Pill tone="neutral" dot={place.color || true} className={cn(pillClass, 'max-w-[150px]')}>
+                                <span className="truncate">{place.name}</span>
+                            </Pill>
+                        )}
+                        {context && <Pill tone="neutral" className={pillClass}>{context}</Pill>}
                         {showPriority && (
-                            <span
-                                data-testid="menubar-row-priority"
-                                className="rounded-pill bg-destructive/10 px-2 py-[4px] font-medium text-danger-text"
-                            >
+                            <Pill tone="danger" className={cn(pillClass, 'font-semibold')} data-testid="menubar-row-priority">
                                 {priorityLabel}
-                            </span>
-                        )}
-                        {project && (
-                            <span className="inline-flex max-w-[170px] items-center gap-1 text-muted-foreground">
-                                <span
-                                    aria-hidden
-                                    className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/60"
-                                    style={projectColor ? { backgroundColor: projectColor } : undefined}
-                                />
-                                <span className="truncate">{project.title}</span>
-                            </span>
+                            </Pill>
                         )}
                     </span>
                 )}
             </button>
-            {canReorder && reorder && reorderLabels && onMove && (
-                <>
+            <div className="flex shrink-0 items-center gap-1 self-start" {...{ [REORDER_IGNORE_ATTR]: '' }}>
+                {canReorder && reorder && reorderLabels && onMove && (
                     <button
                         ref={moreRef}
                         type="button"
-                        {...{ [REORDER_IGNORE_ATTR]: '' }}
                         aria-label={`${reorderLabels.moreActions}: ${task.title}`}
                         aria-haspopup="menu"
                         aria-expanded={menu !== null}
                         onClick={onMoreClick}
                         className={cn(
-                            'absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-control bg-card text-muted-foreground shadow-soft-sm transition-opacity duration-150 motion-reduce:transition-none',
-                            'opacity-0 hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus-ring',
-                            menu && 'opacity-100',
+                            actionClass,
+                            'hidden text-muted-foreground hover:bg-well hover:text-foreground group-hover:inline-flex group-focus-within:inline-flex',
+                            menu && 'inline-flex',
                         )}
                     >
                         <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
                     </button>
-                    {menu && (
-                        <RowMenu task={task} reorder={reorder} labels={reorderLabels} anchor={menu} onClose={closeMenu} onMove={onMove} />
-                    )}
-                </>
+                )}
+                {open && onAddToNow && (
+                    <button
+                        type="button"
+                        onClick={() => onAddToNow(task)}
+                        aria-label={`${labels.addToNow}: ${task.title}`}
+                        title={labels.addToNow}
+                        data-testid="menubar-row-add-now"
+                        className={cn(actionClass, 'bg-well text-muted-foreground hover:bg-accent-soft hover:text-accent-text')}
+                    >
+                        <Plus className="h-4 w-4" aria-hidden />
+                    </button>
+                )}
+                {open && onStart && (
+                    <button
+                        type="button"
+                        onClick={() => onStart(task)}
+                        aria-label={`${labels.start}: ${task.title}`}
+                        title={labels.start}
+                        data-testid="menubar-row-start"
+                        className={cn(actionClass, 'bg-accent-soft text-accent-text hover:bg-primary hover:text-primary-foreground')}
+                    >
+                        <Play className="h-3.5 w-3.5 fill-current" aria-hidden />
+                    </button>
+                )}
+            </div>
+            {canReorder && reorder && reorderLabels && onMove && menu && (
+                <RowMenu task={task} reorder={reorder} labels={reorderLabels} anchor={menu} onClose={closeMenu} onMove={onMove} />
             )}
         </li>
     );

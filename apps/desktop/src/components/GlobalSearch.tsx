@@ -147,7 +147,8 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+            // Cmd/Ctrl+F searches; Cmd/Ctrl+K is Capture (see useCaptureShortcut).
+            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
                 e.preventDefault();
                 if (isOpenRef.current) setIsOpen(false);
                 else openSearch();

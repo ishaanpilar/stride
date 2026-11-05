@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "quick-add",
-    "menubar-panel"
+    "menubar-panel",
+    "focus-float"
   ],
   "permissions": [
     "core:default",

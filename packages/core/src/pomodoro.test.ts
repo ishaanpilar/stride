@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest';
 import {
     advancePomodoroState,
     createPomodoroCustomPreset,
+    finishPomodoroOvertime,
+    formatPomodoroOvertime,
+    getPomodoroOvertimeProgress,
+    isPomodoroInOvertime,
+    POMODORO_OVERTIME_CAP_MINUTES,
+    togglePomodoroRunning,
+    extendPomodoroPhase,
+    getPomodoroExtensionRoomSeconds,
+    getPomodoroFocusCreditMinutes,
+    getPomodoroPhaseTotalSeconds,
+    normalizePomodoroExtendMinutes,
+    POMODORO_MAX_EXTENSION_MINUTES,
+    resetPomodoroState,
+    resumePomodoroFocus,
     createPomodoroState,
     DEFAULT_POMODORO_DURATIONS,
     formatPomodoroClock,
@@ -296,5 +310,142 @@ describe('pomodoro helpers', () => {
         const rolled = recordPomodoroFocusSessions(previous, 'task-1', 1, '2026-08-18');
         expect(rolled.completedTodayFocusSessions).toBe(1);
         expect(rolled.totalCompletedFocusSessions).toBe(3);
+    });
+});
+
+describe('adding time to a running phase', () => {
+    const durations = { focusMinutes: 25, breakMinutes: 5 };
+
+    it('extends the remaining time and the phase total without resetting, running or paused', () => {
+        const running = { ...createPomodoroState(durations), isRunning: true, remainingSeconds: 600 };
+        const result = extendPomodoroPhase(running, durations, 5);
+        expect(result.addedSeconds).toBe(300);
+        expect(result.state).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 900, phaseTotalSeconds: 1800, extendedSeconds: 300 });
+
+        const paused = { ...running, isRunning: false };
+        const pausedResult = extendPomodoroPhase(paused, durations, 10);
+        expect(pausedResult.state).toMatchObject({ isRunning: false, remainingSeconds: 1200, phaseTotalSeconds: 2100 });
+        expect(getPomodoroPhaseTotalSeconds(pausedResult.state, durations)).toBe(2100);
+    });
+
+    it('extends a break the same way', () => {
+        const brk = { ...createPomodoroState(durations, 'break'), isRunning: true, remainingSeconds: 60 };
+        const result = extendPomodoroPhase(brk, durations, 5);
+        expect(result.state).toMatchObject({ phase: 'break', remainingSeconds: 360, phaseTotalSeconds: 600 });
+    });
+
+    it('caps the total added time per phase', () => {
+        let state = { ...createPomodoroState(durations), isRunning: true };
+        let added = 0;
+        for (let i = 0; i < 3; i += 1) {
+            const result = extendPomodoroPhase(state, durations, 50);
+            state = result.state;
+            added += result.addedSeconds;
+        }
+        expect(added).toBe(POMODORO_MAX_EXTENSION_MINUTES * 60);
+        expect(getPomodoroExtensionRoomSeconds(state)).toBe(0);
+        const blocked = extendPomodoroPhase(state, durations, 5);
+        expect(blocked.addedSeconds).toBe(0);
+        expect(blocked.state).toBe(state);
+    });
+
+    it('accepts only whole minutes from 1 to 60', () => {
+        expect(normalizePomodoroExtendMinutes(0)).toBeNull();
+        expect(normalizePomodoroExtendMinutes(61)).toBeNull();
+        expect(normalizePomodoroExtendMinutes('abc')).toBeNull();
+        expect(normalizePomodoroExtendMinutes(' 7 ')).toBe(7);
+        expect(normalizePomodoroExtendMinutes(12.4)).toBe(12);
+        const state = createPomodoroState(durations);
+        expect(extendPomodoroPhase(state, durations, 0).state).toBe(state);
+    });
+
+    it('forgets the extension when the phase changes', () => {
+        const extended = extendPomodoroPhase({ ...createPomodoroState(durations), isRunning: true, remainingSeconds: 2 }, durations, 1).state;
+        const advanced = advancePomodoroState(extended, durations, extended.remainingSeconds, {});
+        expect(advanced.lastEvent).toBe('focus-finished');
+        expect(advanced.state.phase).toBe('break');
+        expect(advanced.state.phaseTotalSeconds).toBeUndefined();
+        expect(advanced.state.extendedSeconds).toBeUndefined();
+        expect(resetPomodoroState(extended, durations).phaseTotalSeconds).toBeUndefined();
+    });
+
+    it('keeps the extension while counting down', () => {
+        const extended = extendPomodoroPhase({ ...createPomodoroState(durations), isRunning: true }, durations, 10).state;
+        const later = advancePomodoroState(extended, durations, 60, {}).state;
+        expect(later.remainingSeconds).toBe(extended.remainingSeconds - 60);
+        expect(later.phaseTotalSeconds).toBe(2100);
+    });
+
+    it('resumes focus after a finished session as a short phase of exactly that length', () => {
+        const onBreak = { ...createPomodoroState(durations, 'break', 3), isRunning: false };
+        const result = resumePomodoroFocus(onBreak, durations, 10);
+        expect(result.state).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 600, phaseTotalSeconds: 600, completedFocusSessions: 3 });
+        expect(getPomodoroFocusCreditMinutes(result.state, durations)).toBe(10);
+    });
+
+    it('resumes mid-focus by extending the current phase and running it', () => {
+        const midFocus = { ...createPomodoroState(durations), isRunning: false, remainingSeconds: 400 };
+        const result = resumePomodoroFocus(midFocus, durations, 5);
+        expect(result.state).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 700, phaseTotalSeconds: 1800 });
+        expect(getPomodoroFocusCreditMinutes(result.state, durations)).toBe(30);
+    });
+});
+
+describe('keep going (overtime)', () => {
+    const durations = { focusMinutes: 25, breakMinutes: 5 };
+    const running = (extra: Partial<PomodoroState> = {}): PomodoroState => ({ ...createPomodoroState(durations), isRunning: true, ...extra });
+
+    it('counts up from 0:00 instead of ending when the phase allows it, once', () => {
+        const result = advancePomodoroState(running({ remainingSeconds: 3, keepGoing: true }), durations, 3, {});
+        expect(result.lastEvent).toBe('focus-overtime');
+        expect(result.state).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 0, overtimeSeconds: 0, completedFocusSessions: 0 });
+        expect(isPomodoroInOvertime(result.state)).toBe(true);
+        const later = advancePomodoroState(result.state, durations, 75, {});
+        expect(later.lastEvent).toBeNull();
+        expect(later.state.overtimeSeconds).toBe(75);
+        expect(formatPomodoroOvertime(later.state.overtimeSeconds!)).toBe('+1:15');
+        expect(getPomodoroOvertimeProgress(later.state, durations)).toBeCloseTo(75 / 1500);
+    });
+
+    it('crossing 0:00 and counting up in one catch-up gives the overtime event and the right count', () => {
+        const result = advancePomodoroState(running({ remainingSeconds: 10, keepGoing: true }), durations, 70, {});
+        expect(result.lastEvent).toBe('focus-overtime');
+        expect(result.state.overtimeSeconds).toBe(60);
+    });
+
+    it('ends at 0:00 as before without keepGoing (setting off, or a timer-only session)', () => {
+        const result = advancePomodoroState(running({ remainingSeconds: 3 }), durations, 3, {});
+        expect(result.lastEvent).toBe('focus-finished');
+        expect(result.state).toMatchObject({ phase: 'break', completedFocusSessions: 1 });
+        expect(isPomodoroInOvertime(result.state)).toBe(false);
+    });
+
+    it('stops at the cap and finishes the session with its overtime', () => {
+        const start = running({ remainingSeconds: 0, keepGoing: true, overtimeSeconds: 10 });
+        const result = advancePomodoroState(start, durations, POMODORO_OVERTIME_CAP_MINUTES * 60, {});
+        expect(result.lastEvent).toBe('focus-finished');
+        expect(result.state).toMatchObject({ phase: 'break', isRunning: false, completedFocusSessions: 1 });
+        expect(result.state.lastFocusSeconds).toBe(1500 + POMODORO_OVERTIME_CAP_MINUTES * 60);
+        expect(isPomodoroInOvertime(result.state)).toBe(false);
+    });
+
+    it('pausing in overtime finishes the session; elsewhere it just pauses', () => {
+        const over = running({ remainingSeconds: 0, keepGoing: true, overtimeSeconds: 300 });
+        const toggled = togglePomodoroRunning(over, durations);
+        expect(toggled.finished).toBe(true);
+        expect(toggled.state).toMatchObject({ phase: 'break', isRunning: false, completedFocusSessions: 1, lastFocusSeconds: 1800 });
+        expect(togglePomodoroRunning(running(), durations)).toMatchObject({ finished: false, state: { isRunning: false } });
+        expect(finishPomodoroOvertime(running(), durations)).toEqual(running());
+    });
+
+    it('counts overtime toward the credited minutes', () => {
+        expect(getPomodoroFocusCreditMinutes(running({ remainingSeconds: 0, overtimeSeconds: 600 }), durations)).toBe(35);
+    });
+
+    it('adding time during overtime goes back to a countdown and keeps the time worked', () => {
+        const over = running({ remainingSeconds: 0, keepGoing: true, overtimeSeconds: 120 });
+        const result = extendPomodoroPhase(over, durations, 10);
+        expect(isPomodoroInOvertime(result.state)).toBe(false);
+        expect(result.state).toMatchObject({ remainingSeconds: 600, phaseTotalSeconds: 1500 + 120 + 600, keepGoing: true });
     });
 });

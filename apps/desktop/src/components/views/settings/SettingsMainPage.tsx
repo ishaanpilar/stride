@@ -17,6 +17,7 @@ import { HIDEABLE_SIDEBAR_VIEW_IDS, type HideableSidebarViewId } from '../../../
 import { canListInstalledFonts, loadInstalledFontFamilies } from '../../../lib/font-family';
 import { AutocompleteTextInput } from '../../ui/AutocompleteTextInput';
 import { useMotionPreference } from '../../../lib/motion';
+import { playCompletionSound, useCompletionSoundEnabled } from '../../../lib/completion-sound';
 
 const FLATPAK_QUICK_ADD_COMMAND = 'flatpak run com.ishaanpilar.stride --quick-add';
 
@@ -29,6 +30,24 @@ function AnimationsSettingRow({ translate }: { translate: TranslateFn }) {
                 checked={motionPreference === 'on'}
                 aria-label={title}
                 onCheckedChange={(checked) => setMotionPreference(checked ? 'on' : 'off')}
+            />
+        </SettingRow>
+    );
+}
+
+function CompletionSoundSettingRow({ translate }: { translate: TranslateFn }) {
+    const [enabled, setEnabled] = useCompletionSoundEnabled();
+    const title = translate('settings.completionSound');
+    return (
+        <SettingRow padded settingsKey="completionSound" title={title} description={translate('settings.completionSoundDesc')}>
+            <Switch
+                checked={enabled}
+                aria-label={title}
+                onCheckedChange={(checked) => {
+                    setEnabled(checked);
+                    // Turning it on plays it once, so you know what you chose.
+                    if (checked) playCompletionSound();
+                }}
             />
         </SettingRow>
     );
@@ -378,6 +397,11 @@ export function SettingsMainPage({
                         </div>
                     )}
                 </div>
+            </SettingsCard>
+
+            <SettingsSectionHeader>{translate('settings.sounds')}</SettingsSectionHeader>
+            <SettingsCard>
+                <CompletionSoundSettingRow translate={translate} />
             </SettingsCard>
 
             {                  }

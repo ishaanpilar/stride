@@ -158,6 +158,8 @@ function collapseKeyframes(height: number): Keyframe[] {
 
 export function playExitGhost(node: HTMLElement | null, preset: ExitGhostPreset): void {
     if (!node || !node.isConnected || !canAnimate()) return;
+    // A row that already played its own exit (a completed task collapsing) leaves without a ghost.
+    if (node.hasAttribute('data-exit-ghost-skip')) return;
     const parent = node.parentNode;
     if (!parent || !reserveGhostSlot()) return;
     const previous = node.previousSibling;

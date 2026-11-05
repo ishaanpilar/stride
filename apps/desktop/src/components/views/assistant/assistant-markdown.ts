@@ -1,6 +1,6 @@
 /**
  * Tiny, safe markdown subset for assistant replies: headings, bullets, numbered lists, paragraphs,
- * **bold**, `code` and 'quoted task names'. Output is plain data rendered as React text nodes,
+ * fenced code blocks (```lang), **bold**, `code` and 'quoted task names'. Output is plain data rendered as React text nodes,
  * so untrusted model text can never become markup.
  */
 export type InlineNode =
@@ -12,7 +12,8 @@ export type InlineNode =
 export type Block =
     | { kind: 'heading'; text: string }
     | { kind: 'paragraph'; inline: InlineNode[] }
-    | { kind: 'list'; ordered: boolean; items: InlineNode[][] };
+    | { kind: 'list'; ordered: boolean; items: InlineNode[][] }
+    | { kind: 'code'; lang?: string; text: string };
 
 const MAX_LENGTH = 20_000;
 const INLINE_RE = /\*\*([^*\n]+?)\*\*|`([^`\n]+?)`|(?<![\w'’])['‘]([^'‘’\n]{2,100}?)['’](?![\w'’])/g;
@@ -36,6 +37,7 @@ const HEADING_RE = /^#{1,6}\s+(.+?)\s*#*$/;
 const BOLD_LINE_RE = /^\*\*([^*]+?)\*\*:?$/;
 const BULLET_RE = /^[-*•]\s+(.+)$/;
 const NUMBER_RE = /^\d{1,3}[.)]\s+(.+)$/;
+const FENCE_RE = /^(`{3,}|~{3,})\s*([\w#+.-]{0,30})?.*$/;
 
 export function parseMarkdown(source: string): Block[] {
     const lines = String(source ?? '').slice(0, MAX_LENGTH).replace(/\r\n?/g, '\n').split('\n');
@@ -52,8 +54,32 @@ export function parseMarkdown(source: string): Block[] {
         list = null;
     };
 
+    let fence: { marker: string; lang?: string; lines: string[] } | null = null;
+    const flushFence = () => {
+        if (fence) {
+            // Keep indentation, drop the common leading indent and trailing blank lines.
+            const body = fence.lines.slice();
+            while (body.length && !body[body.length - 1].trim()) body.pop();
+            const indent = Math.min(...body.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)![0].length), Infinity);
+            const text = body.map((l) => (Number.isFinite(indent) ? l.slice(indent) : l)).join('\n');
+            blocks.push({ kind: 'code', ...(fence.lang ? { lang: fence.lang } : {}), text });
+        }
+        fence = null;
+    };
+
     for (const raw of lines) {
         const line = raw.trim();
+        if (fence) {
+            if (line.startsWith(fence.marker) && line.replace(/[`~]/g, '') === '') { flushFence(); continue; }
+            fence.lines.push(raw);
+            continue;
+        }
+        const open = FENCE_RE.exec(line);
+        if (open) {
+            flushPara(); flushList();
+            fence = { marker: open[1], lang: open[2] ? open[2].toLowerCase() : undefined, lines: [] };
+            continue;
+        }
         if (!line) { flushPara(); flushList(); continue; }
         const heading = HEADING_RE.exec(line) ?? BOLD_LINE_RE.exec(line);
         if (heading) {
@@ -81,6 +107,6 @@ export function parseMarkdown(source: string): Block[] {
         flushList();
         para.push(line);
     }
-    flushPara(); flushList();
+    flushPara(); flushList(); flushFence();
     return blocks;
 }

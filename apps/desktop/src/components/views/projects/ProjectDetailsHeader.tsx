@@ -1,10 +1,11 @@
 import { format } from 'date-fns';
-import { safeParseDate, tFallback, type Project } from '@stride/core';
+import { isProjectTitleLong, safeParseDate, tFallback, type Project } from '@stride/core';
 import { Calendar, CheckCircle, Copy, FolderOpenDot, FolderPlus, Loader2, MoreHorizontal, RotateCcw, Signal, SlidersHorizontal, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../../lib/ime';
 import { ExitGhost } from '../../ui/ExitGhost';
+import { ProjectTitleLengthHint, getShortenTitleAction } from './ShortenProjectTitleDialog';
 
 type ProjectProgress = {
     total: number;
@@ -38,6 +39,10 @@ type ProjectDetailsHeaderProps = {
     readOnly?: boolean;
     readOnlyHint?: string;
     projectProgress?: ProjectProgress | null;
+    /** Opens the Shorten title dialog (offered once the title passes the soft limit). */
+    onShortenTitle?: () => void;
+    /** AI is on: the Shorten action is "Shorten with AI" (sparkles); otherwise the heuristic. */
+    shortenWithAi?: boolean;
     t: (key: string) => string;
 };
 
@@ -67,6 +72,8 @@ export function ProjectDetailsHeader({
     readOnly = false,
     readOnlyHint,
     projectProgress,
+    onShortenTitle,
+    shortenWithAi = false,
     t,
 }: ProjectDetailsHeaderProps) {
     const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -177,6 +184,9 @@ export function ProjectDetailsHeader({
 
 
     const popoverOpen = menuOpen;
+    const shortenAction = onShortenTitle && !readOnly && isProjectTitleLong(project.title)
+        ? getShortenTitleAction(t, shortenWithAi)
+        : null;
 
     return (
         <header className={`project-details-header pb-4 ${popoverOpen ? 'relative z-30' : ''}`}>
@@ -219,8 +229,19 @@ export function ProjectDetailsHeader({
                             aria-readonly={readOnly}
                             className="project-details-header__titleInput min-w-0 flex-1 resize-none overflow-hidden break-words bg-transparent border-b border-transparent text-[clamp(1.75rem,3.5vw,2.5rem)] font-semibold tracking-tight leading-tight focus:border-border focus:outline-none read-only:cursor-default read-only:focus:border-transparent"
                             aria-label={t('projects.title')}
+                            aria-describedby={!readOnly && isProjectTitleLong(editTitle) ? `project-title-hint-${project.id}` : undefined}
                         />
                     </div>
+                    {!readOnly && (
+                        <ProjectTitleLengthHint
+                            id={`project-title-hint-${project.id}`}
+                            title={editTitle}
+                            t={t}
+                            onShorten={onShortenTitle}
+                            aiEnabled={shortenWithAi}
+                            className="pl-5"
+                        />
+                    )}
 
                 </div>
                 <div className="project-details-header__actions flex flex-none items-center gap-2">
@@ -255,6 +276,17 @@ export function ProjectDetailsHeader({
                                 className="motion-popover z-50 min-w-[180px] rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                             >
                                 <ExitGhost />
+                                {shortenAction && onShortenTitle && (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => runMenuAction(onShortenTitle)}
+                                        className={MENU_ITEM_CLASS}
+                                    >
+                                        <shortenAction.icon className="w-4 h-4" />
+                                        {shortenAction.label}
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     role="menuitem"

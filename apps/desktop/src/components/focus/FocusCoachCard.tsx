@@ -155,6 +155,22 @@ export function FocusCoachCard({ api, tr }: { api: FocusCoachApi; tr: Tr }) {
     const estimate = coach.estimateMinutes
         ? tr('focus.coach.about', 'About {{time}}').replace('{{time}}', formatFocusCoachMinutes(coach.estimateMinutes, tr))
         : null;
+
+    // Without AI the coach is one short motivating line: no question, chips, reply box or feedback.
+    if (coach.source === 'fallback') {
+        return (
+            <div className="fx-coach" data-testid="focus-coach" data-state={status} data-source="fallback" data-leaving={status === 'leaving' ? 'true' : undefined}>
+                {estimate && (
+                    <p className="fx-coach-estimate" data-testid="focus-coach-estimate">
+                        <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        <span className="font-medium text-foreground">{estimate}</span>
+                        {coach.estimateNote && <span className="min-w-0 truncate">· {coach.estimateNote}</span>}
+                    </p>
+                )}
+                <p className="fx-coach-lead" data-testid="focus-coach-lead">{coach.motivation}</p>
+            </div>
+        );
+    }
     const lead = coach.approach?.text ?? coach.motivation;
     const toggleLabel = collapsed ? tr('focus.coach.expand', 'Show coach') : tr('focus.coach.collapse', 'Hide coach');
     const showSteps = coach.steps.length > 0 && steps.state !== 'dismissed';

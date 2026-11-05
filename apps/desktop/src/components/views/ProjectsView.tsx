@@ -44,6 +44,7 @@ import { useLanguage } from '../../contexts/language-context';
 import { PromptModal } from '../PromptModal';
 import { ProjectsSidebar } from './projects/ProjectsSidebar';
 import { AreaManagerModal } from './projects/AreaManagerModal';
+import { consumeAreaManagerRequest, subscribeAreaManagerRequest } from '../../lib/area-manager-request';
 import { ProjectWorkspace } from './projects/ProjectWorkspace';
 import { ProjectToSectionDialog } from './projects/ProjectToSectionDialog';
 import { computeProjectAreaDragResult } from './projects/project-area-dnd';
@@ -223,6 +224,13 @@ export function ProjectsView() {
     const [availableProjectsWidth, setAvailableProjectsWidth] = useState<number | null>(null);
     const [compactSidebarOpen, setCompactSidebarOpen] = useState(false);
     const [showAreaManager, setShowAreaManager] = useState(false);
+    useEffect(() => {
+        // "Manage areas…" in the sidebar's area switcher.
+        if (consumeAreaManagerRequest()) setShowAreaManager(true);
+        return subscribeAreaManagerRequest(() => {
+            if (consumeAreaManagerRequest()) setShowAreaManager(true);
+        });
+    }, []);
     const [newAreaName, setNewAreaName] = useState('');
     const [newAreaColor, setNewAreaColor] = useState<string | undefined>(DEFAULT_AREA_COLOR);
     const [showQuickAreaPrompt, setShowQuickAreaPrompt] = useState(false);

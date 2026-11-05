@@ -354,11 +354,11 @@ describe('ContextsView', () => {
             const label = button.querySelectorAll('span')[1] as HTMLElement;
             return [label.textContent, label.style.paddingLeft, button.getAttribute('title')];
         };
-        expect(row('@person (2)')).toEqual(['person', '', null]);
+        expect(row('@person (2)')).toEqual(['person', '', '@person']);
         expect(row('@person/emma (1)')).toEqual(['/emma', '0.75rem', '@person/emma']);
         expect(row('@person/todd (1)')).toEqual(['/todd', '0.75rem', '@person/todd']);
         expect(row('@place/bank (1)')).toEqual(['/bank', '0.75rem', '@place/bank']);
-        expect(row('#errand (1)')).toEqual(['errand', '', null]);
+        expect(row('#errand (1)')).toEqual(['errand', '', '#errand']);
         expect(row('#errand/post (1)')).toEqual(['/post', '0.75rem', '#errand/post']);
         fireEvent.click(view.getByRole('button', { name: '@person/todd (1)' }));
         expect(view.getByRole('heading', { name: '@person/todd' })).toBeInTheDocument();

@@ -17,6 +17,11 @@ export const UPDATE_REMINDER_MIN_DAYS_SINCE_FIRST_SEEN = 7;
 export const UPDATE_REMINDER_MIN_ACTIVE_DAYS = 2;
 export const UPDATE_REMINDER_PATCH_GRACE_MS = 21 * DAY_MS;
 
+export const DIRECT_UPDATE_FIRST_CHECK_DELAY_MS = 30 * 1000;
+export const DIRECT_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const DIRECT_UPDATE_PROMPT_INTERVAL_MS = DAY_MS;
+export const DIRECT_UPDATE_LATER_SNOOZE_MS = DAY_MS;
+
 export type UserPromptPlatform = 'ios' | 'android' | 'desktop' | 'web' | 'unknown';
 
 export type UserPromptState = {
@@ -37,6 +42,11 @@ export type UserPromptState = {
         dismissedVersion?: string;
         lastCheckedAt?: string;
         lastShownAt?: string;
+        skippedVersion?: string;
+        snoozedVersion?: string;
+        snoozedUntil?: string;
+        lastPromptedVersion?: string;
+        lastPromptedAt?: string;
     };
 };
 
@@ -69,6 +79,15 @@ export type UpdateReminderPromptInput = {
     currentVersion: string;
     latestVersion: string;
     latestReleasedAt?: string | null;
+};
+
+export type DirectUpdatePromptInput = {
+    nowMs: number;
+    promptState: UserPromptState | null | undefined;
+    currentVersion: string;
+    latestVersion: string;
+
+    manual?: boolean;
 };
 
 export function getPromptLocalDayKey(nowMs: number): string {
@@ -426,6 +445,77 @@ export function recordUpdateReminderDismissed(
         update: {
             ...(promptState?.update ?? {}),
             dismissedVersion: latestVersion.trim(),
+        },
+    };
+}
+
+const isSameVersion = (left: string | null | undefined, right: string): boolean => (
+    Boolean(left && left.trim()) && comparePromptVersions(String(left), right) === 0
+);
+
+export function shouldShowDirectUpdatePrompt({
+    nowMs,
+    promptState,
+    currentVersion,
+    latestVersion,
+    manual = false,
+}: DirectUpdatePromptInput): boolean {
+    if (comparePromptVersions(currentVersion, latestVersion) >= 0) return false;
+    if (manual) return true;
+    const update = promptState?.update;
+    if (isSameVersion(update?.skippedVersion, latestVersion)) return false;
+    if (isSameVersion(update?.snoozedVersion, latestVersion)) {
+        const snoozedUntilMs = parseTimeMs(update?.snoozedUntil);
+        if (snoozedUntilMs !== null && nowMs < snoozedUntilMs) return false;
+    }
+    if (isSameVersion(update?.lastPromptedVersion, latestVersion)) {
+        return isCooldownElapsed(update?.lastPromptedAt, nowMs, DIRECT_UPDATE_PROMPT_INTERVAL_MS);
+    }
+    return true;
+}
+
+export function recordDirectUpdatePrompted(
+    promptState: UserPromptState | null | undefined,
+    latestVersion: string,
+    nowMs: number,
+): UserPromptState {
+    const nowIso = new Date(nowMs).toISOString();
+    return {
+        ...(promptState ?? {}),
+        lastInterruptivePromptAt: nowIso,
+        update: {
+            ...(promptState?.update ?? {}),
+            lastShownAt: nowIso,
+            lastPromptedVersion: latestVersion.trim(),
+            lastPromptedAt: nowIso,
+        },
+    };
+}
+
+export function recordDirectUpdateLater(
+    promptState: UserPromptState | null | undefined,
+    latestVersion: string,
+    nowMs: number,
+): UserPromptState {
+    return {
+        ...(promptState ?? {}),
+        update: {
+            ...(promptState?.update ?? {}),
+            snoozedVersion: latestVersion.trim(),
+            snoozedUntil: new Date(nowMs + DIRECT_UPDATE_LATER_SNOOZE_MS).toISOString(),
+        },
+    };
+}
+
+export function recordDirectUpdateSkipped(
+    promptState: UserPromptState | null | undefined,
+    latestVersion: string,
+): UserPromptState {
+    return {
+        ...(promptState ?? {}),
+        update: {
+            ...(promptState?.update ?? {}),
+            skippedVersion: latestVersion.trim(),
         },
     };
 }

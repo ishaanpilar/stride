@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useTaskStore, type Task } from '@stride/core';
-import { usePomodoroStore } from '../../store/pomodoro-store';
+import { DESKTOP_POMODORO_SESSION_STORAGE_KEY, usePomodoroStore } from '../../store/pomodoro-store';
 import { PanelPomodoro } from './PanelPomodoro';
 import { FOCUS_PRESENTATION_STORAGE_KEY } from '../../store/focus-session-store';
 
@@ -89,5 +89,44 @@ describe('PanelPomodoro', () => {
         window.localStorage.removeItem(FOCUS_PRESENTATION_STORAGE_KEY);
         view.rerender(<PanelPomodoro candidates={[task]} tr={tr} />);
         expect(screen.queryByTestId('panel-back-to-focus')).toBeNull();
+    });
+
+    it('idle shows "25 min ⌄" under the time; it opens the presets with the explainer', () => {
+        render(<PanelPomodoro candidates={[task]} tr={tr} />);
+        expect(screen.getByTestId('panel-pomodoro-preset-label')).toHaveTextContent('25 min');
+        fireEvent.click(screen.getByTestId('panel-pomodoro-preset-label'));
+        expect(screen.getByTestId('pomodoro-preset-hint')).toHaveTextContent('Focus minutes / break minutes');
+        fireEvent.click(screen.getByRole('radio', { name: /Deep/ }));
+        expect(screen.getByTestId('panel-pomodoro-preset-label')).toHaveTextContent('50 min');
+    });
+
+    it('picks up a change another window saved (e.g. Pause or added time in another window)', () => {
+        render(<PanelPomodoro candidates={[task]} tr={tr} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        const stored = JSON.parse(window.localStorage.getItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY) ?? '{}');
+        stored.timerState = { ...stored.timerState, remainingSeconds: 1800, phaseTotalSeconds: 1800, extendedSeconds: 300 };
+        stored.updatedAtMs = Date.now();
+        window.localStorage.setItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY, JSON.stringify(stored));
+        act(() => { window.dispatchEvent(new StorageEvent('storage', { key: DESKTOP_POMODORO_SESSION_STORAGE_KEY })); });
+        expect(screen.getByTestId('panel-pomodoro-clock').textContent).toMatch(/^(29:59|30:00)$/);
+    });
+
+    it('overtime: the row counts up in a calmer tone; Pause and check in ends the session', () => {
+        render(<PanelPomodoro candidates={[task]} tr={tr} />);
+        act(() => {
+            usePomodoroStore.getState().commitPomodoro((prev) => ({
+                ...prev,
+                selectedTaskId: 't1',
+                timerState: { ...prev.timerState, isRunning: true, remainingSeconds: 0, overtimeSeconds: 65, keepGoing: true },
+                updatedAtMs: Date.now(),
+            }));
+        });
+        const clock = screen.getByTestId('panel-pomodoro-clock');
+        expect(clock).toHaveTextContent('+1:05');
+        expect(clock).toHaveAttribute('data-overtime', 'true');
+        expect(screen.getByTestId('pomodoro-ring')).toHaveAttribute('data-overtime', 'true');
+        fireEvent.click(screen.getByRole('button', { name: 'Pause and check in' }));
+        expect(usePomodoroStore.getState().snapshot.lastEvent).toBe('focus-finished');
+        expect(usePomodoroStore.getState().snapshot.timerState.phase).toBe('break');
     });
 });

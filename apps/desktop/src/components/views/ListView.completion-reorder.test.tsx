@@ -6,6 +6,7 @@ import { LanguageProvider } from '../../contexts/language-context';
 import { KeybindingProvider } from '../../contexts/keybinding-context';
 import { useUiStore } from '../../store/ui-store';
 import { resetCompletionRetentionForTests } from '../../lib/completion-retention';
+import { COMPLETION_TIMELINE, resetCompletionSequenceForTests } from '../../lib/completion-sequence';
 import { ListView } from './ListView';
 
 vi.mock('../../lib/report-error', () => ({ reportError: vi.fn() }));
@@ -37,6 +38,7 @@ describe('ListView completion and manual order', () => {
   beforeEach(() => {
     window.localStorage.clear();
     resetCompletionRetentionForTests();
+    resetCompletionSequenceForTests();
     useTaskStore.setState(initialTaskState, true);
     useUiStore.setState(initialUiState, true);
     useTaskStore.setState({ _allTasks: [], _allProjects: [], _allAreas: [], settings: {}, lastDataChangeAt: 0 });
@@ -52,14 +54,16 @@ describe('ListView completion and manual order', () => {
 
     vi.useFakeTimers();
     setTasks([a, { ...b, status: 'done', completedAt: now }, c]);
-    // Still present, still in place while the tick settles.
+    // Still present, still in place while the completion sequence plays (pop, strike, hold, leave).
     expect(titles(view)).toEqual(['a', 'b', 'c']);
-    expect(view.getByText('Task b').className).toContain('line-through');
+    expect(view.getByText('Task b').className).toContain('completion-strike');
 
-    act(() => { vi.advanceTimersByTime(600); });
+    act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.leaving + 50); });
+    expect(titles(view)).toEqual(['a', 'b', 'c']);
+    act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone - COMPLETION_TIMELINE.leaving); });
     vi.useRealTimers();
     expect(titles(view)).toEqual(['a', 'c', 'b']);
-    expect(view.getByText('Task b').className).toContain('line-through');
+    expect(view.getByText('Task b').className).toContain('completion-strike');
 
     // Unticking restores it to its place.
     setTasks([a, { ...b, status: 'next', completedAt: undefined }, c]);

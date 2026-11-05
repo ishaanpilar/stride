@@ -85,6 +85,12 @@ Dark is its own palette, not an inversion. Shadows become a subtle top highlight
   dense lists offset 0 and inset ring). Never remove focus styles.
 - **Motion**: 200-250ms ease-out on shadow, background and transform only. Under
   `prefers-reduced-motion: reduce`, no transforms or transitions.
+- **Completing a task** (one shared sequence, `lib/completion-sequence.ts`, ~1.3s): the checkbox pops
+  (0.85 -> 1.15 -> 1) and fills with success, the check draws, a soft success ripple; the strike-through
+  draws left to right while the title and chips fade to muted and the card flashes a success tint; the
+  row holds, done, for a beat (Undo is in the toast); then it collapses and the rows below rise, and
+  views that keep done tasks show it at the bottom as a flat, receded card. Animations off or reduced
+  motion: instant. Optional quiet tick (Settings > Sounds > Completion sound).
 - **Increase contrast** (`prefers-contrast: more`): borders become solid `#9AA5B8` (light) /
   `#5B6475` (dark), shadows drop, muted text uses foreground.
 - **Reduce transparency**: the sidebar uses its opaque token instead of material.
@@ -119,7 +125,7 @@ Minimum on screen: 11px. No all-caps tiny letter-spaced labels; group titles are
   "N left · about H h M m" right in muted 14px; a 6px rounded progress bar (well track, accent gradient
   fill) under that.
 - **Task row**: white surface card, radius 14px, `shadow-soft-sm`, 16px padding, 10px gap between
-  rows. Leading 22px circle checkbox (1.5px tertiary stroke; hover shows accent; done = accent fill
+  rows. Leading 22px circle checkbox (1.5px tertiary stroke; hover shows accent; done = success fill
   with check). Title 15 semibold; optional note line muted 14; chips row: project chip (dot in project
   colour + name, well fill), date chip (calendar icon + "Today"/"Sat, 8 Nov"; today = accent-soft fill +
   accent-text; overdue = danger 10% fill + danger text + the word "overdue"). Priority pill at the

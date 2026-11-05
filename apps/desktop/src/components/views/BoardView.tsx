@@ -44,6 +44,7 @@ import { BoardFiltersPanel } from './board/BoardFiltersPanel';
 import type { DesktopActiveFilterChip } from './list/FilterDisclosure';
 import { beginRendererActivity, recordRendererActivity } from '../../lib/renderer-navigation-diagnostics';
 import { MOTION_EASING, canAnimate } from '../../lib/motion';
+import { beginCompletion, isWithinDoubleClickGuard } from '../../lib/completion-sequence';
 
 const BOARD_DROP_ANIMATION = { duration: 260, easing: MOTION_EASING.out };
 
@@ -556,8 +557,10 @@ export function BoardView() {
     };
     const handleToggleDone = (task: Task) => {
         if (task.status === 'done') {
+            if (isWithinDoubleClickGuard(task.id)) return;
             void moveTask(task.id, resolvePreviousStatus(task));
         } else {
+            if (!beginCompletion(task.id, { sound: true })) return;
             void moveTaskTracked(task.id, 'done');
         }
     };

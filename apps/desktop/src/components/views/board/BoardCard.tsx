@@ -11,6 +11,7 @@ import { Pill, type PillTone } from '../../ui/Pill';
 import { cn } from '../../../lib/utils';
 import { useUiStore } from '../../../store/ui-store';
 import type { BoardKeyboardDirection } from '../board-view-dnd';
+import { isActivePhase, useCompletionPhase } from '../../../lib/completion-sequence';
 
 export type BoardCardProject = { title: string; color?: string };
 
@@ -36,7 +37,10 @@ function priorityTone(priority: Task['priority']): PillTone {
 
 /** Presentational card: title (wraps, up to 3 lines), then one wrapping chip row. Nothing is absolutely positioned over the title. */
 export function BoardCardBody({ task, project, showPriority, t, compact, onToggleDone, onOpenMenu, menuLabel }: BoardCardBodyProps) {
-    const done = isTaskCompleted(task);
+    // Board columns are by status, so a ticked card moves to Done at once; the lighter completion
+    // sequence plays there (check pop, ripple, strike draw).
+    const completingNow = isActivePhase(useCompletionPhase(task.id));
+    const done = isTaskCompleted(task) || completingNow;
     const due = safeParseDate(task.dueDate);
     const overdue = !done && due ? due.getTime() < Date.now() && !isToday(due) : false;
     const tokens = [...(task.contexts ?? []), ...(task.tags ?? [])];
@@ -47,7 +51,7 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
     const showFocusStar = task.isFocusedToday === true && task.status === 'next';
 
     return (
-        <div className={cn('flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
+        <div className={cn('flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')} data-completing={completingNow ? '' : undefined}>
             <div className="flex min-w-0 items-start gap-2">
                 {onToggleDone ? (
                     <button
@@ -59,17 +63,23 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
                         title={done ? reopen : markDone}
                         className="mt-px inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-ring"
                     >
-                        {done ? <Check className="h-4 w-4 text-success-text" aria-hidden="true" /> : <Circle className="h-4 w-4" aria-hidden="true" />}
+                        {done
+                            ? (
+                                <span className="completion-check inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-success-fill text-success-foreground">
+                                    <Check className="completion-check-mark h-3 w-3" strokeWidth={3} aria-hidden="true" />
+                                </span>
+                            )
+                            : <Circle className="h-4 w-4" aria-hidden="true" />}
                     </button>
                 ) : null}
                 <p
                     data-board-card-title
                     className={cn(
                         'm-0 min-w-0 flex-1 break-words text-[14px] font-semibold leading-5 [overflow-wrap:anywhere] line-clamp-3',
-                        done && 'text-muted-foreground line-through',
+                        done && 'text-muted-foreground',
                     )}
                 >
-                    {task.title}
+                    {done ? <span className="completion-strike">{task.title}</span> : task.title}
                     {showFocusStar ? (
                         <FocusStarIcon
                             filled

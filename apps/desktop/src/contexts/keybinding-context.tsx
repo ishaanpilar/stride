@@ -183,7 +183,7 @@ function focusMainContent(): boolean {
 function triggerGlobalSearch() {
     const isMacPlatform = typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent);
     const event = new KeyboardEvent('keydown', {
-        key: 'k',
+        key: 'f',
         metaKey: isMacPlatform,
         ctrlKey: !isMacPlatform,
         bubbles: true,

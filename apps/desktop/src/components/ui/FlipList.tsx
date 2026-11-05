@@ -33,6 +33,8 @@ export class FlipList extends Component<FlipListProps> {
         const items: Array<[string, HTMLElement]> = [];
         root.querySelectorAll<HTMLElement>(selector).forEach((element) => {
             if (element.closest('[data-exit-ghost]')) return;
+            // A completed row that just left plays its own settle-in at its new place.
+            if (element.getAttribute('data-completion') === 'gone') return;
             const enclosingItem = element.parentElement?.closest(selector);
             if (enclosingItem && root.contains(enclosingItem)) return;
             const key = element.getAttribute(attribute);

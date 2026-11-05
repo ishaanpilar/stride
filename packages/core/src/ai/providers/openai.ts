@@ -13,6 +13,7 @@ import {
     withAIRequestStopNotifications,
 } from '../utils';
 import { isDeepSeekUrl } from '../catalog';
+import { handleRateLimitedResponse } from '../provider-rate-limit';
 import { isBreakdownResponse, isClarifyResponse, isCopilotResponse, isReviewAnalysisResponse } from '../validators';
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1/chat/completions';
@@ -301,6 +302,7 @@ async function requestOpenAI(config: AIProviderConfig, prompt: { system: string;
 
 
     const dispatch = async (requestBody: unknown): Promise<BufferedAIResponse> => {
+        let rateLimitRetried = false;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
             throwIfAIRequestAborted(options?.signal, 'OpenAI');
             let response: BufferedAIResponse;
@@ -326,6 +328,11 @@ async function requestOpenAI(config: AIProviderConfig, prompt: { system: string;
                 throw error;
             }
 
+            if (response.status === 429) {
+                await handleRateLimitedResponse(response, { canRetry: !rateLimitRetried && attempt < MAX_RETRIES, signal: options?.signal, label: 'OpenAI' });
+                rateLimitRetried = true;
+                continue;
+            }
             if (!response.ok && RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
                 await waitForAIRequestRetry(400 * Math.pow(2, attempt), options?.signal, 'OpenAI');
                 continue;
