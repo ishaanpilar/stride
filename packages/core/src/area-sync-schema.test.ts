@@ -13,6 +13,7 @@ import {
 
 const PRE_REFACTOR_AREA_SQLITE_COLUMNS = [
     'id', 'name', 'color', 'icon', 'orderNum', 'rev', 'revBy', 'createdAt', 'updatedAt', 'deletedAt',
+    'description', 'keywords', 'peopleIds',
 ];
 
 const PRE_REFACTOR_AREA_UPSERT_UPDATE_CLAUSE = `name=excluded.name,
@@ -23,11 +24,15 @@ rev=excluded.rev,
 revBy=excluded.revBy,
 createdAt=excluded.createdAt,
 updatedAt=excluded.updatedAt,
-deletedAt=excluded.deletedAt
+deletedAt=excluded.deletedAt,
+description=excluded.description,
+keywords=excluded.keywords,
+peopleIds=excluded.peopleIds
 WHERE areas.rev IS NULL OR areas.rev <= excluded.rev`;
 
 const PRE_REFACTOR_ENSURE_AREA_COLUMNS_NAMES = [
     'color', 'icon', 'orderNum', 'rev', 'revBy', 'createdAt', 'updatedAt', 'deletedAt',
+    'description', 'keywords', 'peopleIds',
 ];
 
 const PRE_REFACTOR_ENSURE_AREA_COLUMNS_SQL = [
@@ -39,6 +44,9 @@ const PRE_REFACTOR_ENSURE_AREA_COLUMNS_SQL = [
     'ALTER TABLE areas ADD COLUMN createdAt TEXT',
     'ALTER TABLE areas ADD COLUMN updatedAt TEXT',
     'ALTER TABLE areas ADD COLUMN deletedAt TEXT',
+    'ALTER TABLE areas ADD COLUMN description TEXT',
+    'ALTER TABLE areas ADD COLUMN keywords TEXT',
+    'ALTER TABLE areas ADD COLUMN peopleIds TEXT',
 ];
 
 const sorted = (values: Iterable<string>): string[] => Array.from(values).sort();

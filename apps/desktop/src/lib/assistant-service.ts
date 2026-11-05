@@ -9,6 +9,7 @@ import {
     type Language,
 } from '@stride/core';
 import { buildAIConfig, loadAIKey } from './ai-config';
+import { loadRoutingCorrections } from './ai-routing';
 
 export type AssistantReadiness =
     | { ready: true }
@@ -20,7 +21,7 @@ export function createStoreAssistantPort(): AssistantStorePort {
     return {
         getSnapshot: () => {
             const s = st();
-            return { tasks: s.tasks, projects: s.projects, areas: s.areas };
+            return { tasks: s.tasks, projects: s.projects, areas: s.areas, people: s.people };
         },
         addTask: (title, props) => st().addTask(title, props),
         updateTask: (id, updates) => st().updateTask(id, updates),
@@ -35,6 +36,9 @@ export function createStoreAssistantPort(): AssistantStorePort {
         updateArea: (id, updates) => st().updateArea(id, updates),
         deleteArea: (id) => st().deleteArea(id),
         restoreArea: (id) => st().restoreArea(id),
+        addPerson: (name) => st().addPerson(name),
+        deletePerson: (id) => st().deletePerson(id),
+        getRoutingCorrections: () => loadRoutingCorrections(),
     };
 }
 

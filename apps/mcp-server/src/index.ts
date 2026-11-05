@@ -506,16 +506,25 @@ const updateSectionSchema = z.object({
 const deleteSectionSchema = z.object({
   id: z.string(),
 });
+const areaDescriptionSchema = z.string().max(2000);
+const areaKeywordsSchema = z.array(z.string().min(1).max(40)).max(30);
+const areaPeopleIdsSchema = z.array(z.string().min(1)).max(40);
 const addAreaSchema = z.object({
   name: z.string().min(1).max(MAX_AREA_NAME_LENGTH),
   color: z.string().optional(),
   icon: z.string().optional(),
+  description: areaDescriptionSchema.optional().describe('What belongs in this area: clients, people, products, keywords. Used to route tasks.'),
+  keywords: areaKeywordsSchema.optional(),
+  peopleIds: areaPeopleIdsSchema.optional(),
 });
 const updateAreaSchema = z.object({
   id: z.string(),
   name: z.string().min(1).max(MAX_AREA_NAME_LENGTH).optional(),
   color: z.string().nullable().optional(),
   icon: z.string().nullable().optional(),
+  description: areaDescriptionSchema.nullable().optional(),
+  keywords: areaKeywordsSchema.nullable().optional(),
+  peopleIds: areaPeopleIdsSchema.nullable().optional(),
 });
 const deleteAreaSchema = z.object({
   id: z.string(),

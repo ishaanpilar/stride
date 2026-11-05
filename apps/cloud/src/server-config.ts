@@ -191,6 +191,9 @@ export const CLOUD_AREA_CREATION_ALLOWED_PROP_KEYS = new Set<keyof Area>([
     'color',
     'icon',
     'order',
+    'description',
+    'keywords',
+    'peopleIds',
 ]);
 export const CLOUD_AREA_PATCH_ALLOWED_PROP_KEYS = new Set<keyof Area>([
     'name',

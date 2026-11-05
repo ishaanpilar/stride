@@ -13,6 +13,7 @@ import {
 import { buildAIConfig, loadAIKey } from './ai-config';
 import { logWarn } from './app-log';
 import { createStoreAssistantPort } from './assistant-service';
+import { buildDesktopRoutingContext, trackAiPlacement } from './ai-routing';
 
 export const QUICK_CAPTURE_EVENT = 'stride:quick-capture';
 export const QUICK_CAPTURE_TIMEOUT_MS = 45_000;
@@ -36,9 +37,9 @@ export async function isQuickCaptureAIReady(): Promise<boolean> {
  */
 export async function generateQuickCaptureProposal(text: string, language: Language = 'en'): Promise<MindSweepProposal> {
     const now = new Date();
-    const { settings, projects, areas, tasks } = useTaskStore.getState();
+    const { settings, projects, areas, tasks, people } = useTaskStore.getState();
     const activeProjects = projects.filter((p) => !p.deletedAt && !p.archivedAt && p.status !== 'archived');
-    const fallback = (reason: 'disabled' | 'failed') => buildFallbackMindSweepProposal(text, reason, now, activeProjects, areas);
+    const fallback = (reason: 'disabled' | 'failed') => buildFallbackMindSweepProposal(text, reason, now, activeProjects, areas, people);
     try {
         if (!(await isQuickCaptureAIReady())) return fallback('disabled');
         const provider = settings.ai?.provider ?? 'openai';
@@ -53,6 +54,7 @@ export async function generateQuickCaptureProposal(text: string, language: Langu
             projects: activeProjects.map((p) => p.title),
             areas: areas.filter((a) => !a.deletedAt).map((a) => a.name),
             contexts,
+            routingContext: buildDesktopRoutingContext(),
         }, { timeoutMs: QUICK_CAPTURE_TIMEOUT_MS });
         return proposal ?? fallback('failed');
     } catch (error) {
@@ -61,8 +63,15 @@ export async function generateQuickCaptureProposal(text: string, language: Langu
     }
 }
 
-export function applyQuickCapture(proposal: Pick<MindSweepProposal, 'projects' | 'items'>): Promise<ApplyMindSweepResult> {
-    return applyMindSweepProposal(proposal, createStoreAssistantPort());
+export async function applyQuickCapture(proposal: Pick<MindSweepProposal, 'projects' | 'items'>): Promise<ApplyMindSweepResult> {
+    const result = await applyMindSweepProposal(proposal, createStoreAssistantPort());
+    // Remember where the AI placed each task, so moving it later teaches the routing context.
+    const { _allTasks } = useTaskStore.getState();
+    for (const id of result.taskIds) {
+        const task = _allTasks.find((t) => t.id === id);
+        if (task && (task.projectId || task.areaId)) trackAiPlacement(id, { title: task.title, projectId: task.projectId, areaId: task.areaId });
+    }
+    return result;
 }
 
 export function undoQuickCapture(applied: Pick<ApplyMindSweepResult, 'projectIds' | 'taskIds'>): Promise<boolean> {

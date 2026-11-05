@@ -1,9 +1,9 @@
 import { generateUUID } from '../../uuid';
-import type { Area, Project, Task } from '../../types';
+import type { Area, Person, Project, Task } from '../../types';
 import type { AssistantMessage, AssistantModelClient, AssistantModelRequest, AssistantModelResponse, AssistantStorePort } from './types';
 
 /** In-memory AssistantStorePort for tests (mimics store semantics: undefined clears a field, delete is soft). */
-export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Partial<Project>[]; areas?: Area[] } = {}) {
+export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Partial<Project>[]; areas?: Area[]; people?: Person[] } = {}) {
     const stamp = '2026-01-01T00:00:00.000Z';
     const tasks: Task[] = (seed.tasks ?? []).map((t, i) => ({
         id: `task${i + 1}-0000-0000-0000-000000000000`, title: `Task ${i + 1}`, status: 'next', tags: [], contexts: [], createdAt: stamp, updatedAt: stamp, ...t,
@@ -12,9 +12,10 @@ export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Parti
         id: `proj${i + 1}-0000-0000-0000-000000000000`, title: `Project ${i + 1}`, status: 'active', color: '#fff', order: i, tagIds: [], createdAt: stamp, updatedAt: stamp, ...p,
     }) as Project);
     const areas: Area[] = [...(seed.areas ?? [])];
+    const people: Person[] = [...(seed.people ?? [])];
     const calls: string[] = [];
     const port: AssistantStorePort = {
-        getSnapshot: () => ({ tasks: tasks.map((t) => ({ ...t })), projects: projects.map((p) => ({ ...p })), areas }),
+        getSnapshot: () => ({ tasks: tasks.map((t) => ({ ...t })), projects: projects.map((p) => ({ ...p })), areas, people }),
         async addTask(title, props) {
             calls.push('addTask');
             const t = { id: generateUUID(), title, status: 'inbox', tags: [], contexts: [], createdAt: stamp, updatedAt: stamp, ...props } as Task;
@@ -107,8 +108,21 @@ export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Parti
             delete a.deletedAt;
             return { success: true };
         },
+        async addPerson(name) {
+            calls.push('addPerson');
+            const person = { id: generateUUID(), name, createdAt: stamp, updatedAt: stamp } as Person;
+            people.push(person);
+            return person;
+        },
+        async deletePerson(id) {
+            calls.push('deletePerson');
+            const person = people.find((x) => x.id === id);
+            if (!person) return { success: false, error: 'Person not found' };
+            person.deletedAt = stamp;
+            return { success: true };
+        },
     };
-    return { port, tasks, projects, areas, calls };
+    return { port, tasks, projects, areas, people, calls };
 }
 
 export type ScriptedReply = Partial<AssistantMessage> | ((req: AssistantModelRequest) => Partial<AssistantMessage>);

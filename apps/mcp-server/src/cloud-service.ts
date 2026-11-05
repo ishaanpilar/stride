@@ -554,6 +554,9 @@ export const createCloudService = (options: CloudServiceOptions): StrideService 
         props: filterUndefined({
           color: input.color,
           icon: input.icon,
+          description: input.description,
+          keywords: input.keywords,
+          peopleIds: input.peopleIds,
         }),
       });
       return mapArea(result.area);
@@ -563,6 +566,9 @@ export const createCloudService = (options: CloudServiceOptions): StrideService 
       if (input.name !== undefined) patch.name = input.name;
       if (input.color !== undefined) patch.color = input.color;
       if (input.icon !== undefined) patch.icon = input.icon;
+      if (input.description !== undefined) patch.description = input.description;
+      if (input.keywords !== undefined) patch.keywords = input.keywords;
+      if (input.peopleIds !== undefined) patch.peopleIds = input.peopleIds;
       const result = await request<{ area: AppData['areas'][number] }>('PATCH', `/areas/${encodeURIComponent(input.id)}`, patch);
       return mapArea(result.area);
     },

@@ -1,4 +1,5 @@
-import type { Project, Task, TaskStatus } from '../types';
+import type { Area, Project, Task, TaskStatus } from '../types';
+import { buildTaskPlacementContext } from './routing-context';
 import { timeEstimateToMinutes } from '../calendar-scheduling';
 import type { AIProvider } from './types';
 import { parseJson } from './utils';
@@ -52,6 +53,8 @@ export interface FocusCoachContext {
     checklist?: string[];
     attachments?: string[];
     projectTitle?: string;
+    /** Where the task lives: its area (with the user's description) and the project's purpose. */
+    areaContext?: string;
     projectTasks?: string[];
     relatedTasks?: string[];
 }
@@ -158,9 +161,11 @@ function describeRelated(task: Task): string {
     return task.title;
 }
 
-export function buildFocusCoachContext(data: { task: Task; tasks: readonly Task[]; projects: readonly Project[] }): FocusCoachContext {
+export function buildFocusCoachContext(data: { task: Task; tasks: readonly Task[]; projects: readonly Project[]; areas?: readonly Area[] }): FocusCoachContext {
     const { task, tasks, projects } = data;
     const context: FocusCoachContext = {};
+    const placement = data.areas ? buildTaskPlacementContext(task, { areas: data.areas, projects }) : '';
+    if (placement) context.areaContext = dataLine(placement, 300);
     if (task.description?.trim()) context.notes = dataLine(task.description, 600);
     const checklist = dataList((task.checklist ?? []).map((item) => `${item.isCompleted ? '[done] ' : ''}${item.title}`), 12, 100);
     if (checklist.length) context.checklist = checklist;
@@ -192,7 +197,7 @@ export function buildFocusCoachContext(data: { task: Task; tasks: readonly Task[
 }
 
 export function buildFocusCoachInput(
-    data: { task: Task; tasks: readonly Task[]; projects: readonly Project[] },
+    data: { task: Task; tasks: readonly Task[]; projects: readonly Project[]; areas?: readonly Area[] },
     feedbackSummary: string[] = [],
 ): FocusCoachInput {
     const { task } = data;
@@ -220,11 +225,12 @@ function taskBlock(input: FocusCoachInput): string[] {
 }
 
 function contextBlock(context: FocusCoachContext): string[] {
-    if (!hasFocusCoachContext(context) && !context.projectTitle) return ['<context>none</context>'];
+    if (!hasFocusCoachContext(context) && !context.projectTitle && !context.areaContext) return ['<context>none</context>'];
     const lines = ['<context>'];
     if (context.notes) lines.push(`Notes: ${context.notes}`);
     if (context.checklist?.length) lines.push(`Checklist: ${context.checklist.join('; ')}`);
     if (context.attachments?.length) lines.push(`Attachments: ${context.attachments.join('; ')}`);
+    if (context.areaContext) lines.push(`Area: ${context.areaContext}`);
     if (context.projectTitle) lines.push(`Project: ${context.projectTitle}`);
     if (context.projectTasks?.length) lines.push(`Other tasks in this project: ${context.projectTasks.join('; ')}`);
     if (context.relatedTasks?.length) lines.push(`Related tasks: ${context.relatedTasks.join('; ')}`);

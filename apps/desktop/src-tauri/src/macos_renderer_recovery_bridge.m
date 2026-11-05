@@ -22,6 +22,8 @@ static char crashCountKey;
 static char reloadNavigationKey;
 static char alertOpenKey;
 static char windowKindKey;
+static char lastURLKey;
+static char lastRecoveryKey;
 static StrideRendererEvent logEvent;
 static void (*originalTermination)(id, SEL, WKWebView *);
 static void (*originalFinish)(id, SEL, WKWebView *, WKNavigation *);
@@ -34,6 +36,31 @@ static void emit(WKWebView *webView, int event) {
         logEvent(kind.intValue, event);
     }
 }
+
+
+/// Remembers the page address while the renderer is alive: after the WebContent process is killed
+/// (for example by macOS under memory pressure) `webView.URL` can be nil and `reload` returns nil.
+static void rememberURL(WKWebView *webView) {
+    NSURL *url = webView.URL;
+    if (url != nil) {
+        objc_setAssociatedObject(webView, &lastURLKey, url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+/// Reloads the page, falling back to loading the last known address when `reload` has nothing to reload.
+static WKNavigation *startRecoveryLoad(WKWebView *webView) {
+    WKNavigation *navigation = [webView reload];
+    if (navigation == nil) {
+        NSURL *url = webView.URL ?: objc_getAssociatedObject(webView, &lastURLKey);
+        if (url != nil) {
+            navigation = [webView loadRequest:[NSURLRequest requestWithURL:url]];
+        }
+    }
+    objc_setAssociatedObject(webView, &reloadNavigationKey, navigation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return navigation;
+}
+
+static void showFallback(WKWebView *webView);
 
 static void showFallback(WKWebView *webView) {
     if ([objc_getAssociatedObject(webView, &alertOpenKey) boolValue]) {
@@ -73,8 +100,7 @@ static void showFallback(WKWebView *webView) {
                 return;
             }
             emit(currentView, StrideRendererManualReloadStarted);
-            WKNavigation *navigation = [currentView reload];
-            objc_setAssociatedObject(currentView, &reloadNavigationKey, navigation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            WKNavigation *navigation = startRecoveryLoad(currentView);
             if (navigation == nil) {
                 emit(currentView, StrideRendererReloadUnavailable);
                 showFallback(currentView);
@@ -88,16 +114,30 @@ static void rendererTerminated(id self, SEL command, WKWebView *webView) {
     originalTermination(self, command, webView);
 
     objc_setAssociatedObject(webView, &reloadNavigationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // A crash long after the last successful recovery is a new incident, not a crash loop.
+    NSDate *lastRecovery = objc_getAssociatedObject(webView, &lastRecoveryKey);
+    if (lastRecovery != nil && -[lastRecovery timeIntervalSinceNow] > 120) {
+        objc_setAssociatedObject(webView, &crashCountKey, @0, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     NSUInteger crashes = [objc_getAssociatedObject(webView, &crashCountKey) unsignedIntegerValue] + 1;
     objc_setAssociatedObject(webView, &crashCountKey, @(crashes), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (crashes == 1) {
         emit(webView, StrideRendererAutoReloadStarted);
-        WKNavigation *navigation = [webView reload];
-        objc_setAssociatedObject(webView, &reloadNavigationKey, navigation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (navigation == nil) {
-            emit(webView, StrideRendererReloadUnavailable);
-            showFallback(webView);
+        if (startRecoveryLoad(webView) != nil) {
+            return;
         }
+        // Under memory pressure WebKit may not be ready to start a new renderer yet: retry once shortly.
+        __weak WKWebView *weakWebView = webView;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            WKWebView *view = weakWebView;
+            if (view == nil) {
+                return;
+            }
+            if (startRecoveryLoad(view) == nil) {
+                emit(view, StrideRendererReloadUnavailable);
+                showFallback(view);
+            }
+        });
         return;
     }
     emit(webView, StrideRendererManualReloadRequired);
@@ -108,8 +148,10 @@ static void rendererDidFinish(id self, SEL command, WKWebView *webView, WKNaviga
     if (originalFinish != NULL) {
         originalFinish(self, command, webView, navigation);
     }
+    rememberURL(webView);
     if (navigation != nil && navigation == objc_getAssociatedObject(webView, &reloadNavigationKey)) {
         objc_setAssociatedObject(webView, &reloadNavigationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(webView, &lastRecoveryKey, [NSDate date], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         emit(webView, StrideRendererReloadFinished);
     }
 }
@@ -179,6 +221,7 @@ bool stride_macos_install_renderer_recovery(void *rawWebView, int kind,
 
     logEvent = callback;
     objc_setAssociatedObject(webView, &windowKindKey, @(kind), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    rememberURL(webView);
     object_setClass(delegate, subclass);
     emit(webView, StrideRendererInstalled);
     return true;

@@ -208,6 +208,16 @@ function validateTaskPropValues(value: Record<string, unknown>): string | null {
         ?? validateViewSectionIds(value, 'task');
 }
 
+const isStringArrayOrNullish = (value: unknown): boolean =>
+    value === undefined || value === null || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
+
+function validateAreaPropValues(value: Record<string, unknown>): string | null {
+    if (value.description != null && typeof value.description !== 'string') return 'Invalid area description';
+    if (!isStringArrayOrNullish(value.keywords)) return 'Invalid area keywords: expected an array of strings';
+    if (!isStringArrayOrNullish(value.peopleIds)) return 'Invalid area peopleIds: expected an array of strings';
+    return null;
+}
+
 function validateProjectPropValues(value: Record<string, unknown>): string | null {
     if (value.perSectionFlow != null && typeof value.perSectionFlow !== 'boolean') {
         return 'Invalid project perSectionFlow';
@@ -556,6 +566,7 @@ const ENTITY_PROPS_CONFIG: Record<EntityPropsKind, EntityPropsConfigEntry> = {
             create: CLOUD_AREA_CREATION_ALLOWED_PROP_KEYS as ReadonlySet<string>,
             patch: CLOUD_AREA_PATCH_ALLOWED_PROP_KEYS as ReadonlySet<string>,
         },
+        validateValues: validateAreaPropValues,
     },
 };
 

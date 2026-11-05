@@ -102,7 +102,10 @@ CREATE TABLE IF NOT EXISTS areas (
   updatedAt TEXT NOT NULL,
   deletedAt TEXT,
   deletedAtBeforeProjectArchive TEXT,
-  projectArchivedAt TEXT
+  projectArchivedAt TEXT,
+  description TEXT,
+  keywords TEXT,
+  peopleIds TEXT
 );
 
 CREATE TABLE IF NOT EXISTS people (

@@ -1,4 +1,5 @@
-import type { Area, Project, Task } from '../../types';
+import type { Area, Person, Project, Task } from '../../types';
+import type { RoutingCorrection } from '../routing-corrections';
 
 /** OpenAI-style chat message (the harness's internal wire format). */
 export interface AssistantToolCall {
@@ -74,7 +75,8 @@ export interface StoreResult {
  * Zustand store actions, so sync/undo/UI stay consistent. Tests use an in-memory fake.
  */
 export interface AssistantStorePort {
-    getSnapshot(): { tasks: Task[]; projects: Project[]; areas: Area[] };
+    /** `people` is optional so older adapters keep working; routing then ignores linked People. */
+    getSnapshot(): { tasks: Task[]; projects: Project[]; areas: Area[]; people?: Person[] };
     addTask(title: string, props: Partial<Task>): Promise<StoreResult>;
     updateTask(id: string, updates: Partial<Task>): Promise<StoreResult>;
     completeTask(id: string): Promise<StoreResult>;
@@ -88,6 +90,11 @@ export interface AssistantStorePort {
     updateArea(id: string, updates: Partial<Area>): Promise<StoreResult>;
     deleteArea(id: string): Promise<StoreResult>;
     restoreArea(id: string): Promise<StoreResult>;
+    /** Optional: create a Person (used when the user confirms adding people to an area). */
+    addPerson?(name: string): Promise<Person | null>;
+    deletePerson?(id: string): Promise<StoreResult>;
+    /** Optional: the local routing-correction log (unsynced), summarized into the routing context. */
+    getRoutingCorrections?(): RoutingCorrection[];
 }
 
 export type UndoOp =
@@ -99,7 +106,8 @@ export type UndoOp =
     | { kind: 'restoreProjectFields'; projectId: string; fields: Partial<Project>; clear: string[] }
     | { kind: 'deleteArea'; areaId: string }
     | { kind: 'restoreArea'; areaId: string }
-    | { kind: 'restoreAreaFields'; areaId: string; fields: Partial<Area>; clear: string[] };
+    | { kind: 'restoreAreaFields'; areaId: string; fields: Partial<Area>; clear: string[] }
+    | { kind: 'deletePerson'; personId: string };
 
 /** What kind of thing a change touched; drives the icon in the Changes card. */
 export type ChangeKind = 'task' | 'project' | 'area' | 'tag' | 'merge' | 'plan';
@@ -124,6 +132,8 @@ export interface ChangeEntry {
     kind?: ChangeKind;
     /** Optional sub-lines (e.g. the steps of a batch plan). */
     details?: string[];
+    /** Why the AI routed something where it did, e.g. "mentions Akash → Mauvi Labs" (validated, short). */
+    reason?: string;
     undoOps: UndoOp[];
     changes: FieldChange[];
 }

@@ -1,5 +1,7 @@
 import { generateUUID } from '../../uuid';
-import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from '../../types';
+import type { Area, ChecklistItem, Project, Task, TaskPriority, TaskStatus } from '../../types';
+import { cleanReason } from '../mind-sweep-ai';
+import { projectPurpose } from '../routing-context';
 import { addLocalDays, dayKeyOf, formatWhen, hasTimeOf, parseWhen, shiftWhen, startOfLocalDay, toLocalDay } from './dates';
 import type {
     AssistantTool,
@@ -48,6 +50,23 @@ export function findProject(ctx: ToolContext, ref: string): { project: Project }
     if (partial.length === 1) return { project: partial[0] };
     return { error: `Unknown project "${ref}". Known projects: ${live.slice(0, 20).map((p) => `${p.title} (${shortId(p.id)})`).join('; ') || 'none'}. Use list_projects or add_project.` };
 }
+
+export function findArea(ctx: ToolContext, ref: string): { area: Area } | { error: string } {
+    const live = ctx.port.getSnapshot().areas.filter((a) => !a.deletedAt);
+    const exact = live.find((a) => a.id === ref) ?? (ref.length >= 4 ? live.find((a) => a.id.startsWith(ref)) : undefined);
+    if (exact) return { area: exact };
+    const lower = ref.trim().toLowerCase();
+    const byName = live.filter((a) => a.name.toLowerCase() === lower);
+    if (byName.length === 1) return { area: byName[0] };
+    const partial = live.filter((a) => a.name.toLowerCase().includes(lower));
+    if (partial.length === 1) return { area: partial[0] };
+    return { error: `Unknown area "${ref}". Known areas: ${live.map((a) => `${a.name} (${shortId(a.id)})`).join('; ') || 'none'}. Use list_areas.` };
+}
+
+/** Validated, short routing explanation from tool args (or undefined). */
+export const reasonOf = (value: unknown): string | undefined => cleanReason(value);
+
+export const reasonProp: JsonSchema = { type: 'string', maxLength: 160, description: 'Short why for the area/project you chose (at most 12 words), e.g. "mentions Akash -> Mauvi Labs". Shown to the user.' };
 
 export const compact = (t: Task, projects: Project[]) => {
     const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined;
@@ -216,6 +235,8 @@ const addTask: AssistantTool = {
             reminderMinutesBefore: { type: 'integer', minimum: 0, maximum: 10080, description: 'Remind this many minutes before dueDate (0 = at due time).' },
             priority: { type: 'string', enum: PRIORITIES },
             projectId: { type: 'string', description: 'Project id or exact title.' },
+            areaId: { type: 'string', description: 'Area id or name, for a task that belongs to an area but no project. Route by the area description, keywords and people.' },
+            reason: reasonProp,
             contexts: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             tags: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             description: { type: 'string', maxLength: 4000, description: 'Notes.' },
@@ -230,12 +251,18 @@ const addTask: AssistantTool = {
             return 'A reminder needs a time: give dueDate (or startTime) as "YYYY-MM-DDTHH:mm". Ask the user for the time if they did not say one.';
         }
         if (a.projectId) { const p = findProject(ctx, a.projectId); if ('error' in p) return p.error; }
+        if (a.areaId) {
+            if (a.projectId) return 'Pass projectId or areaId, not both (a project already belongs to its area).';
+            const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error;
+        }
         return null;
     },
     execute: async (a, ctx) => {
         const props: Partial<Task> = {};
         const project = a.projectId ? (findProject(ctx, a.projectId) as { project: Project }).project : undefined;
+        const area = a.areaId ? (findArea(ctx, a.areaId) as { area: Area }).area : undefined;
         if (project) props.projectId = project.id;
+        if (area) props.areaId = area.id;
         if (a.dueDate) props.dueDate = normWhen(ctx, a.dueDate);
         if (a.startTime) props.startTime = normWhen(ctx, a.startTime);
         if (a.priority) props.priority = a.priority as TaskPriority;
@@ -243,7 +270,7 @@ const addTask: AssistantTool = {
         if (a.tags?.length) props.tags = dedupe(normTags(a.tags));
         if (a.description) props.description = a.description;
         if (a.checklist?.length) props.checklist = checklistFrom(a.checklist);
-        props.status = (a.status as TaskStatus) ?? (project || props.dueDate || props.startTime ? 'next' : 'inbox');
+        props.status = (a.status as TaskStatus) ?? (project || area || props.dueDate || props.startTime ? 'next' : 'inbox');
         if (a.remind || a.reminderMinutesBefore !== undefined) {
             props.reminderPolicy = 'send';
             if (a.reminderMinutesBefore) props.dueReminderLeadMinutes = a.reminderMinutesBefore;
@@ -251,11 +278,14 @@ const addTask: AssistantTool = {
         const res = await ctx.port.addTask(a.title, props);
         if (!res.success || !res.id) return fail(res.error ?? 'Could not create the task');
         const when = props.dueDate ?? props.startTime;
+        const reason = project || area ? reasonOf(a.reason) : undefined;
+        const where = project ? ` · ${project.title}` : area ? ` · ${area.name}` : '';
         return {
             ok: true,
-            data: { id: shortId(res.id), title: a.title, status: props.status, due: props.dueDate, start: props.startTime, reminder: props.reminderPolicy === 'send' },
+            data: { id: shortId(res.id), title: a.title, status: props.status, due: props.dueDate, start: props.startTime, reminder: props.reminderPolicy === 'send', ...(project ? { project: project.title } : {}), ...(area ? { area: area.name } : {}) },
             change: {
-                label: `Added '${a.title}'${when ? ` · ${formatWhen(when)}` : ''}${props.reminderPolicy === 'send' ? ' · reminder' : ''}`,
+                ...(reason ? { reason } : {}),
+                label: `Added '${a.title}'${where}${when ? ` · ${formatWhen(when)}` : ''}${props.reminderPolicy === 'send' ? ' · reminder' : ''}`,
                 undoOps: [{ kind: 'deleteTask', taskId: res.id }],
                 changes: [{ taskId: res.id, title: a.title, before: {}, after: { ...props } }],
             },
@@ -278,6 +308,8 @@ const updateTask: AssistantTool = {
             startTime: { ...dateProp('Scheduled start (null clears)'), nullable: true },
             priority: { type: 'string', enum: PRIORITIES, nullable: true },
             projectId: { type: 'string', nullable: true, description: 'Project id or exact title; null removes from project.' },
+            areaId: { type: 'string', nullable: true, description: 'Area id or name (moves the task out of its project into the area); null removes the area.' },
+            reason: reasonProp,
             contexts: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             tags: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             description: { type: 'string', maxLength: 4000 },
@@ -296,6 +328,10 @@ const updateTask: AssistantTool = {
             if (!(hasTimeOf(due) || hasTimeOf(start))) return 'A reminder needs a due/start time ("YYYY-MM-DDTHH:mm").';
         }
         if (typeof a.projectId === 'string') { const p = findProject(ctx, a.projectId); if ('error' in p) return p.error; }
+        if (typeof a.areaId === 'string') {
+            if (typeof a.projectId === 'string') return 'Pass projectId or areaId, not both (a project already belongs to its area).';
+            const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error;
+        }
         return null;
     },
     execute: async (a, ctx) => {
@@ -305,16 +341,29 @@ const updateTask: AssistantTool = {
         if (a.dueDate !== undefined) updates.dueDate = a.dueDate === null ? undefined : normWhen(ctx, a.dueDate);
         if (a.startTime !== undefined) updates.startTime = a.startTime === null ? undefined : normWhen(ctx, a.startTime);
         if (a.projectId !== undefined) updates.projectId = a.projectId === null ? undefined : (findProject(ctx, a.projectId) as { project: Project }).project.id;
+        if (a.areaId !== undefined) {
+            updates.areaId = a.areaId === null ? undefined : (findArea(ctx, a.areaId) as { area: Area }).area.id;
+            // Moving into an area takes the task out of its project (a project already has its own area).
+            if (a.areaId !== null && task.projectId && a.projectId === undefined) { updates.projectId = undefined; updates.sectionId = undefined; }
+        }
         if (a.contexts) updates.contexts = dedupe(normContexts(a.contexts));
         if (a.tags) updates.tags = dedupe(normTags(a.tags));
         if (a.remind !== undefined) updates.reminderPolicy = a.remind ? 'send' : 'skip';
         const r = await applyUpdate(ctx, task, updates as Partial<Task>);
         if ('error' in r) return fail(r.error!);
-        const bits = Object.keys(updates).map((k) => (k === 'dueDate' ? `due ${updates.dueDate ? formatWhen(updates.dueDate as string) : 'cleared'}` : k));
+        const { projects, areas } = ctx.port.getSnapshot();
+        const bits = Object.keys(updates).filter((k) => k !== 'sectionId').map((k) => {
+            if (k === 'dueDate') return `due ${updates.dueDate ? formatWhen(updates.dueDate as string) : 'cleared'}`;
+            if (k === 'projectId' && updates.projectId) return `→ ${projects.find((p) => p.id === updates.projectId)?.title ?? 'project'}`;
+            if (k === 'areaId' && updates.areaId) return `→ ${areas.find((x) => x.id === updates.areaId)?.name ?? 'area'}`;
+            return k;
+        });
+        const routed = Boolean(updates.projectId || updates.areaId);
+        const reason = routed ? reasonOf(a.reason) : undefined;
         return {
             ok: true,
             data: { id: shortId(task.id), updated: Object.keys(updates) },
-            change: { label: `Updated '${task.title}' · ${bits.join(', ')}`, undoOps: [r.undo!], changes: [r.change!] },
+            change: { ...(reason ? { reason } : {}), label: `Updated '${task.title}' · ${bits.join(', ')}`, undoOps: [r.undo!], changes: [r.change!] },
         };
     },
 };
@@ -360,7 +409,7 @@ export const resolveIds = (ctx: ToolContext, ids: string[]): { tasks: Task[] } |
 
 const moveTasks: AssistantTool = {
     name: 'move_tasks',
-    description: 'Bulk defer/move tasks: set one new dueDate, OR shift due dates by shiftDays, OR change status. Changes touching more than 3 tasks require user confirmation.',
+    description: 'Bulk defer/move tasks: set one new dueDate, OR shift due dates by shiftDays, OR change status, OR move them into a project (projectId) or an area (areaId). Changes touching more than 3 tasks require user confirmation.',
     mutating: true,
     parameters: {
         type: 'object',
@@ -370,20 +419,27 @@ const moveTasks: AssistantTool = {
             dueDate: dateProp('Set this due date on all (time of day is kept if a task had one and you pass a date only)'),
             shiftDays: { type: 'integer', minimum: -365, maximum: 365, description: 'Shift existing due (and start) dates by N days; tasks without due date get today+N.' },
             status: { type: 'string', enum: STATUSES.filter((s) => s !== 'done') },
+            projectId: { type: 'string', description: 'Move all into this project (id or exact title).' },
+            areaId: { type: 'string', description: 'Move all into this area (id or name); they leave their projects.' },
+            reason: reasonProp,
         },
     },
     validate: (a, ctx) => {
-        const modes = ['dueDate', 'shiftDays', 'status'].filter((k) => a[k] !== undefined);
-        if (modes.length !== 1) return 'Pass exactly one of dueDate, shiftDays or status.';
+        const modes = ['dueDate', 'shiftDays', 'status', 'projectId', 'areaId'].filter((k) => a[k] !== undefined);
+        if (modes.length !== 1) return 'Pass exactly one of dueDate, shiftDays, status, projectId or areaId.';
         const bad = validateWhen(ctx, a.dueDate, 'dueDate');
         if (bad) return bad;
+        if (a.projectId) { const p = findProject(ctx, a.projectId); if ('error' in p) return p.error; }
+        if (a.areaId) { const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error; }
         const r = resolveIds(ctx, a.ids);
         return 'error' in r ? r.error : null;
     },
     confirmation: (a, ctx) => {
         const { tasks } = resolveIds(ctx, a.ids) as { tasks: Task[] };
         if (tasks.length <= BULK_CONFIRM_THRESHOLD) return null;
-        const what = a.dueDate ? `due ${formatWhen(a.dueDate)}` : a.shiftDays !== undefined ? `shift ${a.shiftDays} day(s)` : `status ${a.status}`;
+        const what = a.dueDate ? `due ${formatWhen(a.dueDate)}` : a.shiftDays !== undefined ? `shift ${a.shiftDays} day(s)`
+            : a.projectId ? `to project ${(findProject(ctx, a.projectId) as { project: Project }).project.title}`
+                : a.areaId ? `to area ${(findArea(ctx, a.areaId) as { area: Area }).area.name}` : `status ${a.status}`;
         return { reason: `Bulk change of ${tasks.length} tasks`, summary: `Move ${tasks.length} tasks: ${what}`, affectedTaskIds: tasks.map((t) => t.id) };
     },
     execute: async (a, ctx) => {
@@ -391,9 +447,16 @@ const moveTasks: AssistantTool = {
         const undoOps: UndoOp[] = [];
         const changes: ChangeEntry['changes'] = [];
         const failures: string[] = [];
+        const targetProject = a.projectId ? (findProject(ctx, a.projectId) as { project: Project }).project : undefined;
+        const targetArea = a.areaId ? (findArea(ctx, a.areaId) as { area: Area }).area : undefined;
         for (const task of tasks) {
             const updates: Record<string, unknown> = {};
             if (a.status) updates.status = a.status;
+            if (targetProject) { updates.projectId = targetProject.id; if (task.areaId) updates.areaId = undefined; }
+            if (targetArea) {
+                updates.areaId = targetArea.id;
+                if (task.projectId) { updates.projectId = undefined; updates.sectionId = undefined; }
+            }
             if (a.dueDate) {
                 const v = normWhen(ctx, a.dueDate);
                 updates.dueDate = !hasTimeOf(v) && hasTimeOf(task.dueDate) ? `${v}T${task.dueDate!.slice(11, 16)}` : v;
@@ -407,11 +470,13 @@ const moveTasks: AssistantTool = {
             else { undoOps.push(r.undo!); changes.push(r.change!); }
         }
         if (changes.length === 0) return fail(`No task was changed. ${failures.join('; ')}`);
-        const what = a.dueDate ? `due ${formatWhen(normWhen(ctx, a.dueDate))}` : a.shiftDays !== undefined ? `${a.shiftDays > 0 ? '+' : ''}${a.shiftDays}d` : `→ ${a.status}`;
+        const what = a.dueDate ? `due ${formatWhen(normWhen(ctx, a.dueDate))}` : a.shiftDays !== undefined ? `${a.shiftDays > 0 ? '+' : ''}${a.shiftDays}d`
+            : targetProject ? `→ ${targetProject.title}` : targetArea ? `→ ${targetArea.name}` : `→ ${a.status}`;
+        const reason = targetProject || targetArea ? reasonOf(a.reason) : undefined;
         return {
             ok: true,
             data: { moved: changes.length, failed: failures },
-            change: { label: `Moved ${changes.length} task${changes.length === 1 ? '' : 's'} · ${what}`, undoOps, changes },
+            change: { ...(reason ? { reason } : {}), label: `Moved ${changes.length} task${changes.length === 1 ? '' : 's'} · ${what}`, undoOps, changes },
         };
     },
 };
@@ -459,6 +524,7 @@ const listProjects: AssistantTool = {
                 open: tasks.filter((t) => isActive(t) && t.projectId === p.id).length,
                 ...(p.dueDate ? { due: p.dueDate } : {}),
                 ...(p.areaId ? { area: areas.find((x) => x.id === p.areaId)?.name } : {}),
+                ...(projectPurpose(p) ? { purpose: projectPurpose(p) } : {}),
             })),
         };
     },
@@ -487,8 +553,9 @@ const addProject: AssistantTool = {
             title: { type: 'string', minLength: 1, maxLength: 200 },
             status: { type: 'string', enum: ['active', 'someday', 'waiting'] },
             dueDate: dateProp('Project deadline'),
-            notes: { type: 'string', maxLength: 4000 },
-            areaId: { type: 'string' },
+            notes: { type: 'string', maxLength: 4000, description: 'The project\'s purpose / desired outcome (used as its purpose in AI routing).' },
+            areaId: { type: 'string', description: 'Area id or name the project belongs to.' },
+            reason: reasonProp,
             nextActions: { type: 'array', items: actionItem, maxItems: 25, description: 'Ordered first steps; strings are accepted as titles.' },
         },
     },
@@ -499,7 +566,7 @@ const addProject: AssistantTool = {
             const e = validateWhen(ctx, item.dueDate, `nextActions[${i}].dueDate`) ?? validateWhen(ctx, item.startTime, `nextActions[${i}].startTime`);
             if (e) return e;
         }
-        if (a.areaId && !ctx.port.getSnapshot().areas.some((x) => x.id === a.areaId)) return `Unknown areaId "${a.areaId}".`;
+        if (a.areaId) { const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error; }
         const dup = ctx.port.getSnapshot().projects.find((p) => !p.deletedAt && p.title.toLowerCase() === a.title.toLowerCase());
         return dup ? `A project named "${dup.title}" already exists (${shortId(dup.id)}). Add tasks to it with add_task instead.` : null;
     },
@@ -508,7 +575,9 @@ const addProject: AssistantTool = {
         const props: Partial<Project> = { status: a.status ?? 'active' };
         if (a.dueDate) props.dueDate = normWhen(ctx, a.dueDate);
         if (a.notes) props.supportNotes = a.notes;
-        if (a.areaId) props.areaId = a.areaId;
+        const area = a.areaId ? (findArea(ctx, a.areaId) as { area: Area }).area : undefined;
+        if (area) props.areaId = area.id;
+        const reason = area ? reasonOf(a.reason) : undefined;
         const project = await ctx.port.addProject(a.title, PROJECT_COLORS[count % PROJECT_COLORS.length], props);
         if (!project) return fail('Could not create the project');
         const created: Array<{ id: string; title: string; due?: string }> = [];
@@ -527,7 +596,8 @@ const addProject: AssistantTool = {
             ok: true,
             data: { projectId: shortId(project.id), title: a.title, tasks: created.map((c) => ({ id: shortId(c.id), title: c.title, due: c.due })), failed: errors },
             change: {
-                label: `Created project '${a.title}'${created.length ? ` with ${created.length} task${created.length === 1 ? '' : 's'}` : ''}`,
+                ...(reason ? { reason } : {}),
+                label: `Created project '${a.title}'${area ? ` in ${area.name}` : ''}${created.length ? ` with ${created.length} task${created.length === 1 ? '' : 's'}` : ''}`,
                 undoOps: [{ kind: 'deleteProject', projectId: project.id }],
                 changes: [{ taskId: project.id, title: a.title, before: {}, after: { project: a.title, tasks: created.map((c) => c.title) } }],
             },

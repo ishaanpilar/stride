@@ -1,4 +1,4 @@
-import { type Area, type Project, type ProjectSequenceTaskCue, type RangeSelectionOptions, type StoreActionResult, type Task } from '@stride/core';
+import { tFallback, type Area, type Project, type ProjectSequenceTaskCue, type RangeSelectionOptions, type StoreActionResult, type Task } from '@stride/core';
 import { useDraggable } from '@dnd-kit/core';
 import { useSortable } from '@dnd-kit/sortable';
 import { SORTABLE_TRANSITION } from '../../../lib/motion';
@@ -6,6 +6,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Trash2 } from 'lucide-react';
 import { TaskItem } from '../../TaskItem';
 import { AreaColorPicker } from './AreaColorPicker';
+import { AreaContextEditor, AreaContextToggle } from './AreaContextEditor';
+import { useId, useState } from 'react';
 import type { ProjectAreaSection } from './project-area-collapse';
 import { isImeComposing } from '../../../lib/ime';
 import { cn } from '../../../lib/utils';
@@ -40,9 +42,12 @@ export function SortableAreaRow({
         if (nextColor === area.color) return;
         void Promise.resolve(onUpdateColor(area.id, nextColor));
     };
+    const [contextOpen, setContextOpen] = useState(false);
+    const contextId = useId();
 
     return (
-        <div ref={setNodeRef} style={style} className="flex items-center gap-2">
+        <div ref={setNodeRef} style={style} className="space-y-2">
+        <div className="flex items-center gap-2">
             <button
                 type="button"
                 {...attributes}
@@ -77,6 +82,13 @@ export function SortableAreaRow({
                 }}
                 className="flex-1 bg-well rounded-control px-2 py-1 text-sm focus-ring"
             />
+            <AreaContextToggle
+                area={area}
+                open={contextOpen}
+                onToggle={() => setContextOpen((v) => !v)}
+                controls={contextId}
+                label={`${tFallback(t, 'areaContext.toggle', 'Area context')}: ${area.name}`}
+            />
             <button
                 type="button"
                 onClick={() => onDelete(area.id)}
@@ -85,6 +97,8 @@ export function SortableAreaRow({
             >
                 <Trash2 className="w-4 h-4" />
             </button>
+        </div>
+        {contextOpen && <div id={contextId}><AreaContextEditor area={area} t={t} /></div>}
         </div>
     );
 }

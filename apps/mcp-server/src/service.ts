@@ -302,6 +302,9 @@ export type AddAreaInput = {
   name: string;
   color?: string;
   icon?: string;
+  description?: string;
+  keywords?: string[];
+  peopleIds?: string[];
 };
 
 export type UpdateAreaInput = {
@@ -309,6 +312,9 @@ export type UpdateAreaInput = {
   name?: string;
   color?: string | null;
   icon?: string | null;
+  description?: string | null;
+  keywords?: string[] | null;
+  peopleIds?: string[] | null;
 };
 
 export type AddPersonInput = {
@@ -670,6 +676,9 @@ export const createService = (
           props: filterUndefined({
             color: input.color,
             icon: input.icon,
+            description: input.description,
+            keywords: input.keywords,
+            peopleIds: input.peopleIds,
           }) as Partial<CoreArea>,
         });
       }),
@@ -679,6 +688,9 @@ export const createService = (
         if (input.name !== undefined) updates.name = validateAreaName(input.name);
         if (input.color !== undefined) updates.color = input.color ?? undefined;
         if (input.icon !== undefined) updates.icon = input.icon ?? undefined;
+        if (input.description !== undefined) updates.description = input.description ?? undefined;
+        if (input.keywords !== undefined) updates.keywords = input.keywords ?? undefined;
+        if (input.peopleIds !== undefined) updates.peopleIds = input.peopleIds ?? undefined;
         return core.updateArea({ id: input.id, updates });
       }),
     deleteArea: async (id) => runCoreWriteWithRetries(options, deps, (core) => core.deleteArea(id)),

@@ -433,6 +433,8 @@ const BASE_AREA_COLUMNS = [
   'deletedAt',
 ];
 
+const AREA_CONTEXT_COLUMNS = ['description', 'keywords', 'peopleIds'];
+
 const areaColumnsCache = new WeakMap<DbClient, { hasOrderNum: boolean; selectColumns: string[] }>();
 
 const getAreaColumns = (db: DbClient) => {
@@ -442,7 +444,11 @@ const getAreaColumns = (db: DbClient) => {
     const columns = db.prepare('PRAGMA table_info(areas)').all<ColumnInfoRow>();
     const names = new Set<string>(columns.map((col) => String(col.name)));
     const hasOrderNum = names.has('orderNum');
-    const selectColumns = BASE_AREA_COLUMNS.filter((name) => hasOrderNum || name !== 'orderNum');
+    const selectColumns = [
+      ...BASE_AREA_COLUMNS.filter((name) => hasOrderNum || name !== 'orderNum'),
+      // Area routing context columns are optional: older databases do not have them yet.
+      ...AREA_CONTEXT_COLUMNS.filter((name) => names.has(name)),
+    ];
     const resolved = { hasOrderNum, selectColumns };
     areaColumnsCache.set(db, resolved);
     return resolved;

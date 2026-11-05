@@ -157,7 +157,10 @@ CREATE TABLE IF NOT EXISTS areas (
   rev INTEGER,
   revBy TEXT,
   createdAt TEXT,
-  updatedAt TEXT
+  updatedAt TEXT,
+  description TEXT,
+  keywords TEXT,
+  peopleIds TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sections (
@@ -481,8 +484,19 @@ fn sqlite_schema_state_is_current(
         // A database carried over from Mindwtr can be "current" by generation yet still have the
         // legacy suppressMindwtrReminders column; force the migration path so the renamed column
         // is added and backfilled.
-        && has_column(conn, "tasks", "suppressStrideReminders")?)
+        && has_column(conn, "tasks", "suppressStrideReminders")?
+        // Area routing context (description, keywords, linked people) was added later; a database
+        // whose generation is current but lacks these columns must still take the migration path,
+        // otherwise every save fails with "table areas has no column named description".
+        && AREA_CONTEXT_COLUMNS
+            .iter()
+            .try_fold(true, |all, column| {
+                Ok::<bool, String>(all && has_column(conn, "areas", column)?)
+            })?)
 }
+
+/// Optional Area routing-context columns (all TEXT; keywords and peopleIds hold JSON arrays).
+const AREA_CONTEXT_COLUMNS: [&str; 3] = ["description", "keywords", "peopleIds"];
 
 fn record_sqlite_schema_state(conn: &Connection, schema_generation: i64) -> Result<(), String> {
     conn.execute(
@@ -556,6 +570,9 @@ fn initialize_sqlite_schema(conn: &mut Connection) -> Result<i64, String> {
             "TEXT",
         )?;
         ensure_column(&transaction, "areas", "projectArchivedAt", "TEXT")?;
+        for column in AREA_CONTEXT_COLUMNS {
+            ensure_column(&transaction, "areas", column, "TEXT")?;
+        }
         ensure_tasks_purged_at_column(&transaction)?;
         ensure_tasks_order_column(&transaction)?;
         ensure_column(&transaction, "tasks", "boardOrder", "INTEGER")?;
@@ -3345,7 +3362,7 @@ fn replace_prepared_data_in_transaction(
         .unwrap_or_default();
     for area in areas {
         execute_insert(
-            "INSERT OR REPLACE INTO areas (id, name, color, icon, orderNum, deletedAt, deletedAtBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR REPLACE INTO areas (id, name, color, icon, orderNum, deletedAt, deletedAtBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt, description, keywords, peopleIds) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 area.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
                 area.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
@@ -3360,6 +3377,9 @@ fn replace_prepared_data_in_transaction(
                 area.get("revBy").and_then(|v| v.as_str()),
                 area.get("createdAt").and_then(|v| v.as_str()),
                 area.get("updatedAt").and_then(|v| v.as_str()),
+                area.get("description").and_then(|v| v.as_str()),
+                area_string_array_json(area.get("keywords")),
+                area_string_array_json(area.get("peopleIds")),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -3775,7 +3795,35 @@ fn row_to_area_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
             map.insert("updatedAt".to_string(), Value::String(v));
         }
     }
+    if let Ok(Some(v)) = row.get::<_, Option<String>>("description") {
+        if !v.is_empty() {
+            map.insert("description".to_string(), Value::String(v));
+        }
+    }
+    for column in ["keywords", "peopleIds"] {
+        if let Ok(Some(raw)) = row.get::<_, Option<String>>(column) {
+            if let Value::Array(items) = parse_json_array(Some(raw)) {
+                let strings: Vec<Value> = items.into_iter().filter(|item| item.is_string()).collect();
+                if !strings.is_empty() {
+                    map.insert(column.to_string(), Value::Array(strings));
+                }
+            }
+        }
+    }
     Ok(Value::Object(map))
+}
+
+/// JSON text for an optional string-array Area field; empty or malformed arrays are stored as NULL.
+fn area_string_array_json(value: Option<&Value>) -> Option<String> {
+    let items: Vec<&Value> = value
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter(|item| item.is_string()).collect())
+        .unwrap_or_default();
+    if items.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&items).ok()
+    }
 }
 
 pub(crate) fn read_sqlite_data(conn: &Connection) -> Result<Value, String> {
@@ -6893,6 +6941,63 @@ mod tests {
             .query_row("SELECT suppressStrideReminders FROM tasks WHERE id='a'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn schema_state_is_not_current_when_area_context_columns_are_missing() {
+        // A database from before Area routing context: generation recorded as current, but the
+        // areas table has none of the new columns. The shortcut must not skip the migration.
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE areas DROP COLUMN description;
+             ALTER TABLE areas DROP COLUMN keywords;
+             ALTER TABLE areas DROP COLUMN peopleIds;",
+        )
+        .unwrap();
+        let generation = sqlite_schema_generation(&conn).unwrap();
+        record_sqlite_schema_state(&conn, generation).unwrap();
+        assert!(!sqlite_schema_state_is_current(&conn, generation).unwrap());
+
+        initialize_sqlite_schema(&mut conn).unwrap();
+        for column in AREA_CONTEXT_COLUMNS {
+            assert!(has_column(&conn, "areas", column).unwrap(), "missing areas.{column}");
+        }
+        let generation = sqlite_schema_generation(&conn).unwrap();
+        assert!(sqlite_schema_state_is_current(&conn, generation).unwrap());
+    }
+
+    #[test]
+    fn area_context_fields_round_trip_and_old_areas_stay_unchanged() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        let data = serde_json::json!({
+            "tasks": [], "projects": [], "sections": [], "people": [], "settings": {},
+            "areas": [
+                {
+                    "id": "frackly", "name": "Frackly Works", "order": 0,
+                    "description": "3D printing company. I run creative direction.",
+                    "keywords": ["Printstick", "3D printing"],
+                    "peopleIds": ["person-akash"],
+                    "createdAt": "2026-11-01T00:00:00.000Z", "updatedAt": "2026-11-01T00:00:00.000Z"
+                },
+                {
+                    "id": "old", "name": "Old area", "order": 1, "keywords": [],
+                    "createdAt": "2026-11-01T00:00:00.000Z", "updatedAt": "2026-11-01T00:00:00.000Z"
+                }
+            ]
+        });
+        migrate_json_to_sqlite(&mut conn, &data).unwrap();
+        let read = read_sqlite_data(&conn).unwrap();
+        let areas = read["areas"].as_array().unwrap();
+        let frackly = areas.iter().find(|a| a["id"] == "frackly").unwrap();
+        assert_eq!(frackly["description"], "3D printing company. I run creative direction.");
+        assert_eq!(frackly["keywords"], serde_json::json!(["Printstick", "3D printing"]));
+        assert_eq!(frackly["peopleIds"], serde_json::json!(["person-akash"]));
+        let old = areas.iter().find(|a| a["id"] == "old").unwrap();
+        assert!(old.get("description").is_none());
+        assert!(old.get("keywords").is_none());
+        assert!(old.get("peopleIds").is_none());
     }
 
     #[test]

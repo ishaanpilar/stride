@@ -42,8 +42,8 @@ const readLive = (taskId: string): Task | undefined => useTaskStore.getState()._
 function inputFor(taskId: string): FocusCoachInput | null {
     const task = readLive(taskId);
     if (!task) return null;
-    const { _allTasks, projects } = useTaskStore.getState();
-    return buildFocusCoachInput({ task, tasks: _allTasks, projects }, readFocusCoachFeedbackSummary());
+    const { _allTasks, projects, areas } = useTaskStore.getState();
+    return buildFocusCoachInput({ task, tasks: _allTasks, projects, areas }, readFocusCoachFeedbackSummary());
 }
 
 export function useFocusCoach(taskId: string | undefined, active: boolean, language: Language, tr: (key: string, fallback: string) => string) {

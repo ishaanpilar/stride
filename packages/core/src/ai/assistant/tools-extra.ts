@@ -2,8 +2,10 @@ import type { Area, Project, Recurrence, Task, TaskStatus } from '../../types';
 import { dayKeyOf, formatWhen, hasTimeOf, toLocalDay } from './dates';
 import {
     BULK_CONFIRM_THRESHOLD, PRIORITIES, STATUSES, applyUpdate, compact, dateProp, dedupe, fail, findProject, findTask,
-    idProp, isActive, isLive, normContexts, normTags, normWhen, shortId, validateWhen,
+    idProp, isActive, isLive, normContexts, normTags, normWhen, shortId, validateWhen, findArea, reasonOf,
 } from './tools';
+
+export { findArea };
 import type { AssistantTool, ChangeEntry, JsonSchema, ToolContext, UndoOp } from './types';
 
 /** Stale = open task untouched for this many days. */
@@ -13,18 +15,6 @@ const strArr = (max = 100): JsonSchema => ({ type: 'array', items: { type: 'stri
 const idsProp: JsonSchema = { ...strArr(100), description: 'Task ids from list_tasks. Unknown ids are dropped.' };
 
 // ---- lookups ---------------------------------------------------------------------------
-
-export function findArea(ctx: ToolContext, ref: string): { area: Area } | { error: string } {
-    const live = ctx.port.getSnapshot().areas.filter((a) => !a.deletedAt);
-    const exact = live.find((a) => a.id === ref) ?? (ref.length >= 4 ? live.find((a) => a.id.startsWith(ref)) : undefined);
-    if (exact) return { area: exact };
-    const lower = ref.trim().toLowerCase();
-    const byName = live.filter((a) => a.name.toLowerCase() === lower);
-    if (byName.length === 1) return { area: byName[0] };
-    const partial = live.filter((a) => a.name.toLowerCase().includes(lower));
-    if (partial.length === 1) return { area: partial[0] };
-    return { error: `Unknown area "${ref}". Known areas: ${live.map((a) => `${a.name} (${shortId(a.id)})`).join('; ') || 'none'}. Use list_areas.` };
-}
 
 /** Resolve task ids, DROPPING unknown ones (reported back to the model). */
 export function resolveIdsLenient(ctx: ToolContext, ids: string[]): { tasks: Task[]; dropped: string[] } {
@@ -265,74 +255,6 @@ const mergeProjects: AssistantTool = {
 
 // ---- areas -----------------------------------------------------------------------------
 
-const listAreas: AssistantTool = {
-    name: 'list_areas',
-    description: 'List areas of life/work with project and open task counts.',
-    mutating: false,
-    parameters: { type: 'object', properties: {} },
-    execute: async (_a, ctx) => {
-        const { areas, projects, tasks } = ctx.port.getSnapshot();
-        return {
-            ok: true,
-            data: areas.filter((a) => !a.deletedAt).map((a) => ({
-                id: shortId(a.id), name: a.name, ...(a.color ? { color: a.color } : {}),
-                projects: projects.filter((p) => !p.deletedAt && p.status !== 'archived' && p.areaId === a.id).length,
-                open: tasks.filter((t) => isActive(t) && (t.areaId === a.id || projects.find((p) => p.id === t.projectId)?.areaId === a.id)).length,
-            })),
-        };
-    },
-};
-
-const addArea: AssistantTool = {
-    name: 'add_area',
-    description: 'Create an area.',
-    mutating: true,
-    parameters: { type: 'object', required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, color: { type: 'string', description: 'Hex like "#10b981".' } } },
-    validate: (a, ctx) => {
-        if (a.color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(a.color)) return 'color must be a hex colour like "#10b981".';
-        const dup = ctx.port.getSnapshot().areas.find((x) => !x.deletedAt && x.name.toLowerCase() === a.name.toLowerCase());
-        return dup ? `An area named "${dup.name}" already exists (${shortId(dup.id)}).` : null;
-    },
-    execute: async (a, ctx) => {
-        const area = await ctx.port.addArea(a.name, a.color ? { color: a.color } : {});
-        if (!area) return fail('Could not create the area');
-        return {
-            ok: true, data: { id: shortId(area.id), name: a.name },
-            change: { kind: 'area', label: `Created area '${a.name}'`, undoOps: [{ kind: 'deleteArea', areaId: area.id }], changes: [{ taskId: area.id, title: a.name, before: {}, after: { area: a.name } }] },
-        };
-    },
-};
-
-const updateArea: AssistantTool = {
-    name: 'update_area',
-    description: 'Rename an area or change its colour.',
-    mutating: true,
-    parameters: { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1, description: 'Area id or name.' }, name: { type: 'string', minLength: 1, maxLength: 100 }, color: { type: 'string' } } },
-    validate: (a, ctx) => {
-        const f = findArea(ctx, a.id);
-        if ('error' in f) return f.error;
-        if (a.name === undefined && a.color === undefined) return 'Nothing to change: pass name or color.';
-        return a.color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(a.color) ? 'color must be a hex colour.' : null;
-    },
-    execute: async (a, ctx) => {
-        const area = (findArea(ctx, a.id) as { area: Area }).area;
-        const updates: Partial<Area> = {};
-        if (a.name !== undefined) updates.name = a.name;
-        if (a.color !== undefined) updates.color = a.color;
-        const before: Record<string, unknown> = {}; const fields: Record<string, unknown> = {}; const clear: string[] = [];
-        for (const k of Object.keys(updates)) { const v = (area as unknown as Record<string, unknown>)[k]; if (v === undefined) clear.push(k); else { fields[k] = v; before[k] = v; } }
-        const res = await ctx.port.updateArea(area.id, updates);
-        if (!res.success) return fail(res.error ?? 'Could not update the area');
-        return {
-            ok: true, data: { id: shortId(area.id) },
-            change: {
-                kind: 'area', label: a.name && a.name !== area.name ? `Renamed area '${area.name}' to '${a.name}'` : `Updated area '${area.name}'`,
-                undoOps: [{ kind: 'restoreAreaFields', areaId: area.id, fields: fields as Partial<Area>, clear }], changes: [{ taskId: area.id, title: area.name, before, after: { ...updates } }],
-            },
-        };
-    },
-};
-
 const deleteArea: AssistantTool = {
     name: 'delete_area',
     description: 'Delete an area (projects/tasks are kept). Always needs user confirmation.',
@@ -359,7 +281,7 @@ const assignProjectToArea: AssistantTool = {
     name: 'assign_project_to_area',
     description: 'Put a project into an area (areaId null removes it from its area).',
     mutating: true,
-    parameters: { type: 'object', required: ['projectId', 'areaId'], properties: { projectId: { type: 'string', minLength: 1 }, areaId: { type: 'string', nullable: true, description: 'Area id or name, or null.' } } },
+    parameters: { type: 'object', required: ['projectId', 'areaId'], properties: { projectId: { type: 'string', minLength: 1 }, areaId: { type: 'string', nullable: true, description: 'Area id or name, or null.' }, reason: { type: 'string', maxLength: 160, description: 'Short why (at most 12 words), shown to the user.' } } },
     validate: (a, ctx) => {
         const p = findProject(ctx, a.projectId);
         if ('error' in p) return p.error;
@@ -371,7 +293,8 @@ const assignProjectToArea: AssistantTool = {
         const area = a.areaId ? (findArea(ctx, a.areaId) as { area: Area }).area : undefined;
         const r = await applyProjectUpdate(ctx, project, { areaId: area?.id });
         if ('error' in r) return fail(r.error!);
-        return { ok: true, data: { project: shortId(project.id), area: area?.name ?? null }, change: { kind: 'project', label: area ? `Moved project '${project.title}' to area '${area.name}'` : `Removed project '${project.title}' from its area`, undoOps: [r.undo!], changes: [r.change!] } };
+        const reason = area ? reasonOf(a.reason) : undefined;
+        return { ok: true, data: { project: shortId(project.id), area: area?.name ?? null }, change: { ...(reason ? { reason } : {}), kind: 'project', label: area ? `Moved project '${project.title}' to area '${area.name}'` : `Removed project '${project.title}' from its area`, undoOps: [r.undo!], changes: [r.change!] } };
     },
 };
 
@@ -794,7 +717,7 @@ const getOverview: AssistantTool = {
 
 export const EXTRA_TOOLS: AssistantTool[] = [
     updateProject, archiveProject, deleteProject, mergeProjects,
-    listAreas, addArea, updateArea, deleteArea, assignProjectToArea,
+    deleteArea, assignProjectToArea,
     listTags, tagTasks, renameTag, deleteTag,
     bulkUpdate, findDuplicates, mergeTasks, archiveDone,
     scheduleTask, planDay, setRecurrence, setFocus,

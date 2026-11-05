@@ -81,5 +81,6 @@ async function runUndoOp(op: UndoOp, port: AssistantStorePort): Promise<UndoResu
             for (const key of op.clear) updates[key] = undefined;
             return wrap(await port.updateArea(op.areaId, updates as Partial<Area>));
         }
+        case 'deletePerson': return port.deletePerson ? wrap(await port.deletePerson(op.personId)) : { ok: false, error: 'Undo not supported' };
     }
 }

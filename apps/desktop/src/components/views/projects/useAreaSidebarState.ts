@@ -58,6 +58,14 @@ export function useAreaSidebarState({
         return [included, excluded].filter(Boolean).join(' · ');
     }, [selectedArea, areaById, NO_AREA, t]);
 
+    /** The area's description when exactly one real area is selected (shown subtly under the header). */
+    const areaFilterDescription = useMemo(() => {
+        if (!isAreaFilterSelectionActive(selectedArea)) return null;
+        if (selectedArea.included.length !== 1 || selectedArea.excluded.length > 0) return null;
+        const area = areaById.get(selectedArea.included[0]);
+        return area?.description?.trim() || null;
+    }, [selectedArea, areaById]);
+
     const areaSensors = useSensors(
         useSensor(PointerSensor, {
             activationConstraint: { distance: 4 },
@@ -102,6 +110,7 @@ export function useAreaSidebarState({
         sortedAreas,
         areaById,
         areaFilterLabel,
+        areaFilterDescription,
         areaSensors,
         toggleAreaCollapse,
         handleAreaDragEnd,

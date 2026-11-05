@@ -247,3 +247,24 @@ describe('feedback', () => {
         expect(summarizeFocusCoachFeedback([])).toEqual([]);
     });
 });
+
+describe('focus coach area context', () => {
+    it('adds the task area description and project purpose to the prompt context', async () => {
+        const { buildFocusCoachInput } = await import('./focus-coach-ai');
+        const now = new Date().toISOString();
+        const area = { id: 'a1', name: 'Frackly Works', description: '3D printing company; I lead creative direction', order: 0, createdAt: now, updatedAt: now };
+        const project = { id: 'p1', title: 'Printstick v2', status: 'active', color: '#000', order: 0, areaId: 'a1', supportNotes: 'Ship v2 with new packaging', createdAt: now, updatedAt: now };
+        const task = { id: 't1', title: 'Packaging requirement', status: 'next', projectId: 'p1', tags: [], contexts: [], createdAt: now, updatedAt: now };
+        const input = buildFocusCoachInput({ task: task as never, tasks: [task as never], projects: [project as never], areas: [area as never] });
+        expect(input.context.areaContext).toContain('Frackly Works');
+        expect(input.context.areaContext).toContain('3D printing');
+    });
+
+    it('leaves area context out when no areas are passed', async () => {
+        const { buildFocusCoachInput } = await import('./focus-coach-ai');
+        const now = new Date().toISOString();
+        const task = { id: 't1', title: 'Fix the washing machine', status: 'next', tags: [], contexts: [], createdAt: now, updatedAt: now };
+        const input = buildFocusCoachInput({ task: task as never, tasks: [task as never], projects: [] });
+        expect(input.context.areaContext).toBeUndefined();
+    });
+});

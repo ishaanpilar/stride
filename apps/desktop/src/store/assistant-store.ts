@@ -13,6 +13,7 @@ import {
 } from '@stride/core';
 import type { Language } from '@stride/core';
 import { createAssistantClient, createStoreAssistantPort } from '../lib/assistant-service';
+import { syncAssistantPlacements } from '../lib/ai-routing';
 
 const storage = () => {
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -45,7 +46,11 @@ const persist = (thread: AssistantThread) => {
 };
 
 const attachLog = (set: (fn: (s: AssistantState) => Partial<AssistantState>) => void) => {
-    changeLog.subscribe(() => set((s) => ({ logVersion: s.logVersion + 1 })));
+    changeLog.subscribe(() => {
+        // Track where the Assistant routed tasks so a later user move becomes a routing correction.
+        syncAssistantPlacements(changeLog.list());
+        set((s) => ({ logVersion: s.logVersion + 1 }));
+    });
 };
 
 export const useAssistantStore = create<AssistantState>((set, get) => {

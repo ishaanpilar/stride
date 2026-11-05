@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Brain, Loader2, X } from 'lucide-react';
 import {
     tFallback,
+    useTaskStore,
+    type RoutingCorrection,
     type ApplyMindSweepResult,
     type MindSweepKind,
     type MindSweepProposal,
@@ -17,9 +19,11 @@ import {
     generateQuickCaptureProposal,
     undoQuickCapture,
 } from '../lib/quick-capture-service';
+import { saveRoutingCorrection } from '../lib/ai-routing';
 
 type Step = 'capture' | 'review' | 'done';
-type Row = MindSweepProposalItem & { included: boolean };
+/** `aiAreaName` remembers what the AI suggested, so a user change can be learned as a correction. */
+type Row = MindSweepProposalItem & { included: boolean; aiAreaName?: string };
 
 export type QuickCaptureModalProps = {
     /** Test seams; default to the real AI-backed service. */
@@ -27,6 +31,10 @@ export type QuickCaptureModalProps = {
     apply?: (proposal: Pick<MindSweepProposal, 'projects' | 'items'>) => Promise<ApplyMindSweepResult>;
     undo?: (applied: Pick<ApplyMindSweepResult, 'projectIds' | 'taskIds'>) => Promise<boolean>;
     onOpenAiSettings?: () => void;
+    /** Area names offered as chips when the AI is unsure (defaults to the store's live areas). */
+    areaNames?: string[];
+    /** Called with a routing correction when the user changes or picks an area (defaults to the local log). */
+    onCorrection?: (entry: Omit<RoutingCorrection, 'at'>) => void;
     /** Controlled open state (used by tests); otherwise opens on the global quick-capture event. */
     isOpen?: boolean;
     onClose?: () => void;
@@ -63,6 +71,12 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const titleId = useId();
 
+    const storeAreas = useTaskStore((state) => state.areas);
+    const areaNames = useMemo(
+        () => props.areaNames ?? storeAreas.filter((a) => !a.deletedAt).sort((a, b) => a.order - b.order).map((a) => a.name),
+        [props.areaNames, storeAreas],
+    );
+    const onCorrection = props.onCorrection ?? saveRoutingCorrection;
     const generate = props.generate ?? ((value: string) => generateQuickCaptureProposal(value, 'en'));
     const apply = props.apply ?? applyQuickCapture;
     const undo = props.undo ?? undoQuickCapture;
@@ -115,7 +129,7 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
         }
         if (id !== runId.current) return;
         setProposal(result);
-        setRows(result.items.map((item) => ({ ...item, included: true })));
+        setRows(result.items.map((item) => ({ ...item, included: true, aiAreaName: item.areaName })));
         setLoading(false);
     }, [text, loading, props.generate]);
 
@@ -128,12 +142,18 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
     const confirm = useCallback(async () => {
         if (!proposal || includedRows.length === 0 || saving) return;
         setSaving(true);
-        const items = includedRows.map(({ included: _included, ...item }) => item);
+        for (const row of includedRows) {
+            // Learn from the user: a changed AI area, or an area picked where the AI was unsure.
+            if (row.areaName && row.areaName !== row.aiAreaName && !row.projectRef && !row.projectName) {
+                onCorrection({ text: row.title, ...(row.aiAreaName ? { fromArea: row.aiAreaName } : {}), toArea: row.areaName });
+            }
+        }
+        const items = includedRows.map(({ included: _included, aiAreaName: _ai, ...item }) => item);
         const result = await apply({ projects: proposal.projects, items });
         setApplied(result);
         setSaving(false);
         setStep('done');
-    }, [apply, includedRows, proposal, saving]);
+    }, [apply, includedRows, onCorrection, proposal, saving]);
 
     const handleUndo = useCallback(async () => {
         if (!applied) return;
@@ -154,6 +174,9 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
     const renderRow = (row: Row, nested: boolean) => {
         const projectLabel = row.projectName ?? (row.projectRef ? projectsById.get(row.projectRef)?.title : undefined);
         const dateValue = row.dueDate ?? row.startTime;
+        const askArea = !projectLabel && !row.areaName && (row.needsArea || Boolean(row.aiAreaName)) && areaNames.length > 0;
+        // The AI's explanation only while its choice stands.
+        const showReason = Boolean(row.reason) && (projectLabel ? true : Boolean(row.areaName) && row.areaName === row.aiAreaName);
         return (
             <li key={row.key} className={`mb-2 flex flex-wrap items-center gap-2 rounded-card bg-card px-3 py-2 shadow-soft-sm ${nested ? 'ml-6' : ''}`}>
                 <input
@@ -180,6 +203,12 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                         <button type="button" aria-label={t('quickCapture.removeProject', 'Remove project')} onClick={() => updateRow(row.key, { projectName: undefined, projectRef: undefined })}><X className="h-3 w-3" /></button>
                     </span>
                 )}
+                {row.areaName && !projectLabel && (
+                    <span className={chipClass}>
+                        {row.areaName}
+                        <button type="button" aria-label={`${t('quickCapture.removeArea', 'Remove area')} ${row.areaName}`} onClick={() => updateRow(row.key, { areaName: undefined })}><X className="h-3 w-3" /></button>
+                    </span>
+                )}
                 {row.waitingFor && (
                     <span className={chipClass}>
                         {row.waitingFor}
@@ -202,6 +231,28 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                         <option key={kind} value={kind}>{KIND_SINGULAR[kind]}</option>
                     ))}
                 </select>
+                {showReason && (
+                    <p className="basis-full pl-6 text-xs text-muted-foreground" data-testid="quick-capture-reason">
+                        {t('quickCapture.reason', 'Why: {{reason}}').replace('{{reason}}', row.reason ?? '')}
+                    </p>
+                )}
+                {askArea && (
+                    <div className="basis-full pl-6" role="group" aria-label={`${t('quickCapture.whichArea', 'Which area?')} ${row.title}`}>
+                        <span className="mr-2 text-xs font-medium text-muted-foreground">{t('quickCapture.whichArea', 'Which area?')}</span>
+                        <span className="inline-flex flex-wrap gap-1.5 align-middle">
+                            {areaNames.slice(0, 8).map((name) => (
+                                <button
+                                    key={name}
+                                    type="button"
+                                    onClick={() => updateRow(row.key, { areaName: name, needsArea: false })}
+                                    className="inline-flex h-[26px] items-center rounded-pill bg-well px-2.5 text-xs font-medium text-foreground hover:bg-accent-soft hover:text-accent-text focus-ring"
+                                >
+                                    {name}
+                                </button>
+                            ))}
+                        </span>
+                    </div>
+                )}
             </li>
         );
     };
@@ -298,6 +349,11 @@ export function QuickCaptureModal(props: QuickCaptureModalProps) {
                                                         <span>{project.title}</span>
                                                         {project.areaName && <span className={chipClass}>{project.areaName}</span>}
                                                         {project.dueDate && <span className={chipClass}>{project.dueDate.replace('T', ' ')}</span>}
+                                                        {project.reason && (
+                                                            <span className="text-xs font-normal text-muted-foreground">
+                                                                {t('quickCapture.reason', 'Why: {{reason}}').replace('{{reason}}', project.reason)}
+                                                            </span>
+                                                        )}
                                                                                     </div>
                                                     <ul>{rows.filter((r) => r.projectRef === project.ref).map((r) => renderRow(r, true))}</ul>
                                                 </div>

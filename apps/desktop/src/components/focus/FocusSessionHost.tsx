@@ -254,9 +254,9 @@ export function FocusSessionHost() {
     const applyAction = async (action: FocusCoachAction): Promise<FocusUndo | null> => (task ? applyFocusCoachAction(task.id, action) : null);
     const askCoach = async (text: string): Promise<FocusCoachReply> => {
         const live = task ? useTaskStore.getState()._allTasks.find((x) => x.id === task.id) ?? task : undefined;
-        const { _allTasks, projects: allProjects } = useTaskStore.getState();
+        const { _allTasks, projects: allProjects, areas: allAreas } = useTaskStore.getState();
         const input = live
-            ? buildFocusCoachInput({ task: live, tasks: _allTasks, projects: allProjects }, readFocusCoachFeedbackSummary())
+            ? buildFocusCoachInput({ task: live, tasks: _allTasks, projects: allProjects, areas: allAreas }, readFocusCoachFeedbackSummary())
             : { title: '', context: {} };
         return requestFocusCoachReply(input, [
             { role: 'coach', text: tr('focus.checkin.blocking', "What's in the way?") },

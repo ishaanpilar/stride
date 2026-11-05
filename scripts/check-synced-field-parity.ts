@@ -562,6 +562,8 @@ const runNativeTaskMapperFixtureChecks = (): string[] => {
             '-framework', 'Foundation',
             '-framework', 'AppKit',
             '-framework', 'CloudKit',
+            // The bridge checks its CloudKit entitlement via SecTask (Security framework).
+            '-framework', 'Security',
             '-o', objcBinary,
         ]);
         failures.push(...objcCompileFailures);

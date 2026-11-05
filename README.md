@@ -21,6 +21,7 @@ Built on David Allen's *Getting Things Done*. Your data stays on your Mac.
 - **Undo for everything**: every AI change lands in a Changes card with its own Undo. Destructive or bulk changes ask first, and a clean-up plan ("rename 2, archive 3, merge 1") is one approval and one Undo.
 - **AI Capture** (⌘⇧K): dump everything on your mind; the AI proposes projects and tasks, you review, then add them in one go.
 - **Morning briefing**: a short plan for the day as a notification and a card in Focus.
+- **Area context**: describe each area (a company, a part of life) with what belongs there, keywords and people, or just tell the Assistant ("Build me an area for Frackly Works: a 3D printing company…"). Capture, the Assistant and the focus coach use it to file work in the right place, say why, ask when unsure, and learn from your corrections.
 
 ### Focus mode
 
@@ -82,7 +83,6 @@ AI-assisted contributions are welcome. See [CONTRIBUTING](docs/CONTRIBUTING.md).
 - Meetings next to tasks
 - Time-blocking tasks onto the calendar, with two-way sync
 - A daily plan and shutdown ritual
-- Area descriptions so the AI always files work under the right company
 - Nightly AI tidy-up with an undo log
 - iPhone app
 

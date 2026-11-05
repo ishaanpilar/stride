@@ -24,6 +24,7 @@ import {
     hasUncompactedPurgedProjectTombstone,
     hasUncompactedPurgedTaskTombstone,
 } from './tombstone-compaction';
+import { normalizeAreaDescription, normalizeAreaKeywords, normalizeAreaPeopleIds } from './area-context';
 
 export const normalizeAppData = (data: AppData): AppData => ({
     tasks: Array.isArray(data.tasks) ? data.tasks : [],
@@ -335,6 +336,15 @@ export type SyncMergeArea = Omit<Area, 'order'> & {
     updatedAt: string;
 };
 
+/** Context fields are optional: only present keys are normalized so old records keep their exact shape. */
+const normalizeAreaContextForSync = (area: Area): Partial<Area> => {
+    const out: Partial<Area> = {};
+    if ('description' in area) out.description = normalizeAreaDescription(area.description);
+    if ('keywords' in area) out.keywords = normalizeAreaKeywords(area.keywords);
+    if ('peopleIds' in area) out.peopleIds = normalizeAreaPeopleIds(area.peopleIds);
+    return out;
+};
+
 export const normalizeAreaForSyncMerge = (area: Area, nowIso: string): SyncMergeArea => {
     const createdAt = normalizeOptionalString(area.createdAt) ?? normalizeOptionalString(area.updatedAt) ?? nowIso;
     const updatedAt = normalizeOptionalString(area.updatedAt) ?? normalizeOptionalString(area.createdAt) ?? nowIso;
@@ -342,6 +352,7 @@ export const normalizeAreaForSyncMerge = (area: Area, nowIso: string): SyncMerge
         ...area,
         color: normalizeOptionalString(area.color),
         icon: normalizeOptionalString(area.icon),
+        ...normalizeAreaContextForSync(area),
         order: Number.isFinite(area.order) ? area.order : undefined,
         createdAt,
         updatedAt,

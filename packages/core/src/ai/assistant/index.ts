@@ -2,6 +2,7 @@ export * from './types';
 export * from './schema';
 export * from './dates';
 export * from './tools';
+export * from './tools-areas';
 export * from './registry';
 export * from './change-log';
 export * from './prompt';

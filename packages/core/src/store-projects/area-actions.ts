@@ -4,6 +4,7 @@ import { areaOrderIdsForIntent, sortAreasForOrderDisplay } from '../area-orderin
 import { countLiveProjectsByArea } from '../area-project-usage';
 import { areaRenameEffect, planAreaColorChange, planAreaEditorSave, planAreaRename, sameAreaAdditionRow, selectAreaRenameScope } from '../area-rename';
 import { logInfo, logWarn } from '../logger';
+import { normalizeAreaContextUpdates } from '../area-context';
 import { clearDerivedCache } from '../store-settings';
 import { generateUUID as uuidv4 } from '../uuid';
 import { taskEditValuesEqual } from '../json-value-equality';
@@ -16,6 +17,15 @@ import type { AppData } from '../types';
 import type { PreparedAreaAuthority, TaskStore, PreparedAreaColor, PreparedAreaCreate, PreparedAreaDelete, PreparedAreaOrder, PreparedTaskEditResult } from '../store-types';
 import type { Area, AreaActions, Project, ProjectActionContext, Section, Task } from './shared';
 import { actionFail, actionOk, mutateEntities } from './shared';
+
+/** A new area never stores explicit empty context keys (keeps fresh rows identical to pre-context ones). */
+const withoutEmptyAreaContext = (props: Partial<Area>): Partial<Area> => {
+    const next = { ...props };
+    for (const key of ['description', 'keywords', 'peopleIds'] as const) {
+        if (key in next && next[key] === undefined) delete next[key];
+    }
+    return next;
+};
 
 export type AreaAdditionRows = { areas: Area[]; projects: Project[]; sections: Section[]; tasks: Task[] };
 
@@ -245,8 +255,9 @@ export const createAreaActions = ({
             settings: next.settings, lastDataChangeAt };
     };
     return ({
-    addArea: async (name: string, initialProps?: Partial<Area>) => {
+    addArea: async (name: string, rawInitialProps?: Partial<Area>) => {
         if (typeof name !== 'string' || !name.trim()) return null;
+        const initialProps = rawInitialProps ? withoutEmptyAreaContext(normalizeAreaContextUpdates(rawInitialProps)) : rawInitialProps;
         const changeAt = Date.now();
         const restoreAt = new Date().toISOString();
         let area: Area | null = null;
@@ -511,7 +522,8 @@ export const createAreaActions = ({
         return result;
     },
 
-    updateArea: async (id: string, updates: Partial<Area>) => {
+    updateArea: async (id: string, rawUpdates: Partial<Area>) => {
+        const updates = normalizeAreaContextUpdates(rawUpdates);
         const changeAt = Date.now();
         let missingArea = false;
         let invalidName = false;

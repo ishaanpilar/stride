@@ -114,7 +114,7 @@
     "updatedAt",
     "deletedAt"
    ],
-   "pendingProduction": []
+   "pendingProduction": ["areaDescription", "keywords", "peopleIds"]
   },
   "StridePerson": {
    "deployed": [

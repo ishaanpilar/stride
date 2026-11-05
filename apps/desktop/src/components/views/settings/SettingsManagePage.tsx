@@ -1,7 +1,7 @@
 import { cn } from '../../../lib/utils';
 import { Collapse } from '../../ui/Collapse';
 import { logInfo } from '../../../lib/app-log';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId } from 'react';
 import { DndContext, type DragEndEvent, closestCenter, useSensor, useSensors, PointerSensor } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { SORTABLE_TRANSITION } from '../../../lib/motion';
@@ -11,6 +11,7 @@ import { buildPersonSearchQuery, DEFAULT_AREA_COLOR, formatI18nTemplate, getPers
     baseTextCollator, buildSomedaySectionsSettingsUpdate, isManageAreaNameTaken, isSafePersonReferenceLink, orderSomedaySections, removeSomedaySection, renameSomedaySection, updateSettingsFromLatest,
 } from '@stride/core';
 import { AreaColorPicker } from '../projects/AreaColorPicker';
+import { AreaContextEditor, AreaContextToggle } from '../projects/AreaContextEditor';
 import { reportError } from '../../../lib/report-error';
 import { isImeComposing } from '../../../lib/ime';
 import { isTauriRuntime } from '../../../lib/runtime';
@@ -55,9 +56,12 @@ function SortableAreaRow({
         if (color === area.color) return;
         onUpdateColor(area.id, color);
     };
+    const [contextOpen, setContextOpen] = useState(false);
+    const contextId = useId();
 
     return (
-        <div ref={setNodeRef} style={style} className="flex items-center gap-2">
+        <div ref={setNodeRef} style={style} className="space-y-2">
+        <div className="flex items-center gap-2">
             <button
                 type="button"
                 {...attributes}
@@ -90,6 +94,13 @@ function SortableAreaRow({
                 }}
                 className="flex-1 px-2 py-1 text-sm min-w-0 bg-well shadow-soft-inset rounded-control focus-ring"
             />
+            <AreaContextToggle
+                area={area}
+                open={contextOpen}
+                onToggle={() => setContextOpen((v) => !v)}
+                controls={contextId}
+                label={`${translateWithFallback(translate, 'areaContext.toggle', 'Area context')}: ${area.name}`}
+            />
             <button
                 type="button"
                 onClick={() => onDelete(area.id)}
@@ -98,6 +109,8 @@ function SortableAreaRow({
             >
                 <Trash2 className="w-4 h-4" />
             </button>
+        </div>
+        {contextOpen && <div id={contextId}><AreaContextEditor area={area} t={translate} /></div>}
         </div>
     );
 }

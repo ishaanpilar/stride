@@ -282,6 +282,9 @@ static const MWFieldSpec kAreaFields[] = {
     {"createdAt", "createdAt", MWFieldKindDate},
     {"updatedAt", "updatedAt", MWFieldKindDate},
     {"deletedAt", "deletedAt", MWFieldKindDate},
+    {"description", "areaDescription", MWFieldKindString},
+    {"keywords",  "keywords",  MWFieldKindStringArray},
+    {"peopleIds", "peopleIds", MWFieldKindStringArray},
 };
 static const size_t kAreaFieldsCount = sizeof(kAreaFields) / sizeof(kAreaFields[0]);
 

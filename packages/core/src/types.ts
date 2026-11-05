@@ -139,6 +139,12 @@ export interface Area {
     color?: string;
     icon?: string;
     order: number;
+    /** Free text the AI uses to route work here: what the area is, clients, people, products, keywords. */
+    description?: string;
+    /** Short routing keywords (products, clients, brands). */
+    keywords?: string[];
+    /** Linked People ids (People who belong to this area). */
+    peopleIds?: string[];
     rev?: number;
     revBy?: string;
     createdAt: string;

@@ -471,6 +471,7 @@ export function ProjectsView() {
         sortedAreas,
         areaById,
         areaFilterLabel,
+        areaFilterDescription,
         areaSensors,
         toggleAreaCollapse,
         handleAreaDragEnd,
@@ -768,6 +769,7 @@ export function ProjectsView() {
             embedded={Boolean(projectSidebarSlot)}
             t={t}
             areaFilterLabel={areaFilterLabel ?? undefined}
+            areaFilterDescription={areaFilterDescription ?? undefined}
             selectedTag={selectedTag}
             noAreaId={NO_AREA}
             allTagsId={ALL_TAGS}

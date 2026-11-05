@@ -19,6 +19,11 @@ describe('ChangesCard', () => {
         expect(onUndo).toHaveBeenCalledWith('a');
     });
 
+    it('shows the routing reason subtly under the label', () => {
+        render(<ChangesCard entries={[entry('a', "Added 'Send quotation' · Mauvi Labs", { reason: 'mentions Akash → Mauvi Labs' })]} onUndo={vi.fn()} />);
+        expect(screen.getByTestId('assistant-change-reason').textContent).toBe('Why: mentions Akash → Mauvi Labs');
+    });
+
     it('offers Undo all when more than one change is undoable', () => {
         const onUndoAll = vi.fn();
         render(<ChangesCard entries={[entry('a', 'Updated A'), entry('b', 'Deleted B', { toolName: 'delete_task' })]} onUndo={vi.fn()} onUndoAll={onUndoAll} />);

@@ -76,6 +76,8 @@ interface ProjectsSidebarProps {
     embedded?: boolean;
     t: (key: string) => string;
     areaFilterLabel?: string;
+    /** Description of the single selected area (its routing context), shown subtly under the title. */
+    areaFilterDescription?: string;
     selectedTag: string;
     noAreaId: string;
     allTagsId: string;
@@ -121,6 +123,7 @@ interface ProjectsSidebarProps {
 export function ProjectsSidebar({
     t,
     areaFilterLabel,
+    areaFilterDescription,
     selectedTag,
     noAreaId,
     allTagsId,
@@ -530,6 +533,11 @@ export function ProjectsSidebar({
                     )}
                 </div>
             </div>
+            {areaFilterDescription && (
+                <p data-testid="area-header-description" className="-mt-2 line-clamp-2 max-w-prose text-[13px] leading-[17px] text-muted-foreground" title={areaFilterDescription}>
+                    {areaFilterDescription}
+                </p>
+            )}
 
             <div className="flex items-center gap-2">
                 <label htmlFor="projects-tag-filter" className="flex-none text-[13px] font-semibold text-muted-foreground">

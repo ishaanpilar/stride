@@ -1,7 +1,9 @@
 import schemaFixture from './area-sync-schema.fixture.json';
 import type { Area } from './types';
+import { normalizeAreaKeywords, normalizeAreaPeopleIds } from './area-context';
 import {
     deriveSqliteColumnEntries,
+    fromJson,
     fromOptional,
     sqliteColumnsFromEntries,
     sqliteMigrationColumnsFromEntries,
@@ -54,6 +56,9 @@ const areaColumnValues = (area: Area, nowIso: string): Record<string, unknown> =
         createdAt,
         updatedAt,
         deletedAt: area.deletedAt ?? null,
+        description: area.description ?? null,
+        keywords: area.keywords && area.keywords.length > 0 ? JSON.stringify(area.keywords) : null,
+        peopleIds: area.peopleIds && area.peopleIds.length > 0 ? JSON.stringify(area.peopleIds) : null,
     };
 };
 
@@ -76,5 +81,17 @@ export const areaFromSqliteRow = (row: Record<string, unknown>, nowIso: string =
         createdAt,
         updatedAt,
         deletedAt: fromOptional(row.deletedAt as string | null),
+        ...areaContextFromSqliteRow(row),
     };
+};
+
+/** Old databases have no context columns; an absent or empty value stays absent so old rows stay byte-identical. */
+const areaContextFromSqliteRow = (row: Record<string, unknown>): Pick<Area, 'description' | 'keywords' | 'peopleIds'> => {
+    const out: Pick<Area, 'description' | 'keywords' | 'peopleIds'> = {};
+    if (typeof row.description === 'string' && row.description.length > 0) out.description = row.description;
+    const keywords = normalizeAreaKeywords(fromJson<unknown>(row.keywords, []));
+    if (keywords) out.keywords = keywords;
+    const peopleIds = normalizeAreaPeopleIds(fromJson<unknown>(row.peopleIds, []));
+    if (peopleIds) out.peopleIds = peopleIds;
+    return out;
 };

@@ -10,7 +10,10 @@
         { "name": "revBy", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "revBy", "sqliteOrder": 6, "sqliteType": "TEXT" },
         { "name": "createdAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "createdAt", "sqliteOrder": 7, "sqliteType": "TEXT" },
         { "name": "updatedAt", "nullability": "required", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "updatedAt", "sqliteOrder": 8, "sqliteType": "TEXT" },
-        { "name": "deletedAt", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "deletedAt", "sqliteOrder": 9, "sqliteType": "TEXT" }
+        { "name": "deletedAt", "nullability": "optional", "cloudSynced": true, "cloudWrite": "managed", "sqliteColumn": "deletedAt", "sqliteOrder": 9, "sqliteType": "TEXT" },
+        { "name": "description", "nullability": "optional", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "description", "sqliteOrder": 10, "sqliteType": "TEXT" },
+        { "name": "keywords", "nullability": "optional", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "keywords", "sqliteOrder": 11, "sqliteType": "TEXT" },
+        { "name": "peopleIds", "nullability": "optional", "cloudSynced": true, "cloudWrite": "create-patch", "sqliteColumn": "peopleIds", "sqliteOrder": 12, "sqliteType": "TEXT" }
     ],
     "fixture": {
         "id": "area-schema-fixture",
@@ -22,6 +25,9 @@
         "revBy": "device-schema",
         "createdAt": "2026-07-01T10:00:00.000Z",
         "updatedAt": "2026-07-14T11:00:00.000Z",
-        "deletedAt": "2026-07-14T11:30:00.000Z"
+        "deletedAt": "2026-07-14T11:30:00.000Z",
+        "description": "3D printing company; I run creative direction. Printstick is ours.",
+        "keywords": ["Printstick", "3D printing"],
+        "peopleIds": ["person-schema-fixture"]
     }
 }

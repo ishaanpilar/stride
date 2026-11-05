@@ -167,6 +167,9 @@ type AreaContentComparisonInput = Omit<Area, 'order'> & {
 export const normalizeAreaForContentComparison = (area: AreaContentComparisonInput): Record<string, unknown> => ({
     ...area,
     color: area.color === '#6B7280' ? undefined : area.color,
+    description: area.description?.trim() || undefined,
+    keywords: area.keywords && area.keywords.length > 0 ? area.keywords : undefined,
+    peopleIds: area.peopleIds && area.peopleIds.length > 0 ? area.peopleIds : undefined,
     order: undefined,
 });
 
