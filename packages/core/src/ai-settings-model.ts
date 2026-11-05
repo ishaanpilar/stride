@@ -6,11 +6,15 @@ import type { AIProviderId, AIReasoningEffort } from './ai/types';
 import {
     DEFAULT_ANTHROPIC_THINKING_BUDGET,
     DEFAULT_GEMINI_THINKING_BUDGET,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_DEFAULT_MODEL,
+    DEEPSEEK_MODEL_OPTIONS,
     DEFAULT_REASONING_EFFORT,
     getCopilotModelOptions,
     getDefaultAIConfig,
     getDefaultCopilotModel,
     getModelOptions,
+    isDeepSeekUrl,
 } from './ai/catalog';
 import { resolveAIRequestTimeoutSeconds } from './ai-config';
 import { resolveI18nText, type I18nTemplateValues } from './i18n';
@@ -42,6 +46,14 @@ const GEMINI_STT_MODEL_OPTIONS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemin
 
 export const AI_MODEL_FETCH_DEBOUNCE_MS = 400;
 
+/**
+ * What the provider row offers. DeepSeek is not a stored provider: it is the OpenAI-compatible
+ * provider pointed at DeepSeek's base URL, exactly as the desktop and mobile screens store it.
+ */
+export type AIProviderChoice = AIProviderId | 'deepseek';
+
+export const AI_DEEPSEEK_LABEL = 'DeepSeek';
+
 export type SpeechProviderChoice = 'openai' | 'gemini' | 'whisper';
 
 
@@ -60,16 +72,18 @@ export function resolveAISettingsScreenState(settings: AppSettings, isFossBuild:
                 ? DEFAULT_GEMINI_STT_MODEL
                 : MOBILE_DEFAULT_WHISPER_MODEL
     );
+    const usingDeepSeek = !isFossBuild && aiProvider === 'openai' && isDeepSeekUrl(ai?.baseUrl);
     return {
         aiProvider,
+        usingDeepSeek,
         aiEnabled: ai?.enabled === true,
-        staticAiModelOptions: isFossBuild ? FOSS_LOCAL_LLM_MODEL_OPTIONS : getModelOptions(aiProvider),
+        staticAiModelOptions: isFossBuild ? FOSS_LOCAL_LLM_MODEL_OPTIONS : usingDeepSeek ? DEEPSEEK_MODEL_OPTIONS : getModelOptions(aiProvider),
         aiModel,
         aiBaseUrl: ai?.baseUrl ?? '',
         aiOpenAIExtraBodyParams: ai?.openAIExtraBodyParams,
         aiReasoningEffort: (ai?.reasoningEffort ?? DEFAULT_REASONING_EFFORT) as AIReasoningEffort,
         aiThinkingBudget,
-        staticAiCopilotOptions: isFossBuild ? FOSS_LOCAL_LLM_COPILOT_OPTIONS : getCopilotModelOptions(aiProvider),
+        staticAiCopilotOptions: isFossBuild ? FOSS_LOCAL_LLM_COPILOT_OPTIONS : usingDeepSeek ? DEEPSEEK_MODEL_OPTIONS : getCopilotModelOptions(aiProvider),
         aiCopilotModel: ai?.copilotModel ?? (isFossBuild ? FOSS_LOCAL_LLM_COPILOT_OPTIONS[0] : getDefaultCopilotModel(aiProvider)),
         aiRequestTimeoutSeconds: resolveAIRequestTimeoutSeconds(ai?.requestTimeoutSeconds),
         anthropicThinkingEnabled: aiProvider === 'anthropic' && aiThinkingBudget > 0,
@@ -102,7 +116,8 @@ type AISettingsTranslators = { t: Translate; tr: (key: string, values?: I18nTemp
 
 export const createAISettingsTranslator = (t: Translate) => (key: string, values?: I18nTemplateValues) => resolveI18nText(t, key, { values });
 
-export function getAIProviderLabel(provider: AIProviderId, isFossBuild: boolean, { t, tr }: AISettingsTranslators): string {
+export function getAIProviderLabel(provider: AIProviderChoice, isFossBuild: boolean, { t, tr }: AISettingsTranslators): string {
+    if (provider === 'deepseek') return AI_DEEPSEEK_LABEL;
     return isFossBuild && provider === 'openai'
         ? tr('settings.aiMobile.localCustomOpenaiCompatible')
         : provider === 'openai'
@@ -125,9 +140,11 @@ export function getAIProviderPolicyUrl(provider: AIProviderId, isFossBuild: bool
 export type AIConsentPrompt = { title: string; message: string; cancel: string; agree: string };
 
 
-export function getAIConsentPrompt(provider: AIProviderId, isFossBuild: boolean, translators: AISettingsTranslators): AIConsentPrompt {
+export function getAIConsentPrompt(choice: AIProviderChoice, isFossBuild: boolean, translators: AISettingsTranslators): AIConsentPrompt {
     const { tr } = translators;
-    return {
+    // DeepSeek asks with the OpenAI-compatible prompt, naming DeepSeek in place of OpenAI.
+    const provider: AIProviderId = choice === 'deepseek' ? 'openai' : choice;
+    const prompt = {
         title: tr('settings.aiMobile.enableAiFeatures'),
         message: isFossBuild && provider === 'openai'
             ? tr('settings.aiMobile.toUseAiAssistantYourTaskTextAndOptionalNotes')
@@ -138,6 +155,8 @@ export function getAIConsentPrompt(provider: AIProviderId, isFossBuild: boolean,
         cancel: tr('common.cancel'),
         agree: tr('settings.aiConsentAgree'),
     };
+    if (choice === 'deepseek') prompt.message = prompt.message.replace(getAIProviderLabel(provider, isFossBuild, translators), AI_DEEPSEEK_LABEL);
+    return prompt;
 }
 
 type ConsentStorage = {
@@ -168,7 +187,7 @@ export function canDiscoverAIModels(input: { provider: string; consent: Readonly
 }
 
 
-export async function recordAIProviderConsent(storage: ConsentStorage, provider: AIProviderId, warn: ConsentWarn): Promise<void> {
+export async function recordAIProviderConsent(storage: ConsentStorage, provider: AIProviderChoice, warn: ConsentWarn): Promise<void> {
     try {
         const consentMap = await readAIProviderConsent(storage, warn);
         consentMap[provider] = true;
@@ -195,6 +214,14 @@ export function getAIProviderDefaultsPatch(provider: AIProviderId, isFossBuild: 
     };
 }
 
+
+/** Selecting DeepSeek: the OpenAI-compatible provider on DeepSeek's endpoint and default model. */
+export const getDeepSeekProviderPatch = (): Partial<AISettings> => ({
+    provider: 'openai',
+    baseUrl: DEEPSEEK_BASE_URL,
+    model: DEEPSEEK_DEFAULT_MODEL,
+    copilotModel: DEEPSEEK_DEFAULT_MODEL,
+});
 
 export const getAnthropicThinkingPatch = (enabled: boolean): Partial<AISettings> => ({
     thinkingBudget: enabled ? (DEFAULT_ANTHROPIC_THINKING_BUDGET || 1024) : 0,

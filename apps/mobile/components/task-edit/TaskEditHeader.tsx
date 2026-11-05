@@ -22,6 +22,8 @@ type TaskEditHeaderProps = {
   onSkipOccurrence?: () => void;
   cancelTaskLabel?: string;
   onDelete: () => void;
+  onStartFocus?: () => void;
+  onStartPomodoro?: () => void;
   onConvertToAction?: () => void;
   showConvertToAction?: boolean;
   onConvertToSection?: () => void;
@@ -40,6 +42,8 @@ export function TaskEditHeader({
   onSkipOccurrence,
   cancelTaskLabel,
   onDelete,
+  onStartFocus,
+  onStartPomodoro,
   onConvertToAction,
   showConvertToAction = false,
   onConvertToSection,
@@ -56,6 +60,8 @@ export function TaskEditHeader({
   const skipOccurrenceLabel = tFallback(t, 'task.skipOccurrence', 'Skip this occurrence');
   const moreLabel = t('common.more');
   const closeLabel = t('common.close');
+  const startFocusLabel = tFallback(t, 'task.startFocus', 'Start focus');
+  const startPomodoroLabel = tFallback(t, 'task.startPomodoro', 'Start Pomodoro');
 
 
   const doneLabel = readOnly ? closeLabel : t('common.save');
@@ -117,6 +123,23 @@ export function TaskEditHeader({
               accessibilityViewIsModal
             >
               <ScrollView style={styles.menuScroll} keyboardShouldPersistTaps="handled">
+                {[
+                  { label: startFocusLabel, action: onStartFocus },
+                  { label: startPomodoroLabel, action: onStartPomodoro },
+                ].map(({ label, action }) => (action ? (
+                  <AppPressable
+                    key={label}
+                    style={styles.menuItem}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                    onPress={() => {
+                      setMenuVisible(false);
+                      action();
+                    }}
+                  >
+                    <Text style={[styles.menuItemText, { color: tc.text }]}>{label}</Text>
+                  </AppPressable>
+                ) : null))}
                 {taskId ? (['link', 'id'] as const).map((kind) => {
                   const label = kind === 'link'
                     ? tFallback(t, 'task.copyTaskLink', 'Copy task link')

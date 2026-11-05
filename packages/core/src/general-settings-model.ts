@@ -46,6 +46,7 @@ export function resolveMobileAppLockRelockDelayMinutes(value: unknown): MobileAp
 export type GeneralSettingsEdit =
     | { type: 'theme'; value: AppTheme }
     | { type: 'showTaskAge'; value: boolean }
+    | { type: 'animations'; value: boolean }
     | { type: 'quickAccessView'; value: MobileQuickAccessView }
     | { type: 'appLock'; value: boolean }
     | { type: 'appLockRelockDelay'; value: MobileAppLockRelockDelayMinutes }
@@ -66,6 +67,8 @@ export function buildGeneralSettingsUpdate(settings: AppSettings, edit: GeneralS
             return { appearance: { ...(settings.appearance ?? {}), showTaskAge: edit.value } };
         case 'quickAccessView':
             return { appearance: { ...(settings.appearance ?? {}), mobileQuickAccessView: edit.value } };
+        case 'animations':
+            return null;
         case 'appLock':
             return { security: { ...(settings.security ?? {}), mobileAppLockEnabled: edit.value } };
         case 'appLockRelockDelay':
@@ -99,6 +102,7 @@ export function isGeneralSettingStored(settings: AppSettings, edit: GeneralSetti
         case 'calendarSystem': return settings.calendarSystem === edit.value;
         case 'timeFormat': return settings.timeFormat === edit.value;
         case 'appSearch': return true;
+        case 'animations': return true;
     }
 }
 
@@ -116,6 +120,9 @@ export const MOBILE_APP_SEARCH_STORAGE_KEY = 'mindwtr:appSearchIndexingEnabled';
 export const MOBILE_APP_SEARCH_WIPE_OWED_STORAGE_KEY = 'mindwtr:appSearchWipeOwed';
 
 
+// The Animations switch is a device preference, never a synced setting; it is stored as 'on' or 'off'.
+export const MOBILE_ANIMATIONS_STORAGE_KEY = '@stride_animations';
+
 export type SettingsDeviceWrite = { key: string; value: string | null };
 
 
@@ -126,6 +133,8 @@ export function getGeneralSettingsDeviceWrites(edit: GeneralSettingsEdit): Setti
                 { key: MOBILE_THEME_STORAGE_KEY, value: edit.value },
                 { key: MOBILE_THEME_STYLE_STORAGE_KEY, value: edit.value === 'material3-light' || edit.value === 'material3-dark' ? 'material3' : 'default' },
             ];
+        case 'animations':
+            return [{ key: MOBILE_ANIMATIONS_STORAGE_KEY, value: edit.value ? 'on' : 'off' }];
         case 'language':
             return [{ key: LANGUAGE_STORAGE_KEY, value: edit.value }];
         case 'appSearch':
@@ -167,6 +176,7 @@ export type GeneralSettingsModel = {
             groups: (GeneralSettingsOption<AppTheme> & { icon: GeneralSettingsThemeIcon })[][];
         };
         showTaskAge: GeneralSettingsToggle;
+        animations: GeneralSettingsToggle;
         quickAccess: GeneralSettingsPicker<MobileQuickAccessView>;
     };
     privacy: {
@@ -208,6 +218,8 @@ export function buildGeneralSettingsModel(input: {
 
     systemDateSample: string;
     appSearch: { supported: boolean; enabled: boolean };
+    /** The device's stored Animations preference ('on' | 'off'); anything else reads as on. */
+    animations?: string | null;
     t: Translate;
 }): GeneralSettingsModel {
     const { settings, themeMode, language, systemLocale, t } = input;
@@ -220,6 +232,7 @@ export function buildGeneralSettingsModel(input: {
     const showCalendarSystem = canUseJalaliCalendar({ language, systemLocale });
     const calendarSystem = resolveCalendarSystemSetting(settings.calendarSystem, { language, systemLocale });
     const showTaskAge = settings.appearance?.showTaskAge === true;
+    const animationsOn = input.animations !== 'off';
     const quickAccessView = resolveMobileQuickAccessView(settings.appearance?.mobileQuickAccessView);
     const appLockEnabled = settings.security?.mobileAppLockEnabled === true;
     const relockDelay = resolveMobileAppLockRelockDelayMinutes(settings.security?.mobileAppLockRelockDelayMinutes);
@@ -308,6 +321,12 @@ export function buildGeneralSettingsModel(input: {
                 description: tr('settings.mobile.displayHowLongAgoATaskWasCreatedInTask'),
                 value: showTaskAge,
                 edit: { type: 'showTaskAge', value: !showTaskAge },
+            },
+            animations: {
+                label: tr('settings.animations'),
+                description: tr('settings.animationsDesc'),
+                value: animationsOn,
+                edit: { type: 'animations', value: !animationsOn },
             },
             quickAccess: {
                 label: tr('settings.mobile.quickAccessView'),

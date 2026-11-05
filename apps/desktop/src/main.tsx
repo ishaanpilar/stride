@@ -108,6 +108,11 @@ const isFocusFloatWindow = isFocusFloatLocation();
 const isQuickAddWindow = isQuickAddWindowLocation() || isMenuBarPanelWindow || isFocusFloatWindow;
 if (isMenuBarPanelWindow) document.documentElement.classList.add('menubar-panel-window');
 if (isFocusFloatWindow) document.documentElement.classList.add('focus-float-window');
+// Only macOS gets transparent secondary windows (native vibrancy). On Windows and Linux they are
+// opaque, so the page paints the theme background edge to edge instead of rounded translucency.
+if ((isMenuBarPanelWindow || isFocusFloatWindow) && !isMacRuntime()) {
+    document.documentElement.classList.add('opaque-native-window');
+}
 if (isQuickAddWindow && !isMenuBarPanelWindow && !isFocusFloatWindow) {
     document.documentElement.dataset.quickAddWindow = 'true';
 }

@@ -63,9 +63,23 @@ Built on David Allen's *Getting Things Done*. Your data stays on your Mac.
 
 ## Install
 
+### Mac
+
 1. Download `Stride.app.zip` from the [latest release](https://github.com/ishaanpilar/stride/releases/latest) and move **Stride** to Applications.
 2. The current builds are not notarised by Apple yet. The first time, right-click Stride and choose **Open**, or allow it in **System Settings → Privacy & Security**.
 3. Open **Settings → AI**, choose DeepSeek or Claude and paste your API key. Stride works without AI too.
+
+### Windows (beta)
+
+Stride for Windows 10 and 11 (x64) is a beta, starting with 1.6.0.
+
+1. Download `Stride_<version>_x64-setup.exe` from the [latest release](https://github.com/ishaanpilar/stride/releases/latest) and run it. (The `.msi` is for managed installs; the setup `.exe` is the one that updates itself.)
+2. The installer is not code-signed yet, so Microsoft Defender SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**. To be sure the file is genuine, compare its SHA-256 (`Get-FileHash .\Stride_<version>_x64-setup.exe`) with `SHA256SUMS.txt` on the release.
+3. Open **Settings → AI**, choose DeepSeek or Claude and paste your API key.
+
+On Windows, Stride lives in the system tray instead of the menu bar: left-click the tray icon for the panel (capture, Now, All tasks, Pomodoro), right-click it for the menu. Shortcuts use Ctrl where the Mac uses Cmd, and the accent colour follows your Windows accent colour. When a new version comes out, Stride offers it in the app, either as an in-app update or as a link to the new installer.
+
+Mac-only for now: syncing dated tasks to macOS Calendar, recovering the window after a display or graphics crash, and the translucent (vibrancy) look of the panel and floating timer.
 
 ## Build from source
 

@@ -68,7 +68,7 @@ const styles = StyleSheet.create({
     paddingVertical: 36,
     paddingHorizontal: 20,
     alignItems: 'center',
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
   },
   text: {
@@ -86,7 +86,8 @@ const styles = StyleSheet.create({
   action: {
     marginTop: 16,
     paddingHorizontal: 16,
-    paddingVertical: 9,
+    minHeight: 44,
+    justifyContent: 'center',
     borderRadius: 999,
     borderWidth: 1,
   },

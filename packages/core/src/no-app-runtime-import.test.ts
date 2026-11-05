@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 
-const REACT_HOOK_MODULES = new Set(['startup-prompts.ts', 'task-filter-selections.ts']);
+const REACT_HOOK_MODULES = new Set(['startup-prompts.ts', 'task-filter-selections.ts', 'use-focus-coach.ts', 'use-focus-steps.ts']);
 const forbidden = (specifier: string, file: string): boolean => {
     if (/^(expo(-[\w-]+)?|@expo\/[\w-]+)(\/|$)/.test(specifier)) return true;
     if (/^(react-native(-[\w-]+)?|@react-native(-[\w-]+)?\/[\w-]+)(\/|$)/.test(specifier)) return true;
@@ -26,7 +26,7 @@ const offendersIn = (code: string, file: string): string[] => {
 };
 
 describe('core source', () => {
-    it('never imports Expo, React Native or whisper.rn, and React only in its two shared hooks', () => {
+    it('never imports Expo, React Native or whisper.rn, and React only in its shared hooks', () => {
         const offenders: string[] = [];
         const walk = (dir: string) => {
             for (const entry of readdirSync(dir, { withFileTypes: true })) {

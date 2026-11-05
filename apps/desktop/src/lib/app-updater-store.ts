@@ -10,7 +10,9 @@ import {
 import { logError, logInfo } from './app-log';
 import {
     checkForAppUpdate,
+    checkForManualAppUpdate,
     classifyUpdaterError,
+    installerExitsApp,
     relaunchApp,
     type AppUpdateProgress,
     type AvailableAppUpdate,
@@ -103,17 +105,14 @@ export const useAppUpdaterStore = create<AppUpdaterState>((set, get) => ({
         if (BUSY_PHASES.has(get().phase)) return 'busy';
         if (!manual && get().dialogOpen) return 'busy';
         set({ phase: 'checking', errorKind: null, errorStage: null });
-        try {
-            const result = await checkForAppUpdate();
+        const present = (info: AvailableAppUpdate | null): AppUpdateCheckResult => {
             const nowMs = Date.now();
             const lastCheckedAt = new Date(nowMs).toISOString();
             updateAppUpdaterPrefs((prefs) => ({ ...prefs, lastCheckedAt }));
-            pendingUpdate = result;
-            if (!result) {
+            if (!info) {
                 set({ phase: 'idle', update: null, lastCheckedAt });
                 return 'up-to-date';
             }
-            const { info } = result;
             set({ phase: 'available', update: info, lastCheckedAt });
             const shouldShow = shouldShowDirectUpdatePrompt({
                 nowMs,
@@ -126,9 +125,25 @@ export const useAppUpdaterStore = create<AppUpdaterState>((set, get) => ({
             safelyUpdatePromptState('recordPrompted', (state) => recordDirectUpdatePrompted(state, info.version, nowMs));
             set({ dialogOpen: true });
             return 'available';
+        };
+        try {
+            const result = await checkForAppUpdate();
+            pendingUpdate = result;
+            return present(result?.info ?? null);
         } catch (error) {
             const kind = classifyUpdaterError(error);
             logUpdaterError(error, 'check', kind);
+            if (kind === 'unavailable') {
+                // No signed bundle for this machine in latest.json (an Intel Mac, or a Windows
+                // release built without updater signing): offer the GitHub download instead.
+                try {
+                    const manualUpdate = await checkForManualAppUpdate();
+                    pendingUpdate = null;
+                    return present(manualUpdate);
+                } catch (fallbackError) {
+                    logUpdaterError(fallbackError, 'check-fallback', classifyUpdaterError(fallbackError));
+                }
+            }
             set({ phase: 'error', errorKind: kind, errorStage: 'check' });
             return 'error';
         }
@@ -145,12 +160,42 @@ export const useAppUpdaterStore = create<AppUpdaterState>((set, get) => ({
             errorStage: null,
             dialogOpen: true,
         });
+        const flushBeforeExit = () => beginCloseFlush({
+            flush: flushPendingSave,
+            timeoutMs: UPDATE_RELAUNCH_FLUSH_TIMEOUT_MS,
+            logStep: (step) => {
+                void logInfo(`Update relaunch: ${step}`, { scope: 'updater', force: true });
+            },
+            reportError: (label, error) => {
+                void logError(error, { scope: 'updater', step: label });
+            },
+        });
+        // Windows: the installer closes Stride as soon as it starts, so save and record "What's
+        // new" before handing over; the installer relaunches the new version itself.
+        const beforeInstall = installerExitsApp()
+            ? async () => {
+                updateAppUpdaterPrefs((prefs) => ({
+                    ...prefs,
+                    pendingWhatsNew: { version: info.version, notes: info.notes },
+                }));
+                set({ phase: 'restarting' });
+                await flushBeforeExit();
+            }
+            : undefined;
         try {
             await target.downloadAndInstall((progress) => {
                 const finished = progress.totalBytes !== null && progress.downloadedBytes >= progress.totalBytes;
                 set({ progress, phase: finished ? 'installing' : 'downloading' });
-            });
+            }, beforeInstall ? { beforeInstall } : undefined);
         } catch (error) {
+            if (beforeInstall) {
+                resetCloseFlushGate();
+                updateAppUpdaterPrefs((prefs) => {
+                    const next = { ...prefs };
+                    delete next.pendingWhatsNew;
+                    return next;
+                });
+            }
             const kind = classifyUpdaterError(error);
             logUpdaterError(error, 'install', kind);
             set({ phase: 'error', errorKind: kind, errorStage: 'install' });
@@ -162,16 +207,7 @@ export const useAppUpdaterStore = create<AppUpdaterState>((set, get) => ({
         }));
         set({ phase: 'restarting' });
         try {
-            await beginCloseFlush({
-                flush: flushPendingSave,
-                timeoutMs: UPDATE_RELAUNCH_FLUSH_TIMEOUT_MS,
-                logStep: (step) => {
-                    void logInfo(`Update relaunch: ${step}`, { scope: 'updater', force: true });
-                },
-                reportError: (label, error) => {
-                    void logError(error, { scope: 'updater', step: label });
-                },
-            });
+            await flushBeforeExit();
             await relaunchApp();
         } catch (error) {
             resetCloseFlushGate();

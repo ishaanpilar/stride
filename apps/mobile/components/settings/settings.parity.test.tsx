@@ -2,6 +2,7 @@
 
 
 import React from 'react';
+import { resetMotionPreferenceForTests } from '@/lib/motion-preference';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -311,6 +312,11 @@ const generalScenarios: Scenario[] = [
     actions: [['toggle', 'showTaskAge'], ['toggle', 'showTaskAge'], ['open', 'quickAccess'], ['pick', 3], ['open', 'quickAccess'], ['pick', 1]],
   },
   {
+    name: 'general: animations switch',
+    data: 'none', settings: 'stored', device: { themeMode: 'nord' },
+    actions: [['toggle', 'animations'], ['toggle', 'animations']],
+  },
+  {
     name: 'general: app lock',
     data: 'none', settings: 'base', device: { authOutcomes: ['success', 'cancelled', 'unavailable', 'throw'] },
     actions: [['toggle', 'appLock'], ['toggle', 'appLock'], ['toggle', 'appLock'], ['toggle', 'appLock'], ['toggle', 'appLock']],
@@ -438,6 +444,7 @@ let realActions: Record<string, (...args: any[]) => Promise<any>> | null = null;
 async function seedStore(scenario: Scenario) {
   await flushPendingSave();
   resetForTests();
+  resetMotionPreferenceForTests();
   const initial = useTaskStore.getState() as unknown as Record<string, (...args: any[]) => Promise<any>>;
   realActions ??= Object.fromEntries(RECORDED.map((name) => [name, initial[name]]));
   const real = realActions;
@@ -634,7 +641,7 @@ const GENERAL_ROW_KEYS: Record<string, string> = {
   theme: 'settings.theme', quickAccess: 'settings.mobile.quickAccessView', appLockRelock: 'settings.mobile.appLockRelock', language: 'settings.language',
   weekStart: 'settings.weekStart', dateFormat: 'settings.dateFormat', calendarSystem: 'settings.calendarSystem', timeFormat: 'settings.timeFormat',
 };
-const GENERAL_SWITCHES: Record<string, number> = { showTaskAge: 0, appLock: 1, appSearch: 2 };
+const GENERAL_SWITCHES: Record<string, number> = { showTaskAge: 0, animations: 1, appLock: 2, appSearch: 3 };
 
 async function run(what: string, fn: (() => unknown) | undefined) {
   if (!fn) throw new Error(`Nothing to do for ${what}`);

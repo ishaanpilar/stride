@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="branding/source/stride-icon-source.png" width="120" alt="Stride 图标">
-
-# Stride
+<img src="docs/assets/screenshots/cover.png" width="100%" alt="Stride：一款安静、由 AI 驱动的 Mac 个人整理工具。把脑子里的事都记下来，让 AI 帮你归类和规划，然后一次只专注一件事。">
 
 **一款安静、由 AI 驱动的 Mac 个人整理工具。**
 
@@ -12,6 +10,20 @@
 [下载](https://github.com/ishaanpilar/stride/releases/latest) · [功能](#功能) · [用 AI 构建](#用-ai-构建) · [English](./README.md)
 
 </div>
+
+## 截图
+
+<p align="center">
+  <img src="docs/assets/screenshots/1-focus-briefing.png" alt="带有 AI 晨间简报的专注视图" width="100%">
+</p>
+
+| 助手会规划，也会提问 | 全屏专注计时器 |
+|---|---|
+| <img src="docs/assets/screenshots/2-assistant.png" alt="助手规划下午的安排并追问一个问题"> | <img src="docs/assets/screenshots/3-focus-timer.png" alt="带专注教练的全屏番茄钟"> |
+
+| 菜单栏面板 | 项目 |
+|---|---|
+| <img src="docs/assets/screenshots/4-menu-bar.png" alt="显示今日任务、AI 收集和番茄钟的菜单栏面板"> | <img src="docs/assets/screenshots/5-project.png" alt="显示进度、优先级和预估时间的项目视图"> |
 
 ## 功能
 
@@ -52,9 +64,23 @@
 
 ## 安装
 
+### Mac
+
 1. 从[最新版本](https://github.com/ishaanpilar/stride/releases/latest)下载 `Stride.app.zip`，把 **Stride** 移到“应用程序”。
 2. 当前版本尚未经过 Apple 公证。首次打开时请右键点击 Stride 并选择“打开”，或在“系统设置 → 隐私与安全性”中允许。
 3. 打开“设置 → AI”，选择 DeepSeek 或 Claude 并粘贴 API 密钥。不使用 AI 也可以正常使用。
+
+### Windows（测试版）
+
+从 1.6.0 起提供适用于 Windows 10 和 11（x64）的 Stride 测试版。
+
+1. 从[最新版本](https://github.com/ishaanpilar/stride/releases/latest)下载 `Stride_<版本>_x64-setup.exe` 并运行。（`.msi` 用于集中管理的安装；能自动更新的是 setup `.exe`。）
+2. 安装程序目前还没有代码签名，Microsoft Defender SmartScreen 可能会提示“Windows 已保护你的电脑”。点击“更多信息”，再点击“仍要运行”。如需确认文件可信，可用 `Get-FileHash .\Stride_<版本>_x64-setup.exe` 计算 SHA-256，并与发布页上的 `SHA256SUMS.txt` 对照。
+3. 打开“设置 → AI”，选择 DeepSeek 或 Claude 并粘贴 API 密钥。
+
+在 Windows 上，Stride 位于系统托盘而不是菜单栏：左键点击托盘图标打开面板（收集、现在、全部任务、番茄钟），右键点击打开菜单。快捷键中 Mac 的 Cmd 对应 Ctrl，强调色跟随 Windows 的强调色。有新版本时，Stride 会在应用内提示：直接在应用内更新，或给出新安装程序的下载链接。
+
+目前仅限 Mac：将带日期的任务同步到 macOS 日历、显示或图形崩溃后自动恢复窗口，以及面板和悬浮计时器的半透明（毛玻璃）效果。
 
 ## 从源码构建
 

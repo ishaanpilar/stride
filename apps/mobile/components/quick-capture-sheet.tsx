@@ -354,10 +354,13 @@ export function QuickCaptureSheet({
   activitySessionOwnerId = 'quick-capture:route-draft',
   onSubmissionStart,
   onSubmissionSettled,
+  onOpenAiCapture,
 }: {
   visible: boolean;
   openRequestId?: number;
   onClose: () => void;
+  /** When set, the sheet shows an "AI Capture" button that closes the sheet and calls this. */
+  onOpenAiCapture?: () => void;
   initialProps?: Partial<Task>;
   initialValue?: string;
   autoRecord?: boolean;
@@ -1401,6 +1404,10 @@ export function QuickCaptureSheet({
         handleClose={handleClose}
         handleRequestClose={pendingBulkLines ? cancelBulkQuickAdd : handleClose}
         handleImportTextFile={handleImportTextFile}
+        handleOpenAiCapture={onOpenAiCapture ? () => {
+          handleClose();
+          onOpenAiCapture();
+        } : undefined}
         handleSave={() => {
           void handleSave();
         }}

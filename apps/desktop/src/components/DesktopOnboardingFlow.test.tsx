@@ -4,6 +4,7 @@ import type { MindSweepProposal } from '@stride/core';
 import { DesktopOnboardingFlow } from './DesktopOnboardingFlow';
 import type { OnboardingServices } from './onboarding/onboarding-services';
 import { LanguageProvider } from '../contexts/language-context';
+import { isMacRuntime } from '../lib/runtime';
 
 const item = (key: string, title: string, kind: 'inbox' | 'next' = 'inbox') => ({ key, title, kind } as MindSweepProposal['items'][number]);
 const fallbackProposal = (): MindSweepProposal => ({
@@ -220,8 +221,9 @@ describe('DesktopOnboardingFlow', () => {
         it('opens Focus when nothing was added', async () => {
             const props = setup(makeServices());
             await toDone();
-            expect(screen.getByText('⌘⇧K')).toBeInTheDocument();
-            expect(screen.getByText('⌘⇧J')).toBeInTheDocument();
+            const mac = isMacRuntime();
+            expect(screen.getByText(mac ? '⌘⇧K' : 'Ctrl+Shift+K')).toBeInTheDocument();
+            expect(screen.getByText(mac ? '⌘⇧J' : 'Ctrl+Shift+J')).toBeInTheDocument();
             await click(/open stride/i);
             expect(props.onFinish).toHaveBeenCalledWith('focus');
         });

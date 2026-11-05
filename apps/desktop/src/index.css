@@ -1217,6 +1217,13 @@ html.menubar-panel-window #root {
   overflow: hidden;
 }
 
+/* Windows and Linux: the panel window is opaque, so paint the theme background edge to edge. */
+html.opaque-native-window.menubar-panel-window,
+html.opaque-native-window.menubar-panel-window body,
+html.opaque-native-window.menubar-panel-window #root {
+  background-color: hsl(var(--background)) !important;
+}
+
 @keyframes menubar-check-draw {
   from { stroke-dashoffset: 18; }
   to { stroke-dashoffset: 0; }

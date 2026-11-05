@@ -55,6 +55,7 @@ import { useTaskDescriptionEditor } from './task-edit/use-task-description-edito
 import { TaskEditViewTab } from './task-edit/TaskEditViewTab';
 import { TaskEditFormTab } from './task-edit/TaskEditFormTab';
 import { TaskEditHeader } from './task-edit/TaskEditHeader';
+import { startFocusFromTask } from '../lib/start-focus';
 import { TaskEditModalErrorBoundary } from './task-edit/TaskEditModalErrorBoundary';
 import { TaskEditOverlayStack } from './task-edit/TaskEditOverlayStack';
 import { TaskEditTabs } from './task-edit/TaskEditTabs';
@@ -1214,6 +1215,8 @@ function TaskEditModalInner({
                             ? tFallback(t, 'task.cancelRecurringSeries', 'Cancel recurring series')
                             : tFallback(t, 'task.cancel', 'Cancel task')}
                         onDelete={handleDeleteTask}
+                        onStartFocus={task && !readOnly && isTaskActionable(task) ? () => { handleDone(); void startFocusFromTask(task.id, 'focus'); } : undefined}
+                        onStartPomodoro={task && !readOnly && isTaskActionable(task) ? () => { handleDone(); void startFocusFromTask(task.id, 'pomodoro'); } : undefined}
                         onConvertToAction={handleConvertToAction}
                         showConvertToAction={isReference}
                         onConvertToSection={handleConvertToSection}

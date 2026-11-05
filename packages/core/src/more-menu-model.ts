@@ -52,6 +52,7 @@ const ICON_COLORS = {
     trash: '#EF4444',
     settings: '#64748B',
     saved: '#4F8CF7',
+    ai: '#3b82f6',
 };
 
 const QUICK_ACCESS_ROUTES: Record<MobileQuickAccessView, string> = {
@@ -105,6 +106,8 @@ export function buildMoreMenuModel(input: {
             item('reference', t('nav.reference'), 'book.closed.fill', ICON_COLORS.reference, '/reference'),
             quickAccessTile('contexts'),
             quickAccessTile('calendar'),
+            item('ai-capture', t('quickAdd.openAiCapture'), 'sparkles', ICON_COLORS.ai, '/ai-capture'),
+            item('assistant', t('assistant.title'), 'bubble.left.and.bubble.right.fill', ICON_COLORS.ai, '/assistant'),
         ],
     };
 }

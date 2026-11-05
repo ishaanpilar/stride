@@ -218,7 +218,8 @@ const fetchForUpdates = async (
 
 export function detectPlatform(): string {
   const userAgent = navigator.userAgent.toLowerCase();
-  if (userAgent.includes("win")) return "windows";
+  // Not a bare "win": "darwin" (Node/jsdom user agents) contains it too.
+  if (/windows|win32|win64/.test(userAgent)) return "windows";
   if (userAgent.includes("mac")) return "macos";
   if (userAgent.includes("linux")) return "linux";
   return "unknown";
@@ -236,7 +237,8 @@ function getDownloadUrl(
   }
 
   const patterns: Record<string, RegExp[]> = {
-    windows: [/\.msi$/i, /\.exe$/i],
+    // The NSIS installer first: it is what the in-app updater ships, so updates stay one install.
+    windows: [/-setup\.exe$/i, /\.msi$/i, /\.exe$/i],
     macos: [/\.dmg$/i, /\.app\.tar\.gz$/i],
     linux: [/\.AppImage$/i, /\.deb$/i, /\.rpm$/i],
   };

@@ -646,6 +646,7 @@ export function Layout({
     const triggerInboxCapture = () => { openCapture({ fromTrigger: true }); };
     const addTaskLabel = tFallback(t, 'quickCapture.button', 'Capture');
     const captureShortcutLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent) ? '⌘K' : 'Ctrl+K';
+    const assistantShortcutLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent) ? '⌘⇧J' : 'Ctrl+Shift+J';
     const captureLabel = `${tFallback(t, 'quickCapture.button', 'Capture')} (${captureShortcutLabel})`;
     const inboxCaptureLabel = captureLabel;
     const searchTitleLabel = tFallback(t, 'search.title', 'Search');
@@ -1229,7 +1230,7 @@ export function Layout({
                         <IconButton
                             variant="soft"
                             aria-label="Open assistant"
-                            title="Open assistant (Cmd+Shift+J)"
+                            title={`Open assistant (${assistantShortcutLabel})`}
                             data-testid="assistant-toggle"
                             onClick={openAssistant}
                         >

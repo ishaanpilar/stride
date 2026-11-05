@@ -14,12 +14,11 @@ test('stable policy is validated before publishing and forwarded to every produc
   expect(inputs.rollout_percentage.default).toBe(5);
   const gate = stable.jobs.validate.steps.find((step) => step.id === 'rollout');
   expect(gate.env.ROLLOUT_MODE).toContain("vars.RELEASE_ROLLOUT_MODE || 'staged'");
-  for (const job of ['android', 'windows']) {
-    expect(stable.jobs[job].with.rollout_mode).toBe('${{ needs.validate.outputs.rollout_mode }}');
-    expect(stable.jobs[job].with.rollout_percentage).toBe('${{ fromJSON(needs.validate.outputs.rollout_percentage) }}');
-  }
+  expect(stable.jobs.android.with.rollout_mode).toBe('${{ needs.validate.outputs.rollout_mode }}');
+  expect(stable.jobs.android.with.rollout_percentage).toBe('${{ fromJSON(needs.validate.outputs.rollout_percentage) }}');
   expect(inputs.run_msstore.default).toBe(true);
-  expect(stable.jobs.windows.with.run_msstore).toBe("${{ github.event_name != 'workflow_dispatch' || inputs.run_msstore }}");
+  // Stride builds Windows installers in the separate Release Windows workflow, not here.
+  expect(stable.jobs.windows).toBeUndefined();
   for (const job of ['ios-appstore', 'macos-appstore']) {
     expect(stable.jobs[job].with.phased_release).toBe("${{ needs.validate.outputs.rollout_mode == 'staged' }}");
   }
@@ -72,7 +71,7 @@ test('an open production rollout fails the stable release before any build job',
   }
 
   for (const job of [
-    'android-version-code', 'linux', 'macos', 'windows',
+    'android-version-code', 'linux', 'macos',
     'android', 'android-foss', 'ios-appstore', 'macos-appstore',
   ]) {
     expect(stable.jobs[job].needs).toContain('rollout-preflight');
@@ -83,7 +82,7 @@ test('an open production rollout fails the stable release before any build job',
   }
 });
 
-test('Windows artifact recovery can leave an accepted Store submission and flight intact', () => {
+test('the Microsoft Store rollout preflight runs only when the Store is selected', () => {
   const stable = workflow('release');
   const evaluate = (expression, event_name, run_msstore) => new Function(
     'github', 'inputs', 'vars',
@@ -94,38 +93,9 @@ test('Windows artifact recovery can leave an accepted Store submission and fligh
     ['workflow_dispatch', true, true],
     ['workflow_dispatch', false, false],
   ]) {
-    expect(evaluate(stable.jobs.windows.with.run_msstore, event, selected)).toBe(expected);
-    expect(evaluate(stable.jobs.windows.with.run_msstore_flight, event, selected)).toBe(expected);
     const preflight = stable.jobs['rollout-preflight'].steps.at(-1);
     expect(evaluate(preflight.env.CHECK_MSSTORE, event, selected)).toBe(expected);
   }
-  const windows = workflow('release-windows').jobs.standalone.steps;
-  const resolve = windows.find((step) => step.id === 'version');
-  expect(resolve.env.RUN_MSSTORE).toBe('${{ inputs.run_msstore }}');
-  expect(resolve.run).toContain("-or $env:RUN_MSSTORE -eq 'true'");
-  for (const name of ['Check Microsoft Store submission status', 'Publish to Microsoft Store (metadata + package)']) {
-    expect(windows.find((step) => step.name === name).if).toContain("steps.version.outputs.store_stable == 'true'");
-  }
-});
-
-test('the Windows stable Store path fails instead of exiting zero on an open rollout', () => {
-  const windows = workflow('release-windows');
-  const publish = windows.jobs.standalone.steps.find(
-    (step) => step.id === 'msstore_publish',
-  );
-  expect(publish.if).toContain("steps.version.outputs.store_stable == 'true'");
-  const refusals = [...publish.run.matchAll(/if \(& \$is(RolloutOpen|StoreBusy) \$errText\) \{\n(.*)\n/g)]
-    .map((match) => [match[1], match[2].trim()]);
-
-  expect(refusals.map(([matcher]) => matcher)).toEqual([
-    'RolloutOpen', 'StoreBusy', 'RolloutOpen', 'StoreBusy',
-  ]);
-  for (const [matcher, body] of refusals) {
-    if (matcher === 'RolloutOpen') expect(body).toBe('throw $rolloutOpenMessage');
-    else expect(body).toStartWith('Write-Warning');
-  }
-  expect(publish.run).toContain('package rollout is still open');
-  expect(publish.run).toContain('Get-StoreErrorText -ErrorRecord $_');
 });
 
 test('release policy shell accepts valid modes and rejects unsafe percentages and unknown modes', () => {

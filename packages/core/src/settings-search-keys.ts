@@ -266,7 +266,6 @@ export const SETTINGS_SEARCH_MOBILE_EXCLUSIONS: Record<string, string> = {
     featureTimeline: 'Timeline view exists on desktop only; the mobile GTD > Features screen has no row for it (#1145).',
     density: 'No adjustable list density setting on mobile.',
     textSize: 'Mobile follows the OS text-size setting automatically; no in-app override.',
-    animations: 'Desktop-only motion switch; mobile follows the OS Reduce Motion setting.',
     completionSound: 'Desktop-only completion tick (WebAudio); mobile has no completion sound.',
     keybindings: 'No hardware-keyboard shortcuts configuration on mobile.',
     globalQuickAddShortcut: 'System-wide hotkey; no equivalent on mobile.',

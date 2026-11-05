@@ -7,7 +7,8 @@ export const styles = StyleSheet.create({
         paddingVertical: 10,
         paddingHorizontal: 16,
         borderRadius: 14,
-        marginBottom: 6,
+        marginBottom: 10,
+        minHeight: 44,
         position: 'relative',
     },
     priorityStrip: {

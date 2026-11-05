@@ -33,6 +33,12 @@ export function AppUpdateDialog({ blocked = false, onOpenDownloadPage }: AppUpda
     if (!dialogOpen || blocked || !update) return null;
 
     const busy = phase === 'downloading' || phase === 'installing' || phase === 'restarting';
+    // No signed in-app bundle for this machine: the primary action opens the GitHub release.
+    const downloadOnly = update.downloadOnly === true;
+    const openDownload = () => {
+        onOpenDownloadPage(update.downloadUrl || GITHUB_RELEASE_DOWNLOAD_URL);
+        remindLater();
+    };
     const showError = phase === 'error' && errorStage !== 'check';
     const progressValue = progress && progress.totalBytes ? (progress.downloadedBytes / progress.totalBytes) * 100 : 0;
     const statusText = phase === 'downloading'
@@ -63,7 +69,7 @@ export function AppUpdateDialog({ blocked = false, onOpenDownloadPage }: AppUpda
                             {updaterText(t, 'title', { version: update.version })}
                         </h3>
                         <p id={bodyId} className="mt-1 text-sm leading-6 text-muted-foreground">
-                            {updaterText(t, 'subtitle', { current: update.currentVersion })}
+                            {updaterText(t, downloadOnly ? 'subtitleDownload' : 'subtitle', { current: update.currentVersion })}
                         </p>
                     </div>
                 </div>
@@ -110,7 +116,14 @@ export function AppUpdateDialog({ blocked = false, onOpenDownloadPage }: AppUpda
                     <Button variant="secondary" onClick={remindLater} disabled={busy}>
                         {updaterText(t, 'later')}
                     </Button>
-                    {errorStage === 'relaunch' ? null : (
+                    {downloadOnly ? (
+                        <Button
+                            onClick={openDownload}
+                            leadingIcon={<ExternalLink className="h-4 w-4" aria-hidden="true" />}
+                        >
+                            {updaterText(t, 'downloadFromGitHub')}
+                        </Button>
+                    ) : errorStage === 'relaunch' ? null : (
                         <Button
                             onClick={() => void installUpdate()}
                             loading={busy}

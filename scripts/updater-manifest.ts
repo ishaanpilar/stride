@@ -2,6 +2,7 @@ import { createHash, createPublicKey, verify } from 'node:crypto';
 
 export const UPDATER_REPO = 'ishaanpilar/stride';
 export const MAC_UPDATER_TARGET = 'darwin-aarch64';
+export const WINDOWS_UPDATER_TARGET = 'windows-x86_64';
 
 export type UpdaterPlatformEntry = {
     signature: string;
@@ -45,6 +46,48 @@ export function macUpdaterAssetName(version: string): string {
 
 export function macInstallZipName(version: string): string {
     return `Stride-${version}-macOS.zip`;
+}
+
+/** NSIS installer: first installs and, signed, the Windows in-app update bundle. */
+export function windowsSetupAssetName(version: string): string {
+    return `Stride_${version}_x64-setup.exe`;
+}
+
+export function windowsMsiAssetName(version: string): string {
+    return `Stride_${version}_x64_en-US.msi`;
+}
+
+export type AddUpdaterPlatformInput = {
+    version: string;
+    target: string;
+    assetName: string;
+    signature: string;
+    repo?: string;
+};
+
+/**
+ * Adds (or replaces) one platform in an existing latest.json, e.g. the Windows entry after the macOS
+ * release created the manifest. The manifest must already describe `version`, so a Windows build of
+ * one tag can never point the updater at another release.
+ */
+export function addUpdaterPlatform(manifest: unknown, input: AddUpdaterPlatformInput): UpdaterManifest {
+    const errors = validateLatestJson(manifest);
+    if (errors.length > 0) throw new Error(`Existing latest.json is invalid: ${errors.join(' ')}`);
+    const current = manifest as UpdaterManifest;
+    if (current.version !== input.version) {
+        throw new Error(`latest.json is for ${current.version}, not ${input.version}; refusing to mix releases.`);
+    }
+    const [entry] = Object.values(buildLatestJson({
+        version: input.version,
+        notes: current.notes,
+        pubDate: new Date(current.pub_date),
+        artifacts: [{ target: input.target, assetName: input.assetName, signature: input.signature }],
+        repo: input.repo,
+    }).platforms);
+    return {
+        ...current,
+        platforms: { ...current.platforms, [input.target]: entry },
+    };
 }
 
 export function buildLatestJson({ version, notes, pubDate, artifacts, repo = UPDATER_REPO }: BuildLatestJsonInput): UpdaterManifest {

@@ -135,7 +135,7 @@ vi.mock('@/hooks/use-theme-colors', () => {
   return { useThemeColors: () => colors };
 });
 vi.mock('@/hooks/use-theme-tokens', () => ({
-  useThemeTokens: () => ({ isMaterial: false, roles: null, shape: { large: 16 } }),
+  useThemeTokens: () => ({ isMaterial: false, roles: null, shape: { large: 16 }, soft: { enabled: false, raised: () => ({}), accentShadow: { boxShadow: [] }, accentGradient: ['#000000', '#000000'], accentStrong: '#000000', accentForeground: '#FFFFFF', shadowDark: '#000000' } }),
 }));
 vi.mock('@/lib/app-log', () => ({ logError: vi.fn(), logInfo: vi.fn(), logWarn: vi.fn() }));
 vi.mock('@/lib/performance-diagnostics', () => ({

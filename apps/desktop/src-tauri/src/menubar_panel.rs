@@ -1,4 +1,10 @@
-//! macOS menu bar panel: a small frameless popover shown under the tray icon.
+//! Menu bar / tray panel: a small frameless popover shown next to the tray icon.
+//!
+//! - macOS: left click on the status item toggles the panel under the icon (native vibrancy).
+//! - Windows: left click on the notification-area icon toggles the panel, above the icon when the
+//!   taskbar is at the bottom (or beside/below it for other taskbar edges). Right click keeps the menu.
+//! - Linux: tray click events are unreliable with libappindicator, so the tray menu has an
+//!   "Open panel" item that shows the panel near the top-right of the work area.
 //!
 //! The panel is a second webview (`index.html?menubarPanel=1`) created hidden at startup, in the
 //! same way as the Quick Add window. It reads and writes tasks through the same JS storage
@@ -98,12 +104,38 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Where the panel sits relative to the tray icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PanelPlacement {
+    /// Under the icon (menu bar / taskbar at the top).
+    Below,
+    /// Above the icon (taskbar at the bottom).
+    Above,
+    /// To the right of the icon (taskbar at the left edge).
+    RightOf,
+    /// To the left of the icon (taskbar at the right edge).
+    LeftOf,
+    /// Top-right corner of the work area; the icon position is ignored (Linux).
+    TopRightCorner,
+}
+
+/// Which screen edge holds the taskbar / panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskbarEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
 /// Work area / icon geometry in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PanelGeometry {
+    pub placement: PanelPlacement,
     pub icon_x: f64,
+    pub icon_y: f64,
     pub icon_width: f64,
-    pub icon_bottom: f64,
+    pub icon_height: f64,
     pub window_width: f64,
     pub window_height: f64,
     pub area_x: f64,
@@ -114,17 +146,74 @@ pub(crate) struct PanelGeometry {
     pub gap: f64,
 }
 
-/// Centers the panel under the tray icon, then clamps it into the screen work area.
+/// Placement for a taskbar on `edge`: the panel opens away from the edge, towards the screen.
+pub(crate) fn placement_for_taskbar(edge: TaskbarEdge) -> PanelPlacement {
+    match edge {
+        TaskbarEdge::Bottom => PanelPlacement::Above,
+        TaskbarEdge::Top => PanelPlacement::Below,
+        TaskbarEdge::Left => PanelPlacement::RightOf,
+        TaskbarEdge::Right => PanelPlacement::LeftOf,
+    }
+}
+
+/// Finds the taskbar edge by comparing a monitor's full rect with its work area (both physical
+/// px, `(x, y, width, height)`): the edge with the largest inset is the taskbar. With an
+/// auto-hidden taskbar the insets are all zero, so the edge nearest the icon centre is used.
+pub(crate) fn detect_taskbar_edge(
+    monitor: (f64, f64, f64, f64),
+    work: (f64, f64, f64, f64),
+    icon_center: (f64, f64),
+) -> TaskbarEdge {
+    let top = work.1 - monitor.1;
+    let left = work.0 - monitor.0;
+    let bottom = (monitor.1 + monitor.3) - (work.1 + work.3);
+    let right = (monitor.0 + monitor.2) - (work.0 + work.2);
+    let largest = top.max(bottom).max(left).max(right);
+    if largest > 0.5 {
+        // Ties favour bottom, then top, then left/right (the Windows default is bottom).
+        return if bottom >= largest {
+            TaskbarEdge::Bottom
+        } else if top >= largest {
+            TaskbarEdge::Top
+        } else if left >= largest {
+            TaskbarEdge::Left
+        } else {
+            TaskbarEdge::Right
+        };
+    }
+    let to_top = (icon_center.1 - monitor.1).abs();
+    let to_bottom = (monitor.1 + monitor.3 - icon_center.1).abs();
+    let to_left = (icon_center.0 - monitor.0).abs();
+    let to_right = (monitor.0 + monitor.2 - icon_center.0).abs();
+    let nearest = to_top.min(to_bottom).min(to_left).min(to_right);
+    if to_bottom <= nearest {
+        TaskbarEdge::Bottom
+    } else if to_top <= nearest {
+        TaskbarEdge::Top
+    } else if to_left <= nearest {
+        TaskbarEdge::Left
+    } else {
+        TaskbarEdge::Right
+    }
+}
+
+/// Positions the panel next to the tray icon (or in the corner), clamped into the work area.
 pub(crate) fn compute_panel_position(g: PanelGeometry) -> (i32, i32) {
-    let desired_x = g.icon_x + g.icon_width / 2.0 - g.window_width / 2.0;
     let min_x = g.area_x + g.margin;
     let max_x = (g.area_x + g.area_width - g.window_width - g.margin).max(min_x);
-    let x = desired_x.clamp(min_x, max_x);
-
-    let desired_y = g.icon_bottom + g.gap;
     let min_y = g.area_y;
     let max_y = (g.area_y + g.area_height - g.window_height - g.margin).max(min_y);
-    let y = desired_y.clamp(min_y, max_y);
+    let centered_x = g.icon_x + g.icon_width / 2.0 - g.window_width / 2.0;
+    let centered_y = g.icon_y + g.icon_height / 2.0 - g.window_height / 2.0;
+    let (x, y) = match g.placement {
+        PanelPlacement::Below => (centered_x, g.icon_y + g.icon_height + g.gap),
+        PanelPlacement::Above => (centered_x, g.icon_y - g.gap - g.window_height),
+        PanelPlacement::RightOf => (g.icon_x + g.icon_width + g.gap, centered_y),
+        PanelPlacement::LeftOf => (g.icon_x - g.gap - g.window_width, centered_y),
+        PanelPlacement::TopRightCorner => (max_x, min_y + g.margin),
+    };
+    let x = x.clamp(min_x, max_x);
+    let y = y.clamp(min_y, max_y);
     (x.round() as i32, y.round() as i32)
 }
 
@@ -210,17 +299,21 @@ pub(crate) fn hide_panel(app: &tauri::AppHandle) -> bool {
     was_visible
 }
 
-fn show_panel_under_icon(
-    app: &tauri::AppHandle,
-    window: &tauri::WebviewWindow,
-    rect: &tauri::Rect,
+/// Where the icon is, when known (absent for the Linux menu item).
+struct IconAnchor {
+    rect: tauri::Rect,
     click: tauri::PhysicalPosition<f64>,
-) {
-    let monitor = app
-        .monitor_from_point(click.x, click.y)
-        .ok()
-        .flatten()
-        .or_else(|| app.primary_monitor().ok().flatten());
+}
+
+fn show_panel(app: &tauri::AppHandle, window: &tauri::WebviewWindow, anchor: Option<IconAnchor>) {
+    let monitor = match &anchor {
+        Some(a) => app.monitor_from_point(a.click.x, a.click.y).ok().flatten(),
+        None => app
+            .cursor_position()
+            .ok()
+            .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten()),
+    }
+    .or_else(|| app.primary_monitor().ok().flatten());
     let mut height = stored_height(app);
     if let Some(monitor) = &monitor {
         let area_logical = monitor.work_area().size.height as f64 / monitor.scale_factor();
@@ -229,13 +322,36 @@ fn show_panel_under_icon(
     let _ = window.set_size(tauri::LogicalSize::new(MENUBAR_PANEL_WIDTH, height));
     if let Some(monitor) = monitor {
         let scale = monitor.scale_factor();
-        let icon_pos = rect.position.to_physical::<f64>(scale);
-        let icon_size = rect.size.to_physical::<f64>(scale);
         let area = monitor.work_area();
+        let (icon_pos, icon_size) = match &anchor {
+            Some(a) => (a.rect.position.to_physical::<f64>(scale), a.rect.size.to_physical::<f64>(scale)),
+            None => (tauri::PhysicalPosition::new(0.0, 0.0), tauri::PhysicalSize::new(0.0, 0.0)),
+        };
+        let placement = if anchor.is_none() {
+            PanelPlacement::TopRightCorner
+        } else if cfg!(target_os = "windows") {
+            let full_pos = monitor.position();
+            let full_size = monitor.size();
+            let edge = detect_taskbar_edge(
+                (full_pos.x as f64, full_pos.y as f64, full_size.width as f64, full_size.height as f64),
+                (
+                    area.position.x as f64,
+                    area.position.y as f64,
+                    area.size.width as f64,
+                    area.size.height as f64,
+                ),
+                (icon_pos.x + icon_size.width / 2.0, icon_pos.y + icon_size.height / 2.0),
+            );
+            placement_for_taskbar(edge)
+        } else {
+            PanelPlacement::Below
+        };
         let (x, y) = compute_panel_position(PanelGeometry {
+            placement,
             icon_x: icon_pos.x,
+            icon_y: icon_pos.y,
             icon_width: icon_size.width,
-            icon_bottom: icon_pos.y + icon_size.height,
+            icon_height: icon_size.height,
             window_width: MENUBAR_PANEL_WIDTH * scale,
             window_height: height * scale,
             area_x: area.position.x as f64,
@@ -263,8 +379,21 @@ fn show_panel_under_icon(
     let _ = window.emit(MENUBAR_PANEL_SHOWN_EVENT, ());
 }
 
-/// Left-click on the tray icon: toggle the panel under the icon. Falls back to the main window
+/// Linux tray menu item: shows the panel near the top-right of the work area (no toggle; the menu
+/// click itself is not a tray-icon click, so there is no blur race to guard against).
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn open_panel_in_corner(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(MENUBAR_PANEL_WINDOW_LABEL) else {
+        log::warn!("menubar panel: window missing, showing main window");
+        crate::show_main(app);
+        return;
+    };
+    show_panel(app, &window, None);
+}
+
+/// Left-click on the tray icon (macOS, Windows): toggle the panel next to the icon. Falls back to the main window
 /// when the panel window is unavailable.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn toggle_panel(
     app: &tauri::AppHandle,
     rect: &tauri::Rect,
@@ -284,7 +413,7 @@ pub(crate) fn toggle_panel(
         log::info!("menubar panel: tray click right after blur-hide, ignored");
         return;
     }
-    show_panel_under_icon(app, &window, rect, click);
+    show_panel(app, &window, Some(IconAnchor { rect: *rect, click }));
 }
 
 #[derive(Clone, Serialize)]
@@ -295,7 +424,7 @@ struct MenuBarOpenPayload {
     open_capture: bool,
 }
 
-/// Panel replacement for the tray menu's "Lock" item (macOS has no tray menu).
+/// Panel replacement for the tray menu's "Lock" item (macOS has no tray menu; also handy elsewhere).
 #[tauri::command(async)]
 pub(crate) fn menubar_lock(app: tauri::AppHandle) {
     hide_panel(&app);
@@ -401,9 +530,11 @@ mod tests {
 
     fn geometry() -> PanelGeometry {
         PanelGeometry {
+            placement: PanelPlacement::Below,
             icon_x: 1000.0,
+            icon_y: 10.0,
             icon_width: 40.0,
-            icon_bottom: 50.0,
+            icon_height: 40.0,
             window_width: 760.0,
             window_height: 1120.0,
             area_x: 0.0,
@@ -435,7 +566,7 @@ mod tests {
 
     #[test]
     fn never_goes_above_the_work_area() {
-        let g = PanelGeometry { icon_bottom: 0.0, gap: 0.0, ..geometry() };
+        let g = PanelGeometry { icon_y: -40.0, gap: 0.0, ..geometry() };
         assert_eq!(compute_panel_position(g).1, 50);
     }
 
@@ -467,5 +598,123 @@ mod tests {
     fn clamps_to_the_bottom_edge_on_short_screens() {
         let g = PanelGeometry { area_height: 900.0, ..geometry() };
         assert_eq!(compute_panel_position(g).1, 50);
+    }
+
+    /// Windows, 1920x1080 at 100%, taskbar 48px at the bottom, icon in the tray at the right.
+    fn windows_bottom() -> PanelGeometry {
+        PanelGeometry {
+            placement: PanelPlacement::Above,
+            icon_x: 1700.0,
+            icon_y: 1040.0,
+            icon_width: 24.0,
+            icon_height: 40.0,
+            window_width: 380.0,
+            window_height: 600.0,
+            area_x: 0.0,
+            area_y: 0.0,
+            area_width: 1920.0,
+            area_height: 1032.0,
+            margin: 8.0,
+            gap: 4.0,
+        }
+    }
+
+    #[test]
+    fn opens_above_a_bottom_taskbar_icon() {
+        // x: 1712 - 190 = 1522; y: 1040 - 4 - 600 = 436, clamped to the work-area bottom margin
+        // (1032 - 600 - 8 = 424)
+        assert_eq!(compute_panel_position(windows_bottom()), (1522, 424));
+    }
+
+    #[test]
+    fn above_placement_clamps_to_the_right_edge_and_top() {
+        let g = PanelGeometry { icon_x: 1910.0, ..windows_bottom() };
+        assert_eq!(compute_panel_position(g).0, 1920 - 380 - 8);
+        let tall = PanelGeometry { window_height: 1200.0, ..windows_bottom() };
+        assert_eq!(compute_panel_position(tall).1, 0);
+    }
+
+    #[test]
+    fn opens_beside_side_taskbars() {
+        let left = PanelGeometry {
+            placement: PanelPlacement::RightOf,
+            icon_x: 0.0,
+            icon_y: 500.0,
+            icon_width: 48.0,
+            icon_height: 40.0,
+            area_x: 48.0,
+            area_width: 1872.0,
+            area_height: 1080.0,
+            ..windows_bottom()
+        };
+        // x: 48 + 4 = 52 (clamped to area_x + margin = 56); y: 520 - 300 = 220
+        assert_eq!(compute_panel_position(left), (56, 220));
+        let right = PanelGeometry {
+            placement: PanelPlacement::LeftOf,
+            icon_x: 1872.0,
+            icon_y: 500.0,
+            icon_width: 48.0,
+            icon_height: 40.0,
+            area_width: 1872.0,
+            area_height: 1080.0,
+            ..windows_bottom()
+        };
+        // x: 1872 - 4 - 380 = 1488, clamped to 1872 - 380 - 8 = 1484; y: 220
+        assert_eq!(compute_panel_position(right), (1484, 220));
+    }
+
+    #[test]
+    fn top_taskbar_opens_below() {
+        let g = PanelGeometry {
+            placement: PanelPlacement::Below,
+            icon_y: 4.0,
+            area_y: 48.0,
+            area_height: 1032.0,
+            ..windows_bottom()
+        };
+        assert_eq!(compute_panel_position(g).1, 48);
+        assert_eq!(placement_for_taskbar(TaskbarEdge::Top), PanelPlacement::Below);
+    }
+
+    #[test]
+    fn linux_corner_is_top_right_of_the_work_area() {
+        let g = PanelGeometry {
+            placement: PanelPlacement::TopRightCorner,
+            icon_x: 0.0,
+            icon_y: 0.0,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            area_x: 100.0,
+            area_y: 30.0,
+            area_width: 1820.0,
+            area_height: 1050.0,
+            ..windows_bottom()
+        };
+        assert_eq!(compute_panel_position(g), (100 + 1820 - 380 - 8, 30 + 8));
+    }
+
+    #[test]
+    fn taskbar_edge_is_found_from_the_work_area_inset() {
+        let mon = (0.0, 0.0, 1920.0, 1080.0);
+        let icon = (1700.0, 1060.0);
+        assert_eq!(detect_taskbar_edge(mon, (0.0, 0.0, 1920.0, 1032.0), icon), TaskbarEdge::Bottom);
+        assert_eq!(detect_taskbar_edge(mon, (0.0, 48.0, 1920.0, 1032.0), icon), TaskbarEdge::Top);
+        assert_eq!(detect_taskbar_edge(mon, (48.0, 0.0, 1872.0, 1080.0), icon), TaskbarEdge::Left);
+        assert_eq!(detect_taskbar_edge(mon, (0.0, 0.0, 1872.0, 1080.0), icon), TaskbarEdge::Right);
+        // Secondary monitor with a non-zero origin.
+        let second = (1920.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(
+            detect_taskbar_edge(second, (1920.0, 0.0, 1920.0, 1032.0), (3000.0, 1060.0)),
+            TaskbarEdge::Bottom
+        );
+    }
+
+    #[test]
+    fn auto_hidden_taskbar_falls_back_to_the_icon_position() {
+        let mon = (0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(detect_taskbar_edge(mon, mon, (1700.0, 1060.0)), TaskbarEdge::Bottom);
+        assert_eq!(detect_taskbar_edge(mon, mon, (1700.0, 10.0)), TaskbarEdge::Top);
+        assert_eq!(detect_taskbar_edge(mon, mon, (10.0, 500.0)), TaskbarEdge::Left);
+        assert_eq!(detect_taskbar_edge(mon, mon, (1910.0, 500.0)), TaskbarEdge::Right);
     }
 }

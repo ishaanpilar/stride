@@ -1,5 +1,5 @@
 import React from 'react';
-import { FlatList, Pressable, Text } from 'react-native';
+import { FlatList, Modal, Pressable, Text } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -49,30 +49,19 @@ vi.mock('../contexts/language-context', () => ({
   useLanguage: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock('@/hooks/use-theme-colors', () => ({
-  useThemeColors: () => ({
-    bg: '#000000',
-    cardBg: '#111827',
-    inputBg: '#111827',
-    filterBg: '#1f2937',
-    border: '#334155',
-    text: '#f8fafc',
-    secondaryText: '#94a3b8',
-    icon: '#94a3b8',
-    tint: '#3b82f6',
-    onTint: '#ffffff',
-    danger: '#ef4444',
-    success: '#10b981',
-    warning: '#f59e0b',
-  }),
+vi.mock('@/hooks/use-theme-tokens', async () => {
+  const { buildDefaultSoftTokens } = await vi.importActual<typeof import('../constants/soft-ui')>('../constants/soft-ui');
+  return {
+    useThemeTokens: () => ({ colors: {}, soft: buildDefaultSoftTokens(false) }),
+  };
+});
+
+vi.mock('react-native-svg', () => ({
+  default: 'Svg',
+  Circle: 'Circle',
 }));
 
-vi.mock('@/hooks/use-filled-button-colors', () => ({
-  useFilledButtonColors: () => ({
-    backgroundColor: '#3b82f6',
-    textColor: '#ffffff',
-  }),
-}));
+vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
 vi.mock('../lib/notification-service', () => ({
   cancelMobilePomodoroCompletionNotification: vi.fn(async () => undefined),
@@ -130,22 +119,24 @@ describe('PomodoroPanel', () => {
   });
 
   it('keeps restored local session history when persisting the timer state', async () => {
-    vi.mocked(AsyncStorage.getItem).mockResolvedValueOnce(JSON.stringify({
-      durations: { focusMinutes: 25, breakMinutes: 5 },
-      timerState: {
-        phase: 'focus',
-        remainingSeconds: 1500,
-        isRunning: false,
-        completedFocusSessions: 0,
-      },
-      selectedTaskId: 'task-1',
-      sessionHistory: {
-        totalCompletedFocusSessions: 4,
-        completedFocusSessionsByTaskId: {
-          'task-1': 2,
+    vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => (key === '@mindwtr_pomodoro_state'
+      ? JSON.stringify({
+        durations: { focusMinutes: 25, breakMinutes: 5 },
+        timerState: {
+          phase: 'focus',
+          remainingSeconds: 1500,
+          isRunning: false,
+          completedFocusSessions: 0,
         },
-      },
-    }));
+        selectedTaskId: 'task-1',
+        sessionHistory: {
+          totalCompletedFocusSessions: 4,
+          completedFocusSessionsByTaskId: {
+            'task-1': 2,
+          },
+        },
+      })
+      : null));
 
     await renderPanel();
     await act(async () => undefined);
@@ -347,7 +338,7 @@ describe('PomodoroPanel', () => {
       .find((node) => node.props.accessibilityLabel === 'Timer task');
     act(() => picker?.props.onPress());
     expect(tree.root.findByType(FlatList).props.data).toEqual([]);
-    expect(tree.root.findAll((node) => node.props.accessibilityState?.selected === true))
+    expect(tree.root.findByType(Modal).findAll((node) => node.props.accessibilityState?.selected === true))
       .toHaveLength(0);
   });
 

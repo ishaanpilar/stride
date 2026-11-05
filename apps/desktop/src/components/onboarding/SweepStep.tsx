@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { ApplyMindSweepResult, Language, MindSweepProposal } from '@stride/core';
+import { isMacRuntime } from '../../lib/runtime';
 import { Button } from '../ui/Button';
 import { useOnboardingCopy } from './copy';
 import { ProposalReview, type ReviewRow } from './ProposalReview';
@@ -22,6 +23,7 @@ export type SweepStepProps = {
 export function SweepStep(props: SweepStepProps) {
     const { text, language } = props;
     const ob = useOnboardingCopy();
+    const continueHint = isMacRuntime() ? ob('onboarding.sweep.hintKey') : ob('onboarding.sweep.hintKey').replace('⌘', 'Ctrl +');
     const [phase, setPhase] = useState<'input' | 'loading' | 'review'>('input');
     const [proposal, setProposal] = useState<MindSweepProposal | null>(null);
     const [rows, setRows] = useState<ReviewRow[]>([]);
@@ -104,7 +106,7 @@ export function SweepStep(props: SweepStepProps) {
                     className="mt-2 w-full resize-none rounded-card bg-well px-4 py-3 text-[15px] shadow-soft-inset placeholder:text-tertiary focus-ring"
                 />
                 <p className="mt-2 text-xs text-muted-foreground">
-                    {props.aiReady ? ob('onboarding.sweep.hintKey') : `${ob('onboarding.sweep.hintManual')} ${ob('onboarding.sweep.hintKey')}`}
+                    {props.aiReady ? continueHint : `${ob('onboarding.sweep.hintManual')} ${continueHint}`}
                 </p>
                 <StepFooter
                     onBack={props.onBack}

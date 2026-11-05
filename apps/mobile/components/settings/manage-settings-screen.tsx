@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { AreaContextEditor } from './area-context-editor';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
@@ -787,6 +788,7 @@ export function ManageSettingsScreen() {
                                 ))}
                             </View>
                         ) : null}
+                        {editorTarget?.type === 'area' ? <AreaContextEditor areaId={editorTarget.id} t={t} /> : null}
                         {editorFailed && <Text accessibilityRole="alert" style={[styles.settingDescription, { color: tc.danger }]}>{t('settings.feedback.saveFailed')}</Text>}
                         <View style={styles.manageEditorActions}>
                             <TouchableOpacity

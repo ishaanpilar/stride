@@ -236,6 +236,17 @@ export function getManageEditorText(t: Translate, type: ManageEditorTarget['type
             referencePlaceholder: untranslated.referencePlaceholder,
         } : null,
 
+        // Only an existing area carries routing context (description, keywords, linked people).
+        areaContextFields: type === 'area' ? {
+            hint: tf('areaContext.aiHint', 'The AI uses this to put tasks in the right area.'),
+            descriptionLabel: tf('areaContext.description', 'Description'),
+            descriptionPlaceholder: tf('areaContext.descriptionPlaceholder', 'What belongs here: clients, people, products, keywords'),
+            keywordsLabel: tf('areaContext.keywords', 'Keywords'),
+            keywordsPlaceholder: tf('areaContext.keywordsPlaceholder', 'Add a keyword and press Enter'),
+            peopleLabel: tf('areaContext.people', 'People'),
+            peoplePlaceholder: tf('areaContext.peoplePlaceholder', 'Add a person'),
+        } : null,
+
         changeColor: isArea || type === 'unassignedArea' ? t('projects.changeColor') : null,
 
         nameTaken: type === 'newArea' ? tf('areas.nameExists', 'An area with this name already exists.') : null,

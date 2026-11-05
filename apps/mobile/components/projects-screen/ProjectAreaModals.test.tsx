@@ -13,6 +13,7 @@ vi.mock('@stride/core', async (importOriginal) => ({
   useTaskStore: { getState: () => ({ areas: live.areas, projects: live.projects, _allProjects: live.projects }) },
   flushPendingSave: diagnostics.flush,
 }));
+vi.mock('../settings/area-context-editor', () => ({ AreaContextEditor: () => null }));
 vi.mock('../../lib/use-android-keyboard-inset', () => ({ useAndroidKeyboardInset: () => 0 }));
 
 const now = '2026-09-22T00:00:00.000Z';

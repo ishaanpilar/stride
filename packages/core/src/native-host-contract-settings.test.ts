@@ -169,6 +169,7 @@ function menuDriver(host: Host, scenario: Scenario) {
 
 const THEME_STYLE = (theme: string) => (theme === 'material3-light' || theme === 'material3-dark' ? 'material3' : 'default');
 
+
 function generalDriver(host: Host, scenario: Scenario) {
     const { log, drain } = createLog();
     const device = scenario.device;
@@ -178,7 +179,8 @@ function generalDriver(host: Host, scenario: Scenario) {
     let expanded = false;
     let picker: string | null = null;
     let appLockError: 'unavailable' | 'cancelled' | 'failed' | null = null;
-    const read = () => value(host.getGeneralSettings({ deviceTheme, appSearch }));
+    let animationsPreference: string | null = null;
+    const read = () => value(host.getGeneralSettings({ deviceTheme, appSearch, animations: animationsPreference }));
     const pickerOf = (model: ReturnType<typeof read>, control: string) => {
         if (control === 'theme') return { title: model.appearance.theme.pickerTitle, groups: model.appearance.theme.groups };
         const controls = {
@@ -204,6 +206,9 @@ function generalDriver(host: Host, scenario: Scenario) {
             } else if (write.key === 'mindwtr-language') {
                 log.device.push(['setLanguage', write.value]);
                 value(await host.setLanguage({ storedLanguage: write.value, systemLocale: device.systemLocale ?? 'en-US' }));
+            } else if (write.key === '@stride_animations') {
+                log.device.push(['setItem', write.key, write.value]);
+                animationsPreference = write.value;
             } else if (write.key === 'mindwtr:appSearchWipeOwed') {
 
                 expect(write.value).toBe('true');
@@ -229,6 +234,7 @@ function generalDriver(host: Host, scenario: Scenario) {
                     model.title,
                     appearance.title, ...rows(appearance.theme),
                     appearance.showTaskAge.label, appearance.showTaskAge.description,
+                    appearance.animations.label, appearance.animations.description,
                     ...rows(appearance.quickAccess),
                     privacy.title, privacy.appLock.label, privacy.appLock.description,
                     ...(appLockError ? [privacy.appLock.errors[appLockError]] : []),
@@ -240,6 +246,7 @@ function generalDriver(host: Host, scenario: Scenario) {
                 ],
                 switches: [
                     [appearance.showTaskAge.value, false],
+                    [appearance.animations.value, false],
                     [privacy.appLock.value, false],
                     ...(privacy.appSearch ? [[privacy.appSearch.value, false]] : []),
                 ],
@@ -276,11 +283,14 @@ function generalDriver(host: Host, scenario: Scenario) {
                     return;
                 }
                 case 'toggle': {
-                    if (target === 'showTaskAge') {
+                    const pressed = target as string;
+                    if (pressed === 'showTaskAge') {
                         await send(model.appearance.showTaskAge.edit);
-                    } else if (target === 'appSearch') {
+                    } else if (pressed === 'animations') {
+                        await send(model.appearance.animations.edit);
+                    } else if (pressed === 'appSearch') {
                         await send(model.privacy.appSearch!.edit);
-                    } else if (target === 'appLock') {
+                    } else if (pressed === 'appLock') {
                         appLockError = null;
                         const edit = model.privacy.appLock.edit;
                         if (edit.value === true) {
@@ -288,7 +298,7 @@ function generalDriver(host: Host, scenario: Scenario) {
                             log.device.push(['authenticate', model.privacy.appLock.enablePrompt]);
                             const outcome = outcomes.shift();
                             if (outcome === 'success') await send(edit);
-                            else appLockError = outcome === 'throw' ? 'failed' : outcome as 'cancelled' | 'unavailable';
+                            else appLockError = outcome === undefined || outcome === 'throw' ? 'failed' : outcome as 'cancelled' | 'unavailable';
                         } else {
                             await send(edit);
                         }
@@ -384,6 +394,11 @@ function manageDriver(host: Host, scenario: Scenario) {
                     title: text.title,
                     inputs: [
                         ...(text.namePlaceholder !== null ? [[nameTestId, text.namePlaceholder, editor.draft.name]] : []),
+                        ...(text.areaContextFields ? [
+                            ['area-context-description', text.areaContextFields.descriptionPlaceholder, ''],
+                            ['area-context-keyword-input', text.areaContextFields.keywordsPlaceholder, ''],
+                            ['area-context-person-input', text.areaContextFields.peoplePlaceholder, ''],
+                        ] : []),
                         ...(text.personFields ? [
                             ['manage-person-note-input', text.personFields.notePlaceholder, editor.draft.note],
                             ['manage-person-reference-input', text.personFields.referencePlaceholder, editor.draft.referenceLink],

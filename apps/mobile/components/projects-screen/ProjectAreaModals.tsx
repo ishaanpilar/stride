@@ -1,4 +1,5 @@
 import React from 'react';
+import { AreaContextEditor } from '../settings/area-context-editor';
 import { Modal, Platform, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ban } from 'lucide-react-native';
 import { areaOrderIdsForIntent, sortAreasForOrderDisplay, isManageAreaNameTaken, flushPendingSave, runStoreCommand, useTaskStore, tFallback, type Area, type Project } from '@stride/core';
@@ -364,6 +365,7 @@ export function ProjectAreaModals({
                                                             <Text style={[styles.linkModalButtonText, { color: tc.tint }]}>{t('common.save')}</Text>
                                                         </TouchableOpacity>
                                                     </View>
+                                                    <AreaContextEditor areaId={area.id} t={t} />
                                                 </View>
                                             ) : null}
                                             {isExpanded ? (

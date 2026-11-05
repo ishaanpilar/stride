@@ -180,7 +180,7 @@ vi.mock('@/hooks/use-theme-colors', () => ({
 }));
 
 vi.mock('@/hooks/use-theme-tokens', () => ({
-  useThemeTokens: () => mockThemeTokens.value,
+  useThemeTokens: () => ({ soft: { enabled: false, raised: () => ({}), accentShadow: { boxShadow: [] }, accentGradient: ['#000000', '#000000'], accentStrong: '#000000', accentForeground: '#FFFFFF', shadowDark: '#000000' }, ...mockThemeTokens.value }),
 }));
 
 vi.mock('../contexts/language-context', () => ({

@@ -25,9 +25,17 @@ describe('supportsInAppUpdates', () => {
         expect(supportsInAppUpdates(null, 'macos')).toBe(false);
     });
 
-    it('keeps Windows and Linux on the reminder until their targets ship in latest.json', () => {
-        expect(supportsInAppUpdates('direct', 'windows')).toBe(false);
+    it('enables the updater for direct GitHub installs on Windows x64', () => {
+        expect(supportsInAppUpdates('direct', 'windows')).toBe(true);
+        expect(supportsInAppUpdates('github-release', 'windows')).toBe(true);
+        for (const source of ['microsoft-store', 'winget', 'scoop', 'chocolatey', 'portable'] as InstallSource[]) {
+            expect(supportsInAppUpdates(source, 'windows')).toBe(false);
+        }
+    });
+
+    it('keeps Linux on the reminder until its targets ship in latest.json', () => {
         expect(supportsInAppUpdates('appimage', 'linux')).toBe(false);
+        expect(supportsInAppUpdates('direct', 'linux')).toBe(false);
     });
 });
 

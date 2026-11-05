@@ -42,6 +42,7 @@ import { useSwipeableChecklist } from './swipeable-task-item/useSwipeableCheckli
 import { settleStoreAction } from './store-action-result';
 import { TaskEditDestinationPicker } from './task-edit/TaskEditDestinationPicker';
 import { ChecklistTargetPicker } from './swipeable-task-item/ChecklistTargetPicker';
+import { startFocusFromTask } from '../lib/start-focus';
 
 
 export type TaskRowActions = {
@@ -865,6 +866,8 @@ function SwipeableTaskItemInner({
                 onMoveToSection={onMoveToSection}
                 onAddToChecklist={canMoveTaskToChecklist(task, resolveQuickCaptureDefaultAreaId(useTaskStore.getState().settings, useTaskStore.getState().areas)) ? () => setShowChecklistPicker(true) : undefined}
                 onBackdatedComplete={canBackdateCompletion ? () => setCompletedAtPicker('complete') : undefined}
+                onStartFocus={isTaskActionable(task) ? () => { void startFocusFromTask(task.id, 'focus'); } : undefined}
+                onStartPomodoro={isTaskActionable(task) ? () => { void startFocusFromTask(task.id, 'pomodoro'); } : undefined}
                 taskId={task.id}
                 taskStatus={task.status}
                 tc={tc}

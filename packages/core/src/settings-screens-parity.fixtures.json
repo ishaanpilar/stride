@@ -1,43 +1,9 @@
 {
  "provenance": {
   "command": "cd apps/mobile && STRIDE_CAPTURE_SETTINGS_SCREENS=1 TZ=UTC bunx vitest run components/settings/settings.parity.test.tsx",
-  "capturedAt": "f24839ede33e3ad0be6bab6263369bee673497e1",
+  "capturedAt": "7b083e766c57cf175e65b0ab03e03b712b19dad1",
   "sourceState": "Every file under apps/ was at HEAD except this harness. packages/core held the new settings models and contract block, which no React Native code imported yet.",
-  "device": "The device is stubbed: navigator.language and Intl.DateTimeFormat().resolvedOptions().locale are the scenario systemLocale, and Date.prototype.toLocaleDateString is core's System short date (createDateFormatter with dateFormat system) for that locale and the stored settings.",
-  "recaptured": [
-   {
-    "base": "3788823be",
-    "command": "cd apps/mobile && TZ=UTC bunx vitest run components/settings/settings.parity.test.tsx, with the React Native settings fixes in place; only the observations below were replaced",
-    "observations": [
-     "general: theme picker, the last pick (the stored theme again): no settings write. Its 'repeat' marker is gone: React Native and the native host both skip a write that changes nothing.",
-     "manage: every people row: a count of one reads '1 task' ('1 Aufgabe' in German), and a person with no note or link shows the count once, beside the row.",
-     "manage: unassigned color and new areas, the new area 'home' while 'Home' exists: Save is off, so the editor stays open and nothing is written (it used to add nothing and recolor 'Home' grey)."
-    ]
-   },
-   {
-    "base": "470c46e39",
-    "command": "cd apps/mobile && STRIDE_DUMP_SETTINGS_SCREENS=<file> TZ=UTC bunx vitest run components/settings/settings.parity.test.tsx, with the React Native accessibility fixes in place; only the observations below were replaced, and every other observation matched the frozen one",
-    "observations": [
-     "manage: every scenario that shows Areas, Contexts or Tags open (stored open sections, unreadable stored sections, toggling sections, unassigned color and new areas, editing areas, deleting an area, contexts and tags, empty lists, in German): only the accessibility labels changed. The pencil and trash buttons now name their item, 'Edit: <name>' and 'Delete: <name>' ('Bearbeiten: …' and 'Löschen: …' in German), and the unassigned row's pencil reads 'Edit: Unassigned'. Texts, writes, device writes and alerts are unchanged.",
-     "The section headers now carry a button role and their open state, and the General pickers' options a radio role and their chosen state; this fixture records neither, so no other observation changed."
-    ]
-   },
-   {
-    "base": "b54b88ee4d29572676d9ff2e330ec3f9d219cf09",
-    "command": "STRIDE_DUMP_SETTINGS_SCREENS=<task-log>/settings-observations.json rtk bun run --cwd apps/mobile test components/settings/settings.parity.test.tsx; replaced only Manage texts and labels for the new explicit context/tag create affordances",
-    "observations": [
-     "Manage sections for Contexts and Tags append a New context/New tag label and Add button when open (localized in German). Frozen inputs, actions, writes, alerts, device writes and editor fields are unchanged."
-    ]
-   },
-   {
-    "base": "4f5ac3c79",
-    "command": "cd apps/mobile && STRIDE_DUMP_SETTINGS_SCREENS=<file> TZ=UTC bunx vitest run components/settings/settings.parity.test.tsx, with the App Lock relock delay row in place (#1423); only the observations below were replaced, and every other observation matched the frozen one",
-    "observations": [
-     "general: stored values, task age and quick access, in German, and app lock after the successful enable: while App Lock is on, a 'Require unlock' row ('Entsperren verlangen' in German) showing 'Immediately' ('Sofort') follows the App lock row. Only texts changed.",
-     "general: app lock relock delay is a new scenario: the picker offers Immediately, After 1 minute, After 5 minutes and After 15 minutes; picking 5 minutes writes security.mobileAppLockRelockDelayMinutes 5 with App Lock kept on, and picking it again writes nothing."
-    ]
-   }
-  ]
+  "device": "The device is stubbed: navigator.language and Intl.DateTimeFormat().resolvedOptions().locale are the scenario systemLocale, and Date.prototype.toLocaleDateString is core's System short date (createDateFormatter with dateFormat system) for that locale and the stored settings."
  },
  "now": "2026-09-24T14:00:00.000Z",
  "timeZone": "UTC",
@@ -564,6 +530,24 @@
     [
      "pick",
      1
+    ]
+   ]
+  },
+  {
+   "name": "general: animations switch",
+   "data": "none",
+   "settings": "stored",
+   "device": {
+    "themeMode": "nord"
+   },
+   "actions": [
+    [
+     "toggle",
+     "animations"
+    ],
+    [
+     "toggle",
+     "animations"
     ]
    ]
   },
@@ -2626,6 +2610,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2641,6 +2627,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -2664,6 +2654,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2688,6 +2680,10 @@
       false
      ],
      [
+      true,
+      false
+     ],
+     [
       false,
       false
      ]
@@ -2708,6 +2704,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2723,6 +2721,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -2748,6 +2750,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2763,6 +2767,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -2786,6 +2794,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2801,6 +2811,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -2902,6 +2916,8 @@
      "Dracula",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2917,6 +2933,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -2952,6 +2972,8 @@
      "Dracula",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -2967,6 +2989,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3068,6 +3094,8 @@
      "Material 3 (Light)",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3083,6 +3111,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3118,6 +3150,8 @@
      "Material 3 (Light)",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3133,6 +3167,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3234,6 +3272,8 @@
      "Material 3 (Light)",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3249,6 +3289,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3272,6 +3316,8 @@
      "Material 3 (Light)",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3287,6 +3333,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3388,6 +3438,8 @@
      "Material 3 (Light)",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3403,6 +3455,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3433,6 +3489,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -3448,6 +3506,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -3473,6 +3535,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -3501,6 +3565,10 @@
      [
       true,
       false
+     ],
+     [
+      true,
+      false
      ]
     ],
     "expanded": true,
@@ -3519,6 +3587,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -3540,6 +3610,10 @@
      "24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -3593,6 +3667,8 @@
      "Dark",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3608,6 +3684,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3631,6 +3711,8 @@
      "Dark",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3646,6 +3728,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3749,6 +3835,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3764,6 +3852,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3787,6 +3879,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -3802,6 +3896,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3905,6 +4003,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -3920,6 +4020,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -3945,6 +4049,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -3962,6 +4068,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -3996,6 +4106,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4011,6 +4123,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4047,6 +4163,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4062,6 +4180,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4113,6 +4235,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Contexts",
      "Privacy",
@@ -4128,6 +4252,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4164,6 +4292,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Contexts",
      "Privacy",
@@ -4179,6 +4309,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4230,6 +4364,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Projects",
      "Privacy",
@@ -4245,6 +4381,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4274,6 +4414,158 @@
     "links": []
    }
   ],
+  "general: animations switch": [
+   {
+    "texts": [
+     "General",
+     "Appearance",
+     "Theme",
+     "Nord",
+     "Show task age",
+     "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
+     "Quick access view",
+     "Calendar",
+     "Privacy",
+     "App lock",
+     "Require your device lock when opening Stride or returning to the app. This protects the app view, not the on-device database.",
+     "Require unlock",
+     "Immediately",
+     "Language",
+     "Select your preferred language",
+     "Language",
+     "English",
+     "Regional formats",
+     "Monday · Year / Month / Day · 24-hour"
+    ],
+    "switches": [
+     [
+      true,
+      false
+     ],
+     [
+      true,
+      false
+     ],
+     [
+      true,
+      false
+     ]
+    ],
+    "expanded": false,
+    "picker": null,
+    "writes": [],
+    "device": [],
+    "alerts": [],
+    "navigations": [],
+    "links": []
+   },
+   {
+    "texts": [
+     "General",
+     "Appearance",
+     "Theme",
+     "Nord",
+     "Show task age",
+     "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
+     "Quick access view",
+     "Calendar",
+     "Privacy",
+     "App lock",
+     "Require your device lock when opening Stride or returning to the app. This protects the app view, not the on-device database.",
+     "Require unlock",
+     "Immediately",
+     "Language",
+     "Select your preferred language",
+     "Language",
+     "English",
+     "Regional formats",
+     "Monday · Year / Month / Day · 24-hour"
+    ],
+    "switches": [
+     [
+      true,
+      false
+     ],
+     [
+      false,
+      false
+     ],
+     [
+      true,
+      false
+     ]
+    ],
+    "expanded": false,
+    "picker": null,
+    "writes": [],
+    "device": [
+     [
+      "setItem",
+      "@stride_animations",
+      "off"
+     ]
+    ],
+    "alerts": [],
+    "navigations": [],
+    "links": []
+   },
+   {
+    "texts": [
+     "General",
+     "Appearance",
+     "Theme",
+     "Nord",
+     "Show task age",
+     "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
+     "Quick access view",
+     "Calendar",
+     "Privacy",
+     "App lock",
+     "Require your device lock when opening Stride or returning to the app. This protects the app view, not the on-device database.",
+     "Require unlock",
+     "Immediately",
+     "Language",
+     "Select your preferred language",
+     "Language",
+     "English",
+     "Regional formats",
+     "Monday · Year / Month / Day · 24-hour"
+    ],
+    "switches": [
+     [
+      true,
+      false
+     ],
+     [
+      true,
+      false
+     ],
+     [
+      true,
+      false
+     ]
+    ],
+    "expanded": false,
+    "picker": null,
+    "writes": [],
+    "device": [
+     [
+      "setItem",
+      "@stride_animations",
+      "on"
+     ]
+    ],
+    "alerts": [],
+    "navigations": [],
+    "links": []
+   }
+  ],
   "general: app lock": [
    {
     "texts": [
@@ -4283,6 +4575,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4298,6 +4592,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -4321,6 +4619,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4338,6 +4638,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -4379,6 +4683,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4394,6 +4700,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -4426,6 +4736,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4445,51 +4757,7 @@
       false
      ],
      [
-      false,
-      false
-     ]
-    ],
-    "expanded": false,
-    "picker": null,
-    "writes": [],
-    "device": [
-     [
-      "authenticate",
-      {
-       "promptMessage": "Enable Stride app lock",
-       "cancelLabel": "Cancel",
-       "fallbackLabel": "Use device passcode"
-      }
-     ]
-    ],
-    "alerts": [],
-    "navigations": [],
-    "links": []
-   },
-   {
-    "texts": [
-     "General",
-     "Appearance",
-     "Theme",
-     "System",
-     "Show task age",
-     "Display how long ago a task was created in task metadata.",
-     "Quick access view",
-     "Review",
-     "Privacy",
-     "App lock",
-     "Require your device lock when opening Stride or returning to the app. This protects the app view, not the on-device database.",
-     "Set up a device passcode or biometrics to use app lock.",
-     "Language",
-     "Select your preferred language",
-     "Language",
-     "English",
-     "Regional formats",
-     "System default (Sunday) · System default (09/24/2026) · System default"
-    ],
-    "switches": [
-     [
-      false,
+      true,
       false
      ],
      [
@@ -4522,6 +4790,62 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
+     "Quick access view",
+     "Review",
+     "Privacy",
+     "App lock",
+     "Require your device lock when opening Stride or returning to the app. This protects the app view, not the on-device database.",
+     "Set up a device passcode or biometrics to use app lock.",
+     "Language",
+     "Select your preferred language",
+     "Language",
+     "English",
+     "Regional formats",
+     "System default (Sunday) · System default (09/24/2026) · System default"
+    ],
+    "switches": [
+     [
+      false,
+      false
+     ],
+     [
+      true,
+      false
+     ],
+     [
+      false,
+      false
+     ]
+    ],
+    "expanded": false,
+    "picker": null,
+    "writes": [],
+    "device": [
+     [
+      "authenticate",
+      {
+       "promptMessage": "Enable Stride app lock",
+       "cancelLabel": "Cancel",
+       "fallbackLabel": "Use device passcode"
+      }
+     ]
+    ],
+    "alerts": [],
+    "navigations": [],
+    "links": []
+   },
+   {
+    "texts": [
+     "General",
+     "Appearance",
+     "Theme",
+     "System",
+     "Show task age",
+     "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4538,6 +4862,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -4572,6 +4900,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4587,6 +4917,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4612,6 +4946,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4627,6 +4963,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4678,6 +5018,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4693,6 +5035,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4728,6 +5074,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4743,6 +5091,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4794,6 +5146,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4809,6 +5163,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4834,6 +5192,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4849,6 +5209,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4900,6 +5264,8 @@
      "Nord",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Calendar",
      "Privacy",
@@ -4915,6 +5281,10 @@
      "Monday · Year / Month / Day · 24-hour"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -4942,6 +5312,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -4959,6 +5331,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -4986,6 +5362,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5003,6 +5381,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5038,6 +5420,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5055,6 +5439,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5092,6 +5480,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5107,6 +5497,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5130,6 +5524,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5145,6 +5541,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5289,6 +5689,8 @@
      "System",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Revision",
      "Datenschutz",
@@ -5304,6 +5706,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5339,6 +5745,8 @@
      "System",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Revision",
      "Datenschutz",
@@ -5354,6 +5762,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5498,6 +5910,8 @@
      "System",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Revision",
      "Datenschutz",
@@ -5513,6 +5927,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5538,6 +5956,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5553,6 +5973,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5576,6 +6000,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5600,6 +6026,10 @@
       false
      ],
      [
+      true,
+      false
+     ],
+     [
       false,
       false
      ]
@@ -5620,6 +6050,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5641,6 +6073,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5690,6 +6126,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5711,6 +6149,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5741,6 +6183,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5762,6 +6206,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5811,6 +6259,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5832,6 +6282,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5862,6 +6316,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5883,6 +6339,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5927,6 +6387,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5948,6 +6410,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -5978,6 +6444,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -5999,6 +6467,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6048,6 +6520,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6069,6 +6543,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6099,6 +6577,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6120,6 +6600,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6169,6 +6653,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6190,6 +6676,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6220,6 +6710,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6241,6 +6733,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6285,6 +6781,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6306,6 +6804,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6338,6 +6840,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6353,6 +6857,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6376,6 +6884,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6402,6 +6912,10 @@
       false
      ],
      [
+      true,
+      false
+     ],
+     [
       false,
       false
      ]
@@ -6422,6 +6936,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6445,6 +6961,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6484,6 +7004,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6507,6 +7029,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6537,6 +7063,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6560,6 +7088,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6609,6 +7141,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6635,6 +7169,10 @@
       false
      ],
      [
+      true,
+      false
+     ],
+     [
       false,
       false
      ]
@@ -6655,6 +7193,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6678,6 +7218,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6717,6 +7261,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6740,6 +7286,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6772,6 +7322,8 @@
      "Nord",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Kalender",
      "Datenschutz",
@@ -6787,6 +7339,10 @@
      "Montag · Jahr / Monat / Tag · 24-Stunden"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -6812,6 +7368,8 @@
      "Nord",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Kalender",
      "Datenschutz",
@@ -6840,6 +7398,10 @@
      [
       true,
       false
+     ],
+     [
+      true,
+      false
      ]
     ],
     "expanded": true,
@@ -6858,6 +7420,8 @@
      "Nord",
      "Aufgabenalter anzeigen",
      "Zeigt in den Aufgaben-Metadaten an, wie lange die Erstellung einer Aufgabe zurückliegt.",
+     "Animationen",
+     "Sanfte Übergänge für Dialoge, Listen und Bereiche. Ausschalten für sofortige Änderungen. Folgt der Systemeinstellung „Bewegung reduzieren“.",
      "Schnellzugriff-Ansicht",
      "Kalender",
      "Datenschutz",
@@ -6879,6 +7443,10 @@
      "24-Stunden"
     ],
     "switches": [
+     [
+      true,
+      false
+     ],
      [
       true,
       false
@@ -6932,6 +7500,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6947,6 +7517,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -6970,6 +7544,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -6994,6 +7570,10 @@
       false
      ],
      [
+      true,
+      false
+     ],
+     [
       false,
       false
      ]
@@ -7014,6 +7594,8 @@
      "System",
      "Show task age",
      "Display how long ago a task was created in task metadata.",
+     "Animations",
+     "Smooth transitions for dialogs, lists and panels. Turn off for instant changes. Follows the system Reduce motion setting.",
      "Quick access view",
      "Review",
      "Privacy",
@@ -7035,6 +7617,10 @@
     "switches": [
      [
       false,
+      false
+     ],
+     [
+      true,
       false
      ],
      [
@@ -13454,6 +14040,21 @@
        null,
        "Area",
        "Work"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -13801,6 +14402,21 @@
        null,
        "Area",
        "Office"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -14148,6 +14764,21 @@
        null,
        "Area",
        "Office"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -14785,6 +15416,21 @@
        null,
        "Area",
        "Home"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -15413,6 +16059,21 @@
        null,
        "Area",
        "Home"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -15760,6 +16421,21 @@
        null,
        "Area",
        "Home"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -16396,6 +17072,21 @@
        null,
        "Area",
        "Errands"
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [
@@ -16743,6 +17434,21 @@
        null,
        "Area",
        " office "
+      ],
+      [
+       "area-context-description",
+       "What belongs here: clients, people, products, keywords",
+       ""
+      ],
+      [
+       "area-context-keyword-input",
+       "Add a keyword and press Enter",
+       ""
+      ],
+      [
+       "area-context-person-input",
+       "Add a person",
+       ""
       ]
      ],
      "colors": [

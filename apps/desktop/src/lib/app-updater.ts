@@ -1,14 +1,20 @@
 import type { DownloadEvent } from '@tauri-apps/plugin-updater';
 
 import { isTauriRuntime } from './runtime';
-import { detectPlatform, type InstallSource } from './update-service';
+import { checkForUpdates, detectPlatform, type InstallSource } from './update-service';
 
 export const IN_APP_UPDATE_INSTALL_SOURCES: ReadonlySet<InstallSource> = new Set<InstallSource>([
     'direct',
     'github-release',
 ]);
 
-export const IN_APP_UPDATE_PLATFORMS: ReadonlySet<string> = new Set(['macos']);
+/**
+ * Platforms whose GitHub installs use the Tauri updater. macOS (Apple silicon) and Windows x64 are
+ * published in `latest.json`; when the manifest has no entry for this machine (an Intel Mac, or a
+ * Windows release built without updater signing) the check falls back to the GitHub release and
+ * offers a manual download instead.
+ */
+export const IN_APP_UPDATE_PLATFORMS: ReadonlySet<string> = new Set(['macos', 'windows']);
 
 export const GITHUB_RELEASE_DOWNLOAD_URL = 'https://github.com/ishaanpilar/stride/releases/latest';
 
@@ -19,6 +25,10 @@ export type AvailableAppUpdate = {
     currentVersion: string;
     notes: string;
     date: string | null;
+    /** No signed in-app bundle for this machine: the dialog links to GitHub instead of installing. */
+    downloadOnly?: boolean;
+    /** Where "Download from GitHub" goes for a download-only update. */
+    downloadUrl?: string;
 };
 
 export type AppUpdateProgress = {
@@ -28,8 +38,18 @@ export type AppUpdateProgress = {
 
 export type PendingAppUpdate = {
     info: AvailableAppUpdate;
-    downloadAndInstall: (onProgress: (progress: AppUpdateProgress) => void) => Promise<void>;
+    /**
+     * `beforeInstall` runs between download and install. Windows needs it: the NSIS installer
+     * closes Stride as soon as it starts, so pending changes must be saved before that.
+     */
+    downloadAndInstall: (
+        onProgress: (progress: AppUpdateProgress) => void,
+        options?: { beforeInstall?: () => Promise<void> },
+    ) => Promise<void>;
 };
+
+/** The Windows installer exits the app the moment it starts, so saves happen before install. */
+export const installerExitsApp = (platform: string = detectPlatform()): boolean => platform === 'windows';
 
 export type UpdaterErrorKind = 'offline' | 'signature' | 'rate-limited' | 'unavailable' | 'unknown';
 
@@ -54,10 +74,10 @@ export async function checkForAppUpdate(): Promise<PendingAppUpdate | null> {
             notes: update.body ?? '',
             date: update.date ?? null,
         },
-        downloadAndInstall: async (onProgress) => {
+        downloadAndInstall: async (onProgress, options) => {
             let downloadedBytes = 0;
             let totalBytes: number | null = null;
-            await update.downloadAndInstall((event: DownloadEvent) => {
+            const onEvent = (event: DownloadEvent) => {
                 if (event.event === 'Started') {
                     totalBytes = event.data.contentLength ?? null;
                 } else if (event.event === 'Progress') {
@@ -66,8 +86,35 @@ export async function checkForAppUpdate(): Promise<PendingAppUpdate | null> {
                     downloadedBytes = totalBytes ?? downloadedBytes;
                 }
                 onProgress({ downloadedBytes, totalBytes });
-            });
+            };
+            if (!options?.beforeInstall) {
+                await update.downloadAndInstall(onEvent);
+                return;
+            }
+            await update.download(onEvent);
+            await options.beforeInstall();
+            await update.install();
         },
+    };
+}
+
+/**
+ * Fallback for a check that found no in-app update for this platform: ask GitHub for the latest
+ * release. Returns a download-only update when it is newer, null when this copy is current.
+ */
+export async function checkForManualAppUpdate(): Promise<AvailableAppUpdate | null> {
+    if (!isTauriRuntime()) return null;
+    const { getVersion } = await import('@tauri-apps/api/app');
+    const currentVersion = await getVersion();
+    const info = await checkForUpdates(currentVersion, { installSource: 'github-release' });
+    if (!info.hasUpdate) return null;
+    return {
+        version: info.latestVersion,
+        currentVersion,
+        notes: info.releaseNotes ?? '',
+        date: info.latestReleasedAt,
+        downloadOnly: true,
+        downloadUrl: info.releaseUrl || GITHUB_RELEASE_DOWNLOAD_URL,
     };
 }
 

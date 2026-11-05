@@ -11,6 +11,10 @@ import {
     formatOpenAIExtraBodyParams,
     mergeModelOptions,
     parseOpenAIExtraBodyParamsInput,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_DEFAULT_MODEL,
+    DEEPSEEK_MODEL_OPTIONS,
+    isDeepSeekUrl,
     shallow,
     type AIProviderId,
     type AppSettings,
@@ -121,8 +125,10 @@ export function AISettingsScreen() {
         staticSpeechModelOptions,
     } = resolveAISettingsScreenState(settings, isFossBuild);
     const aiApiKey = aiKey.provider === aiProvider ? aiKey.value : '';
-    const aiModelOptions = mergeModelOptions(fetchedChatModels, staticAiModelOptions, aiModel);
-    const aiCopilotOptions = mergeModelOptions(fetchedChatModels, staticAiCopilotOptions, aiCopilotModel);
+    // DeepSeek is stored as the OpenAI-compatible provider with DeepSeek's base URL (same as desktop).
+    const usingDeepSeek = !isFossBuild && aiProvider === 'openai' && isDeepSeekUrl(aiBaseUrl);
+    const aiModelOptions = mergeModelOptions(fetchedChatModels, usingDeepSeek ? DEEPSEEK_MODEL_OPTIONS : staticAiModelOptions, aiModel);
+    const aiCopilotOptions = mergeModelOptions(fetchedChatModels, usingDeepSeek ? DEEPSEEK_MODEL_OPTIONS : staticAiCopilotOptions, aiCopilotModel);
     const speechSettings = settings.ai?.speechToText ?? {};
     const speechApiKey = speechKey.provider === speechProvider ? speechKey.value : '';
     const speechModelOptions = mergeModelOptions(fetchedSpeechModels, staticSpeechModelOptions, speechModel);
@@ -170,13 +176,20 @@ export function AISettingsScreen() {
         setOpenAIExtraParamsError('');
     }, [aiOpenAIExtraBodyParams]);
 
-    const getAIProviderLabel = (provider: AIProviderId): string => getCoreAIProviderLabel(provider, isFossBuild, { t, tr });
+    const getAIProviderLabel = (provider: AIProviderId | 'deepseek'): string => {
+        if (provider === 'deepseek') return 'DeepSeek';
+        return getCoreAIProviderLabel(provider, isFossBuild, { t, tr });
+    };
 
-    const requestAIProviderConsent = async (provider: AIProviderId): Promise<boolean> => {
+    const requestAIProviderConsent = async (provider: AIProviderId, deepSeek = false): Promise<boolean> => {
+        const consentKey = deepSeek ? 'deepseek' : provider;
         const consentMap = await readAIProviderConsent(AsyncStorage, logSettingsWarn);
-        if (consentMap[provider]) return true;
+        if (consentMap[consentKey]) return true;
 
         const prompt = getAIConsentPrompt(provider, isFossBuild, { t, tr });
+        if (deepSeek) {
+            prompt.message = prompt.message.replace(getCoreAIProviderLabel(provider, isFossBuild, { t, tr }), 'DeepSeek');
+        }
 
         return await new Promise<boolean>((resolve) => {
             let settled = false;
@@ -197,8 +210,8 @@ export function AISettingsScreen() {
                     {
                         text: prompt.agree,
                         onPress: () => {
-                            void recordAIProviderConsent(AsyncStorage, provider, logSettingsWarn);
-                            setConsentMap((current) => ({ ...(current ?? {}), [provider]: true }));
+                            void recordAIProviderConsent(AsyncStorage, consentKey as AIProviderId, logSettingsWarn);
+                            setConsentMap((current) => ({ ...(current ?? {}), [consentKey]: true }));
                             finish(true);
                         },
                     },
@@ -301,14 +314,32 @@ export function AISettingsScreen() {
         };
     }, [aiEnabled, aiProvider, consentMap, speechApiKey, speechBaseUrl, speechProvider]);
 
-    const handleAIProviderChange = (provider: AIProviderId) => {
-        if (provider === aiProvider) return;
+    const handleAIProviderChange = (provider: AIProviderId | 'deepseek') => {
+        if (provider === 'deepseek') {
+            if (usingDeepSeek) return;
+            void (async () => {
+                if (aiEnabled) {
+                    const consented = await requestAIProviderConsent('openai', true);
+                    if (!consented) return;
+                }
+                updateAISettings({
+                    provider: 'openai',
+                    baseUrl: DEEPSEEK_BASE_URL,
+                    model: DEEPSEEK_DEFAULT_MODEL,
+                    copilotModel: DEEPSEEK_DEFAULT_MODEL,
+                });
+            })();
+            return;
+        }
+        if (provider === aiProvider && !usingDeepSeek) return;
         void (async () => {
             if (aiEnabled) {
                 const consented = await requestAIProviderConsent(provider);
                 if (!consented) return;
             }
+            // Leaving DeepSeek: drop its base URL so OpenAI does not keep pointing at it.
             applyAIProviderDefaults(provider);
+            if (usingDeepSeek) updateAISettings({ baseUrl: '' });
         })();
     };
 
@@ -318,7 +349,7 @@ export function AISettingsScreen() {
             return;
         }
         void (async () => {
-            const consented = await requestAIProviderConsent(aiProvider);
+            const consented = await requestAIProviderConsent(aiProvider, usingDeepSeek);
             if (!consented) return;
             updateAISettings({ enabled: true });
         })();
@@ -500,6 +531,7 @@ export function AISettingsScreen() {
                         aiModel={aiModel}
                         aiModelOptions={aiModelOptions}
                         aiProvider={aiProvider}
+                        usingDeepSeek={usingDeepSeek}
                         appleClarificationAvailability={appleClarificationAvailability}
                         appleClarificationBackend={appleClarificationBackend}
                         appleClarificationVisible={appleClarificationPrototypeEnabled}

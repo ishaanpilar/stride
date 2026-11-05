@@ -199,6 +199,9 @@ export const allowedEnglishMirrorKeysByLocale: Record<string, readonly string[]>
 
 
         'nav.reference',
+        'assistant.send',
+        'assistant.stop',
+        'task.startPomodoro',
         'keybindings.style.standard',
         'tab.menu',
         'list.reference',

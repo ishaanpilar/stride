@@ -376,41 +376,31 @@ test("tag-accepting release workflows queue by effective tag or shared Store fli
   }
 });
 
-test("Windows release jobs never reacquire the workflow lock and serialize Store flights", () => {
+test("Windows installers come from a dispatch-only Stride workflow, not the store orchestrators", () => {
   const windows = parse(readFileSync(".github/workflows/release-windows.yml", "utf8"));
-  const flight = parse(readFileSync(".github/workflows/release-msstore-flight.yml", "utf8"));
+  expect(Object.keys(windows.on)).toEqual(["workflow_dispatch"]);
+  expect(windows.on.workflow_dispatch.inputs.tag).toMatchObject({ required: true, type: "string" });
+  expect(windows.on.workflow_dispatch.inputs.prerelease_note).toMatchObject({ required: false, type: "string" });
+  expect(windows.permissions).toEqual({ contents: "write" });
+  expect(windows.jobs.windows["runs-on"]).toBe("windows-latest");
 
-
-  const resolve = (group, inputs, github) => group.replace(/\$\{\{(.*?)\}\}/g, (_, expression) =>
-    new Function("inputs", "github", "format", `return (${expression})`)(
-      inputs,
-      github,
-      (template, value) => template.replace("{0}", value),
-    ));
-  const workflowGroup = windows.concurrency.group;
-  const jobGroup = windows.jobs.standalone.concurrency.group;
-  for (const workflow of ["Release Windows", "Release", "Release RC"]) {
-    for (const tag of [undefined, "1.3.0-rc.2a"]) {
-      for (const [run_msstore, run_msstore_flight, event_name] of [
-        [false, false, 'workflow_dispatch'], [true, false, 'workflow_dispatch'],
-        [false, true, 'workflow_dispatch'], [true, true, 'workflow_dispatch'],
-        [false, false, 'push'], [false, true, 'push'],
-      ]) {
-        const inputs = { tag, run_msstore, run_msstore_flight };
-        const github = { workflow, ref_name: "main", event_name };
-        const jobLock = resolve(jobGroup, inputs, github);
-        expect(jobLock.toLowerCase()).not.toBe(resolve(workflowGroup, inputs, github).toLowerCase());
-        if (run_msstore || run_msstore_flight || event_name === 'push') {
-          expect(jobLock).toBe(flight.concurrency.group);
-        } else {
-          expect(jobLock).not.toBe(flight.concurrency.group);
-          expect(jobLock).toContain(tag || github.ref_name);
-        }
-      }
+  for (const file of ["release.yml", "release-rc.yml"]) {
+    const text = readFileSync(join(".github/workflows", file), "utf8");
+    expect(text).not.toContain("./.github/workflows/release-windows.yml");
+    const workflow = parse(text);
+    expect(workflow.jobs.windows).toBeUndefined();
+    for (const job of Object.values(workflow.jobs)) {
+      expect(asNeedsList(job.needs ?? [])).not.toContain("windows");
     }
   }
-  expect(windows.jobs.standalone.concurrency["cancel-in-progress"]).toBe(false);
-  expect(flight.concurrency["cancel-in-progress"]).toBe(false);
+
+  const text = readFileSync(".github/workflows/release-windows.yml", "utf8");
+  for (const storeOnly of ["msstore", "MakeAppx", "winget", "chocolatey", "SignPath", "APPLE_SIGNING_IDENTITY"]) {
+    expect(text).not.toContain(storeOnly);
+  }
+  for (const step of windows.jobs.windows.steps) {
+    if (step.uses) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
+  }
 });
 
 test("stable release validates tags and committed versions before any build or publish", () => {
@@ -469,7 +459,6 @@ test("stable release validates tags and committed versions before any build or p
   const buildJobs = [
     "linux",
     "macos",
-    "windows",
     "android-version-code",
     "android",
     "android-foss",
@@ -484,7 +473,6 @@ test("stable release validates tags and committed versions before any build or p
   for (const jobName of [
     "linux",
     "macos",
-    "windows",
     "ios-appstore",
     "macos-appstore",
   ]) {
@@ -746,7 +734,6 @@ test("existing RC releases stay immutable while dispatch can retry beta channels
   for (const jobName of [
     "linux",
     "macos",
-    "windows",
     "android-version-code",
     "android",
     "android-foss",
@@ -777,79 +764,69 @@ test("existing RC releases stay immutable while dispatch can retry beta channels
   }
 });
 
-test("Windows release signs and publishes exactly the current NSIS installer", () => {
-  const windowsText = readFileSync(
-    ".github/workflows/release-windows.yml",
-    "utf8",
-  );
-  const windows = parse(windowsText);
-  const steps = windows.jobs.standalone.steps;
-  const bundleStep = steps.find((step) => step.name === "Bundle installer");
-  const stageExeStep = steps.find(
-    (step) => step.name === "Stage unsigned app binary for signing",
-  );
-  const resolveStep = steps.find(
-    (step) => step.name === "Resolve current NSIS installer",
-  );
-  const stageStep = steps.find(
-    (step) => step.name === "Stage unsigned installer for signing",
-  );
-  const applyStep = steps.find(
-    (step) => step.name === "Apply and verify signed installer",
-  );
-  const collectStep = steps.find(
-    (step) => step.name === "Collect Windows artifacts",
+test("Windows release builds NSIS and MSI for the tag and uploads them to the existing release", () => {
+  const windows = parse(readFileSync(".github/workflows/release-windows.yml", "utf8"));
+  const steps = windows.jobs.windows.steps;
+  const find = (name) => {
+    const step = steps.find((candidate) => candidate.name === name);
+    expect(step).toBeDefined();
+    return step;
+  };
+  const index = (name) => steps.findIndex((candidate) => candidate.name === name);
+
+  const validate = find("Validate tag and release");
+  expect(validate.run).toContain("^v(\\d+\\.\\d+\\.\\d+)$");
+  expect(validate.run).toContain("gh release view $tag");
+  expect(validate.run).toContain('"setup_name=Stride_${version}_x64-setup.exe"');
+  expect(validate.run).toContain('"msi_name=Stride_${version}_x64_en-US.msi"');
+  expect(find("Checkout tag").with.ref).toBe("refs/tags/${{ steps.version.outputs.tag }}");
+  expect(find("Setup Bun").with["bun-version-file"]).toBe(".bun-version");
+  expect(find("Setup Rust").with).toMatchObject({ toolchain: "stable", targets: "x86_64-pc-windows-msvc" });
+
+  const build = find("Build installers");
+  expect(build.run).toContain("'--target', 'x86_64-pc-windows-msvc', '--bundles', 'nsis,msi'");
+  expect(build.run).toContain("src-tauri/tauri.updater.conf.json");
+  expect(build.env.TAURI_SIGNING_PRIVATE_KEY).toBe(
+    "${{ steps.updater.outputs.enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}",
   );
 
-  expect(bundleStep.run).toContain(
-    'Remove-Item -Recurse -Force "$bundleDir"',
-  );
-  expect(bundleStep.run.indexOf("Remove-Item")).toBeLessThan(
-    bundleStep.run.indexOf("bunx tauri bundle"),
-  );
-  expect(stageExeStep.if).toContain(
-    "vars.SIGNPATH_SIGNING_ENABLED == 'true'",
-  );
-  expect(resolveStep).toBeDefined();
-  expect(resolveStep.run).toContain("tauri.conf.json");
-  expect(resolveStep.run).toContain("$tauriConfig.productName");
-  expect(resolveStep.run).toContain(
-    '"${productName}_${baseVersion}_x64-setup.exe"',
-  );
-  expect(resolveStep.run).toContain("$installers.Count -ne 1");
-  expect(resolveStep.run).toContain("$installer.FullName -ne $expectedPath");
+  const collect = find("Collect installers");
+  expect(collect.run).toContain("$setups.Count -ne 1");
+  expect(collect.run).toContain("$msis.Count -ne 1");
 
-  const installerOutput =
-    "${{ steps.current-installer.outputs.installer_path }}";
-  expect(stageStep.run).toContain(installerOutput);
-  expect(applyStep.run).toContain(installerOutput);
-  expect(collectStep.run).toContain(installerOutput);
-  expect(stageStep.run).not.toContain("Select-Object -First 1");
-  expect(collectStep.run).not.toContain(
-    'Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.exe"',
-  );
-
-  const stable = parse(readFileSync(".github/workflows/release.yml", "utf8"));
-  const validateAssets = stable.jobs.release.steps.find(
-    (step) => step.name === "Validate release assets",
-  );
-  expect(validateAssets.run).toContain(
-    'expected_windows_installer="./release-assets/stride_${VERSION}_x64-setup.exe"',
-  );
-  expect(validateAssets.run).toContain(
-    "${windows_installers[@]}",
-  );
-  expect(validateAssets.run).toContain(
-    '"${#windows_installers[@]}" -ne 1',
-  );
+  const upload = find("Upload installers to the release");
+  expect(upload.run).toContain("gh release upload $env:RELEASE_TAG @files --clobber");
+  const manifest = find("Add Windows to latest.json and SHA256SUMS.txt");
+  expect(index("Upload installers to the release")).toBeLessThan(index("Add Windows to latest.json and SHA256SUMS.txt"));
+  expect(manifest.run).toContain("if ($env:UPDATER_SIGNING -eq 'true')");
+  expect(manifest.run).toContain("bun scripts/add-windows-updater-entry.ts");
+  expect(manifest.run).toContain("--verify");
+  expect(manifest.run).toContain("bun scripts/upsert-sha256sums.ts");
+  expect(manifest.run).toContain("gh release upload $env:RELEASE_TAG @upload --clobber");
 });
 
+test("Windows updater signing and Authenticode are gated on secrets and off by default", () => {
+  const windows = parse(readFileSync(".github/workflows/release-windows.yml", "utf8"));
+  const steps = windows.jobs.windows.steps;
+  const detect = steps.find((step) => step.id === "updater");
+  expect(detect.env.HAS_KEY).toBe("${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}");
+  expect(detect.env.HAS_PASSWORD).toBe("${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}");
+  // Secrets never sit in job-wide env, so dependency install scripts cannot read them.
+  expect(JSON.stringify(windows.jobs.windows.env)).not.toContain("secrets.");
+  const install = steps.find((step) => step.name === "Install dependencies");
+  expect(JSON.stringify(install.env ?? {})).not.toContain("secrets.");
+
+  const authenticode = steps.find((step) => step.id === "authenticode");
+  expect(authenticode.if).toBe("${{ vars.WINDOWS_CODE_SIGNING == 'azure-trusted-signing' }}");
+  expect(authenticode.run).toContain("signCommand");
+  expect(authenticode.run).toContain("trusted-signing-cli");
+});
 
 test("Windows release retries a failed Bun install with isolated package caches", () => {
   const windows = parse(
     readFileSync(".github/workflows/release-windows.yml", "utf8"),
   );
-  const install = windows.jobs.standalone.steps.find(
+  const install = windows.jobs.windows.steps.find(
     (step) => step.name === "Install dependencies",
   );
 
@@ -864,51 +841,6 @@ test("Windows release retries a failed Bun install with isolated package caches"
   expect(install.run).toContain("--network-concurrency 1 --concurrent-scripts 1");
   expect(install.run).not.toContain("bun pm cache");
   expect(install.run).toContain("exit $LASTEXITCODE");
-});
-
-test("Windows release SignPath submissions are gated end to end and target the pinned slugs", () => {
-  const windows = parse(
-    readFileSync(".github/workflows/release-windows.yml", "utf8"),
-  );
-  const steps = windows.jobs.standalone.steps;
-  const find = (name) => {
-    const step = steps.find((candidate) => candidate.name === name);
-    expect(step).toBeDefined();
-    return step;
-  };
-
-  const stageExeOutcome = "steps.stage-unsigned-exe.outcome == 'success'";
-  const stageInstallerOutcome =
-    "steps.stage-unsigned-installer.outcome == 'success'";
-
-  const uploadExeStep = find("Upload unsigned app binary");
-  const submitExeStep = find(
-    "Submit SignPath signing request for the app binary",
-  );
-  const applyExeStep = find("Apply signed app binary");
-  for (const step of [uploadExeStep, submitExeStep, applyExeStep]) {
-    expect(step.if).toContain(stageExeOutcome);
-  }
-  expect(submitExeStep.with["artifact-configuration-slug"]).toBe("initial");
-
-  const stageInstallerStep = find("Stage unsigned installer for signing");
-  expect(stageInstallerStep.if).toContain(stageExeOutcome);
-
-  const uploadInstallerStep = find("Upload unsigned installer");
-  const submitInstallerStep = find(
-    "Submit SignPath signing request for the installer",
-  );
-  const applyInstallerStep = find("Apply and verify signed installer");
-  for (const step of [
-    uploadInstallerStep,
-    submitInstallerStep,
-    applyInstallerStep,
-  ]) {
-    expect(step.if).toContain(stageInstallerOutcome);
-  }
-  expect(submitInstallerStep.with["artifact-configuration-slug"]).toBe(
-    "windows-installer",
-  );
 });
 
 test("stable and RC releases sign and verify the checksum manifest", () => {

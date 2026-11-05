@@ -1,5 +1,6 @@
 import {
     AssistantChangeLog,
+    createAssistantStorePort,
     createAssistantChatClient,
     isAIKeyRequired,
     isAssistantProviderSupported,
@@ -17,29 +18,7 @@ export type AssistantReadiness =
 
 /** Tools run through the same Zustand store actions the UI uses, so sync/undo/UI stay consistent. */
 export function createStoreAssistantPort(): AssistantStorePort {
-    const st = () => useTaskStore.getState();
-    return {
-        getSnapshot: () => {
-            const s = st();
-            return { tasks: s.tasks, projects: s.projects, areas: s.areas, people: s.people };
-        },
-        addTask: (title, props) => st().addTask(title, props),
-        updateTask: (id, updates) => st().updateTask(id, updates),
-        completeTask: (id) => st().moveTask(id, 'done'),
-        deleteTask: (id) => st().deleteTask(id),
-        restoreTask: (id) => st().restoreTask(id),
-        addProject: (title, color, props) => st().addProject(title, color, props),
-        deleteProject: (id) => st().deleteProject(id),
-        restoreProject: (id) => st().restoreProject(id),
-        updateProject: (id, updates) => st().updateProject(id, updates),
-        addArea: (name, props) => st().addArea(name, props),
-        updateArea: (id, updates) => st().updateArea(id, updates),
-        deleteArea: (id) => st().deleteArea(id),
-        restoreArea: (id) => st().restoreArea(id),
-        addPerson: (name) => st().addPerson(name),
-        deletePerson: (id) => st().deletePerson(id),
-        getRoutingCorrections: () => loadRoutingCorrections(),
-    };
+    return createAssistantStorePort(() => useTaskStore.getState(), () => loadRoutingCorrections());
 }
 
 export async function getAssistantReadiness(): Promise<AssistantReadiness> {

@@ -22,7 +22,7 @@ export const ONBOARDING_COPY = {
     'onboarding.welcome.tribute': 'Built on the ideas of Getting Things Done by David Allen.',
     'onboarding.welcome.mind': 'Mind like water.',
     'onboarding.ai.title': 'Connect the Assistant',
-    'onboarding.ai.intro': 'Add an API key so Stride can sort your thoughts into tasks. Your key stays on this Mac.',
+    'onboarding.ai.intro': 'Add an API key so Stride can sort your thoughts into tasks. Your key stays on this device.',
     'onboarding.ai.optional': 'Optional',
     'onboarding.ai.providerLabel': 'AI provider',
     'onboarding.ai.keyLabel': 'API key',

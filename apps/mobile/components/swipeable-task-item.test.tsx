@@ -205,6 +205,7 @@ vi.mock('../hooks/use-theme-tokens', () => ({
   useThemeTokens: () => ({
     isMaterial: false,
     shape: { large: 16 },
+    soft: { enabled: false, raised: () => ({}), accentShadow: { boxShadow: [] }, accentGradient: ['#000000', '#000000'], accentStrong: '#000000', accentForeground: '#FFFFFF', shadowDark: '#000000' },
     state: { rippleColor: undefined, stateLayerColor: () => 'transparent' },
   }),
 }));

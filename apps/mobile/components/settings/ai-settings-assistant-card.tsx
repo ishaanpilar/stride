@@ -30,6 +30,7 @@ type AiSettingsAssistantCardProps = {
     aiModel: string;
     aiModelOptions: string[];
     aiProvider: AIProviderId;
+    usingDeepSeek?: boolean;
     appleClarificationAvailability: string;
     appleClarificationBackend: AppleClarificationBackend;
     appleClarificationVisible: boolean;
@@ -37,7 +38,7 @@ type AiSettingsAssistantCardProps = {
     aiRequestTimeoutSeconds: number;
     aiThinkingBudget: number;
     anthropicThinkingEnabled: boolean;
-    getAIProviderLabel: (provider: AIProviderId) => string;
+    getAIProviderLabel: (provider: AIProviderId | 'deepseek') => string;
     isFossBuild: boolean;
     tr: SettingsTranslator;
     onAiApiKeyChange: (value: string) => void;
@@ -47,7 +48,7 @@ type AiSettingsAssistantCardProps = {
     onAiExtraBodyParamsDraftChange: (value: string) => void;
     onAiExtraBodyParamsSave: () => void;
     onAiModelChange: (value: string) => void;
-    onAiProviderChange: (provider: AIProviderId) => void;
+    onAiProviderChange: (provider: AIProviderId | 'deepseek') => void;
     onAppleClarificationBackendChange: (backend: AppleClarificationBackend) => void;
     onAiReasoningEffortChange: (value: AIReasoningEffort) => void;
     onAiRequestTimeoutSecondsChange: (value: AIRequestTimeoutSeconds) => void;
@@ -71,6 +72,7 @@ export function AiSettingsAssistantCard({
     aiModel,
     aiModelOptions,
     aiProvider,
+    usingDeepSeek = false,
     appleClarificationAvailability,
     appleClarificationBackend,
     appleClarificationVisible,
@@ -189,7 +191,7 @@ export function AiSettingsAssistantCard({
                         <View style={styles.settingInfo}>
                             <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.aiEnable')}</Text>
                             <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>
-                                {tr('settings.aiMobile.taskTextSentToProvider', { provider: getAIProviderLabel(aiProvider) })}
+                                {tr('settings.aiMobile.taskTextSentToProvider', { provider: getAIProviderLabel(usingDeepSeek ? 'deepseek' : aiProvider) })}
                             </Text>
                         </View>
                         <Switch
@@ -202,7 +204,7 @@ export function AiSettingsAssistantCard({
                     <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: tc.border }]}>
                         <View style={styles.settingInfo}>
                             <Text style={[styles.settingLabel, { color: tc.text }]}>{t('settings.aiProvider')}</Text>
-                            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{getAIProviderLabel(aiProvider)}</Text>
+                            <Text style={[styles.settingDescription, { color: tc.secondaryText }]}>{getAIProviderLabel(usingDeepSeek ? 'deepseek' : aiProvider)}</Text>
                         </View>
                     </View>
                     <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
@@ -210,17 +212,34 @@ export function AiSettingsAssistantCard({
                             <TouchableOpacity
                                 style={[
                                     styles.backendOption,
-                                    { borderColor: tc.border, backgroundColor: aiProvider === 'openai' ? tc.filterBg : 'transparent' },
+                                    { borderColor: tc.border, backgroundColor: aiProvider === 'openai' && !usingDeepSeek ? tc.filterBg : 'transparent' },
                                 ]}
                                 onPress={() => onAiProviderChange('openai')}
                             >
                                 <CompactText
-                                    style={[styles.backendOptionText, { color: aiProvider === 'openai' ? tc.tint : tc.secondaryText }]}
+                                    style={[styles.backendOptionText, { color: aiProvider === 'openai' && !usingDeepSeek ? tc.tint : tc.secondaryText }]}
                                     numberOfLines={2}
                                 >
                                     {getAIProviderLabel('openai')}
                                 </CompactText>
                             </TouchableOpacity>
+                            {!isFossBuild && (
+                                <TouchableOpacity
+                                    testID="ai-provider-deepseek"
+                                    style={[
+                                        styles.backendOption,
+                                        { borderColor: tc.border, backgroundColor: usingDeepSeek ? tc.filterBg : 'transparent' },
+                                    ]}
+                                    onPress={() => onAiProviderChange('deepseek')}
+                                >
+                                    <CompactText
+                                        style={[styles.backendOptionText, { color: usingDeepSeek ? tc.tint : tc.secondaryText }]}
+                                        numberOfLines={2}
+                                    >
+                                        {getAIProviderLabel('deepseek')}
+                                    </CompactText>
+                                </TouchableOpacity>
+                            )}
                             {!isFossBuild && (
                                 <TouchableOpacity
                                     style={[

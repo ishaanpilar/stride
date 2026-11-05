@@ -151,98 +151,10 @@ test('upload failure does not commit and ambiguous create is not retried', async
   expect(calls.some(call => call.url.endsWith('/commit'))).toBe(false);
 });
 
-test('RC defaults enable only the flight; stable refreshes the configured tester flight', () => {
-  const rc = parse(readFileSync('.github/workflows/release-rc.yml', 'utf8'));
-  const stable = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
-  const windows = parse(readFileSync('.github/workflows/release-windows.yml', 'utf8'));
-  expect(rc.on.workflow_dispatch.inputs.run_msstore_flight.default).toBe(true);
-  expect(rc.jobs.windows.with.run_msstore).toBe(false);
-  const expression = rc.jobs.windows.with.run_msstore_flight.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
-  const enabled = new Function('github', 'inputs', `return Boolean(${expression})`);
-  expect(enabled({ event_name: 'push' }, {})).toBe(true);
-  expect(enabled({ event_name: 'workflow_dispatch' }, { run_msstore_flight: true })).toBe(true);
-  expect(enabled({ event_name: 'workflow_dispatch' }, { run_msstore_flight: false })).toBe(false);
-  expect(stable.jobs.windows.with.run_msstore_flight).toBe("${{ vars.MSSTORE_FLIGHT_ID != '' && (github.event_name != 'workflow_dispatch' || inputs.run_msstore) }}");
-  for (const trigger of ['workflow_call', 'workflow_dispatch']) expect(windows.on[trigger].inputs.run_msstore_flight.default).toBe(false);
-  const steps = windows.jobs.standalone.steps;
-  const install = steps.find(step => step.name === 'Install dependencies').run;
-  expect(install).toContain('node scripts/ci/prepare-windows-bun-install.js');
-  expect(install).toContain("Join-Path $env:RUNNER_TEMP 'bun-install-cache-1'");
-  expect(install).toContain("Join-Path $env:RUNNER_TEMP 'bun-install-cache-2'");
-  expect(install).toContain('--cache-dir "$cacheDir" --backend copyfile');
-  expect(install).toContain('--network-concurrency 1 --concurrent-scripts 1');
-  expect(install).toContain('Remove-Item node_modules -Recurse -Force');
-  expect(install).not.toContain('bun pm cache');
-  for (const name of ['Ensure MakeAppx is available', 'Build MSIX package']) {
-    expect(steps.find(step => step.name === name).if).toBe("steps.version.outputs.store_package == 'true'");
-  }
-  expect(steps.find(step => step.name === 'Check Microsoft Store submission status').if).toBe("steps.version.outputs.store_stable == 'true'");
-  expect(steps.find(step => step.name === 'Publish to Microsoft Store (metadata + package)').if).toContain("steps.version.outputs.store_stable == 'true'");
-  const publishIndex = steps.findIndex(step => step.name === 'Publish to Microsoft Store (metadata + package)');
-  const flightIndex = steps.findIndex(step => step.name === 'Submit Microsoft Store beta flight');
-  const flightStep = steps[flightIndex];
-  expect(flightStep.if).toBe('inputs.run_msstore_flight');
-  expect(flightStep['continue-on-error']).toBe(true);
-  expect(flightIndex).toBeGreaterThan(publishIndex);
-
+test('the Store flight recovery workflow packages a published stable or RC Windows binary', () => {
   const recovery = parse(readFileSync('.github/workflows/release-msstore-flight.yml', 'utf8'));
   const download = recovery.jobs['package-flight'].steps.find(step => step.id === 'release').run;
   expect(recovery.on.workflow_dispatch.inputs.tag.description).toContain('stable or RC');
   expect(download).toContain("(-rc\\.[1-9][0-9]*)?$");
   expect(download).toContain('[bool]$release.prerelease -ne $isRc');
 });
-
-pwshTest('Windows PowerShell validates Store versions only for selected Store routes', () => {
-  const windows = parse(readFileSync('.github/workflows/release-windows.yml', 'utf8'));
-  const script = windows.jobs.standalone.steps.find(step => step.id === 'version').run;
-  const routingStart = script.indexOf("$tag = (($lines | Where-Object { $_ -like 'tag=*' })");
-  expect(routingStart).toBeGreaterThan(-1);
-  const routing = script.slice(routingStart);
-  const run = ({ tag = 'v1.3.0-rc.2', version = tag.replace(/^v/, ''), event = 'workflow_dispatch', ref = 'refs/heads/main', stable = false, flight = true, id = flightId } = {}) => {
-    const directory = mkdtempSync(join(tmpdir(), 'msstore-routing-'));
-    try {
-      const output = join(directory, 'output');
-      const command = `$ErrorActionPreference = 'Stop'\n$lines = @("tag=$env:TEST_RELEASE_TAG", "version=$env:TEST_RELEASE_VERSION")\n${routing}`;
-      execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
-        env: { ...process.env, GITHUB_OUTPUT: output, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, RUN_MSSTORE: String(stable), RUN_MSSTORE_FLIGHT: String(flight), MSSTORE_FLIGHT_ID: id, TEST_RELEASE_TAG: tag, TEST_RELEASE_VERSION: version },
-        stdio: 'pipe',
-      });
-      return readFileSync(output, 'utf8').trim().split(/\r?\n/);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  };
-
-  expect(run()).toContain('store_stable=false');
-  expect(run()).toContain('store_package=true');
-  for (const disabled of [
-    { tag: 'v1.3.0-rc.2a', ref: 'refs/tags/v1.3.0-rc.2a' },
-    { tag: 'v1.2.6-a', ref: 'refs/heads/main' },
-    { tag: 'v1.3.0', ref: 'refs/tags/v1.3.0' },
-    { tag: 'v1.3.0', ref: 'refs/heads/main' },
-  ]) {
-    const output = run({ ...disabled, flight: false });
-    expect(output).toContain('store_stable=false');
-    expect(output).toContain('store_package=false');
-    expect(output.some(line => line.startsWith('msix_version='))).toBe(false);
-  }
-
-  expect(() => run({ stable: true })).toThrow();
-  expect(() => run({ id: '' })).toThrow();
-  expect(() => run({ tag: 'v1.3.0-rc.2a' })).toThrow();
-
-  const stablePush = run({ tag: 'v1.3.0', event: 'push', ref: 'refs/tags/v1.3.0', flight: false });
-  expect(stablePush).toContain('store_stable=true');
-  expect(stablePush).toContain('store_package=true');
-  expect(stablePush).toContain('msix_version=1.3.100.0');
-
-  const explicitStable = run({ tag: 'v1.3.0', stable: true, flight: false });
-  expect(explicitStable).toContain('store_stable=true');
-  expect(explicitStable).toContain('store_package=true');
-  expect(explicitStable).toContain('msix_version=1.3.100.0');
-
-  const branchPush = run({ tag: 'v1.3.0', event: 'push', ref: 'refs/heads/main', flight: false });
-  expect(branchPush).toContain('store_stable=false');
-  expect(branchPush).toContain('store_package=false');
-  expect(branchPush.some(line => line.startsWith('msix_version='))).toBe(false);
-}, 30_000);

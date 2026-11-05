@@ -1,4 +1,4 @@
-import { getProjectAccentColor } from '@stride/core';
+import { getProjectAccentColor , projectMatchesAreaFilterSelection } from '@stride/core';
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { useStartupScreenReady } from '@/hooks/use-startup-screen-ready';
 import { WidgetLaunchDestination } from '@/hooks/use-widget-launch';
@@ -106,6 +106,7 @@ import { TaskEditModal } from '@/components/task-edit-modal';
 import type { TaskEditTab } from '@/components/task-edit/use-task-edit-state';
 import { useFutureStartRevealTick, useLocalDayKey } from '@/hooks/use-local-day-key';
 import { PomodoroPanel } from '@/components/pomodoro-panel';
+import { MorningBriefingCard } from '@/components/briefing/MorningBriefingCard';
 import { FilterChip, TaskFilterSheet } from '@/components/task-filter-sheet';
 import { useTaskFilterSelections } from '@/hooks/use-task-filter-selections';
 import { useVisibleTaskContext } from '@/hooks/use-visible-tasks';
@@ -114,7 +115,6 @@ import { useManualPullSync } from '@/hooks/use-manual-pull-sync';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useCollapsedTaskGroups } from '@/lib/view-state/task-group-collapse-state';
 import { logInfo as logAppInfo } from '@/lib/app-log';
-import { projectMatchesAreaFilterSelection } from '@stride/core';
 import { openContextsScreen, openProjectScreen } from '@/lib/task-meta-navigation';
 import {
   buildFocusListLayoutFrames,
@@ -1488,6 +1488,7 @@ export default function FocusScreen() {
             )}
           >
           <View style={styles.header}>
+            <MorningBriefingCard />
             {pomodoroEnabled && (
               <PomodoroPanel
                 tasks={pomodoroTasks}

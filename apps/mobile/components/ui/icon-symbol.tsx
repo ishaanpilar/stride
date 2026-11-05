@@ -27,6 +27,8 @@ const MAPPING = {
   'trash.fill': 'trash',
   'gearshape.fill': 'settings',
   'questionmark.circle.fill': 'help-circle',
+  'sparkles': 'sparkles',
+  'bubble.left.and.bubble.right.fill': 'chatbubbles',
 } as const;
 
 

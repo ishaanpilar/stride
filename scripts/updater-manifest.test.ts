@@ -2,12 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 
 import {
+    addUpdaterPlatform,
     buildLatestJson,
     macUpdaterAssetName,
     minisignKeyId,
     releaseAssetUrl,
     validateLatestJson,
     verifyUpdaterSignature,
+    windowsMsiAssetName,
+    windowsSetupAssetName,
 } from './updater-manifest';
 
 const SIGNATURE = Buffer.from('untrusted comment: signature from tauri secret key\nRUQ...\n').toString('base64');
@@ -80,6 +83,60 @@ describe('buildLatestJson', () => {
             version: '1.5.0', notes: '', pub_date: '2026-11-05T00:00:00Z',
             platforms: { 'darwin-aarch64': { signature: SIGNATURE, url: 'http://example.com/a' } },
         })).toEqual(['darwin-aarch64: url must be https.']);
+    });
+});
+
+describe('addUpdaterPlatform', () => {
+    const macManifest = () => buildLatestJson({
+        version: '1.6.0',
+        notes: 'Windows beta',
+        pubDate: new Date('2026-11-06T10:00:00Z'),
+        artifacts: [{ target: 'darwin-aarch64', assetName: macUpdaterAssetName('1.6.0'), signature: SIGNATURE }],
+    });
+
+    test('adds the Windows NSIS entry next to the macOS one, keeping notes and date', () => {
+        const manifest = addUpdaterPlatform(macManifest(), {
+            version: '1.6.0',
+            target: 'windows-x86_64',
+            assetName: windowsSetupAssetName('1.6.0'),
+            signature: `${SIGNATURE}\n`,
+        });
+        expect(manifest.notes).toBe('Windows beta');
+        expect(manifest.pub_date).toBe('2026-11-06T10:00:00Z');
+        expect(manifest.platforms['darwin-aarch64']).toEqual(macManifest().platforms['darwin-aarch64']);
+        expect(manifest.platforms['windows-x86_64']).toEqual({
+            signature: SIGNATURE,
+            url: 'https://github.com/ishaanpilar/stride/releases/download/v1.6.0/Stride_1.6.0_x64-setup.exe',
+        });
+        expect(validateLatestJson(manifest)).toEqual([]);
+    });
+
+    test('replaces an existing Windows entry when the workflow is re-run', () => {
+        const first = addUpdaterPlatform(macManifest(), {
+            version: '1.6.0', target: 'windows-x86_64', assetName: 'old.exe', signature: SIGNATURE,
+        });
+        const second = addUpdaterPlatform(first, {
+            version: '1.6.0', target: 'windows-x86_64', assetName: windowsSetupAssetName('1.6.0'), signature: SIGNATURE,
+        });
+        expect(Object.keys(second.platforms).sort()).toEqual(['darwin-aarch64', 'windows-x86_64']);
+        expect(second.platforms['windows-x86_64'].url).toEndWith('/Stride_1.6.0_x64-setup.exe');
+    });
+
+    test('refuses a manifest for another version or an invalid one', () => {
+        expect(() => addUpdaterPlatform(macManifest(), {
+            version: '1.6.1', target: 'windows-x86_64', assetName: 'a.exe', signature: SIGNATURE,
+        })).toThrow('refusing to mix releases');
+        expect(() => addUpdaterPlatform({ version: '1.6.0' }, {
+            version: '1.6.0', target: 'windows-x86_64', assetName: 'a.exe', signature: SIGNATURE,
+        })).toThrow('invalid');
+        expect(() => addUpdaterPlatform(macManifest(), {
+            version: '1.6.0', target: 'windows-x86_64', assetName: 'a.exe', signature: 'not base64!',
+        })).toThrow('base64');
+    });
+
+    test('names the Windows assets the way Tauri bundles them', () => {
+        expect(windowsSetupAssetName('1.6.0')).toBe('Stride_1.6.0_x64-setup.exe');
+        expect(windowsMsiAssetName('1.6.0')).toBe('Stride_1.6.0_x64_en-US.msi');
     });
 });
 

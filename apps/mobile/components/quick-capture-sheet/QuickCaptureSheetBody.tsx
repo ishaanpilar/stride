@@ -2,7 +2,7 @@ import React from 'react';
 import type { RefObject } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Switch, TextInput, TouchableOpacity, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
-import { AtSign, CalendarDays, ChevronDown, ChevronUp, Clock, FileText, Flag, Folder, Layers, Mic, SlidersHorizontal, Square, X } from 'lucide-react-native';
+import { AtSign, CalendarDays, ChevronDown, ChevronUp, Clock, FileText, Flag, Folder, Layers, Mic, SlidersHorizontal, Sparkles, Square, X } from 'lucide-react-native';
 import { getQuickCaptureFocusLabel, getQuickCaptureText, tFallback, TASK_PRIORITY_COLORS, type TaskPriority } from '@stride/core';
 import { ToastViewport } from '@/contexts/toast-context';
 import type { ThemeColors } from '@/hooks/use-theme-colors';
@@ -47,6 +47,7 @@ interface QuickCaptureSheetBodyProps {
   handleClose: () => void;
   handleRequestClose?: () => void;
   handleImportTextFile?: () => void;
+  handleOpenAiCapture?: () => void;
   handleSave: () => void;
   handleSaveAndEdit?: () => void;
   insetsBottom: number;
@@ -114,6 +115,7 @@ export function QuickCaptureSheetBody({
   handleClose,
   handleRequestClose,
   handleImportTextFile,
+  handleOpenAiCapture,
   handleSave,
   handleSaveAndEdit,
   insetsBottom,
@@ -557,6 +559,24 @@ export function QuickCaptureSheetBody({
                       numberOfLines={2}
                     >
                       {tFallback(t, 'quickAdd.bulkImportTextFile', 'Import .txt')}
+                    </CompactText>
+                  </TouchableOpacity>
+                ) : null}
+
+                {handleOpenAiCapture ? (
+                  <TouchableOpacity
+                    style={[styles.importTextButton, { backgroundColor: tc.filterBg, borderColor: tc.border }]}
+                    onPress={handleOpenAiCapture}
+                    accessibilityRole="button"
+                    accessibilityLabel={tFallback(t, 'quickAdd.openAiCaptureLabel', 'Open AI Capture to organise a brain dump')}
+                    testID="quick-capture-open-ai-capture"
+                  >
+                    <Sparkles size={16} color={tc.text} />
+                    <CompactText
+                      style={[styles.importTextButtonText, { color: tc.text }]}
+                      numberOfLines={2}
+                    >
+                      {tFallback(t, 'quickAdd.openAiCapture', 'AI Capture')}
                     </CompactText>
                   </TouchableOpacity>
                 ) : null}

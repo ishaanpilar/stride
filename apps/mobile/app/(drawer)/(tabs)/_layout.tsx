@@ -39,6 +39,7 @@ import {
 } from '@stride/core';
 import { MOBILE_QUICK_ACCESS_TAB_ROUTE } from '@/lib/mobile-quick-access-view';
 import { COMPACT_NAV_TEXT_MAX_SCALE } from '@/constants/text-scale';
+import { FocusMiniBar } from '@/components/focus/FocusMiniBar';
 
 type IconSymbolName = Parameters<typeof IconSymbol>[0]['name'];
 type Translate = (key: string) => string;
@@ -320,6 +321,7 @@ function MoreNavigationSheet({
 
 
   const menu = buildMoreMenuModel({ quickAccessView, savedSearches, t });
+  // AI Capture and Assistant come from the shared More menu model, like every other tile.
   const primaryItems = menu.primary.map(toMoreDestination);
   const secondaryItems = menu.utilities.map(toMoreDestination);
 
@@ -413,6 +415,15 @@ function MoreNavigationSheet({
   );
 }
 
+function useCaptureSoftStyle(tokens: ReturnType<typeof useThemeTokens>) {
+  const { soft, isMaterial } = tokens;
+  if (isMaterial || !soft.enabled) return null;
+  return {
+    experimental_backgroundImage: `linear-gradient(135deg, ${soft.accentGradient[0]}, ${soft.accentGradient[1]})`,
+    ...soft.accentShadow,
+  } as ViewStyle;
+}
+
 function NativeTabBar({
   state,
   descriptors,
@@ -472,6 +483,8 @@ function NativeTabBar({
   compactNavigationFrame?: { x: number; width: number };
 }) {
   const longPressRef = useRef(false);
+  const tabBarTokens = useThemeTokens();
+  const captureSoftStyle = useCaptureSoftStyle(tabBarTokens);
   const visibleTabNames = new Set(['inbox', 'focus', 'capture', quickAccessTabRoute, 'menu']);
   const visibleRoutes = state.routes.filter((route) => visibleTabNames.has(route.name));
 
@@ -482,6 +495,7 @@ function NativeTabBar({
         expanded ? styles.nativeTabRail : styles.nativeTabBarCompact,
         {
           backgroundColor: tc.cardBg,
+          ...(tabBarTokens.soft.enabled && !expanded ? { borderTopWidth: 0, boxShadow: [{ offsetX: 0, offsetY: -3, blurRadius: 12, color: tabBarTokens.soft.shadowDark }] } : null),
           borderTopColor: expanded ? 'transparent' : tc.border,
           borderLeftColor: navigationPlacement === 'right' ? tc.border : 'transparent',
           borderRightColor: navigationPlacement === 'left' ? tc.border : 'transparent',
@@ -533,7 +547,7 @@ function NativeTabBar({
                 },
               ]}
             >
-              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }]}>
+              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }, captureSoftStyle]}>
                 {defaultAutoRecord ? (
                   <Mic size={24} color={captureFg} strokeWidth={2.5} />
                 ) : (
@@ -805,9 +819,10 @@ export default function TabLayout() {
   const inactiveTint = tc.tabIconDefault;
 
 
-  const captureBg = tokens.isMaterial && tokens.roles ? tokens.roles.primary : tc.tint;
-  const captureFg = tokens.isMaterial && tokens.roles ? tokens.roles.onPrimary : tc.onTint;
+  const captureBg = tokens.isMaterial && tokens.roles ? tokens.roles.primary : tokens.soft.enabled ? tokens.soft.accentStrong : tc.tint;
+  const captureFg = tokens.isMaterial && tokens.roles ? tokens.roles.onPrimary : tokens.soft.enabled ? tokens.soft.accentForeground : tc.onTint;
   const captureRadius = tokens.isMaterial ? tokens.shape.large : 10;
+  const captureSoftStyle = useCaptureSoftStyle(tokens);
   const defaultCapture = settings.gtd?.defaultCaptureMethod ?? 'text';
   const defaultAutoRecord = defaultCapture === 'audio';
   const quickAccessView = resolveMobileQuickAccessView(settings.appearance?.mobileQuickAccessView);
@@ -972,7 +987,7 @@ export default function TabLayout() {
               accessibilityLabel={defaultAutoRecord ? t('quickAdd.audioCaptureLabel') : t('nav.addTask')}
               style={styles.captureButton}
             >
-              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }]}>
+              <View style={[styles.captureButtonInner, { backgroundColor: captureBg, borderRadius: captureRadius }, captureSoftStyle]}>
                 {defaultAutoRecord ? (
                   <Mic size={24} color={captureFg} strokeWidth={2.5} />
                 ) : (
@@ -1042,6 +1057,7 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    <FocusMiniBar bottomOffset={adaptiveWindow.isExpanded ? 12 : tabBarHeight + 8} />
     {captureState.visible && (
       <QuickCaptureSheet
         visible
@@ -1053,6 +1069,7 @@ export default function TabLayout() {
         onSubmissionStart={handleCaptureSubmissionStart}
         onSubmissionSettled={handleCaptureSubmissionSettled}
         onClose={closeQuickCapture}
+        onOpenAiCapture={() => router.push('/ai-capture' as never)}
       />
     )}
     <MoreNavigationSheet

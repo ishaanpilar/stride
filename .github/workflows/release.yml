@@ -32,7 +32,7 @@ on:
         type: boolean
         default: false
       run_windows:
-        description: 'Run Windows release job'
+        description: 'Include the Microsoft Store rollout preflight (Windows installers come from the Release Windows workflow)'
         required: false
         type: boolean
         default: false
@@ -360,22 +360,6 @@ jobs:
       tag: ${{ needs.validate.outputs.tag }}
     secrets: inherit
 
-  windows:
-    needs: [validate, rollout-preflight, android-version-code]
-    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.run_windows) && needs.validate.result == 'success' && (needs['rollout-preflight'].result == 'success' || needs['rollout-preflight'].result == 'skipped') && (needs['android-version-code'].result == 'success' || (github.event_name == 'workflow_dispatch' && !inputs.run_android && !inputs.run_android_foss)) }}
-    uses: ./.github/workflows/release-windows.yml
-    permissions:
-      contents: read
-
-      actions: read
-    with:
-      tag: ${{ needs.validate.outputs.tag }}
-      run_msstore_flight: ${{ vars.MSSTORE_FLIGHT_ID != '' && (github.event_name != 'workflow_dispatch' || inputs.run_msstore) }}
-      run_msstore: ${{ github.event_name != 'workflow_dispatch' || inputs.run_msstore }}
-      rollout_mode: ${{ needs.validate.outputs.rollout_mode }}
-      rollout_percentage: ${{ fromJSON(needs.validate.outputs.rollout_percentage) }}
-    secrets: inherit
-
   android-version-code:
     needs: [validate, rollout-preflight]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.run_android || inputs.run_android_foss) && needs.validate.result == 'success' && (needs['rollout-preflight'].result == 'success' || needs['rollout-preflight'].result == 'skipped') }}
@@ -515,8 +499,10 @@ jobs:
     secrets: inherit
 
   release:
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.run_linux && inputs.run_macos && inputs.run_windows && inputs.run_android && inputs.run_android_foss) }}
-    needs: [validate, linux, macos, windows, android, android-foss]
+    # Windows installers are built separately by release-windows.yml (dispatch it with the tag after
+    # this release exists); it uploads them to the same GitHub release.
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.run_linux && inputs.run_macos && inputs.run_android && inputs.run_android_foss) }}
+    needs: [validate, linux, macos, android, android-foss]
 
 
     runs-on: ubuntu-24.04
@@ -607,18 +593,6 @@ jobs:
           fi
           if ! has_match "*.dmg"; then
             echo "Missing macOS artifact (*.dmg)." >&2
-            missing=1
-          fi
-          expected_windows_installer="./release-assets/stride_${VERSION}_x64-setup.exe"
-          mapfile -d '' -t windows_installers < <(find ./release-assets -maxdepth 1 -type f -name '*.exe' -print0)
-          if [ "${#windows_installers[@]}" -ne 1 ]; then
-            echo "Expected exactly one Windows installer for ${VERSION}; found ${#windows_installers[@]}." >&2
-            if [ "${#windows_installers[@]}" -gt 0 ]; then
-              printf '  %s\n' "${windows_installers[@]}" >&2
-            fi
-            missing=1
-          elif [ "${windows_installers[0]}" != "$expected_windows_installer" ]; then
-            echo "Expected Windows installer ${expected_windows_installer}; found ${windows_installers[0]}." >&2
             missing=1
           fi
           if ! has_match "*.AppImage" && ! has_match "*.deb" && ! has_match "*.rpm" && ! has_match "*.snap"; then

@@ -131,7 +131,7 @@ describe('list view models', () => {
     it('resolves an unknown quick-access view to Review and gives its tile to Projects', () => {
         expect(resolveMobileQuickAccessView('trash')).toBe('review');
         const menu = buildMoreMenuModel({ quickAccessView: 'calendar', savedSearches: [], t });
-        expect(menu.primary.map((item) => item.id)).toEqual(['waiting', 'someday', 'review', 'reference', 'contexts', 'projects']);
+        expect(menu.primary.map((item) => item.id)).toEqual(['waiting', 'someday', 'review', 'reference', 'contexts', 'projects', 'ai-capture', 'assistant']);
     });
 
     it('cycles a token through included, excluded and neutral, and retains a missing selection', () => {

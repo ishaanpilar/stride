@@ -18,6 +18,7 @@ import { useTheme } from '@/contexts/theme-context';
 import { useThemeColors } from '@/hooks/use-theme-colors';
 import { isAppSearchSupported, readAppSearchIndexingEnabled, writeAppSearchIndexingEnabled } from '@/lib/app-search-preference';
 import { enableAppSearchIndexing, wipeAppSearchIndex } from '@/lib/app-search-service';
+import { useMotionPreference } from '@/lib/motion-preference';
 import { authenticateWithDeviceLock, getMobileAppLockErrorKey } from '@/lib/mobile-app-lock';
 import { getSystemDateFormat } from '@/modules/system-date-format';
 
@@ -34,6 +35,7 @@ export function GeneralSettingsScreen() {
         updateSettings: state.updateSettings,
     }), shallow);
     const tc = useThemeColors();
+    const [motionPreference, setMotionPreference] = useMotionPreference();
     const scrollContentStyle = useSettingsScrollContent();
     const [themePickerOpen, setThemePickerOpen] = useState(false);
     const [languagePickerOpen, setLanguagePickerOpen] = useState(false);
@@ -133,6 +135,14 @@ export function GeneralSettingsScreen() {
                         description={appearance.showTaskAge.description}
                         value={appearance.showTaskAge.value}
                         onChange={(value) => writeSetting({ type: 'showTaskAge', value })}
+                        trackColor={{ false: tc.secondaryText, true: tc.tint }}
+                    />
+                    <SettingToggleRow
+                        divider
+                        label={tr('settings.animations')}
+                        description={tr('settings.animationsDesc')}
+                        value={motionPreference === 'on'}
+                        onChange={(value) => setMotionPreference(value ? 'on' : 'off')}
                         trackColor={{ false: tc.secondaryText, true: tc.tint }}
                     />
                     <SettingRow

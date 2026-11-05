@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, ChevronUp, Check } from 'lucide-react-native';
+import { ChevronDown, ChevronUp, Check, Flame, Maximize2, RotateCcw } from 'lucide-react-native';
 import { workspaceSessionStorage as AsyncStorage } from '@/lib/workspace-session-storage';
 import {
   type Task,
@@ -14,11 +14,15 @@ import {
 } from '@stride/core';
 
 import { useLanguage } from '../contexts/language-context';
-import { useThemeColors } from '@/hooks/use-theme-colors';
-import { useFilledButtonColors } from '@/hooks/use-filled-button-colors';
+import { useThemeTokens } from '@/hooks/use-theme-tokens';
 import { logWarn } from '../lib/app-log';
 import { POMODORO_COLLAPSED_STORAGE_KEY } from '../lib/pomodoro-session';
 import { mobilePomodoroController, useMobilePomodoroControllerState } from '../lib/pomodoro-controller';
+import { useFocusSessionUi } from '../lib/focus-session-store';
+import { focusStreakStore, hydrateFocusStorage } from '../lib/focus-storage';
+import { FocusRing } from './focus/FocusRing';
+import { GradientButton, SoftCard, SoftChip, SoftIconButton } from './soft';
+import { openFocusSession, startFocusFromTask } from '../lib/start-focus';
 
 export function PomodoroPanel({
   tasks,
@@ -28,8 +32,9 @@ export function PomodoroPanel({
   onMarkDone: (taskId: string) => void;
 }) {
   const { t } = useLanguage();
-  const tc = useThemeColors();
-  const filledButton = useFilledButtonColors();
+  const { soft } = useThemeTokens();
+  const focusUi = useFocusSessionUi();
+  const [streak, setStreak] = useState(0);
   const customDurations = useTaskStore((state) => state.settings.gtd?.pomodoro?.customDurations);
   const linkTaskEnabled = useTaskStore((state) => state.settings.gtd?.pomodoro?.linkTask === true);
   const liveTasks = useTaskStore((state) => state.tasks);
@@ -91,7 +96,6 @@ export function PomodoroPanel({
   const selectedTaskLabel = tFallback(t, 'pomodoro.selectedTask', 'Timer task');
   const timerOnlyLabel = tFallback(t, 'pomodoro.timerOnly', 'Timer only');
   const changeTaskLabel = selectedTask ? tFallback(t, 'common.change', 'Change') : tFallback(t, 'pomodoro.linkTask', 'Link task');
-  const taskDoneShortLabel = tFallback(t, 'pomodoro.taskDoneShort', 'Task done');
   const runningLabel = tFallback(t, 'pomodoro.running', 'Running');
   const pausedLabel = tFallback(t, 'pomodoro.paused', 'Paused');
   const handleApplyPreset = (focusMinutes: number, breakMinutes: number) => {
@@ -140,7 +144,26 @@ export function PomodoroPanel({
 
   const collapseLabel = tFallback(t, 'pomodoro.collapse', 'Collapse timer');
   const expandLabel = tFallback(t, 'pomodoro.expand', 'Expand timer');
-  const phaseColor = timerState.phase === 'focus' ? tc.tint : tc.success;
+  const openFocusLabel = tFallback(t, 'pomodoro.openFocus', 'Open focus');
+  const startFocusLabel = tFallback(t, 'pomodoro.startFocus', 'Start focus');
+  const streakLabel = tFallback(t, 'focus.streak', 'Day streak');
+  const phaseColor = timerState.phase === 'focus' ? soft.accentText : soft.successText;
+  const isRunning = timerState.isRunning;
+  const sessionsToday = getPomodoroFocusSessionsCompletedToday(sessionHistory);
+  const totalSeconds = Math.max(1, (timerState.phase === 'focus' ? durations.focusMinutes : durations.breakMinutes) * 60);
+  const progress = Math.min(1, Math.max(0, 1 - timerState.remainingSeconds / totalSeconds));
+  const inProgress = progress > 0 && !isRunning;
+  const sessionLive = focusUi.open && (isRunning || timerState.phase === 'focus');
+
+  useEffect(() => {
+    void hydrateFocusStorage().then(() => setStreak(focusStreakStore.getFocusStreak()));
+  }, [sessionsToday]);
+
+  const openFocus = () => { void openFocusSession(); };
+
+  const startFocusOnTask = () => {
+    if (selectedTask) void startFocusFromTask(selectedTask.id, 'focus');
+  };
 
   const collapseToggle = (
     <Pressable
@@ -151,24 +174,22 @@ export function PomodoroPanel({
       style={styles.collapseToggle}
     >
       {collapsed
-        ? <ChevronDown size={18} color={tc.secondaryText} />
-        : <ChevronUp size={18} color={tc.secondaryText} />}
+        ? <ChevronDown size={18} color={soft.muted} />
+        : <ChevronUp size={18} color={soft.muted} />}
     </Pressable>
   );
 
   if (collapsed) {
-
-
     return (
-      <View style={[styles.card, styles.collapsedCard, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+      <SoftCard style={styles.card}>
         <View style={styles.collapsedRow}>
-          <Text style={[styles.collapsedClock, { color: tc.text }]}>
+          <Text style={[styles.collapsedClock, { color: soft.foreground }]}>
             {formatPomodoroClock(timerState.remainingSeconds)}
           </Text>
           <Text style={[styles.phaseStatusText, { color: phaseColor }]} numberOfLines={1}>
-            {`${phaseLabel} · ${timerState.isRunning ? runningLabel : pausedLabel}`}
+            {`${phaseLabel} · ${isRunning ? runningLabel : pausedLabel}`}
           </Text>
-          {timerState.isRunning && (
+          {isRunning && (
             <View
               accessible={false}
               accessibilityElementsHidden
@@ -179,15 +200,15 @@ export function PomodoroPanel({
           <View style={styles.collapsedSpacer} />
           {collapseToggle}
         </View>
-      </View>
+      </SoftCard>
     );
   }
 
   return (
-    <View style={[styles.card, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
+    <SoftCard size="lg" style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.headerText}>
-          <Text style={[styles.title, { color: tc.text }]}>{cardTitle}</Text>
+          <Text style={[styles.title, { color: soft.muted }]}>{cardTitle}</Text>
         </View>
         <View style={styles.phaseStatus}>
           <Text style={[styles.phaseStatusText, { color: phaseColor }]}>
@@ -199,121 +220,123 @@ export function PomodoroPanel({
 
       {isHydratingSession && (
         <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color={tc.tint} />
-          <Text style={[styles.loadingText, { color: tc.secondaryText }]}>{loadingLabel}</Text>
+          <ActivityIndicator size="small" color={soft.accent} />
+          <Text style={[styles.loadingText, { color: soft.muted }]}>{loadingLabel}</Text>
         </View>
       )}
 
-      <View style={styles.presetRow}>
-        {presetOptions.map((preset) => {
-          const active = durations.focusMinutes === preset.focusMinutes && durations.breakMinutes === preset.breakMinutes;
-          return (
-            <Pressable
-              key={preset.id}
-              onPress={() => handleApplyPreset(preset.focusMinutes, preset.breakMinutes)}
-              disabled={isHydratingSession}
-              style={[
-                styles.presetChip,
-                {
-                  opacity: isHydratingSession ? 0.6 : 1,
-                  borderColor: active ? tc.tint : tc.border,
-                  backgroundColor: active ? tc.tint : tc.filterBg,
-                },
-              ]}
-            >
-              <Text style={[styles.presetText, { color: active ? tc.onTint : tc.secondaryText }]}>{preset.label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+      <View style={styles.mainRow}>
+        <FocusRing progress={progress} phase={timerState.phase} size={116} stroke={5}>
+          <Text style={[styles.timerText, { color: soft.foreground }]} allowFontScaling={false} testID="pomodoro-clock">
+            {formatPomodoroClock(timerState.remainingSeconds)}
+          </Text>
+        </FocusRing>
 
-      <View style={styles.timerBox}>
-        <Text style={[styles.timerText, { color: tc.text }]}>{formatPomodoroClock(timerState.remainingSeconds)}</Text>
-        <Text style={[styles.sessionText, { color: tc.secondaryText }]}>
-          {`${sessionsDoneLabel}: ${getPomodoroFocusSessionsCompletedToday(sessionHistory)}`}
-        </Text>
-      </View>
-
-      {linkTaskEnabled && (
-        <View style={styles.taskLinkRow}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={selectedTaskLabel}
-            onPress={() => setIsTaskPickerOpen(true)}
-            style={[styles.taskPickerButton, { borderColor: tc.border, backgroundColor: tc.filterBg }]}
-          >
-            <View style={styles.taskPickerTextBlock}>
-              <Text style={[styles.taskPickerLabel, { color: tc.secondaryText }]}>{selectedTaskLabel}</Text>
-              <Text style={[styles.taskPickerValue, { color: tc.text }]} numberOfLines={1}>
-                {selectedTask?.title ?? timerOnlyLabel}
-              </Text>
+        <View style={styles.sideColumn}>
+          {(sessionsToday > 0 || streak > 0) && (
+            <View style={styles.sessionsRow} accessibilityLabel={`${sessionsDoneLabel}: ${sessionsToday}`}>
+              {Array.from({ length: Math.min(8, sessionsToday) }, (_, index) => (
+                <View key={index} style={[styles.sessionDot, { backgroundColor: soft.accent }]} />
+              ))}
+              {streak > 0 && (
+                <View style={styles.streak} accessibilityLabel={`${streakLabel}: ${streak}`}>
+                  <Flame size={12} color={soft.muted} />
+                  <Text style={[styles.sessionText, { color: soft.muted }]}>{streak}</Text>
+                </View>
+              )}
             </View>
-            <Text style={[styles.taskPickerAction, { color: tc.tint }]}>{changeTaskLabel}</Text>
-          </Pressable>
-          {selectedTask && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={markDoneLabel}
-              onPress={handleMarkDone}
-              disabled={!selectedTask || isHydratingSession}
-              style={[
-                styles.actionDone,
-                {
-                  opacity: selectedTask && !isHydratingSession ? 1 : 0.5,
-                  borderColor: tc.success,
-                  backgroundColor: `${tc.success}18`,
-                },
-              ]}
-            >
-              <Text style={[styles.actionDoneText, { color: tc.success }]}>
-                {taskDoneShortLabel}
-              </Text>
-            </Pressable>
           )}
+
+          {linkTaskEnabled ? (
+            <View style={styles.taskLinkRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={selectedTaskLabel}
+                onPress={() => setIsTaskPickerOpen(true)}
+                style={styles.taskPickerButton}
+              >
+                <Text style={[styles.taskPickerValue, { color: soft.foreground }]} numberOfLines={3}>
+                  {selectedTask?.title ?? timerOnlyLabel}
+                </Text>
+                <Text style={[styles.taskPickerAction, { color: soft.accentText }]}>{changeTaskLabel}</Text>
+              </Pressable>
+              {selectedTask && (
+                <SoftIconButton
+                  icon="checkmark"
+                  variant="ghost"
+                  size={20}
+                  accessibilityLabel={markDoneLabel}
+                  onPress={handleMarkDone}
+                  disabled={isHydratingSession}
+                />
+              )}
+            </View>
+          ) : null}
+
+          <View style={styles.timerActionRow}>
+            <GradientButton
+              label={isRunning ? pauseLabel : startLabel}
+              onPress={handleToggleRun}
+              disabled={isHydratingSession}
+              style={styles.startButton}
+            />
+            {(inProgress || isRunning) && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={resetLabel}
+                hitSlop={8}
+                onPress={handleReset}
+                disabled={isHydratingSession}
+                style={styles.resetButton}
+              >
+                <RotateCcw size={18} color={soft.muted} />
+              </Pressable>
+            )}
+          </View>
+        </View>
+      </View>
+
+      {!isRunning && (
+        <View style={styles.presetRow}>
+          {presetOptions.map((preset) => {
+            const active = durations.focusMinutes === preset.focusMinutes && durations.breakMinutes === preset.breakMinutes;
+            return (
+              <SoftChip
+                key={preset.id}
+                label={preset.label}
+                selected={active}
+                onPress={isHydratingSession ? undefined : () => handleApplyPreset(preset.focusMinutes, preset.breakMinutes)}
+              />
+            );
+          })}
         </View>
       )}
 
-      <View style={styles.timerActionRow}>
-        <Pressable
-          onPress={handleToggleRun}
-          disabled={isHydratingSession}
-          style={[
-            styles.actionPrimary,
-            {
-              opacity: isHydratingSession ? 0.5 : 1,
-              backgroundColor: filledButton.backgroundColor,
-              borderColor: filledButton.backgroundColor,
-            },
-          ]}
-        >
-          <Text style={[styles.actionPrimaryText, { color: filledButton.textColor ?? tc.onTint }]}>
-            {timerState.isRunning ? pauseLabel : startLabel}
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={handleReset}
-          disabled={isHydratingSession}
-          style={[styles.actionSecondary, { borderColor: tc.border, backgroundColor: tc.filterBg }]}
-        >
-          <Text style={[styles.actionSecondaryText, { color: tc.secondaryText }]}>
-            {resetLabel}
-          </Text>
-        </Pressable>
+      <View style={styles.linksRow}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={switchLabel}
           onPress={handleSwitchPhase}
           disabled={isHydratingSession}
-          style={[styles.actionSecondary, { borderColor: tc.border, backgroundColor: tc.filterBg }]}
+          hitSlop={6}
         >
-          <Text style={[styles.actionSecondaryText, { color: tc.secondaryText }]}>
-            {switchLabel}
-          </Text>
+          <Text style={[styles.linkText, { color: soft.muted }]}>{switchLabel}</Text>
         </Pressable>
+        {sessionLive ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={openFocusLabel} onPress={openFocus} hitSlop={6} style={styles.linkWithIcon}>
+            <Maximize2 size={14} color={soft.accentText} />
+            <Text style={[styles.linkText, { color: soft.accentText }]}>{openFocusLabel}</Text>
+          </Pressable>
+        ) : selectedTask ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={startFocusLabel} onPress={startFocusOnTask} hitSlop={6} style={styles.linkWithIcon}>
+            <Maximize2 size={14} color={soft.accentText} />
+            <Text style={[styles.linkText, { color: soft.accentText }]}>{startFocusLabel}</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {lastEvent && (
-        <Text style={[styles.eventText, { color: tc.secondaryText }]}>
+        <Text style={[styles.eventText, { color: soft.muted }]}>
           {lastEvent === 'focus-finished' ? focusDoneLabel : breakDoneLabel}
         </Text>
       )}
@@ -326,9 +349,9 @@ export function PomodoroPanel({
           onRequestClose={() => setIsTaskPickerOpen(false)}
         >
           <View style={styles.modalRoot}>
-            <Pressable style={styles.modalScrim} onPress={() => setIsTaskPickerOpen(false)} />
-            <View style={[styles.taskPickerSheet, { backgroundColor: tc.cardBg, borderColor: tc.border }]}>
-              <Text style={[styles.taskPickerSheetTitle, { color: tc.text }]}>{selectedTaskLabel}</Text>
+            <Pressable style={[styles.modalScrim, { backgroundColor: soft.foreground }]} onPress={() => setIsTaskPickerOpen(false)} />
+            <View style={[styles.taskPickerSheet, { backgroundColor: soft.surface, borderColor: soft.border, borderRadius: soft.radius.sheet }]}>
+              <Text style={[styles.taskPickerSheetTitle, { color: soft.foreground }]}>{selectedTaskLabel}</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ selected: !selectedTaskId }}
@@ -339,19 +362,16 @@ export function PomodoroPanel({
                 style={[
                   styles.taskPickerOption,
                   {
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 6,
-                    borderColor: !selectedTaskId ? tc.tint : tc.border,
+                    borderColor: !selectedTaskId ? soft.accent : soft.border,
                     borderWidth: !selectedTaskId ? 2 : 1,
-                    backgroundColor: !selectedTaskId ? `${tc.tint}18` : tc.filterBg,
+                    backgroundColor: !selectedTaskId ? soft.accentSoft : soft.well,
                   },
                 ]}
               >
-                <Text style={[styles.taskPickerOptionText, { flex: 1, color: !selectedTaskId ? tc.tint : tc.text }]}>
+                <Text style={[styles.taskPickerOptionText, { color: !selectedTaskId ? soft.accentText : soft.foreground }]}>
                   {timerOnlyLabel}
                 </Text>
-                {!selectedTaskId && <Check size={16} color={tc.tint} strokeWidth={2.5} />}
+                {!selectedTaskId && <Check size={16} color={soft.accent} strokeWidth={2.5} />}
               </Pressable>
               <FlatList
                 data={pickerTasks}
@@ -368,22 +388,19 @@ export function PomodoroPanel({
                       style={[
                         styles.taskPickerOption,
                         {
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                          borderColor: selected ? tc.tint : tc.border,
+                          borderColor: selected ? soft.accent : soft.border,
                           borderWidth: selected ? 2 : 1,
-                          backgroundColor: selected ? `${tc.tint}18` : tc.filterBg,
+                          backgroundColor: selected ? soft.accentSoft : soft.well,
                         },
                       ]}
                     >
                       <Text
-                        style={[styles.taskPickerOptionText, { flex: 1, color: selected ? tc.tint : tc.text }]}
+                        style={[styles.taskPickerOptionText, { color: selected ? soft.accentText : soft.foreground }]}
                         numberOfLines={2}
                       >
                         {task.title}
                       </Text>
-                      {selected && <Check size={16} color={tc.tint} strokeWidth={2.5} />}
+                      {selected && <Check size={16} color={soft.accent} strokeWidth={2.5} />}
                     </Pressable>
                   );
                 }}
@@ -397,33 +414,27 @@ export function PomodoroPanel({
                 removeClippedSubviews={false}
                 showsVerticalScrollIndicator={false}
                 ListEmptyComponent={
-                  <Text style={[styles.noTaskText, { color: tc.secondaryText }]}>{noTaskLabel}</Text>
+                  <Text style={[styles.noTaskText, { color: soft.muted }]}>{noTaskLabel}</Text>
                 }
               />
             </View>
           </View>
         </Modal>
       )}
-    </View>
+    </SoftCard>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 10,
-    gap: 8,
+    gap: 12,
     marginBottom: 12,
   },
   headerRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-  },
-  collapsedCard: {
-    paddingVertical: 10,
   },
   collapsedRow: {
     flexDirection: 'row',
@@ -447,7 +458,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-
   headerText: {
     flex: 1,
   },
@@ -461,8 +471,8 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   title: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
   },
   phaseStatus: {
     paddingTop: 2,
@@ -472,64 +482,63 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
   },
+  mainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  sideColumn: {
+    flex: 1,
+    minWidth: 0,
+    gap: 10,
+  },
+  timerText: {
+    fontSize: 30,
+    fontWeight: '300',
+    fontVariant: ['tabular-nums'],
+  },
+  sessionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  sessionDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  streak: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginLeft: 4,
+  },
+  sessionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
   presetRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
   },
-  presetChip: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  presetText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  timerBox: {
-    alignItems: 'center',
-    gap: 2,
-  },
-  timerText: {
-    fontSize: 36,
-    fontWeight: '800',
-    letterSpacing: 1,
-    fontVariant: ['tabular-nums'],
-  },
-  sessionText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
   taskLinkRow: {
     flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 8,
+    alignItems: 'center',
+    gap: 4,
   },
   taskPickerButton: {
     flex: 1,
     minWidth: 0,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  taskPickerTextBlock: {
-    flex: 1,
-    minWidth: 0,
     gap: 2,
-  },
-  taskPickerLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    minHeight: 44,
+    justifyContent: 'center',
   },
   taskPickerValue: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
   taskPickerAction: {
     fontSize: 12,
@@ -537,40 +546,33 @@ const styles = StyleSheet.create({
   },
   timerActionRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: 8,
   },
-  actionPrimary: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+  startButton: {
+    minWidth: 112,
   },
-  actionPrimaryText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  actionSecondary: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  actionSecondaryText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  actionDone: {
-    borderWidth: 1,
-    borderRadius: 10,
-    justifyContent: 'center',
+  resetButton: {
+    width: 40,
+    height: 40,
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    justifyContent: 'center',
   },
-  actionDoneText: {
-    fontSize: 12,
-    fontWeight: '700',
+  linksRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  linkWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  linkText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   eventText: {
     fontSize: 12,
@@ -583,11 +585,10 @@ const styles = StyleSheet.create({
   },
   modalScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#00000099',
+    opacity: 0.5,
   },
   taskPickerSheet: {
     borderWidth: 1,
-    borderRadius: 14,
     padding: 12,
     gap: 10,
     maxHeight: '72%',
@@ -603,12 +604,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   taskPickerOption: {
-    borderWidth: 1,
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   taskPickerOptionText: {
+    flex: 1,
     fontSize: 14,
     fontWeight: '700',
   },

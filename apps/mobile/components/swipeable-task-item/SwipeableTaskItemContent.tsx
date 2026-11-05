@@ -360,7 +360,8 @@ export function SwipeableTaskItemContent({
         }
     };
 
-    const { isMaterial, shape } = useThemeTokens();
+    const { isMaterial, shape, soft } = useThemeTokens();
+    const softCardStyle = soft.enabled ? soft.raised('sm') : undefined;
     const visibleMetaParts = (hideDetails ? meta.parts.filter((part) => !part.detail) : meta.parts).map(renderMetaPart);
 
     return (
@@ -369,11 +370,14 @@ export function SwipeableTaskItemContent({
                 styles.taskItem,
                 isMaterial ? { borderRadius: shape.large } : undefined,
                 { backgroundColor: tc.taskItemBg },
-                { borderWidth: 1, borderColor: tc.border },
-                isAvailableNextAction && !selectionMode && {
-                    backgroundColor: isDark ? 'rgba(59, 130, 246, 0.08)' : 'rgba(59, 130, 246, 0.05)',
-                    borderColor: isDark ? 'rgba(59, 130, 246, 0.34)' : 'rgba(59, 130, 246, 0.24)',
-                },
+                soft.enabled ? { borderWidth: 0 } : { borderWidth: 1, borderColor: tc.border },
+                softCardStyle,
+                isAvailableNextAction && !selectionMode && (soft.enabled
+                    ? { backgroundColor: soft.accentSoft }
+                    : {
+                        backgroundColor: isDark ? 'rgba(59, 130, 246, 0.08)' : 'rgba(59, 130, 246, 0.05)',
+                        borderColor: isDark ? 'rgba(59, 130, 246, 0.34)' : 'rgba(59, 130, 246, 0.24)',
+                    }),
                 showFocusHighlight && canShowFocusToggle && task.isFocusedToday && !selectionMode && { borderWidth: 2, borderColor: tc.tint },
                 isHighlighted && !selectionMode && { borderWidth: 2, borderColor: tc.tint },
                 selectionMode && { borderWidth: 2, borderColor: isMultiSelected ? tc.tint : tc.border },

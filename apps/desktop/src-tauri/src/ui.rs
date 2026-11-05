@@ -497,17 +497,34 @@ pub(crate) fn build_tray_menu(
     show: &str,
     lock: Option<&str>,
     quit: &str,
+    open_panel: Option<&str>,
 ) -> tauri::Result<Menu<tauri::Wry>> {
     let quick_add_item = MenuItem::with_id(app, "quick_add", quick_add, true, None::<&str>)?;
     let show_item = MenuItem::with_id(app, "show", show, true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", quit, true, None::<&str>)?;
-    match lock {
-        Some(lock) => {
-            let lock_item = MenuItem::with_id(app, "lock", lock, true, None::<&str>)?;
-            Menu::with_items(app, &[&quick_add_item, &show_item, &lock_item, &quit_item])
-        }
-        None => Menu::with_items(app, &[&quick_add_item, &show_item, &quit_item]),
+    // Linux tray click events are unreliable, so the menu is the way to reach the panel there.
+    let panel_item = open_panel
+        .map(|label| MenuItem::with_id(app, "panel", label, true, None::<&str>))
+        .transpose()?;
+    let lock_item = lock
+        .map(|label| MenuItem::with_id(app, "lock", label, true, None::<&str>))
+        .transpose()?;
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&quick_add_item, &show_item];
+    if let Some(item) = &panel_item {
+        items.push(item);
     }
+    if let Some(item) = &lock_item {
+        items.push(item);
+    }
+    items.push(&quit_item);
+    Menu::with_items(app, &items)
+}
+
+/// Label for the Linux-only "Open panel" tray item.
+const OPEN_PANEL_LABEL: &str = "Open panel";
+
+pub(crate) fn open_panel_label(custom: Option<&str>) -> Option<&str> {
+    cfg!(target_os = "linux").then(|| custom.filter(|v| !v.trim().is_empty()).unwrap_or(OPEN_PANEL_LABEL))
 }
 
 #[tauri::command]
@@ -517,6 +534,7 @@ pub(crate) fn set_tray_labels(
     show: String,
     lock: Option<String>,
     quit: String,
+    open_panel: Option<String>,
 ) -> Result<(), String> {
     let Some(tray) = app.tray_by_id("main") else {
         return Ok(());
@@ -526,7 +544,7 @@ pub(crate) fn set_tray_labels(
         return Ok(());
     }
     let lock = lock.filter(|_| crate::app_lock::is_enabled());
-    let menu = build_tray_menu(&app, &quick_add, &show, lock.as_deref(), &quit)
+    let menu = build_tray_menu(&app, &quick_add, &show, lock.as_deref(), &quit, open_panel_label(open_panel.as_deref()))
         .map_err(|e| e.to_string())?;
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
     // Replacing the menu re-enables "show menu on left click" on macOS, which swallows the

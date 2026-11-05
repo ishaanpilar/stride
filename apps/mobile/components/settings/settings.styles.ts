@@ -1,5 +1,9 @@
 import { StyleSheet } from 'react-native';
 
+const STATIC_CARD_SHADOW = [
+    { offsetX: 3, offsetY: 3, blurRadius: 8, color: 'rgba(60, 72, 100, 0.2)' },
+];
+
 export const styles = StyleSheet.create({
     container: { flex: 1 },
     scrollView: { flex: 1 },
@@ -33,9 +37,9 @@ export const styles = StyleSheet.create({
     backButton: { fontSize: 16, fontWeight: '500' },
     subHeaderTitle: { fontSize: 18, fontWeight: '600' },
     description: { fontSize: 13, marginBottom: 12, paddingHorizontal: 4, lineHeight: 18 },
-    sectionTitle: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', marginBottom: 8, marginLeft: 4 },
+    sectionTitle: { fontSize: 13, fontWeight: '600', marginBottom: 8, marginLeft: 4 },
     menuGroupStack: { paddingTop: 16, gap: 14 },
-    menuCard: { borderRadius: 12, overflow: 'hidden' },
+    menuCard: { borderRadius: 14, overflow: 'hidden', boxShadow: STATIC_CARD_SHADOW },
     menuItem: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -54,7 +58,7 @@ export const styles = StyleSheet.create({
     chevron: { fontSize: 24, fontWeight: '300' },
     menuRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     updateDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ef4444' },
-    settingCard: { borderRadius: 12, overflow: 'hidden' },
+    settingCard: { borderRadius: 14, overflow: 'hidden', boxShadow: STATIC_CARD_SHADOW },
     aboutAppHeader: {
         minHeight: 196,
         alignItems: 'center',

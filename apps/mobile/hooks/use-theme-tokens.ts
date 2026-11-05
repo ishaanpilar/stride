@@ -6,6 +6,7 @@ import { M3Typography } from '../constants/material3/m3-typography';
 import { M3Shape } from '../constants/material3/m3-shape';
 import { buildElevationStyle, type ElevationStyle, type M3ElevationLevel } from '../constants/material3/m3-elevation';
 import { buildStateLayer, type M3StateName } from '../constants/material3/m3-state';
+import { buildDefaultSoftTokens, buildFlatSoftTokens, type SoftTokens } from '../constants/soft-ui';
 import { useTheme, type ThemeContextType } from '../contexts/theme-context';
 
 type ResolvableTheme = Pick<ThemeContextType, 'isDark' | 'themeStyle' | 'themePreset' | 'themeMode'>;
@@ -19,11 +20,11 @@ export interface ThemeColors {
 }
 
 export const FALLBACK_THEME_COLORS: ThemeColors = {
-  bg: Colors.light.background, cardBg: '#FFFFFF', taskItemBg: '#F1F5F9',
+  bg: Colors.light.background, cardBg: '#FFFFFF', taskItemBg: '#FFFFFF',
   text: Colors.light.text, secondaryText: '#4B5563', icon: Colors.light.icon,
-  border: '#E2E8F0', tint: Colors.light.tint, onTint: '#FFFFFF',
+  border: '#E3E8F0', tint: Colors.light.tint, onTint: '#FFFFFF',
   tabIconDefault: Colors.light.tabIconDefault, tabIconSelected: Colors.light.tabIconSelected,
-  inputBg: '#EEF2F7', danger: '#EF4444', success: '#10B981', warning: '#F59E0B', filterBg: '#EEF2F7',
+  inputBg: '#E9EEF4', danger: '#B91C1C', success: '#15803D', warning: '#C2410C', filterBg: '#E9EEF4',
 };
 
 export interface ThemeTokens {
@@ -35,6 +36,7 @@ export interface ThemeTokens {
   state: { rippleColor: string | undefined; stateLayerColor: (s: M3StateName) => string };
   isMaterial: boolean;
   isDark: boolean;
+  soft: SoftTokens;
 }
 
 function m3RolesFor(theme: ResolvableTheme): M3ColorRoles {
@@ -61,19 +63,21 @@ function resolveGenericColors(theme: ResolvableTheme): ThemeColors {
   const isDark = theme.isDark;
   return {
     bg: isDark ? Colors.dark.background : Colors.light.background,
-    cardBg: isDark ? '#1F2937' : '#FFFFFF',
-    taskItemBg: isDark ? '#1F2937' : '#F1F5F9',
+    cardBg: isDark ? '#1E222A' : '#FFFFFF',
+    taskItemBg: isDark ? '#1E222A' : '#FFFFFF',
     text: isDark ? Colors.dark.text : Colors.light.text,
-    secondaryText: isDark ? '#9CA3AF' : '#4B5563',
+    secondaryText: isDark ? '#A1A8B5' : '#4B5563',
     icon: isDark ? Colors.dark.icon : Colors.light.icon,
-    border: isDark ? '#374151' : '#E2E8F0',
+    border: isDark ? '#2A2E37' : '#E3E8F0',
     tint: isDark ? Colors.dark.tint : Colors.light.tint,
-    onTint: isDark ? '#0F172A' : '#FFFFFF',
+    onTint: isDark ? '#14161C' : '#FFFFFF',
     tabIconDefault: isDark ? Colors.dark.tabIconDefault : Colors.light.tabIconDefault,
     tabIconSelected: isDark ? Colors.dark.tabIconSelected : Colors.light.tabIconSelected,
-    inputBg: isDark ? '#374151' : '#EEF2F7',
-    danger: '#EF4444', success: '#10B981', warning: '#F59E0B',
-    filterBg: isDark ? '#374151' : '#EEF2F7',
+    inputBg: isDark ? '#171A20' : '#E9EEF4',
+    danger: isDark ? '#F87171' : '#B91C1C',
+    success: isDark ? '#4ADE80' : '#15803D',
+    warning: isDark ? '#FB923C' : '#C2410C',
+    filterBg: isDark ? '#171A20' : '#E9EEF4',
   };
 }
 
@@ -83,6 +87,7 @@ const FALLBACK: ThemeTokens = {
   elevation: () => ({}), state: { rippleColor: undefined, stateLayerColor: () => 'transparent' },
   isMaterial: false,
   isDark: false,
+  soft: buildDefaultSoftTokens(false),
 };
 
 
@@ -98,8 +103,10 @@ export function resolveThemeTokens(theme?: ResolvableTheme | null): ThemeTokens 
   if (cached?.key === key) return cached.tokens;
   const isMaterial = theme.themeStyle === 'material3';
   const roles = isMaterial ? m3RolesFor(theme) : null;
+  const colors = resolveGenericColors(theme);
+  const usesSoftUi = !isMaterial && theme.themePreset === 'default';
   const tokens: ThemeTokens = {
-    colors: resolveGenericColors(theme),
+    colors,
     roles,
     type: M3Typography,
     shape: M3Shape,
@@ -107,6 +114,8 @@ export function resolveThemeTokens(theme?: ResolvableTheme | null): ThemeTokens 
     state: buildStateLayer({ isMaterial, roles }),
     isMaterial,
     isDark: theme.isDark,
+    // Without resolved colors (partial theme state) fall back to the default Soft UI palette instead of crashing.
+    soft: usesSoftUi || !colors ? buildDefaultSoftTokens(theme.isDark) : buildFlatSoftTokens(colors, theme.isDark),
   };
   cached = { key, tokens };
   return tokens;

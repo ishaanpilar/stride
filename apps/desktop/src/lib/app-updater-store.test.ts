@@ -9,7 +9,13 @@ const flushMock = vi.hoisted(() => vi.fn(async () => {
     calls.push('flush');
 }));
 
+const manualCheckMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: checkMock }));
+vi.mock('./app-updater', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./app-updater')>()),
+    checkForManualAppUpdate: manualCheckMock,
+}));
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: relaunchMock }));
 vi.mock('@stride/core', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@stride/core')>()),
@@ -53,6 +59,8 @@ beforeEach(() => {
     window.localStorage.clear();
     calls.length = 0;
     checkMock.mockReset();
+    manualCheckMock.mockReset();
+    manualCheckMock.mockRejectedValue(new Error('GitHub API unreachable'));
     relaunchMock.mockClear();
     flushMock.mockClear();
     resetCloseFlushGate();
@@ -149,6 +157,53 @@ describe('app updater store', () => {
         checkMock.mockRejectedValue('Could not fetch a valid release JSON from the remote');
         await store().checkNow({ manual: true });
         expect(store().errorKind).toBe('unavailable');
+    });
+
+    it('offers a GitHub download when latest.json has no entry for this platform', async () => {
+        checkMock.mockRejectedValue('the platform `windows-x86_64` was not found on the response `platforms` object');
+        manualCheckMock.mockResolvedValue({
+            version: '1.6.0',
+            currentVersion: '1.5.0',
+            notes: 'Windows beta',
+            date: '2026-11-06T10:00:00Z',
+            downloadOnly: true,
+            downloadUrl: 'https://github.com/ishaanpilar/stride/releases/tag/v1.6.0',
+        });
+        await expect(store().checkNow()).resolves.toBe('available');
+        expect(store()).toMatchObject({ phase: 'available', dialogOpen: true, errorKind: null });
+        expect(store().update).toMatchObject({ version: '1.6.0', downloadOnly: true });
+
+        // Nothing to install in-app: the install action is a no-op for a download-only update.
+        await store().installUpdate();
+        expect(calls).toEqual([]);
+    });
+
+    it('on Windows saves pending changes after download and before the installer closes the app', async () => {
+        vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+        const update = fakeUpdate('1.6.0', {
+            download: vi.fn(async (onEvent: (event: unknown) => void) => {
+                calls.push('download');
+                onEvent({ event: 'Started', data: { contentLength: 10 } });
+                onEvent({ event: 'Finished' });
+            }),
+            install: vi.fn(async () => {
+                calls.push('install');
+            }),
+        });
+        checkMock.mockResolvedValue(update);
+        await store().checkNow();
+        await store().installUpdate();
+        expect(calls).toEqual(['download', 'flush', 'install', 'relaunch']);
+        expect(update.downloadAndInstall).not.toHaveBeenCalled();
+        expect(readAppUpdaterPrefs().pendingWhatsNew?.version).toBe('1.6.0');
+        vi.restoreAllMocks();
+    });
+
+    it('reports up to date when the fallback finds no newer GitHub release', async () => {
+        checkMock.mockRejectedValue('the platform `windows-x86_64` was not found on the response `platforms` object');
+        manualCheckMock.mockResolvedValue(null);
+        await expect(store().checkNow({ manual: true })).resolves.toBe('up-to-date');
+        expect(store()).toMatchObject({ phase: 'idle', update: null, dialogOpen: false });
     });
 
     it('keeps the app running and offers a retry when the signature does not verify', async () => {

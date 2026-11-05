@@ -80,6 +80,7 @@ import { ProjectNextActionPromptProvider } from '@/components/project-next-actio
 import { ThemedAlertProvider } from '@/components/themed-alert';
 import { AppAnnouncementModal } from '@/components/app-announcement-modal';
 import { MobileOnboardingFlow } from '@/components/MobileOnboardingFlow';
+import { preloadMotionPreference } from '@/lib/motion-preference';
 import { MobileAppLockGate } from '@/components/mobile-app-lock-gate';
 import { useIncomingUrl } from '@/hooks/use-incoming-url';
 import { useWidgetLaunch, WidgetLaunchContext } from '@/hooks/use-widget-launch';
@@ -238,6 +239,9 @@ export function RootAdaptiveWindowHost({ children }: { children: React.ReactNode
 
 function RootLayoutContent() {
   const tc = useThemeColors();
+  useEffect(() => {
+    void preloadMotionPreference();
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: tc.bg }}>
@@ -1079,6 +1083,21 @@ function RootLayoutContentInner() {
                 headerShown: false,
                 presentation: 'modal',
                 animation: 'slide_from_bottom'
+              }}
+            />
+            <Stack.Screen
+              name="ai-capture"
+              options={{
+                headerShown: false,
+                presentation: 'modal',
+                animation: 'slide_from_bottom'
+              }}
+            />
+            <Stack.Screen
+              name="assistant"
+              options={{
+                headerShown: false,
+                animation: 'slide_from_right'
               }}
             />
           </Stack>

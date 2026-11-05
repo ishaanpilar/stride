@@ -1958,14 +1958,13 @@ pub fn run() {
             if let Err(error) = create_quick_add_window(&handle) {
                 log::warn!("{error}");
             }
-            #[cfg(target_os = "macos")]
             if let Err(error) = menubar_panel::create_menubar_panel_window(&handle) {
                 log::warn!("{error}");
             }
             macos_widget::install_macos_widget_capture_listener(&handle);
             let tray_init_result: tauri::Result<()> = (|| {
                 let tray_menu =
-                    build_tray_menu(handle, "Quick Add", "Open Stride", None, "Quit")?;
+                    build_tray_menu(handle, "Quick Add", "Open Stride", None, "Quit", ui::open_panel_label(None))?;
 
                 let tray_icon = resolve_tray_icon(handle);
 
@@ -2017,6 +2016,10 @@ pub fn run() {
                             "show" => {
                                 show_main(app);
                             }
+                            "panel" => {
+                                #[cfg(target_os = "linux")]
+                                menubar_panel::open_panel_in_corner(app);
+                            }
                             "lock" => {
                                 app_lock::engage_from_tray(app);
                             }
@@ -2041,7 +2044,16 @@ pub fn run() {
                                 {
                                     menubar_panel::toggle_panel(tray.app_handle(), &rect, position);
                                 }
-                                #[cfg(not(target_os = "macos"))]
+                                // Windows: left click toggles the panel; right click keeps the menu.
+                                #[cfg(target_os = "windows")]
+                                if button == MouseButton::Left
+                                    && button_state == MouseButtonState::Up
+                                {
+                                    menubar_panel::toggle_panel(tray.app_handle(), &rect, position);
+                                }
+                                // Linux: click events are unreliable; the panel is reached from the
+                                // tray menu's "Open panel" item. Keep the old click-to-open-main.
+                                #[cfg(target_os = "linux")]
                                 if button == MouseButton::Left
                                     && button_state == MouseButtonState::Up
                                 {

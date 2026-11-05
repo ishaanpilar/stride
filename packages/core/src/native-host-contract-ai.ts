@@ -23,6 +23,7 @@ import {
     getAIProviderDefaultsPatch,
     getAIProviderLabel,
     getAnthropicThinkingPatch,
+    getDeepSeekProviderPatch,
     getFossSpeechCorrection,
     getSelectedMobileWhisperModel,
     getSpeechModelListKind,
@@ -33,6 +34,7 @@ import {
     recordAIProviderConsent,
     resolveAISettingsScreenState,
     type AIConsentPrompt,
+    type AIProviderChoice,
     type SpeechProviderChoice,
 } from './ai-settings-model';
 import {
@@ -162,7 +164,7 @@ export type NativeAISettings = {
         title: string;
         description: string;
         enabled: NativeAIRow & { value: boolean };
-        provider: NativeAIRow & { options: NativeAIChoice<AIProviderId>[] };
+        provider: NativeAIRow & { options: NativeAIChoice<AIProviderChoice>[] };
         model: NativeAIRow & { value: string; placeholder: string; suggestions: string };
         copilotModel: NativeAIRow & { value: string; placeholder: string; suggestions: string };
         panel: NativeAIProviderPanel;
@@ -199,7 +201,7 @@ export type NativeAISettings = {
 
 export type NativeAISettingChange =
     | { type: 'enabled'; value: boolean }
-    | { type: 'provider'; value: AIProviderId }
+    | { type: 'provider'; value: AIProviderChoice }
     | { type: 'model' | 'copilotModel'; value: string }
     | { type: 'reasoningEffort'; value: AIReasoningEffort }
     | { type: 'thinkingBudget'; value: number }
@@ -275,7 +277,7 @@ export type NativeWeeklyReviewAnalysis = {
     selectedIds: string[] | null;
 };
 
-const PROVIDERS: readonly AIProviderId[] = ['openai', 'gemini', 'anthropic'];
+const PROVIDERS: readonly AIProviderChoice[] = ['openai', 'deepseek', 'gemini', 'anthropic'];
 const SPEECH_PROVIDERS: readonly SpeechProviderChoice[] = ['openai', 'gemini', 'whisper'];
 const EFFORTS: readonly AIReasoningEffort[] = ['low', 'medium', 'high'];
 const MODES: readonly AudioCaptureMode[] = ['smart_parse', 'transcribe_only'];
@@ -478,7 +480,10 @@ export function createAIMethods(deps: AIDeps) {
         const aiModelOptions = mergeModelOptions(fetched('assistant'), state.staticAiModelOptions, state.aiModel);
         const aiCopilotOptions = mergeModelOptions(fetched('assistant'), state.staticAiCopilotOptions, state.aiCopilotModel);
         const speechModelOptions = mergeModelOptions(fetched('speech'), state.staticSpeechModelOptions, state.speechModel);
-        const providerLabel = (provider: AIProviderId) => getAIProviderLabel(provider, isFossBuild, { t, tr });
+        const providerLabel = (provider: AIProviderChoice) => getAIProviderLabel(provider, isFossBuild, { t, tr });
+        // Like the mobile screen, the current-provider text reads "DeepSeek" while OpenAI-compatible points at DeepSeek;
+        // the OpenAI choice itself keeps its own label.
+        const currentProviderLabel = providerLabel(state.usingDeepSeek ? 'deepseek' : state.aiProvider);
         const assistantKey = visit?.keys.assistant?.provider === state.aiProvider ? visit.keys.assistant.value : '';
         const speechKey = visit?.keys.speech?.provider === state.speechProvider ? visit.keys.speech.value : '';
         const keyField = (key: string, note: string | null): NativeAIKeyField => ({
@@ -556,16 +561,18 @@ export function createAIMethods(deps: AIDeps) {
                 description: t('settings.aiDesc'),
                 enabled: {
                     label: t('settings.aiEnable'),
-                    description: tr('settings.aiMobile.taskTextSentToProvider', { provider: providerLabel(state.aiProvider) }),
+                    description: tr('settings.aiMobile.taskTextSentToProvider', { provider: currentProviderLabel }),
                     value: state.aiEnabled,
                 },
                 provider: {
                     label: t('settings.aiProvider'),
-                    description: providerLabel(state.aiProvider),
+                    description: currentProviderLabel,
                     options: choices((isFossBuild ? PROVIDERS.slice(0, 1) : PROVIDERS).map((provider) => ({
                         value: provider,
-                        label: provider === 'openai' ? providerLabel('openai') : t(provider === 'gemini' ? 'settings.aiProviderGemini' : 'settings.aiProviderAnthropic'),
-                    })), state.aiProvider),
+                        label: provider === 'openai' || provider === 'deepseek'
+                            ? providerLabel(provider)
+                            : t(provider === 'gemini' ? 'settings.aiProviderGemini' : 'settings.aiProviderAnthropic'),
+                    })), state.usingDeepSeek ? 'deepseek' : state.aiProvider),
                 },
                 model: { label: t('settings.aiModel'), description: null, value: state.aiModel, placeholder: aiModelOptions[0] ?? '', suggestions: tr('settings.aiMobile.suggestions') },
                 copilotModel: {
@@ -665,7 +672,7 @@ export function createAIMethods(deps: AIDeps) {
     const planChange = (
         host: NativeAIHost,
         change: NativeAISettingChange,
-    ): { patches: Partial<AISettings>[]; consentFor: AIProviderId | null; extraBodyDraft?: string }
+    ): { patches: Partial<AISettings>[]; consentFor: AIProviderChoice | null; extraBodyDraft?: string }
         | { answer: Omit<NativeAISettingResult, 'toasts'> & { toast?: NativeAIToast } }
         | null => {
         const { isFossBuild } = host.platform;
@@ -673,11 +680,20 @@ export function createAIMethods(deps: AIDeps) {
         const unchanged = { answer: { changed: false, consent: null, extraBodyDraft: null } };
         switch (change.type) {
             case 'enabled':
-                return change.value ? { patches: [{ enabled: true }], consentFor: state.aiProvider } : { patches: [{ enabled: false }], consentFor: null };
+                return change.value ? { patches: [{ enabled: true }], consentFor: state.usingDeepSeek ? 'deepseek' : state.aiProvider } : { patches: [{ enabled: false }], consentFor: null };
             case 'provider':
                 if (isFossBuild && change.value !== 'openai') return null;
-                if (change.value === state.aiProvider) return unchanged;
-                return { patches: [getAIProviderDefaultsPatch(change.value, isFossBuild)], consentFor: state.aiEnabled ? change.value : null };
+                if (change.value === 'deepseek') {
+                    return state.usingDeepSeek
+                        ? unchanged
+                        : { patches: [getDeepSeekProviderPatch()], consentFor: state.aiEnabled ? 'deepseek' : null };
+                }
+                if (change.value === state.aiProvider && !state.usingDeepSeek) return unchanged;
+                // Leaving DeepSeek drops its base URL so OpenAI does not keep pointing at it.
+                return {
+                    patches: [getAIProviderDefaultsPatch(change.value, isFossBuild), ...(state.usingDeepSeek ? [{ baseUrl: '' }] : [])],
+                    consentFor: state.aiEnabled ? change.value : null,
+                };
             case 'model':
             case 'copilotModel':
                 return { patches: [{ [change.type]: change.value }], consentFor: null };

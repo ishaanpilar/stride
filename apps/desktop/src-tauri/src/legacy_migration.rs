@@ -130,6 +130,17 @@ pub(crate) fn migrate_legacy_data_dirs() {
     }
 }
 
+/// WebView localStorage of a previous install.
+///
+/// - macOS: WKWebView, `~/Library/WebKit/<name>/WebsiteData/Default/<hash>/<hash>/LocalStorage/
+///   localstorage.sqlite3`.
+/// - Linux: WebKitGTK, `<data dir>/<identifier>/localstorage/<origin>.localstorage` (the same
+///   `ItemTable` SQLite schema); best effort, since the layout differs between WebKitGTK versions.
+/// - Windows: WebView2 stores localStorage in a Chromium LevelDB under
+///   `%LOCALAPPDATA%\<identifier>\EBWebView`. Reading LevelDB (snappy, custom comparator) is not
+///   practical without a new dependency, so it is skipped there; data files and keyring secrets
+///   are still migrated.
+///
 /// WKWebView keeps localStorage in `~/Library/WebKit/<name>/WebsiteData/Default/<hash>/<hash>/
 /// LocalStorage/localstorage.sqlite3`, where `<name>` was the bundle identifier (packaged app)
 /// or the executable name (dev builds) of a previous install. Storage is also keyed by page
@@ -138,13 +149,36 @@ pub(crate) fn migrate_legacy_data_dirs() {
 /// ones it lacks (apps/desktop/src/lib/legacy-local-storage.ts). Legacy-only.
 const LEGACY_WEBKIT_DIR_NAMES: &[&str] = &["com.ishaanpilar.donext", "tech.dongdongbh.mindwtr", "mindwtr", "donext"];
 
+fn is_local_storage_db_name(name: &str) -> bool {
+    name == "localstorage.sqlite3" || name.ends_with(".localstorage")
+}
+
+/// Base directories that may hold legacy WebView localStorage for this OS (empty on Windows,
+/// where WebView2 uses LevelDB).
+fn legacy_local_storage_bases() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|home| vec![home.join("Library/WebKit")]).unwrap_or_default()
+    } else if cfg!(target_os = "linux") {
+        // Flatpak sandboxes data under ~/.var/app, which dirs::data_dir() already reflects.
+        let mut bases: Vec<PathBuf> = Vec::new();
+        for dir in [dirs::data_dir(), dirs::data_local_dir()].into_iter().flatten() {
+            if !bases.contains(&dir) {
+                bases.push(dir);
+            }
+        }
+        bases
+    } else {
+        Vec::new()
+    }
+}
+
 fn find_local_storage_dbs(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             find_local_storage_dbs(&path, out);
-        } else if entry.file_name() == "localstorage.sqlite3" {
+        } else if is_local_storage_db_name(&entry.file_name().to_string_lossy()) {
             out.push(path);
         }
     }
@@ -190,9 +224,15 @@ fn read_local_storage_db(db: &Path) -> rusqlite::Result<Vec<(String, String)>> {
 
 /// All legacy localStorage rows, newest database first; the first value seen for a key wins.
 fn read_legacy_local_storage(webkit_base: &Path) -> Vec<(String, String)> {
+    read_legacy_local_storage_from(&[webkit_base.to_path_buf()])
+}
+
+fn read_legacy_local_storage_from(bases: &[PathBuf]) -> Vec<(String, String)> {
     let mut dbs = Vec::new();
-    for name in LEGACY_WEBKIT_DIR_NAMES {
-        find_local_storage_dbs(&webkit_base.join(name), &mut dbs);
+    for base in bases {
+        for name in LEGACY_WEBKIT_DIR_NAMES {
+            find_local_storage_dbs(&base.join(name), &mut dbs);
+        }
     }
     let modified = |p: &PathBuf| {
         let wal = PathBuf::from(format!("{}-wal", p.display()));
@@ -214,16 +254,14 @@ fn read_legacy_local_storage(webkit_base: &Path) -> Vec<(String, String)> {
     items
 }
 
-/// Legacy localStorage rows for the page to import once (macOS only; empty elsewhere).
+/// Legacy localStorage rows for the page to import once (macOS and Linux; empty on Windows).
 /// Async so the file reads never block the main thread.
 #[tauri::command(async)]
 pub(crate) fn legacy_local_storage_items() -> Vec<(String, String)> {
-    if !cfg!(target_os = "macos") || crate::storage::is_portable_mode() {
+    if crate::storage::is_portable_mode() {
         return Vec::new();
     }
-    dirs::home_dir()
-        .map(|home| read_legacy_local_storage(&home.join("Library/WebKit")))
-        .unwrap_or_default()
+    read_legacy_local_storage_from(&legacy_local_storage_bases())
 }
 
 /// Which value (if any) to write into the Stride keychain for a key. Pure.
@@ -381,5 +419,48 @@ mod tests {
         assert_eq!(secret_to_copy(Some("have"), Some("k")), None);
         assert_eq!(secret_to_copy(None, None), None);
         assert_eq!(secret_to_copy(None, Some("")), None);
+    }
+
+    #[test]
+    fn windows_style_single_base_dir_imports_flat_data() {
+        // On Windows config and data dirs are both %APPDATA%, so one base serves both.
+        let tmp = tempfile::tempdir().unwrap();
+        let appdata = tmp.path().join("Roaming");
+        write(&appdata.join("tech.dongdongbh.mindwtr/data.json"), "{}");
+        write(&appdata.join("tech.dongdongbh.mindwtr/mindwtr.db"), "db");
+        assert_eq!(import_legacy_data(&appdata, &appdata).unwrap(), 2);
+        assert!(appdata.join("stride/data.json").exists());
+        assert_eq!(fs::read_to_string(appdata.join("stride/stride.db")).unwrap(), "db");
+        assert!(appdata.join("stride/.legacy-import-done").exists());
+    }
+
+    #[test]
+    fn linux_xdg_split_dirs_import_both_halves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, data) = (tmp.path().join(".config"), tmp.path().join(".local/share"));
+        write(&cfg.join("mindwtr/config.toml"), "c");
+        write(&data.join("mindwtr/mindwtr.db"), "db");
+        import_legacy_data(&cfg, &data).unwrap();
+        assert!(cfg.join("stride/config.toml").exists());
+        assert!(data.join("stride/stride.db").exists());
+        assert!(data.join("mindwtr/mindwtr.db").exists());
+    }
+
+    #[test]
+    fn reads_webkitgtk_style_local_storage_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tech.dongdongbh.mindwtr/localstorage");
+        fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("tauri_localhost_0.localstorage");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB NOT NULL ON CONFLICT FAIL);").unwrap();
+            let value: Vec<u8> = "light".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+            conn.execute("INSERT INTO ItemTable VALUES (?1, ?2)", rusqlite::params!["theme", value]).unwrap();
+        }
+        assert!(is_local_storage_db_name("tauri_localhost_0.localstorage"));
+        assert!(!is_local_storage_db_name("data.json"));
+        let items = read_legacy_local_storage_from(&[tmp.path().to_path_buf()]);
+        assert_eq!(items, vec![("theme".to_string(), "light".to_string())]);
     }
 }

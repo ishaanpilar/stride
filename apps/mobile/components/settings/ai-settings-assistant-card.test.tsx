@@ -111,6 +111,21 @@ describe('AiSettingsAssistantCard request timeout', () => {
         expect(onChange).toHaveBeenCalledWith('on-device');
     });
 
+    it('offers DeepSeek and Claude as provider choices', async () => {
+        const onChange = vi.fn();
+        const tree = await renderCard({
+            ...baseProps,
+            getAIProviderLabel: (provider) => (provider === 'deepseek' ? 'DeepSeek' : provider),
+            onAiProviderChange: onChange,
+        });
+        expect(texts(tree)).toContain('DeepSeek');
+        expect(texts(tree)).toContain('settings.aiProviderAnthropic');
+        await press(tree, 'DeepSeek');
+        expect(onChange).toHaveBeenCalledWith('deepseek');
+        await press(tree, 'settings.aiProviderAnthropic');
+        expect(onChange).toHaveBeenCalledWith('anthropic');
+    });
+
     it('keeps Advanced collapsed and offers every supported duration', async () => {
         const onChange = vi.fn();
         const tree = await renderCard({

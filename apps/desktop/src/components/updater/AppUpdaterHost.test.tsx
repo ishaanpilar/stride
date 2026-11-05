@@ -12,6 +12,8 @@ vi.mock('@stride/core', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@stride/core')>()),
     flushPendingSave: flushMock,
 }));
+const openLinkMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../lib/external-link', () => ({ openExternalLink: openLinkMock }));
 vi.mock('../../lib/app-log', () => ({
     logError: vi.fn(async () => null),
     logInfo: vi.fn(async () => null),
@@ -25,6 +27,7 @@ import type { InstallSource } from '../../lib/update-service';
 import { AppUpdaterHost } from './AppUpdaterHost';
 
 const MAC_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)';
+const WINDOWS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/130.0.0.0';
 const FIRST_DELAY = 30_000;
 const INTERVAL = 6 * 60 * 60 * 1000;
 
@@ -63,6 +66,7 @@ beforeEach(() => {
     (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
     window.localStorage.clear();
     checkMock.mockReset();
+    openLinkMock.mockClear();
     relaunchMock.mockClear();
     flushMock.mockClear();
     resetCloseFlushGate();
@@ -149,6 +153,40 @@ describe('AppUpdaterHost', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Later' }));
         expect(screen.queryByRole('heading', { name: 'Stride 1.5.0 is available' })).toBeNull();
+    });
+
+    it('checks on Windows too and installs the signed NSIS update in-app', async () => {
+        vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WINDOWS_USER_AGENT);
+        checkMock.mockResolvedValue(fakeUpdate());
+        renderHost('direct');
+        await advance(FIRST_DELAY);
+        expect(checkMock).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('button', { name: 'Install and restart' })).toBeInTheDocument();
+    });
+
+    it('turns a download-only update into a GitHub link instead of an install button', async () => {
+        renderHost();
+        act(() => {
+            useAppUpdaterStore.setState({
+                phase: 'available',
+                dialogOpen: true,
+                update: {
+                    version: '1.6.0',
+                    currentVersion: '1.5.0',
+                    notes: 'Windows beta',
+                    date: null,
+                    downloadOnly: true,
+                    downloadUrl: 'https://github.com/ishaanpilar/stride/releases/tag/v1.6.0',
+                },
+            });
+        });
+        expect(screen.getByRole('heading', { name: 'Stride 1.6.0 is available' })).toBeInTheDocument();
+        expect(screen.getByText(/Download the new version from GitHub/)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Download from GitHub' }));
+        await advance(0);
+        expect(openLinkMock).toHaveBeenCalledWith('https://github.com/ishaanpilar/stride/releases/tag/v1.6.0', 'markdown');
+        expect(useAppUpdaterStore.getState().dialogOpen).toBe(false);
     });
 
     it("shows What's new once after relaunching on the new version", async () => {
