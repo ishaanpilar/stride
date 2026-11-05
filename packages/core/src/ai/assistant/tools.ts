@@ -3,7 +3,6 @@ import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from '../
 import { addLocalDays, dayKeyOf, formatWhen, hasTimeOf, parseWhen, shiftWhen, startOfLocalDay, toLocalDay } from './dates';
 import type {
     AssistantTool,
-    AssistantToolDefinition,
     ChangeEntry,
     JsonSchema,
     ToolContext,
@@ -14,17 +13,17 @@ import type {
 /** Confirmation gate: any change touching more than this many tasks needs user approval. */
 export const BULK_CONFIRM_THRESHOLD = 3;
 
-const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'reference', 'done'] as const;
-const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
-const PROJECT_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+export const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'reference', 'done'] as const;
+export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
+export const PROJECT_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-const shortId = (id: string) => id.slice(0, 8);
-const isLive = (t: Task) => !t.deletedAt && !t.purgedAt;
-const isActive = (t: Task) => isLive(t) && t.status !== 'done' && t.status !== 'archived' && t.status !== 'reference';
+export const shortId = (id: string) => id.slice(0, 8);
+export const isLive = (t: Task) => !t.deletedAt && !t.purgedAt;
+export const isActive = (t: Task) => isLive(t) && t.status !== 'done' && t.status !== 'archived' && t.status !== 'reference';
 
 // ---- lookup helpers -------------------------------------------------------------------
 
-function findTask(ctx: ToolContext, ref: string): { task: Task } | { error: string } {
+export function findTask(ctx: ToolContext, ref: string): { task: Task } | { error: string } {
     const { tasks } = ctx.port.getSnapshot();
     const live = tasks.filter(isLive);
     const exact = live.find((t) => t.id === ref);
@@ -37,7 +36,7 @@ function findTask(ctx: ToolContext, ref: string): { task: Task } | { error: stri
     return { error: `Unknown task id "${ref}". Use list_tasks to find real ids; never guess ids.` };
 }
 
-function findProject(ctx: ToolContext, ref: string): { project: Project } | { error: string } {
+export function findProject(ctx: ToolContext, ref: string): { project: Project } | { error: string } {
     const { projects } = ctx.port.getSnapshot();
     const live = projects.filter((p) => !p.deletedAt && p.status !== 'archived');
     const exact = live.find((p) => p.id === ref) ?? (ref.length >= 4 ? live.find((p) => p.id.startsWith(ref)) : undefined);
@@ -50,7 +49,7 @@ function findProject(ctx: ToolContext, ref: string): { project: Project } | { er
     return { error: `Unknown project "${ref}". Known projects: ${live.slice(0, 20).map((p) => `${p.title} (${shortId(p.id)})`).join('; ') || 'none'}. Use list_projects or add_project.` };
 }
 
-const compact = (t: Task, projects: Project[]) => {
+export const compact = (t: Task, projects: Project[]) => {
     const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined;
     return {
         id: shortId(t.id),
@@ -64,11 +63,11 @@ const compact = (t: Task, projects: Project[]) => {
     };
 };
 
-const normContexts = (items?: string[]) => (items ?? []).map((c) => c.trim()).filter(Boolean).map((c) => (c.startsWith('@') ? c : `@${c}`));
-const normTags = (items?: string[]) => (items ?? []).map((c) => c.trim()).filter(Boolean).map((c) => (c.startsWith('#') ? c : `#${c}`));
-const dedupe = <T,>(items: T[]) => Array.from(new Set(items));
+export const normContexts = (items?: string[]) => (items ?? []).map((c) => c.trim()).filter(Boolean).map((c) => (c.startsWith('@') ? c : `@${c}`));
+export const normTags = (items?: string[]) => (items ?? []).map((c) => c.trim()).filter(Boolean).map((c) => (c.startsWith('#') ? c : `#${c}`));
+export const dedupe = <T,>(items: T[]) => Array.from(new Set(items));
 
-function snapshotFields(task: Task, keys: string[]): { before: Record<string, unknown>; fields: Partial<Task>; clear: string[] } {
+export function snapshotFields(task: Task, keys: string[]): { before: Record<string, unknown>; fields: Partial<Task>; clear: string[] } {
     const before: Record<string, unknown> = {};
     const fields: Record<string, unknown> = {};
     const clear: string[] = [];
@@ -84,7 +83,7 @@ function snapshotFields(task: Task, keys: string[]): { before: Record<string, un
 }
 
 /** Applies an update through the store and returns the undo/audit record. */
-async function applyUpdate(ctx: ToolContext, task: Task, updates: Partial<Task>) {
+export async function applyUpdate(ctx: ToolContext, task: Task, updates: Partial<Task>) {
     const keys = Object.keys(updates);
     const snap = snapshotFields(task, keys);
     const res = await ctx.port.updateTask(task.id, updates);
@@ -97,18 +96,18 @@ async function applyUpdate(ctx: ToolContext, task: Task, updates: Partial<Task>)
     };
 }
 
-const fail = (error: string): ToolOutcome => ({ ok: false, error });
+export const fail = (error: string): ToolOutcome => ({ ok: false, error });
 
-const dateProp = (what: string): JsonSchema => ({ type: 'string', description: `${what}. Local "YYYY-MM-DD" or "YYYY-MM-DDTHH:mm" (24h).` });
-const idProp: JsonSchema = { type: 'string', minLength: 1, description: 'Task id from list_tasks / get_task.' };
+export const dateProp = (what: string): JsonSchema => ({ type: 'string', description: `${what}. Local "YYYY-MM-DD" or "YYYY-MM-DDTHH:mm" (24h).` });
+export const idProp: JsonSchema = { type: 'string', minLength: 1, description: 'Task id from list_tasks / get_task.' };
 
-function validateWhen(ctx: ToolContext, value: unknown, label: string, allowPast = false): string | null {
+export function validateWhen(ctx: ToolContext, value: unknown, label: string, allowPast = false): string | null {
     if (value === undefined || value === null) return null;
     const r = parseWhen(String(value), ctx.now, { allowPast });
     return r.ok ? null : `${label}: ${r.error}`;
 }
 
-const normWhen = (ctx: ToolContext, v: string) => {
+export const normWhen = (ctx: ToolContext, v: string) => {
     const r = parseWhen(v, ctx.now, { allowPast: true });
     return r.ok ? r.value : v;
 };
@@ -347,7 +346,7 @@ const completeTask: AssistantTool = {
     },
 };
 
-const resolveIds = (ctx: ToolContext, ids: string[]): { tasks: Task[] } | { error: string } => {
+export const resolveIds = (ctx: ToolContext, ids: string[]): { tasks: Task[] } | { error: string } => {
     const tasks: Task[] = [];
     const bad: string[] = [];
     for (const id of ids) {
@@ -604,10 +603,7 @@ const getTodayOverview: AssistantTool = {
     },
 };
 
-export const ASSISTANT_TOOLS: AssistantTool[] = [
+export const CORE_TOOLS: AssistantTool[] = [
     listTasks, getTask, addTask, updateTask, completeTask, moveTasks, deleteTask,
     listProjects, addProject, breakdownTask, getTodayOverview,
 ];
-
-export const getToolDefinitions = (tools: AssistantTool[] = ASSISTANT_TOOLS): AssistantToolDefinition[] =>
-    tools.map(({ name, description, parameters }) => ({ name, description, parameters }));

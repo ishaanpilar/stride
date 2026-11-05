@@ -10,6 +10,7 @@ import {
 import { ChevronDown, Folder, MapPin, Plus } from 'lucide-react';
 
 import { cn } from '../../lib/utils';
+import { ExitGhost } from './ExitGhost';
 import { isImeComposing } from '../../lib/ime';
 import { ModalPortal } from '../ModalPortal';
 import { useDropdownPosition } from './use-dropdown-position';
@@ -336,11 +337,12 @@ export function DestinationSelector({
                         data-selector-dropdown="true"
                         style={fixedDropdownStyle}
                         className={cn(
-                            'z-[70] rounded-control border border-border bg-popover p-1 text-xs text-popover-foreground shadow-soft-sm',
+                            'motion-popover z-[70] rounded-control border border-border bg-popover p-1 text-xs text-popover-foreground shadow-soft-sm',
                             menuClassName,
                         )}
                         onKeyDown={handleDropdownKeyDown}
                     >
+                        <ExitGhost />
                         <input
                             autoFocus
                             value={query}

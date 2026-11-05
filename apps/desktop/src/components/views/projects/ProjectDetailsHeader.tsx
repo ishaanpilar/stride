@@ -4,6 +4,7 @@ import { Calendar, CheckCircle, Copy, FolderOpenDot, FolderPlus, Loader2, MoreHo
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../../lib/ime';
+import { ExitGhost } from '../../ui/ExitGhost';
 
 type ProjectProgress = {
     total: number;
@@ -251,8 +252,9 @@ export function ProjectDetailsHeader({
                                 ref={menuPanelRef}
                                 role="menu"
                                 style={menuStyle}
-                                className="z-50 min-w-[180px] rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
+                                className="motion-popover z-50 min-w-[180px] rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                             >
+                                <ExitGhost />
                                 <button
                                     type="button"
                                     role="menuitem"

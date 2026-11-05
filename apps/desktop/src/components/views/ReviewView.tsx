@@ -4,6 +4,8 @@ import { ReviewHeader, ReviewListControls } from './review/ReviewHeader';
 import { ReviewFiltersBar } from './review/ReviewFiltersBar';
 import { ReviewBulkActions } from './review/ReviewBulkActions';
 import { ReviewTaskList } from './review/ReviewTaskList';
+import { useCompletionRetention } from '../../lib/completion-retention';
+import { partitionDoneLast } from '@stride/core';
 import { StoreTaskItem } from './list/StoreTaskItem';
 import { LIST_END_GAP } from './list/list-toolbar';
 import { useTaskListScope } from './list/task-list-scope';
@@ -133,6 +135,7 @@ export function ReviewView() {
         return () => window.clearTimeout(timer);
     }, [perf.enabled]);
 
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
     const { tasksById, statusCounts, filteredTasks } = useMemo(() => {
         perf.trackUseMemo();
         return perf.measure('reviewData', () => {
@@ -142,9 +145,15 @@ export function ReviewView() {
                 nextStatusCounts[status] = 0;
             });
 
+            // Completion rule: tasks ticked done this session are reviewed as if still open (so they stay
+            // listed, struck through) and drop to the bottom after the settle delay.
+            const completionOriginals = new Map<string, Task>();
             const nextVisibleTasks: Task[] = [];
-            tasks.forEach((task) => {
-                nextTasksById[task.id] = task;
+            tasks.forEach((rawTask) => {
+                const kept = sessionCompletions.get(rawTask.id);
+                const task = kept && rawTask.status === 'done' ? { ...rawTask, status: kept.previousStatus } : rawTask;
+                if (task !== rawTask) completionOriginals.set(rawTask.id, rawTask);
+                nextTasksById[task.id] = rawTask;
                 if (task.status === 'reference') return;
                 if (task.status === 'inbox') {
                     if (!isTaskVisibleInInbox(task, visibility)) return;
@@ -170,10 +179,15 @@ export function ReviewView() {
             return {
                 tasksById: nextTasksById,
                 statusCounts: nextStatusCounts,
-                filteredTasks: searchFilteredTasks,
+                filteredTasks: completionOriginals.size === 0
+                    ? searchFilteredTasks
+                    : partitionDoneLast(
+                        searchFilteredTasks.map((task) => completionOriginals.get(task.id) ?? task),
+                        { holdInPlace: (task) => !settledCompletionIds.has(task.id) },
+                    ),
             };
         });
-    }, [filterStatus, normalizedSearchQuery, nowTick, scope, sortBy, tasks, visibility]);
+    }, [filterStatus, normalizedSearchQuery, nowTick, scope, sessionCompletions, settledCompletionIds, sortBy, tasks, visibility]);
     const revealedHighlightRef = useRef<{ id: string; at: number | null } | null>(null);
     useEffect(() => {
         if (!highlightTaskId) {

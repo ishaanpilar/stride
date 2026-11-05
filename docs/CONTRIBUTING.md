@@ -9,7 +9,7 @@ Thanks for your interest in improving Stride. This guide covers:
 - Pull request guidelines
 - Documentation and translation contributions
 
-Stride is a Bun monorepo with:
+Stride is a Bun monorepo. The Mac app is the focus right now; the mobile app is not yet rebuilt as Stride.
 
 - Desktop app (`apps/desktop`): Tauri + React + Vite
 - Mobile app (`apps/mobile`): Expo + React Native
@@ -56,7 +56,7 @@ Stride focuses on GTD and practical execution, and is built to be **simple by de
 2. Fork the repository and create a branch in your fork.
 3. Implement the change with focused scope.
 4. Run relevant checks locally.
-5. Open a pull request to `ishaanpilar/Stride:main`.
+5. Open a pull request to `ishaanpilar/stride:main`.
 6. Link the issue in the PR (example: `Fixes #123`).
 
 Branch naming examples:
@@ -205,28 +205,22 @@ Naming:
 - Utility modules: kebab-case (example: `storage-adapter.ts`)
 - Tests: mirror source filename with `.test.ts`/`.test.tsx`
 
-## LLM-assisted coding ("vibe coding")
+## Building with AI agents
 
-Stride is not strictly against LLM-assisted coding. LLM tools are improving quickly and can be productive when used correctly.
+Stride is built with AI coding agents, and we are glad when you build with them too. Most of Stride's own code was written by Claude through Claude Code, directed and reviewed by a human. Agents are first-class contributors here; the bar is the same for every change, however it was written.
 
-If you use LLM/coding agents for contributions, follow these rules:
+How to work with an agent on Stride:
 
-1. Do not use web chat interfaces as your main coding tool.
-   Use coding agents in an IDE or CLI with repository indexing and full codebase context.
-2. Use coding-focused agents, not general chat models.
-   Example: use Codex or Claude Code agent for coding tasks, not generic chatbot mode.
-3. Start with a clear implementation goal.
-   Define the bug/feature, expected behavior, and intended implementation before prompting.
-4. Avoid over-engineering.
-   Prefer small, maintainable changes that match Stride's "simple by default" philosophy.
-5. YOU review the output before opening a non-Draft PR.
-   Do not request review until you have read and understood every generated change, run relevant tests, and verified behavior on real devices/platforms. You are responsible for the code you submit, not the tool.
-6. Remove verbosity and blathering.
-   Strip filler from code comments, documentation, PR descriptions, and commit messages. All of these — including names — should be concise, clear, and contain useful information, nothing more.
-7. Remove and deduplicate redundant code, tests, and explanations.
-   Explicitness and clarity are good; verbosity, over-explanation, and redundancy are bad.
-8. Keep security in scope.
-   Do not introduce insecure defaults, unsafe parsing, token leaks, or new attack surfaces.
+1. Start from [`CLAUDE.md`](../CLAUDE.md). It is the harness every agent follows: the goals, the rules and the test gate. Point your agent at it before it writes anything.
+2. Use a coding agent with the whole repository in context (Claude Code, Codex, OpenCode, Aider and similar), not a chat window you paste code out of.
+3. Give it a clear goal: the bug or feature, the expected behaviour, and how you will check it.
+4. Run several agents in parallel if it helps, but give each one its own files so they don't overwrite each other, and review each one's work.
+5. Keep the gate green: typecheck, lint, translations (`bun run i18n:check`, never `--fix`), Rust tests when `src-tauri` changes, and the unit tests for what you touched.
+6. Check the result in the real app, not only in tests, and say in the PR what you could not verify.
+7. You own what you submit. Read every change before asking for review, and cut filler from code, comments and PR text.
+8. Credit the agent. Add a `Co-Authored-By:` line for the model that helped, so the history stays honest.
+
+Rules for AI features inside the app (also in `CLAUDE.md`): AI output is untrusted, so validate it, time it out and always keep a non-AI fallback; destructive AI actions need confirmation or undo; never log or commit API keys; tests mock AI providers and never call a real API.
 
 ## Pull request guidelines
 
@@ -260,29 +254,9 @@ Commit style:
   - `feat(core): add date format normalization`
   - `docs: clarify sync troubleshooting`
 
-## Contributor License Agreement
-
-Before we can merge your pull request, you'll need to sign our
-[Contributor License Agreement (CLA)](https://gist.github.com/ishaanpilar/0446c35e1d5c1a73c344b16cba4aeeaa).
-
-This is a one-time process — CLA Assistant will automatically check
-when you open a PR and prompt you if needed. Signing takes about
-30 seconds via your GitHub account.
-
-### Why a CLA?
-
-Stride is free, open-source, and licensed under AGPL-3.0. The CLA
-ensures the project has the flexibility to explore sustainability
-options (like dual licensing) in the future, so we can keep the
-project alive long-term. You retain full ownership of your
-contributions — the CLA just grants the project a license to use them.
-
-The core of Stride will always remain available under an
-OSI-approved open-source license.
-
 ## Documentation contributions
 
-Documentation updates are welcome in the docs site repo, `README.md`, `README_zh.md`, and repository-local docs.
+Documentation updates are welcome in `README.md`, `README_zh.md` and the docs in `docs/`.
 
 User-facing documentation goes in `docs/` (for example `docs/STRIDE-GUIDE.md`), alongside contribution guides, architecture summaries, ADRs, and release notes. The `wiki/` directory holds only a landing page that points to `docs/`; do not add content pages there.
 
@@ -293,14 +267,12 @@ When changing docs:
 - Validate links
 - Update both English and Chinese docs when the content is mirrored
 - Keep `README.md` and `README_zh.md` heading structure aligned; CI runs `bun run docs:check-readme`
-- Prefer updating the [Stride web docs source](https://github.com/ishaanpilar/stride-web/tree/main/docs) when the content is public user/developer documentation
 
 Useful references:
 
-- [Official docs](https://github.com/ishaanpilar/stride/tree/main/docs)
-- [Docs source](https://github.com/ishaanpilar/stride-web/tree/main/docs)
-- [Developer Guide](https://github.com/ishaanpilar/stride/tree/main/docs)
-- [Architecture](https://github.com/ishaanpilar/stride/tree/main/docs)
+- [User guide](STRIDE-GUIDE.md)
+- [Visual design spec](design/stride-soft-ui.md)
+- [Agent harness](../CLAUDE.md)
 
 ## Translation contributions
 

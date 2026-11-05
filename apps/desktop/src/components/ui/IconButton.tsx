@@ -30,7 +30,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
             ref={ref}
             type={type}
             className={cn(
-                'inline-flex shrink-0 items-center justify-center rounded-control p-0 transition-[background-color,box-shadow] duration-200 ease-out motion-reduce:transition-none',
+                'motion-press inline-flex shrink-0 items-center justify-center rounded-control p-0 transition-[color,background-color,box-shadow,scale] duration-200 ease-out motion-reduce:transition-none',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                 'disabled:pointer-events-none disabled:opacity-50',
                 variantStyles[variant],

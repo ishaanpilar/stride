@@ -5,7 +5,7 @@
 //! adapter as every other window; Rust here only owns window lifecycle, positioning and the
 //! hand-off to the main window.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -15,6 +15,11 @@ pub(crate) const MENUBAR_PANEL_WINDOW_LABEL: &str = "menubar-panel";
 const MENUBAR_PANEL_WINDOW_URL: &str = "index.html?menubarPanel=1";
 const MENUBAR_PANEL_WIDTH: f64 = 380.0;
 const MENUBAR_PANEL_HEIGHT: f64 = 600.0;
+/// The user can drag the panel's bottom edge between these bounds (logical px).
+const MENUBAR_PANEL_MIN_HEIGHT: f64 = 420.0;
+/// Space kept free below the panel when it is at its tallest.
+const SCREEN_BOTTOM_MARGIN: f64 = 40.0;
+const MENUBAR_PANEL_STATE_FILE: &str = "menubar-panel.json";
 /// Corner radius of the native vibrancy layer; the webview container uses the same radius.
 #[cfg(target_os = "macos")]
 const MENUBAR_PANEL_CORNER_RADIUS: f64 = 12.0;
@@ -30,6 +35,61 @@ const ICON_GAP: f64 = 4.0;
 
 static LAST_BLUR_HIDE_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_SHOWN_MS: AtomicU64 = AtomicU64::new(0);
+/// Logical panel height as f64 bits; 0 means "not loaded yet".
+static PANEL_HEIGHT_BITS: AtomicU64 = AtomicU64::new(0);
+/// True while the user drags the bottom edge: a blur must not hide the panel mid-drag.
+static RESIZING: AtomicBool = AtomicBool::new(false);
+static LAST_RESIZE_END_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Clamps a requested logical height into [min, max]; non-finite input falls back to the default.
+pub(crate) fn clamp_panel_height(requested: f64, min: f64, max: f64) -> f64 {
+    let max = max.max(min);
+    let value = if requested.is_finite() { requested } else { MENUBAR_PANEL_HEIGHT };
+    value.clamp(min, max)
+}
+
+/// Tallest allowed panel for a work area of `area_height_logical` (menu bar already excluded).
+pub(crate) fn max_panel_height(area_height_logical: f64) -> f64 {
+    (area_height_logical - ICON_GAP - SCREEN_BOTTOM_MARGIN).max(MENUBAR_PANEL_MIN_HEIGHT)
+}
+
+pub(crate) fn parse_saved_height(raw: &str) -> Option<f64> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let height = value.get("height")?.as_f64()?;
+    height.is_finite().then_some(height)
+}
+
+pub(crate) fn serialize_height(height: f64) -> String {
+    serde_json::json!({ "height": height }).to_string()
+}
+
+fn state_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join(MENUBAR_PANEL_STATE_FILE))
+}
+
+/// The remembered logical height (unclamped to the screen; callers clamp per monitor).
+fn stored_height(app: &tauri::AppHandle) -> f64 {
+    let bits = PANEL_HEIGHT_BITS.load(Ordering::SeqCst);
+    if bits != 0 {
+        return f64::from_bits(bits);
+    }
+    let loaded = state_file(app)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| parse_saved_height(&raw))
+        .map(|h| clamp_panel_height(h, MENUBAR_PANEL_MIN_HEIGHT, 4000.0))
+        .unwrap_or(MENUBAR_PANEL_HEIGHT);
+    PANEL_HEIGHT_BITS.store(loaded.to_bits(), Ordering::SeqCst);
+    loaded
+}
+
+fn persist_height(app: &tauri::AppHandle, height: f64) {
+    if let Some(path) = state_file(app) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, serialize_height(height));
+    }
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -117,6 +177,12 @@ pub(crate) fn create_menubar_panel_window(app: &tauri::AppHandle) -> Result<(), 
                         log::info!("menubar panel: blur within grace period, ignored");
                         return;
                     }
+                    if RESIZING.load(Ordering::SeqCst)
+                        || now_ms().saturating_sub(LAST_RESIZE_END_MS.load(Ordering::SeqCst)) < BLUR_GRACE_MS
+                    {
+                        log::info!("menubar panel: blur during resize, ignored");
+                        return;
+                    }
                     log::info!("menubar panel: blur, hiding");
                     if hide_panel(&handle) {
                         LAST_BLUR_HIDE_MS.store(now_ms(), Ordering::SeqCst);
@@ -155,10 +221,12 @@ fn show_panel_under_icon(
         .ok()
         .flatten()
         .or_else(|| app.primary_monitor().ok().flatten());
-    let _ = window.set_size(tauri::LogicalSize::new(
-        MENUBAR_PANEL_WIDTH,
-        MENUBAR_PANEL_HEIGHT,
-    ));
+    let mut height = stored_height(app);
+    if let Some(monitor) = &monitor {
+        let area_logical = monitor.work_area().size.height as f64 / monitor.scale_factor();
+        height = clamp_panel_height(height, MENUBAR_PANEL_MIN_HEIGHT, max_panel_height(area_logical));
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(MENUBAR_PANEL_WIDTH, height));
     if let Some(monitor) = monitor {
         let scale = monitor.scale_factor();
         let icon_pos = rect.position.to_physical::<f64>(scale);
@@ -169,7 +237,7 @@ fn show_panel_under_icon(
             icon_width: icon_size.width,
             icon_bottom: icon_pos.y + icon_size.height,
             window_width: MENUBAR_PANEL_WIDTH * scale,
-            window_height: MENUBAR_PANEL_HEIGHT * scale,
+            window_height: height * scale,
             area_x: area.position.x as f64,
             area_y: area.position.y as f64,
             area_width: area.size.width as f64,
@@ -238,6 +306,46 @@ pub(crate) fn menubar_lock(app: tauri::AppHandle) {
 #[tauri::command(async)]
 pub(crate) fn menubar_quit(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Resizes the panel to `height` logical px (None resets to the default), keeping the top edge
+/// anchored under the menu bar icon. `finish` ends a drag: the height is saved and blur-hide re-arms.
+/// Returns the height that was applied after clamping to [420, screen height - menu bar - margin].
+#[tauri::command(async)]
+pub(crate) fn menubar_panel_resize(
+    app: tauri::AppHandle,
+    height: Option<f64>,
+    finish: bool,
+) -> Result<f64, String> {
+    let window = app
+        .get_webview_window(MENUBAR_PANEL_WINDOW_LABEL)
+        .ok_or_else(|| "menu bar panel window is missing".to_string())?;
+    if !finish {
+        RESIZING.store(true, Ordering::SeqCst);
+    }
+    let area_logical = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.work_area().size.height as f64 / m.scale_factor())
+        .unwrap_or(MENUBAR_PANEL_HEIGHT + ICON_GAP + SCREEN_BOTTOM_MARGIN + 200.0);
+    let requested = height.unwrap_or(MENUBAR_PANEL_HEIGHT);
+    let applied = clamp_panel_height(requested, MENUBAR_PANEL_MIN_HEIGHT, max_panel_height(area_logical));
+    // Native resizing may move the origin (Cocoa grows windows upward); pin the top-left back.
+    let anchor = window.outer_position().ok();
+    window
+        .set_size(tauri::LogicalSize::new(MENUBAR_PANEL_WIDTH, applied))
+        .map_err(|e| e.to_string())?;
+    if let Some(position) = anchor {
+        let _ = window.set_position(position);
+    }
+    PANEL_HEIGHT_BITS.store(applied.to_bits(), Ordering::SeqCst);
+    if finish {
+        persist_height(&app, applied);
+        LAST_RESIZE_END_MS.store(now_ms(), Ordering::SeqCst);
+        RESIZING.store(false, Ordering::SeqCst);
+    }
+    Ok(applied)
 }
 
 #[tauri::command(async)]
@@ -329,6 +437,30 @@ mod tests {
     fn never_goes_above_the_work_area() {
         let g = PanelGeometry { icon_bottom: 0.0, gap: 0.0, ..geometry() };
         assert_eq!(compute_panel_position(g).1, 50);
+    }
+
+    #[test]
+    fn height_is_clamped_between_min_and_max() {
+        assert_eq!(clamp_panel_height(100.0, 420.0, 800.0), 420.0);
+        assert_eq!(clamp_panel_height(5000.0, 420.0, 800.0), 800.0);
+        assert_eq!(clamp_panel_height(600.0, 420.0, 800.0), 600.0);
+        assert_eq!(clamp_panel_height(f64::NAN, 420.0, 800.0), 600.0);
+        // A tiny screen never produces max < min.
+        assert_eq!(clamp_panel_height(700.0, 420.0, 300.0), 420.0);
+    }
+
+    #[test]
+    fn max_height_leaves_a_bottom_margin() {
+        assert_eq!(max_panel_height(900.0), 900.0 - ICON_GAP - SCREEN_BOTTOM_MARGIN);
+        assert_eq!(max_panel_height(300.0), MENUBAR_PANEL_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn saved_height_round_trips_and_rejects_junk() {
+        assert_eq!(parse_saved_height(&serialize_height(512.0)), Some(512.0));
+        assert_eq!(parse_saved_height("not json"), None);
+        assert_eq!(parse_saved_height("{\"height\":\"tall\"}"), None);
+        assert_eq!(parse_saved_height("{}"), None);
     }
 
     #[test]

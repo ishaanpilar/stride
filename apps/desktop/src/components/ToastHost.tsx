@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useLanguage } from '../contexts/language-context';
 import { useUiStore } from '../store/ui-store';
 import { cn } from '../lib/utils';
+import { ExitGhost } from './ui/ExitGhost';
 
 export function ToastHost() {
     const { t } = useLanguage();
@@ -49,11 +50,12 @@ export function ToastHost() {
                 toasts.forEach((toast) => resumeToast(toast.id, 'pointer'));
             }}
         >
+            <ExitGhost preset="toastStack" />
             {toasts.map((toast) => (
                 <div
                     key={toast.id}
                     className={cn(
-                        "min-w-[220px] max-w-[360px] rounded-card bg-popover px-4 py-3 text-sm text-popover-foreground shadow-soft flex items-start gap-3 animate-in fade-in slide-in-from-bottom-2",
+                        "min-w-[220px] max-w-[360px] rounded-card bg-popover px-4 py-3 text-sm text-popover-foreground shadow-soft flex items-start gap-3 motion-toast",
                         toast.tone === 'success' && "ring-1 ring-success-fill/40",
                         toast.tone === 'error' && "ring-1 ring-danger/50",
                         toast.tone === 'info' && "ring-1 ring-border"
@@ -67,6 +69,7 @@ export function ToastHost() {
                         resumeToast(toast.id, 'focus');
                     }}
                 >
+                    <ExitGhost preset="toast" />
                     {toast.tone === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success-text" aria-hidden="true" />}
                     {toast.tone === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger-text" aria-hidden="true" />}
                     <span className="flex-1">{toast.message}</span>

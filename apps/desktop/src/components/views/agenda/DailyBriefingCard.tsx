@@ -71,8 +71,15 @@ export function DailyBriefingCard() {
                     {failed ? 'Could not generate a briefing right now. Try Regenerate.' : 'No briefing yet today.'}
                 </p>
             )}
+            {!briefing && loading && (
+                <div className="space-y-2" aria-hidden="true" data-briefing-skeleton>
+                    <div className="motion-skeleton h-3.5 w-4/5 rounded" />
+                    <div className="motion-skeleton h-3.5 w-3/5 rounded" />
+                    <div className="motion-skeleton h-3.5 w-2/3 rounded" />
+                </div>
+            )}
             {top.length > 0 && (
-                <ol className="space-y-1.5 text-sm">
+                <ol className="motion-expand-in space-y-1.5 text-sm">
                     {top.map((item, index) => (
                         <li key={item.taskId} className="flex gap-2">
                             <span className="text-muted-foreground tabular-nums">{index + 1}.</span>

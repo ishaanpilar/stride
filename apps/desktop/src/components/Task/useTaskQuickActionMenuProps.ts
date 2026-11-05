@@ -38,6 +38,7 @@ const NOOP_SET_DRAFT_FIELD: TaskDraftSetter = () => {};
 export type TaskQuickActionMenuOverrides = {
     readOnly?: boolean;
     onRename?: () => void;
+    startFocusAction?: TaskQuickActionMenuProps['startFocusAction'];
     focusAction?: TaskQuickActionMenuProps['focusAction'];
 
     onBeforeDelete?: () => void;
@@ -366,6 +367,7 @@ export function useTaskQuickActionMenuProps(
         sections,
         readOnly,
         prioritiesEnabled: resolveFeatureFlags(settings).priorities,
+        startFocusAction: overrides?.startFocusAction,
         focusAction: overrides?.focusAction,
         onRename: overrides?.onRename,
         onDuplicate,

@@ -789,11 +789,11 @@ export function GlobalSearch({ onNavigate, defaultIncludeCompleted = false }: Gl
                         <div className="mb-2 text-center text-muted-foreground text-xs">
                             {t('search.searching')}
                         </div>
-                        <div className="space-y-2 animate-pulse">
+                        <div className="space-y-2">
                             {Array.from({ length: 4 }).map((_, index) => (
                                 <div key={index} className="px-3 py-2.5 rounded-control bg-well">
-                                    <div className="h-3.5 w-2/3 rounded bg-muted-foreground/20" />
-                                    <div className="mt-2 h-2.5 w-1/3 rounded bg-muted-foreground/15" />
+                                    <div className="motion-skeleton h-3.5 w-2/3 rounded" />
+                                    <div className="motion-skeleton mt-2 h-2.5 w-1/3 rounded" />
                                 </div>
                             ))}
                         </div>

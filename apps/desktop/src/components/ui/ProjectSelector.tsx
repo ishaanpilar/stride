@@ -2,6 +2,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState, type KeyboardEve
 import { getProjectChoiceState, groupProjectsForPicker, useTaskStore, type Project } from '@stride/core';
 import { ChevronDown, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { ExitGhost } from './ExitGhost';
 import { isImeComposing } from '../../lib/ime';
 import { ModalPortal } from '../ModalPortal';
 import { useDropdownPosition } from './use-dropdown-position';
@@ -303,11 +304,12 @@ export function ProjectSelector({
                         data-selector-dropdown="true"
                         style={fixedDropdownStyle}
                         className={cn(
-                            'z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft-sm p-1 text-xs',
+                            'motion-popover z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft-sm p-1 text-xs',
                             menuClassName,
                         )}
                         onKeyDown={handleDropdownKeyDown}
                     >
+                        <ExitGhost />
                         <input
                             autoFocus
                             value={query}

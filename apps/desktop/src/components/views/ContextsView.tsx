@@ -77,7 +77,8 @@ import { useCollapsedGroupsViewState, useTaskGroupCollapse } from './list/useTas
 import { LIST_END_GAP, ToolbarButton, VIEW_FILTER_INPUT } from './list/list-toolbar';
 import { ViewControls } from './list/ViewControls';
 import { useUiStore } from '../../store/ui-store';
-import { resolveNonDoneTaskSortBy } from '@stride/core';
+import { partitionDoneLast, resolveNonDoneTaskSortBy } from '@stride/core';
+import { useCompletionRetention } from '../../lib/completion-retention';
 import { CALENDAR_TASK_DRAG_MIME, getCalendarTaskDragTaskId } from '../../lib/calendar-task-drag';
 import { showUndoToast } from '../../lib/undo-registry';
 
@@ -199,7 +200,24 @@ export function ContextsView() {
     }), [setSelectedContext]);
 
 
-    const { projectById: projectMap, visibleTasks: activeTasks } = useVisibleTaskContext();
+    const { projectById: projectMap, visibleTasks: visibleOpenTasks } = useVisibleTaskContext();
+    // Completion rule: tasks ticked done this session stay listed (struck through, at the bottom of their
+    // list or group after the settle delay). They are filtered as if still open, then restored.
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { activeTasks, completionOriginals } = useMemo(() => {
+        const originals = new Map<string, Task>();
+        if (sessionCompletions.size === 0) return { activeTasks: visibleOpenTasks, completionOriginals: originals };
+        const present = new Set(visibleOpenTasks.map((task) => task.id));
+        const extra: Task[] = [];
+        for (const [id, entry] of sessionCompletions) {
+            const task = tasksById.get(id);
+            if (!task || task.status !== 'done' || present.has(id) || task.deletedAt) continue;
+            if (task.projectId && !projectMap.has(task.projectId)) continue;
+            originals.set(id, task);
+            extra.push({ ...task, status: entry.previousStatus });
+        }
+        return { activeTasks: extra.length ? [...visibleOpenTasks, ...extra] : visibleOpenTasks, completionOriginals: originals };
+    }, [projectMap, sessionCompletions, tasksById, visibleOpenTasks]);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [saveFilterOpen, setSaveFilterOpen] = useState(false);
     const features = resolveFeatureFlags(settings);
@@ -272,7 +290,14 @@ export function ContextsView() {
         ? contextFilteredTasks.filter((task) => task.title.toLowerCase().includes(normalizedSearchQuery))
         : contextFilteredTasks
     ), [contextFilteredTasks, normalizedSearchQuery]);
-    const sortedTasks = useMemo(() => sortTasksBy(filteredTasks, sortBy), [filteredTasks, sortBy]);
+    const sortedTasks = useMemo(() => {
+        const sorted = sortTasksBy(filteredTasks, sortBy);
+        if (completionOriginals.size === 0) return sorted;
+        return partitionDoneLast(
+            sorted.map((task) => completionOriginals.get(task.id) ?? task),
+            { holdInPlace: (task) => !settledCompletionIds.has(task.id) },
+        );
+    }, [completionOriginals, filteredTasks, settledCompletionIds, sortBy]);
     const groupBy = persistedViewState.groupBy;
     const setGroupBy = useCallback((value: ContextsViewGroupBy) => {
         setPersistedViewState((current) => ({

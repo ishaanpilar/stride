@@ -6,6 +6,7 @@ import * as languageContext from '../../contexts/language-context';
 import { useUiStore } from '../../store/ui-store';
 import { usePomodoroStore } from '../../store/pomodoro-store';
 import { DESKTOP_POMODORO_SESSION_STORAGE_KEY, PomodoroPanel } from './PomodoroPanel';
+import { resetFocusSessionStore, useFocusSessionStore } from '../../store/focus-session-store';
 const nowIso = '2026-07-01T12:00:00.000Z';
 const task: Task = {
     id: 'task-1',
@@ -87,7 +88,8 @@ describe('PomodoroPanel desktop persistence', () => {
 
         const { getByLabelText, getByText } = renderPanel();
 
-        expect(getByText('Focus sessions completed: 4')).toBeInTheDocument();
+        // Tiny dots plus a screen-reader count, no visible sentence.
+        expect(getByText('Focus sessions completed: 4')).toHaveClass('sr-only');
         expect(getByLabelText('Timer task').textContent).toContain('Write RFC reply');
     });
 
@@ -129,9 +131,9 @@ describe('PomodoroPanel desktop persistence', () => {
             },
         }));
 
-        const { getByText } = renderPanel();
+        renderPanel();
 
-        expect(getByText('Focus sessions completed: 0')).toBeInTheDocument();
+        expect(screen.queryByTestId('pomodoro-sessions')).toBeNull();
     });
 
     it('links a task through the searchable popup and clears back to timer only', () => {
@@ -144,7 +146,7 @@ describe('PomodoroPanel desktop persistence', () => {
         );
 
 
-        expect(screen.getByLabelText('Timer task').textContent).toContain('Timer only');
+        expect(screen.getByLabelText('Timer task').textContent).toContain('Choose a task');
 
 
         fireEvent.click(screen.getByLabelText('Timer task'));
@@ -160,7 +162,7 @@ describe('PomodoroPanel desktop persistence', () => {
         fireEvent.click(screen.getByLabelText('Timer task'));
         fireEvent.click(screen.getByRole('option', { name: 'Timer only' }));
 
-        expect(screen.getByLabelText('Timer task').textContent).toContain('Timer only');
+        expect(screen.getByLabelText('Timer task').textContent).toContain('Choose a task');
         stored = JSON.parse(window.localStorage.getItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY) ?? '{}');
         expect(stored.selectedTaskId ?? null).toBeNull();
     });
@@ -204,7 +206,7 @@ describe('PomodoroPanel desktop persistence', () => {
             </LanguageProvider>
         );
 
-        expect(screen.getByLabelText('Timer task').textContent).toContain('Timer only');
+        expect(screen.getByLabelText('Timer task').textContent).toContain('Choose a task');
     });
 
     it.each(['done', 'archived', 'cancelled', 'reference', 'deleted'] as const)(
@@ -212,6 +214,7 @@ describe('PomodoroPanel desktop persistence', () => {
             storeSession(task.id);
             renderPanel();
             fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+            fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
             fireEvent.click(screen.getByLabelText('Timer task'));
             expect(screen.getByRole('option', { name: task.title })).toBeInTheDocument();
             const before = usePomodoroStore.getState().snapshot;
@@ -223,7 +226,7 @@ describe('PomodoroPanel desktop persistence', () => {
             }];
             act(() => useTaskStore.setState({ tasks: nextTasks, _allTasks: nextTasks }));
 
-            expect(screen.getByRole('button', { name: 'Timer task' }).textContent).toContain('Timer only');
+            expect(screen.getByRole('button', { name: 'Timer task' }).textContent).toContain('Choose a task');
             expect(screen.getByRole('option', { name: 'Timer only' })).toHaveAttribute('aria-selected', 'true');
             expect(screen.queryByRole('option', { name: task.title })).toBeNull();
             expect(screen.queryByLabelText('Mark task done')).toBeNull();
@@ -263,7 +266,7 @@ describe('PomodoroPanel desktop persistence', () => {
         expect(usePomodoroStore.getState().snapshot.selectedTaskId).toBe(task.id);
         await act(async () => finish());
 
-        expect(screen.getByLabelText('Timer task').textContent).toContain('Timer only');
+        expect(screen.getByLabelText('Timer task').textContent).toContain('Choose a task');
         fireEvent.click(screen.getByLabelText('Timer task'));
         expect(screen.queryByRole('option', { name: task.title })).toBeNull();
     });
@@ -289,5 +292,81 @@ describe('PomodoroPanel desktop persistence', () => {
         expect(useUiStore.getState().toasts.map((toast) => toast.message)).toContain('Disk full');
         expect(usePomodoroStore.getState().snapshot.selectedTaskId).toBe(task.id);
         expect(screen.getByLabelText('Timer task').textContent).toContain(task.title);
+    });
+
+    it('idle card is minimal: ring, clock, one task line and a Start button', () => {
+        renderPanel();
+        expect(screen.getByTestId('pomodoro-ring')).toHaveAttribute('data-phase', 'focus');
+        expect(screen.getByTestId('pomodoro-clock').textContent).toBe('25:00');
+        // No visible preset control, prompt, quick picks, motivation or hint.
+        expect(screen.queryByRole('radiogroup')).toBeNull();
+        expect(screen.queryByText('What will you focus on?')).toBeNull();
+        expect(screen.queryByText(/Pick a task for a guided/)).toBeNull();
+        expect(screen.queryByText(/calm break/)).toBeNull();
+        expect(screen.queryByText(/Everything else will dim/)).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Switch to Break' })).toBeInTheDocument();
+        expect(screen.getByLabelText('Timer task').textContent).toBe('Choose a task');
+        expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
+    });
+
+    it('chooses a preset from a popover opened by tapping the clock', () => {
+        renderPanel();
+        const clock = screen.getByRole('button', { name: 'Session length' });
+        fireEvent.click(clock);
+        expect(screen.getByRole('radio', { name: /Classic\s*25\/5/ })).toHaveAttribute('aria-checked', 'true');
+        fireEvent.click(screen.getByRole('radio', { name: /Deep/ }));
+        expect(screen.queryByRole('radiogroup')).toBeNull();
+        expect(screen.getByTestId('pomodoro-clock').textContent).toBe('50:00');
+    });
+
+    it('when running hides everything but the ring, task title and a pause button', () => {
+        storeSession(task.id);
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        expect(screen.getByTestId('pomodoro-ring')).toHaveAttribute('data-running', 'true');
+        expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Session length' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Switch to Break' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Collapse timer' })).toBeNull();
+        expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+        const visibleTitle = screen.getAllByText(task.title).filter((node) => !node.closest('[aria-hidden="true"]'));
+        expect(visibleTitle).toHaveLength(1);
+    });
+
+    it('shows Reset only once a phase is under way and paused', () => {
+        window.localStorage.setItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY, JSON.stringify({
+            durations: { focusMinutes: 25, breakMinutes: 5 },
+            timerState: { phase: 'focus', remainingSeconds: 1200, isRunning: false, completedFocusSessions: 0 },
+            updatedAtMs: Date.now(),
+            sessionHistory: { totalCompletedFocusSessions: 0, completedFocusSessionsByTaskId: {} },
+        }));
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+        expect(screen.getByTestId('pomodoro-clock').textContent).toBe('25:00');
+        expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+    });
+
+    it('switches to a quiet break from the ring phase label', () => {
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: 'Switch to Break' }));
+        expect(screen.getByTestId('pomodoro-ring')).toHaveAttribute('data-phase', 'break');
+        expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Switch to Focus' }).textContent).toBe('Break');
+    });
+    it('offers Back to focus while a task session is minimised or hidden, and records where the stage grows from', () => {
+        resetFocusSessionStore();
+        storeSession(task.id);
+        renderPanel();
+        const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, width: 300, height: 200, right: 310, bottom: 220, toJSON: () => ({}) });
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        rect.mockRestore();
+        expect(useFocusSessionStore.getState().origin).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+        expect(screen.queryByTestId('pomodoro-back-to-focus')).toBeNull();
+        act(() => { useFocusSessionStore.getState().open_(0); useFocusSessionStore.getState().minimise(); });
+        fireEvent.click(screen.getByRole('button', { name: 'Back to focus' }));
+        expect(useFocusSessionStore.getState().presentation).toBe('full');
+        expect(screen.queryByTestId('pomodoro-back-to-focus')).toBeNull();
+        resetFocusSessionStore();
     });
 });

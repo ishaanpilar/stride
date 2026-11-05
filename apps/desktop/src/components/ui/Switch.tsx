@@ -32,7 +32,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
                 if (!event.defaultPrevented) onCheckedChange?.(!checked);
             }}
             className={cn(
-                'relative inline-flex h-[22px] w-10 shrink-0 items-center rounded-full border transition-colors',
+                'relative inline-flex h-[22px] w-10 shrink-0 items-center rounded-full border transition-colors duration-200 ease-out',
                 'after:absolute after:inset-x-0 after:-inset-y-[11px] after:content-[\'\']',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                 'disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none',
@@ -45,7 +45,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
             <span
                 aria-hidden="true"
                 className={cn(
-                    'pointer-events-none inline-block h-[18px] w-[18px] rounded-full transition-transform motion-reduce:transition-none',
+                    'pointer-events-none inline-block h-[18px] w-[18px] rounded-full shadow-sm transition-[transform,background-color] duration-[260ms] ease-[cubic-bezier(0.34,1.26,0.64,1)] motion-reduce:transition-none',
                     checked
                         ? 'translate-x-[20px] bg-primary-foreground'
                         : 'translate-x-[2px] bg-foreground',

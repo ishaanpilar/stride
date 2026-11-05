@@ -1,4 +1,6 @@
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { FocusSessionHost } from './focus/FocusSessionHost';
+import { useFocusShell } from './focus/useFocusShell';
 import { ViewSidebarContext } from '../contexts/view-sidebar-context';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
@@ -12,6 +14,7 @@ import {
     Settings,
     Target,
     Bot,
+    PanelRightOpen,
     Search,
     ChevronsLeft,
     ChevronsRight,
@@ -24,10 +27,13 @@ import {
     type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { Collapse } from './ui/Collapse';
+import { useEnterOnChange } from '../hooks/useEnterOnChange';
 import { isSandboxMode, shallow, useTaskStore, resolveFeatureFlags, safeFormatDate, tFallback, formatTaskMovedMessage, isSyncFileLockUnavailableError } from '@stride/core';
 import type { StoreActionResult, TaskStatus } from '@stride/core';
 import { openQuickCapture } from '../lib/quick-capture-service';
 import { showUndoToast } from '../lib/undo-registry';
+import { addTaskToFocusFromDrop } from '../lib/focus-drop';
 import { undoTaskCompletion } from '../lib/undo-task-completion';
 import { useLanguage } from '../contexts/language-context';
 import { useUiStore } from '../store/ui-store';
@@ -44,6 +50,9 @@ import { SidebarAreaFilter } from './ui/SidebarAreaFilter';
 import { SidebarWorkspaceSwitcher } from './workspaces/SidebarWorkspaceSwitcher';
 import { getCalendarTaskDragTaskId, hasCalendarTaskDragData } from '../lib/calendar-task-drag';
 import { stageCalendarDropLanding } from '../lib/calendar-view-params';
+import { AssistantDock, useAssistantNarrow } from './AssistantDock';
+import { useAssistantDockStore } from '../store/assistant-dock-store';
+import { useAssistantShortcut } from '../hooks/useAssistantShortcut';
 import { SandboxBanner } from './sandbox/SandboxBanner';
 import { getWorkspaceCache } from '../lib/workspace-cache';
 import { TASK_STATUS_ICONS } from '../lib/task-status-icons';
@@ -61,6 +70,7 @@ interface LayoutProps {
     contentView?: string;
     onViewChange: (view: string) => void;
     onOpenSyncSettings?: () => void;
+    onOpenAiSettings?: () => void;
 }
 
 type NavItem = {
@@ -91,6 +101,7 @@ const NAV_DROP_STATUSES: Record<string, TaskStatus> = {
 
     history: 'done',
 };
+const FOCUS_NAV_DROP_ID = 'agenda';
 const SECTION_COLLAPSE_STORAGE_KEY = 'stride:sidebar:collapsedSections';
 const DEFAULT_COLLAPSED_SECTION_KEYS = ['secondary'];
 
@@ -130,8 +141,16 @@ export function Layout({
     contentView = currentView,
     onViewChange,
     onOpenSyncSettings,
+    onOpenAiSettings,
 }: LayoutProps) {
     const sandboxMode = isSandboxMode();
+    const assistantNarrow = useAssistantNarrow();
+    const assistantDocked = useAssistantDockStore((s) => s.open);
+    const assistantDrawerOpen = useAssistantDockStore((s) => s.drawerOpen);
+    const assistantOpen = assistantNarrow ? assistantDrawerOpen : assistantDocked;
+    const openAssistant = useCallback(() => useAssistantDockStore.getState().openAndFocus(assistantNarrow), [assistantNarrow]);
+    const toggleAssistant = useCallback(() => useAssistantDockStore.getState().toggle(assistantNarrow), [assistantNarrow]);
+    useAssistantShortcut(openAssistant, toggleAssistant);
     const { tasks, projects, areas, settings, updateSettings, error, setError } = useTaskStore((state) => ({
         tasks: state.tasks,
         projects: state.projects,
@@ -163,6 +182,7 @@ export function Layout({
     const [sidebarHasRoom, setSidebarHasRoom] = useState(false);
     const hasViewSidebar = (contentView === 'projects' || contentView === 'contexts') && !isCollapsed && sidebarHasRoom;
     const isFocusMode = useUiStore((state) => state.isFocusMode);
+    const focusShell = useFocusShell();
     useEffect(() => {
         const sidebar = sidebarSplitRef.current;
         if (!sidebar || typeof ResizeObserver !== 'function') return;
@@ -432,6 +452,8 @@ export function Layout({
         }))
         .filter((section) => section.items.length > 0), [hiddenSidebarViews, inboxCount, isObsidianEnabled, isTimelineEnabled, t]);
 
+    const viewContentRef = useRef<HTMLDivElement>(null);
+    useEnterOnChange(viewContentRef, currentView);
     const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => loadCollapsedSections());
 
     useEffect(() => {
@@ -531,10 +553,11 @@ export function Layout({
             calendarDragNavTimeoutRef.current = null;
         }, 350);
     }, [currentView, onViewChange]);
-    const handleNavDragOver = useCallback((event: DragEvent<HTMLButtonElement>) => {
+    const handleNavDragOver = useCallback((event: DragEvent<HTMLButtonElement>, navId: string) => {
         if (!hasCalendarTaskDragData(event.dataTransfer)) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
+        setDragOverNavId(navId);
     }, []);
     const handleNavDragLeave = useCallback((event: DragEvent<HTMLButtonElement>) => {
         const relatedTarget = event.relatedTarget;
@@ -553,6 +576,12 @@ export function Layout({
                 stageCalendarDropLanding();
                 onViewChange('calendar');
             }
+            return;
+        }
+
+        if (navId === FOCUS_NAV_DROP_ID) {
+            const focusTaskId = getCalendarTaskDragTaskId(event.dataTransfer);
+            if (focusTaskId) addTaskToFocusFromDrop(focusTaskId, t);
             return;
         }
 
@@ -791,10 +820,19 @@ export function Layout({
 
     return (
         <ViewSidebarContext.Provider value={viewSidebarSlot}>
-        <div className={cn(
-            "flex h-screen overflow-hidden bg-background text-foreground",
-            sandboxMode && "pt-10",
-        )}>
+        <FocusSessionHost />
+        <div
+            className={cn(
+                "flex h-screen overflow-hidden bg-background text-foreground",
+                sandboxMode && "pt-10",
+            )}
+            data-focus-session={focusShell.mode}
+            inert={focusShell.inert || undefined}
+            // Never let focus or find-in-page scroll the app shell: the shell is a fixed-height frame.
+            onScroll={(event) => {
+                if (event.currentTarget.scrollTop !== 0) event.currentTarget.scrollTop = 0;
+            }}
+        >
             <SandboxBanner />
             <a
                 href="#main-content"
@@ -907,7 +945,7 @@ export function Layout({
                                         onClick={() => toggleSection(section.key)}
                                         onDragEnter={(event) => {
                                             if (!hasCalendarTaskDragData(event.dataTransfer)) return;
-                                            if (section.items.some((item) => item.id === 'calendar' || NAV_DROP_STATUSES[item.id] !== undefined)) {
+                                            if (section.items.some((item) => item.id === 'calendar' || item.id === FOCUS_NAV_DROP_ID || NAV_DROP_STATUSES[item.id] !== undefined)) {
                                                 setDragOpenedSectionKey(section.key);
                                             }
                                         }}
@@ -918,31 +956,28 @@ export function Layout({
                                     >
                                         <ChevronDown
                                             className={cn(
-                                                "w-3 h-3 transition-transform duration-150 opacity-70",
+                                                "motion-chevron w-3 h-3 opacity-70",
                                                 isSectionCollapsed && "-rotate-90"
                                             )}
                                         />
                                         <span>{section.label}</span>
                                     </button>
                                 )}
-                                <div
-                                    id={sectionId}
-                                    hidden={isSectionCollapsed}
-                                    className={cn("space-y-1", isSectionCollapsed && "hidden")}
-                                >
+                                <Collapse open={!isSectionCollapsed} id={sectionId} innerClassName="space-y-1">
                                 {section.items.map((item) => {
                                     const itemLabel = item.labelKey ? tFallback(t, item.labelKey, item.fallbackLabel ?? item.id) : (item.fallbackLabel ?? item.id);
-                                    const isActiveItem = currentView === item.id || item.activeIds?.includes(currentView) === true;
-                                    const isDropTarget = item.id === 'calendar' || NAV_DROP_STATUSES[item.id] !== undefined;
+                                    const isAssistantItem = item.id === 'assistant';
+                                    const isActiveItem = isAssistantItem ? assistantOpen : (currentView === item.id || item.activeIds?.includes(currentView) === true);
+                                    const isDropTarget = item.id === 'calendar' || item.id === FOCUS_NAV_DROP_ID || NAV_DROP_STATUSES[item.id] !== undefined;
                                     const inactiveItemClass = 'text-foreground hover:bg-accent';
                                     const inactiveIconClass = 'text-muted-foreground';
                                     const itemWeightClass = isActiveItem ? 'font-semibold' : 'font-normal';
                                     return (
                                     <button
                                         key={item.id}
-                                        onClick={() => onViewChange(item.id)}
+                                        onClick={() => (item.id === 'assistant' ? openAssistant() : onViewChange(item.id))}
                                         onDragEnter={isDropTarget ? (event) => handleNavDragEnter(event, item.id) : undefined}
-                                        onDragOver={isDropTarget ? handleNavDragOver : undefined}
+                                        onDragOver={isDropTarget ? (event) => handleNavDragOver(event, item.id) : undefined}
                                         onDragLeave={isDropTarget ? handleNavDragLeave : undefined}
                                         onDrop={isDropTarget ? (event) => handleNavDrop(event, item.id) : undefined}
                                         data-sidebar-item
@@ -958,7 +993,8 @@ export function Layout({
                                             isDropTarget && taskDragActive && "outline-dashed outline-2 -outline-offset-2 outline-primary/50 bg-primary/10 text-primary",
                                             isDropTarget && dragOverNavId === item.id && "outline outline-2 -outline-offset-2 outline-primary bg-primary/25 text-primary"
                                         )}
-                                        aria-current={isActiveItem ? 'page' : undefined}
+                                        aria-current={isActiveItem && !isAssistantItem ? 'page' : undefined}
+                                        aria-pressed={isAssistantItem ? isActiveItem : undefined}
                                         title={itemLabel}
                                     >
                                         <div className={cn("flex min-w-0 items-center gap-2.5", isCollapsed && "gap-0")}>
@@ -973,7 +1009,7 @@ export function Layout({
                                     </button>
                                     );
                                 })}
-                                </div>
+                                </Collapse>
                             </div>
                             );
                         })}
@@ -1106,7 +1142,7 @@ export function Layout({
                 </aside>
             )}
 
-            <div className="flex min-w-0 flex-1 flex-col bg-background">
+            <div className={cn("flex flex-1 flex-col bg-background", assistantOpen && !assistantNarrow ? "min-w-[480px]" : "min-w-0")}>
             {isFocusMode ? (
                 <div data-tauri-drag-region className="h-[var(--titlebar-inset)] shrink-0" aria-hidden="true" />
             ) : (
@@ -1143,6 +1179,17 @@ export function Layout({
                     >
                         {addTaskLabel}
                     </Button>
+                    {!assistantOpen && (
+                        <IconButton
+                            variant="soft"
+                            aria-label="Open assistant"
+                            title="Open assistant (Cmd+Shift+J)"
+                            data-testid="assistant-toggle"
+                            onClick={openAssistant}
+                        >
+                            <PanelRightOpen className="h-4 w-4" aria-hidden="true" />
+                        </IconButton>
+                    )}
                 </header>
             )}
             <main
@@ -1155,7 +1202,7 @@ export function Layout({
                 role="main"
                 aria-label={tFallback(t, 'accessibility.mainContent', 'Main content')}
             >
-                <div className={cn(
+                <div ref={viewContentRef} className={cn(
                     (contentView === 'projects' || contentView === 'contexts') ? "mx-auto h-full" : "mx-auto h-full px-4 pt-4 lg:px-6 lg:pt-6 2xl:px-8 2xl:pt-8",
                     isFocusMode
                         ? "max-w-[800px]"
@@ -1207,6 +1254,9 @@ export function Layout({
                 </div>
             </main>
             </div>
+            {!isFocusMode && (
+                <AssistantDock narrow={assistantNarrow} padForTitlebar={!sandboxMode} onOpenAiSettings={onOpenAiSettings} />
+            )}
             <ToastHost />
         </div>
         </ViewSidebarContext.Provider>

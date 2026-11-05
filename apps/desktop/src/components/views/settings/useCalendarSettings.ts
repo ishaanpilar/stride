@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { deriveCalendarSyncStatus, groupCalendarTargetsByAccount } from '@stride/core/calendar-sync-status';
 import {
     updateSettingsFromLatest,
     generateUUID,
@@ -14,9 +15,15 @@ import {
 } from '../../../lib/external-calendar-source';
 import { isTauriRuntime } from '../../../lib/runtime';
 import { useLanguage } from '../../../contexts/language-context';
+import type { CalendarSyncSectionProps } from './CalendarSyncSection';
 import { reportSettingsFailure, resolveSettingsFeedback } from './settings-feedback';
 import {
     enableDesktopCalendarPush,
+    getDesktopCalendarPushAccountId,
+    getDesktopCalendarPushRuntimeStatus,
+    setDesktopCalendarPushAccountId,
+    subscribeDesktopCalendarPushRuntimeStatus,
+    syncDesktopCalendarPushNow,
     getDesktopCalendarPushEnabled,
     getDesktopCalendarPushTargetCalendarId,
     getDesktopCalendarPushTargetCalendars,
@@ -28,6 +35,9 @@ import {
 } from '../../../lib/desktop-calendar-push-sync';
 import {
     getSystemCalendarPermissionStatus,
+    getSystemCalendarSources,
+    openSystemCalendarPrivacySettings,
+    type SystemCalendarSource,
     requestSystemCalendarPermission,
     type SystemCalendarPushTarget,
     type SystemCalendarPermissionStatus,
@@ -63,6 +73,13 @@ export function useCalendarSettings({ loadEnabled = true, showSaved, settings, u
     const [calendarPushTargetCalendarId, setCalendarPushTargetCalendarIdState] = useState<string | null>(null);
     const [calendarPushTargets, setCalendarPushTargets] = useState<SystemCalendarPushTarget[]>([]);
     const [calendarPushLoading, setCalendarPushLoading] = useState(false);
+    const [calendarSources, setCalendarSources] = useState<SystemCalendarSource[]>([]);
+    const [calendarPushAccountId, setCalendarPushAccountIdState] = useState<string | null>(null);
+    const pushRuntime = useSyncExternalStore(
+        subscribeDesktopCalendarPushRuntimeStatus,
+        getDesktopCalendarPushRuntimeStatus,
+        getDesktopCalendarPushRuntimeStatus,
+    );
 
     useEffect(() => {
         if (!loadEnabled) return;
@@ -115,6 +132,7 @@ export function useCalendarSettings({ loadEnabled = true, showSaved, settings, u
         }
         try {
             setCalendarPushTargets(await getDesktopCalendarPushTargetCalendars());
+            setCalendarSources(await getSystemCalendarSources());
         } catch (error) {
             reportSettingsFailure('Failed to load system calendar push targets', error, loadFailedMessage);
             setCalendarError(loadFailedMessage);
@@ -133,11 +151,13 @@ export function useCalendarSettings({ loadEnabled = true, showSaved, settings, u
         Promise.all([
             getDesktopCalendarPushEnabled(),
             getDesktopCalendarPushTargetCalendarId(),
+            getDesktopCalendarPushAccountId(),
         ])
-            .then(([enabled, targetCalendarId]) => {
+            .then(([enabled, targetCalendarId, accountId]) => {
                 if (cancelled) return;
                 setCalendarPushEnabledState(enabled);
                 setCalendarPushTargetCalendarIdState(targetCalendarId);
+                setCalendarPushAccountIdState(accountId);
             })
             .catch((error) => {
                 if (!cancelled) {
@@ -327,7 +347,62 @@ export function useCalendarSettings({ loadEnabled = true, showSaved, settings, u
         }
     }, [refreshCalendarPushTargets]);
 
+    const handleCalendarSyncDestinationChange = useCallback(async (destination: { accountId: string | null; calendarId: string | null }) => {
+        if (!supportsSystemCalendar) return;
+        setCalendarError(null);
+        setCalendarPushAccountIdState(destination.accountId);
+        setCalendarPushTargetCalendarIdState(destination.calendarId);
+        try {
+            await setDesktopCalendarPushAccountId(destination.accountId);
+            await setDesktopCalendarPushTargetCalendarId(destination.calendarId);
+            if (calendarPushEnabled) {
+                startDesktopCalendarPushSync();
+                await runFullDesktopCalendarPushSync();
+            }
+            showSaved();
+        } catch (error) {
+            reportSettingsFailure('Failed to update system calendar sync destination', error, saveFailedMessage);
+            setCalendarError(saveFailedMessage);
+        }
+    }, [calendarPushEnabled, saveFailedMessage, showSaved, supportsSystemCalendar]);
+
+    const handleCalendarSyncNow = useCallback(async () => {
+        setCalendarError(null);
+        try {
+            await syncDesktopCalendarPushNow();
+        } catch {
+            // The failure is recorded in the runtime status and shown in the section.
+        }
+    }, []);
+
+    const calendarSyncStatus = useMemo(() => deriveCalendarSyncStatus({
+        enabled: calendarPushEnabled,
+        permission: systemCalendarPermission,
+        syncing: pushRuntime.syncing,
+        lastSyncAt: pushRuntime.lastSyncAt,
+        lastError: pushRuntime.lastError,
+    }), [calendarPushEnabled, pushRuntime, systemCalendarPermission]);
+
+    const calendarSync: CalendarSyncSectionProps | undefined = supportsSystemCalendar ? {
+        enabled: calendarPushEnabled,
+        loading: calendarPushLoading,
+        status: calendarSyncStatus,
+        accounts: groupCalendarTargetsByAccount(calendarSources, calendarPushTargets),
+        accountId: calendarPushAccountId,
+        targetCalendarId: calendarPushTargetCalendarId,
+        onToggle: handleToggleCalendarPush,
+        onDestinationChange: handleCalendarSyncDestinationChange,
+        onSyncNow: handleCalendarSyncNow,
+        onRefresh: handleRefreshCalendarPushTargets,
+        onOpenPrivacySettings: openSystemCalendarPrivacySettings,
+        formatTime: (iso) => {
+            const date = new Date(iso);
+            return Number.isNaN(date.getTime()) ? iso : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        },
+    } : undefined;
+
     return {
+        calendarSync,
         externalCalendars,
 
         theme: settings?.theme,

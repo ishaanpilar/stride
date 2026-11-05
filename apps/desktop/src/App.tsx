@@ -56,6 +56,7 @@ import { GlobalSearch } from './components/GlobalSearch';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { StartupPromptModal, type StartupPromptPresentation } from './components/StartupPromptModal';
 import { DesktopOnboardingFlow } from './components/DesktopOnboardingFlow';
+import { openExternalLink } from './lib/external-link';
 import { Dialog, DialogBody, DialogFooter } from './components/ui/Dialog';
 import { useLanguage } from './contexts/language-context';
 import { KeybindingProvider } from './contexts/keybinding-context';
@@ -149,7 +150,7 @@ import {
 import { getDesktopUpdateTarget, isDesktopUpdateReminderAllowed, isUpdateReminderVersionTrusted } from './lib/desktop-update-targets';
 import { usePomodoroStore } from './store/pomodoro-store';
 import { usePomodoroAlerts } from './hooks/usePomodoroAlerts';
-import { useAssistantShortcut } from './hooks/useAssistantShortcut';
+import { useAssistantDockStore } from './store/assistant-dock-store';
 import {
     PROMPT_TEST_CONTROLS_ENABLED,
     subscribePromptTest,
@@ -298,15 +299,12 @@ function App() {
         sandboxMode ? true : readDesktopOnboardingDismissed()
     ));
     const [desktopOnboardingOpen, setDesktopOnboardingOpen] = useState(false);
-    const [desktopOnboardingBusy, setDesktopOnboardingBusy] = useState(false);
-    const [desktopOnboardingError, setDesktopOnboardingError] = useState<string | null>(null);
     const [desktopOnboardingGateSettled, setDesktopOnboardingGateSettled] = useState(false);
     const [desktopInstallSource, setDesktopInstallSource] = useState<InstallSource | null>(null);
     const [updateReminderInfo, setUpdateReminderInfo] = useState<DesktopUpdateReminderInfo | null>(null);
     const [testAnnouncement, setTestAnnouncement] = useState<AppAnnouncement | null>(null);
     const [, startTransition] = useTransition();
     const fetchData = useTaskStore((state) => state.fetchData);
-    const seedGettingStarted = useTaskStore((state) => state.seedGettingStarted);
     const isLoading = useTaskStore((state) => state.isLoading);
     const timelineEnabled = useTaskStore((state) => resolveFeatureFlags(state.settings).timeline);
     const visibleDataCount = useTaskStore((state) => (
@@ -1313,6 +1311,12 @@ function App() {
     };
 
     const handleViewChange = useCallback((view: string) => {
+        if (view === 'assistant') {
+            // The Assistant is a persistent right-hand dock, not a main view.
+            const narrow = typeof window !== 'undefined' && window.innerWidth < 1100;
+            useAssistantDockStore.getState().openAndFocus(narrow);
+            return;
+        }
         const nextView = view === 'obsidian' && !useObsidianStore.getState().config.enabled ? 'settings' : view;
         const changeView = () => {
             const trace = beginRendererNavigation(nextView);
@@ -1448,8 +1452,6 @@ function App() {
     }, []);
 
     const resumeDesktopOnboarding = useCallback(() => {
-        setDesktopOnboardingBusy(false);
-        setDesktopOnboardingError(null);
         setDesktopOnboardingDismissed(false);
         setDesktopOnboardingOpen(true);
     }, []);
@@ -1461,7 +1463,6 @@ function App() {
         handleViewChange('settings');
     }, [handleViewChange]);
 
-    useAssistantShortcut(useCallback(() => handleViewChange('assistant'), [handleViewChange]));
     useQuickCaptureShortcut();
 
     const openSyncSettings = useCallback(() => {
@@ -1469,29 +1470,16 @@ function App() {
         handleViewChange('settings');
     }, [handleViewChange]);
 
-    const handleStartFreshOnboarding = useCallback(() => {
-        if (desktopOnboardingBusy) return;
-        setDesktopOnboardingBusy(true);
-        setDesktopOnboardingError(null);
-        seedGettingStarted({ language })
-            .then((result) => {
-                if (!result.id) {
-                    setDesktopOnboardingError(t('onboarding.errorNotCreated'));
-                    showToast(t('onboarding.toastNotCreated'), 'info');
-                    return;
-                }
-                dismissDesktopOnboarding();
-                useUiStore.getState().setProjectView({ selectedProjectId: result.id });
-                handleViewChange('projects');
-                showToast(t('onboarding.toastReady'), 'success');
-            })
-            .catch((error) => {
-                setDesktopOnboardingError(t('onboarding.errorFailed'));
-                showToast(t('onboarding.toastFailed'), 'error');
-                void logError(error, { scope: 'onboarding', step: 'seedGettingStarted' });
-            })
-            .finally(() => setDesktopOnboardingBusy(false));
-    }, [desktopOnboardingBusy, dismissDesktopOnboarding, handleViewChange, language, seedGettingStarted, showToast, t]);
+    const handleFinishOnboarding = useCallback((destination: 'inbox' | 'focus') => {
+        dismissDesktopOnboarding();
+        handleViewChange(destination === 'focus' ? 'agenda' : 'inbox');
+    }, [dismissDesktopOnboarding, handleViewChange]);
+
+    const openOnboardingLink = useCallback((url: string) => {
+        openExternalLink(url, 'markdown').catch((error) => {
+            void logError(error, { scope: 'onboarding', step: 'openLink' });
+        });
+    }, []);
 
     const dismissAppAnnouncement = useCallback(() => {
         if (testAnnouncement) {
@@ -1750,6 +1738,7 @@ function App() {
                     contentView={renderedView}
                     onViewChange={handleViewChange}
                     onOpenSyncSettings={openSyncSettings}
+                    onOpenAiSettings={() => { setSettingsInitialPage('ai'); handleViewChange('settings'); }}
                 >
                     <PersistenceFailureBanner />
                     <Suspense
@@ -1824,11 +1813,10 @@ function App() {
                     />
                     <DesktopOnboardingFlow
                         isOpen={desktopOnboardingOpen}
-                        busy={desktopOnboardingBusy}
-                        error={desktopOnboardingError}
                         onOpenSync={() => openSettingsPage('sync')}
                         onOpenImport={() => openSettingsPage('data')}
-                        onStartFresh={handleStartFreshOnboarding}
+                        onOpenLink={openOnboardingLink}
+                        onFinish={handleFinishOnboarding}
                         onSkip={dismissDesktopOnboarding}
                     />
                     <StartupPromptModal

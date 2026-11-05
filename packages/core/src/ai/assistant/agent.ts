@@ -1,8 +1,9 @@
 import { generateUUID } from '../../uuid';
 import { AssistantChangeLog } from './change-log';
 import { buildSystemPrompt } from './prompt';
+import { parseAssistantReply } from './suggestions';
 import { parseToolArguments, validateAgainstSchema } from './schema';
-import { ASSISTANT_TOOLS, getToolDefinitions } from './tools';
+import { ASSISTANT_TOOLS, getToolDefinitions } from './registry';
 import type {
     AssistantMessage,
     AssistantModelClient,
@@ -44,6 +45,8 @@ export interface RunTurnOptions {
 
 export interface TurnResult {
     reply: string;
+    /** Validated follow-up chips parsed from the reply (stripped from `reply`). */
+    suggestions?: string[];
     entries: ChangeEntry[];
     pending: PendingConfirmation[];
     status: 'ok' | 'max_steps' | 'error' | 'aborted';
@@ -201,8 +204,8 @@ export async function runAssistantTurn(options: RunTurnOptions): Promise<TurnRes
         messages.push(assistant);
         const calls = assistant.toolCalls ?? [];
         if (calls.length === 0) {
-            const text = (assistant.content ?? '').trim();
-            return { reply: text || summarize('Done. ') || 'Done.', entries, pending, status: 'ok', steps: step };
+            const parsed = parseAssistantReply((assistant.content ?? '').trim());
+            return { reply: parsed.text || summarize('Done. ') || 'Done.', suggestions: parsed.suggestions, entries, pending, status: 'ok', steps: step };
         }
         for (const call of calls.slice(0, MAX_TOOL_CALLS_PER_STEP)) {
             const result = await runToolCall({

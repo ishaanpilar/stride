@@ -65,3 +65,54 @@ export function resolveBoardDragEnd({
     orderedIds.splice(toIndex, 0, activeId);
     return { type: 'reorder', status: activeStatus, orderedIds };
 }
+
+export type BoardKeyboardDirection = 'left' | 'right' | 'up' | 'down';
+
+/** Alt+Arrow card move: Left/Right change column, Up/Down reorder within the column. */
+export function resolveBoardKeyboardMove({
+    taskId,
+    direction,
+    columnIds,
+    status,
+    columnTaskIds,
+    canReorder,
+}: {
+    taskId: string;
+    direction: BoardKeyboardDirection;
+    columnIds: TaskStatus[];
+    status: TaskStatus;
+    columnTaskIds: string[];
+    canReorder: boolean;
+}): BoardDragEndAction {
+    if (direction === 'left' || direction === 'right') {
+        const index = columnIds.indexOf(status);
+        const next = columnIds[index + (direction === 'left' ? -1 : 1)];
+        if (index < 0 || !next) return { type: 'none' };
+        return { type: 'move', taskId, status: next };
+    }
+    if (!canReorder) return { type: 'none' };
+    const from = columnTaskIds.indexOf(taskId);
+    const to = from + (direction === 'up' ? -1 : 1);
+    if (from < 0 || to < 0 || to >= columnTaskIds.length) return { type: 'none' };
+    const orderedIds = [...columnTaskIds];
+    orderedIds.splice(from, 1);
+    orderedIds.splice(to, 0, taskId);
+    return { type: 'reorder', status, orderedIds };
+}
+
+/** Send a card to the top or bottom of its column (menu action, Alt+Shift+Up/Down). */
+export function resolveBoardEdgeMove(
+    taskId: string,
+    status: TaskStatus,
+    edge: 'top' | 'bottom',
+    columnTaskIds: string[],
+    canReorder: boolean,
+): BoardDragEndAction {
+    if (!canReorder) return { type: 'none' };
+    const from = columnTaskIds.indexOf(taskId);
+    if (from < 0) return { type: 'none' };
+    if (edge === 'top' ? from === 0 : from === columnTaskIds.length - 1) return { type: 'none' };
+    const rest = columnTaskIds.filter((id) => id !== taskId);
+    const orderedIds = edge === 'top' ? [taskId, ...rest] : [...rest, taskId];
+    return { type: 'reorder', status, orderedIds };
+}

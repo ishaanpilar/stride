@@ -83,6 +83,11 @@ export interface AssistantStorePort {
     addProject(title: string, color: string, props: Partial<Project>): Promise<Project | null>;
     deleteProject(id: string): Promise<StoreResult>;
     restoreProject(id: string): Promise<StoreResult>;
+    updateProject(id: string, updates: Partial<Project>): Promise<StoreResult>;
+    addArea(name: string, props: Partial<Area>): Promise<Area | null>;
+    updateArea(id: string, updates: Partial<Area>): Promise<StoreResult>;
+    deleteArea(id: string): Promise<StoreResult>;
+    restoreArea(id: string): Promise<StoreResult>;
 }
 
 export type UndoOp =
@@ -90,7 +95,14 @@ export type UndoOp =
     | { kind: 'deleteTask'; taskId: string }
     | { kind: 'restoreTask'; taskId: string }
     | { kind: 'deleteProject'; projectId: string }
-    | { kind: 'restoreProject'; projectId: string };
+    | { kind: 'restoreProject'; projectId: string }
+    | { kind: 'restoreProjectFields'; projectId: string; fields: Partial<Project>; clear: string[] }
+    | { kind: 'deleteArea'; areaId: string }
+    | { kind: 'restoreArea'; areaId: string }
+    | { kind: 'restoreAreaFields'; areaId: string; fields: Partial<Area>; clear: string[] };
+
+/** What kind of thing a change touched; drives the icon in the Changes card. */
+export type ChangeKind = 'task' | 'project' | 'area' | 'tag' | 'merge' | 'plan';
 
 export interface FieldChange {
     taskId: string;
@@ -108,6 +120,10 @@ export interface ChangeEntry {
     label: string;
     at: string;
     undone: boolean;
+    /** Kind of entity changed (UI icon). Defaults to 'task'. */
+    kind?: ChangeKind;
+    /** Optional sub-lines (e.g. the steps of a batch plan). */
+    details?: string[];
     undoOps: UndoOp[];
     changes: FieldChange[];
 }

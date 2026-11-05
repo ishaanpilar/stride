@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 
 import { cn } from '../../../lib/utils';
 import { getProjectMenuStyle } from './project-menu-position';
+import { ExitGhost } from '../../ui/ExitGhost';
 
 type ProjectSectionActionsMenuProps = {
     sectionTitle: string;
@@ -135,8 +136,9 @@ export function ProjectSectionActionsMenu({
                     ref={panelRef}
                     role="menu"
                     style={menuStyle}
-                    className="z-50 min-w-[200px] overscroll-contain rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
+                    className="motion-popover z-50 min-w-[200px] overscroll-contain rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                 >
+                    <ExitGhost />
                     <button
                         type="button"
                         role="menuitem"

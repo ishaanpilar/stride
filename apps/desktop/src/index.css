@@ -1,3 +1,4 @@
+@import './styles/motion.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -1224,4 +1225,402 @@ html.menubar-panel-window #root {
 @keyframes menubar-row-in {
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+
+/* ==========================================================================
+   Focus mode ("Still"): a large thin clock, drifting ambient light, a glass task card.
+   The app shell root carries data-focus-session="focus" | "break" while the full stage is up.
+   The stage, the mini card and the pill are portalled outside the shell, so they are never dimmed.
+   Every animation here collapses when html[data-motion='off'] (Animations setting off or
+   prefers-reduced-motion); see styles/motion.css and the block at the end of this section.
+   ========================================================================== */
+[data-focus-session] {
+  transition: opacity 600ms cubic-bezier(0.16, 1, 0.3, 1), filter 600ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-focus-session='focus'] {
+  filter: grayscale(0.9) blur(1px);
+  opacity: 0.35;
+}
+[data-focus-session='break'] {
+  filter: grayscale(0.5);
+  opacity: 0.7;
+}
+@media (prefers-reduced-motion: reduce), (prefers-reduced-transparency: reduce) {
+  [data-focus-session='focus'] { filter: none; opacity: 0.45; }
+  [data-focus-session='break'] { filter: none; opacity: 0.75; }
+}
+@media (prefers-contrast: more) {
+  [data-focus-session='focus'] { filter: grayscale(0.9); opacity: 0.5; }
+  [data-focus-session='break'] { filter: none; opacity: 0.75; }
+}
+
+.fx-display { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, sans-serif; }
+:root { --fx-alpha: 0.4; --fx-ease: cubic-bezier(0.2, 0.8, 0.2, 1); --fx-spring: cubic-bezier(0.34, 1.4, 0.64, 1); }
+.dark { --fx-alpha: 0.3; }
+
+/* ---- Stage ---- */
+.fx-stage { position: fixed; inset: 0; z-index: 60; overflow: hidden; color: hsl(var(--foreground)); }
+.fx-veil {
+  position: absolute; inset: 0; background: hsl(var(--background) / 0.6);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  opacity: 0; transition: opacity 600ms var(--fx-ease);
+}
+@media (prefers-reduced-transparency: reduce) { .fx-veil { background: hsl(var(--background) / 0.94); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+.fx-amb {
+  position: absolute; inset: -12%; pointer-events: none; opacity: 0;
+  filter: blur(72px) saturate(1.1);
+  transition: opacity 1100ms var(--fx-ease), filter 1000ms ease;
+}
+.fx-stage[data-lit='true'] .fx-veil, .fx-stage[data-lit='true'] .fx-amb { opacity: 1; }
+.fx-amb > i {
+  position: absolute; border-radius: 9999px;
+  background-color: rgb(var(--fx-rgb) / var(--fx-alpha));
+  transition: background-color 2500ms linear;
+}
+.fx-amb > i:nth-child(1) { width: 60%; height: 70%; left: 8%; top: 4%; animation: fx-drift1 38s ease-in-out infinite alternate; }
+.fx-amb > i:nth-child(2) { width: 55%; height: 65%; right: 4%; top: 20%; animation: fx-drift2 46s ease-in-out infinite alternate; }
+.fx-amb > i:nth-child(3) { width: 50%; height: 55%; left: 30%; bottom: -6%; animation: fx-drift3 52s ease-in-out infinite alternate; }
+@keyframes fx-drift1 { to { transform: translate(18%, 12%) scale(1.15); } }
+@keyframes fx-drift2 { to { transform: translate(-16%, -10%) scale(0.9); } }
+@keyframes fx-drift3 { to { transform: translate(-12%, -14%) scale(1.2); } }
+.fx-amb[data-paused='true'] { filter: blur(72px) saturate(0.35); }
+.fx-amb[data-paused='true'] > i { animation-play-state: paused; }
+.fx-amb[data-pulse='true'] { animation: fx-amb-pulse 1400ms cubic-bezier(0.4, 0, 0.2, 1); }
+@keyframes fx-amb-pulse { 25% { filter: blur(60px) saturate(1.7) brightness(1.25); } }
+.fx-bloom {
+  position: absolute; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 9999px; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle, hsl(var(--accent) / 0.7), hsl(var(--accent) / 0) 70%);
+}
+.fx-wave {
+  position: absolute; left: 50%; top: 50%; width: 200px; height: 200px; margin: -100px 0 0 -100px; border-radius: 9999px;
+  box-shadow: 0 0 0 2px hsl(var(--accent) / 0.55); opacity: 0; pointer-events: none;
+  animation: fx-wave 2000ms var(--fx-ease) 150ms;
+}
+@keyframes fx-wave { 0% { opacity: 0.95; transform: scale(0.3); } 100% { opacity: 0; transform: scale(6.5); } }
+
+.fx-drag { position: absolute; inset: 0 0 auto 0; height: calc(var(--titlebar-inset, 0px) + 20px); }
+.fx-top { position: absolute; top: calc(var(--titlebar-inset, 0px) + 12px); right: 16px; display: flex; gap: 8px; z-index: 2; }
+.fx-center {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  overflow-y: auto; padding: calc(var(--titlebar-inset, 0px) + 56px) 16px 40px;
+}
+.fx-center > .fx-column { margin: auto 0; width: min(560px, 100%); display: flex; flex-direction: column; align-items: center; }
+
+/* Fade-on-idle controls: hidden after 3 s without the pointer while a focus phase runs. */
+.fx-fade { transition: opacity 600ms ease; }
+.fx-stage[data-idle='true'] .fx-fade:not(:focus-within) { opacity: 0; }
+
+/* ---- Clock ---- */
+.fx-top-area { display: flex; flex-direction: column; align-items: center; }
+.fx-clock {
+  display: flex; color: hsl(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-weight: 200; font-size: clamp(84px, 16vh, 136px); line-height: 1; letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums; transition: opacity 500ms ease;
+}
+.fx-clock .d { display: inline-block; min-width: 0.56em; text-align: center; }
+.fx-clock .c { display: inline-block; width: 0.26em; text-align: center; opacity: 0.75; transform: translateY(-0.07em); }
+.fx-stage[data-paused='true'] .fx-clock { opacity: 0.72; }
+.fx-stage[data-paused='true'] .fx-clock .c { animation: fx-blink 1600ms ease-in-out infinite; }
+@keyframes fx-blink { 50% { opacity: 0.1; } }
+.fx-digit-in { animation: fx-digit 560ms var(--fx-spring); }
+@keyframes fx-digit { from { transform: translateY(0.5em); opacity: 0; filter: blur(10px); } }
+.fx-sub { height: 22px; margin-top: 10px; font-size: 15px; font-weight: 500; color: hsl(var(--foreground)); opacity: 0; transition: opacity 800ms ease; }
+.fx-sub[data-show='true'] { opacity: 1; }
+
+/* ---- Glass task card ---- */
+.fx-card {
+  position: relative; width: 100%; margin-top: 30px; padding: 22px 24px 20px; border-radius: 22px;
+  background: hsl(var(--card) / 0.88);
+  -webkit-backdrop-filter: blur(28px) saturate(1.3); backdrop-filter: blur(28px) saturate(1.3);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), 0 24px 60px rgb(15 20 40 / 0.14), 0 0 0 1px hsl(var(--foreground) / 0.06);
+}
+.dark .fx-card { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 24px 60px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.06); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .fx-card { background: hsl(var(--card)); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+.fx-head { display: flex; align-items: center; gap: 8px; font-size: 13px; color: hsl(var(--muted-foreground)); }
+.fx-head .fx-dot { width: 8px; height: 8px; border-radius: 9999px; flex: none; }
+.fx-head .fx-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.fx-title { margin-top: 8px; font-size: 22px; line-height: 28px; font-weight: 650; letter-spacing: -0.012em; overflow-wrap: anywhere; }
+.fx-card[data-phase='break'] .fx-title { font-size: 17px; line-height: 24px; font-weight: 600; }
+.fx-title--quiet { font-size: 17px; line-height: 24px; font-weight: 500; color: hsl(var(--muted-foreground)); }
+.fx-break-idea { margin-top: 6px; font-size: 15px; color: hsl(var(--muted-foreground)); }
+.fx-hair { position: absolute; left: 24px; right: 24px; bottom: 0; height: 2px; border-radius: 2px; overflow: hidden; }
+.fx-hair > i {
+  display: block; height: 100%; border-radius: inherit; transition: width 1000ms linear;
+  background: linear-gradient(90deg, hsl(var(--accent) / 0.2), hsl(var(--accent)));
+}
+.fx-card[data-phase='break'] .fx-hair > i, .fx-mini[data-phase='break'] .fx-hair > i {
+  background: linear-gradient(90deg, hsl(var(--success-fill) / 0.2), hsl(var(--success-fill)));
+}
+
+/* ---- Steps (the task's checklist) ---- */
+.fx-steps { margin-top: 12px; max-height: min(46vh, 380px); overflow-y: auto; margin-inline: -6px; padding-inline: 6px; }
+.fx-step { display: flex; align-items: center; gap: 12px; min-height: 42px; font-size: 15px; color: hsl(var(--muted-foreground)); transition: color 400ms ease; }
+.fx-step[data-current='true'] { color: hsl(var(--foreground)); font-weight: 500; }
+.fx-check {
+  position: relative; flex: none; width: 22px; height: 22px; border-radius: 9999px; display: grid; place-items: center;
+  box-shadow: inset 0 0 0 1.5px currentColor; color: inherit;
+  transition: box-shadow 300ms ease, transform 200ms ease;
+}
+.fx-check:hover { transform: scale(1.08); }
+.fx-check:active { transform: scale(0.9); }
+.fx-step[data-current='true'] .fx-check { box-shadow: inset 0 0 0 1.5px hsl(var(--accent-text)); }
+.fx-check svg { width: 13px; height: 13px; color: hsl(var(--accent-foreground)); }
+.fx-check svg path { stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset 350ms var(--fx-ease) 120ms; }
+.fx-step[data-done='true'] .fx-check { background-image: var(--accent-gradient); box-shadow: none; }
+.fx-step[data-done='true'] .fx-check svg path { stroke-dashoffset: 0; }
+.fx-step[data-just='true'] .fx-check { animation: fx-cbpop 600ms var(--fx-spring); }
+.fx-step[data-just='true'] { animation: fx-row-flash 1000ms var(--fx-ease); border-radius: 10px; }
+@keyframes fx-row-flash { 0% { background-color: hsl(var(--accent) / 0.16); } 100% { background-color: hsl(var(--accent) / 0); } }
+.fx-check::after {
+  content: ''; position: absolute; inset: -1px; border-radius: 9999px; box-shadow: 0 0 0 2.5px hsl(var(--accent)); opacity: 0; pointer-events: none;
+}
+.fx-step[data-just='true'] .fx-check::after { animation: fx-ripple 900ms var(--fx-ease) forwards; }
+@keyframes fx-cbpop { 0% { transform: scale(0.6); } 55% { transform: scale(1.25); } 100% { transform: scale(1); } }
+@keyframes fx-ripple { from { opacity: 0.8; transform: scale(1); } to { opacity: 0; transform: scale(2.8); } }
+.fx-step-label { position: relative; min-width: 0; flex: 1; text-align: left; overflow-wrap: anywhere; border-radius: 6px; }
+.fx-step-label > span { position: relative; }
+.fx-step-label > span::after {
+  content: ''; position: absolute; left: 0; top: 55%; height: 1.5px; width: 0; background: currentColor; opacity: 0.85;
+  transition: width 500ms var(--fx-ease) 120ms;
+}
+.fx-step[data-done='true'] .fx-step-label > span::after { width: 100%; }
+.fx-step-remove { opacity: 0; transition: opacity 150ms ease; }
+.fx-step:hover .fx-step-remove, .fx-step-remove:focus-visible { opacity: 1; }
+.fx-step-enter { animation: fx-step-in 550ms var(--fx-ease) both; animation-delay: calc(var(--fx-i, 0) * 90ms); }
+@keyframes fx-step-in { from { opacity: 0; transform: translateY(8px); filter: blur(4px); } }
+.fx-loading {
+  display: flex; align-items: center; gap: 8px; margin-top: 14px; height: 26px; font-size: 14px; font-weight: 500;
+  color: hsl(var(--muted-foreground));
+}
+.fx-loading .fx-shimmer-text {
+  background: linear-gradient(90deg, hsl(var(--muted-foreground)) 0%, hsl(var(--muted-foreground)) 35%, hsl(var(--accent-text)) 50%, hsl(var(--muted-foreground)) 65%, hsl(var(--muted-foreground)) 100%);
+  background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: fx-shimmer 1600ms linear infinite;
+}
+@keyframes fx-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.fx-skeleton { height: 30px; border-radius: 8px; margin-top: 8px; background: hsl(var(--foreground) / 0.07); }
+
+/* ---- Note + controls ---- */
+.fx-note {
+  min-height: 22px; margin-top: 18px; max-width: 100%; text-align: center; font-size: 15px; font-weight: 500;
+  color: hsl(var(--foreground)); opacity: 0; transform: translateY(4px); transition: opacity 500ms ease, transform 500ms var(--fx-ease);
+}
+.fx-note[data-show='true'] { opacity: 1; transform: none; }
+.fx-controls { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px; min-height: 56px; }
+.fx-round {
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 9999px; color: hsl(var(--foreground));
+  background: hsl(var(--card) / 0.62); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.08), 0 4px 14px rgb(15 20 40 / 0.08);
+  transition: background-color 200ms ease, transform 200ms ease;
+}
+.fx-round:hover { background: hsl(var(--card) / 0.9); }
+.fx-round:active { transform: scale(0.95); }
+.fx-round--main { width: 56px; height: 56px; background: hsl(var(--card) / 0.85); }
+.fx-round--sm { width: 40px; height: 40px; }
+.fx-round--xs { width: 32px; height: 32px; }
+
+/* ---- Finish: solid panel, so every line reads on any light ---- */
+.fx-finish {
+  position: relative; width: 100%; margin-top: 8px; padding: 28px 28px 24px; border-radius: 22px; text-align: center;
+  background: hsl(var(--card)); color: hsl(var(--card-foreground));
+  box-shadow: 0 24px 60px rgb(15 20 40 / 0.16), 0 0 0 1px hsl(var(--foreground) / 0.06);
+  animation: fx-rise 650ms var(--fx-spring) 120ms both;
+}
+@keyframes fx-rise { from { opacity: 0; transform: translateY(18px) scale(0.95); filter: blur(8px); } }
+.fx-mark-wrap { position: relative; width: 64px; height: 64px; margin: 0 auto 14px; }
+.fx-mark-bloom {
+  position: absolute; inset: -36px; border-radius: 9999px; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle, hsl(var(--accent) / 0.32), hsl(var(--accent) / 0) 68%);
+  animation: fx-mark-bloom 1500ms var(--fx-ease) 1150ms backwards;
+}
+@keyframes fx-mark-bloom { 0% { opacity: 0.95; transform: scale(0.4); } 100% { opacity: 0; transform: scale(1.5); } }
+.dark .fx-finish { box-shadow: 0 24px 60px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.07); }
+.fx-mark { position: relative; width: 64px; height: 64px; color: hsl(var(--accent-text)); }
+.fx-mark circle, .fx-mark path { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.fx-mark circle { stroke-width: 3; stroke-dasharray: 283; stroke-dashoffset: 0; opacity: 0.35; animation: fx-draw-circle 1100ms var(--fx-ease) 400ms backwards; }
+.fx-mark path { stroke-width: 5; stroke-dasharray: 60; stroke-dashoffset: 0; animation: fx-draw-check 600ms var(--fx-ease) 1100ms backwards; }
+@keyframes fx-draw-circle { from { stroke-dashoffset: 283; } }
+@keyframes fx-draw-check { from { stroke-dashoffset: 60; } }
+.fx-finish h2 { font-size: 22px; line-height: 28px; font-weight: 650; letter-spacing: -0.012em; }
+.fx-finish-line { margin-top: 6px; font-size: 15px; line-height: 22px; color: hsl(var(--muted-foreground)); }
+.fx-stats { display: grid; gap: 4px; margin-top: 20px; padding: 14px 8px; border-radius: 14px; background: hsl(var(--well)); }
+.fx-stats dd { font-size: 24px; line-height: 30px; font-weight: 650; font-variant-numeric: tabular-nums; color: hsl(var(--foreground)); }
+.fx-stats dt { font-size: 13px; line-height: 18px; color: hsl(var(--muted-foreground)); }
+.fx-text-btn {
+  height: 40px; padding: 0 12px; border-radius: 10px; font-size: 14px; font-weight: 500; color: hsl(var(--muted-foreground));
+  text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 4px; transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+.fx-text-btn:hover { color: hsl(var(--foreground)); text-decoration-color: currentColor; }
+
+/* ---- Coach: one quiet area under the title; the timer stays the hero ---- */
+.fx-coach { margin-top: 14px; padding: 12px 14px; border-radius: 14px; background: hsl(var(--well)); color: hsl(var(--foreground)); animation: fx-coach-in 320ms var(--fx-ease) both; }
+.fx-coach[data-state='loading'] { padding-block: 8px; }
+.fx-coach[data-state='loading'] .fx-loading { margin-top: 0; }
+@keyframes fx-coach-in { from { opacity: 0; transform: translateY(4px); } }
+.fx-coach[data-leaving='true'], .fx-coach-steps[data-leaving='true'], .fx-coach-turn[data-leaving='true'] { animation: fx-leave 240ms var(--fx-ease) forwards; pointer-events: none; }
+@keyframes fx-leave { to { opacity: 0; transform: translateY(-4px) scale(0.98); filter: blur(3px); } }
+.fx-coach-head { display: flex; align-items: flex-start; gap: 8px; }
+.fx-coach-estimate { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; line-height: 18px; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
+.fx-coach-lead { margin-top: 2px; font-size: 15px; line-height: 21px; font-weight: 550; color: hsl(var(--foreground)); overflow-wrap: anywhere; }
+.fx-coach-body { margin-top: 2px; max-height: min(28vh, 240px); overflow-y: auto; margin-inline: -4px; padding-inline: 4px; overscroll-behavior: contain; }
+.fx-coach-line { margin-top: 4px; font-size: 14px; line-height: 20px; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.fx-coach-line--strong { color: hsl(var(--foreground)); }
+.fx-coach-ask { margin-top: 10px; }
+.fx-coach-q { font-size: 14px; line-height: 20px; font-weight: 500; color: hsl(var(--foreground)); }
+.fx-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.fx-chips--center { justify-content: center; }
+.fx-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; padding: 4px 12px; border-radius: 9999px;
+  font-size: 13px; line-height: 18px; font-weight: 500; text-align: left; color: hsl(var(--foreground));
+  background: hsl(var(--card)); box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.1);
+  transition: background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.fx-chip:hover { box-shadow: 0 0 0 1px hsl(var(--accent-text) / 0.5); }
+.fx-chip:active { transform: scale(0.97); }
+.fx-chip:disabled { opacity: 0.6; cursor: default; }
+.fx-chip--accent { background: var(--accent-soft); color: hsl(var(--accent-text)); box-shadow: none; }
+.fx-chip--lg { min-height: 40px; padding: 8px 18px; font-size: 14px; }
+.fx-finish .fx-chip { background: hsl(var(--well)); box-shadow: none; }
+.fx-finish .fx-chip:hover { box-shadow: 0 0 0 1px hsl(var(--accent-text) / 0.5); }
+.fx-finish .fx-chip--accent { background: var(--accent-soft); }
+.fx-coach-steps { margin-top: 10px; padding-top: 10px; border-top: 1px solid hsl(var(--foreground) / 0.08); }
+.fx-coach-label { font-size: 13px; line-height: 18px; color: hsl(var(--muted-foreground)); }
+.fx-coach-steps ol { margin-top: 4px; list-style: decimal; padding-left: 20px; font-size: 14px; line-height: 20px; }
+.fx-coach-steps li { margin-top: 2px; }
+.fx-coach-source { display: block; font-size: 12px; line-height: 16px; color: hsl(var(--muted-foreground)); }
+.fx-coach-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; }
+.fx-coach-row--tight { margin-top: 6px; align-items: flex-start; }
+.fx-coach-row .fx-chips { flex: 1; min-width: 0; margin-top: 0; }
+.fx-coach-row .fx-feedback { margin-left: auto; }
+.fx-coach-turn { margin-top: 10px; }
+.fx-coach-you { margin-left: auto; width: fit-content; max-width: 85%; padding: 3px 10px; border-radius: 12px 12px 4px 12px; font-size: 13px; line-height: 18px; color: hsl(var(--foreground)); background: hsl(var(--card)); overflow-wrap: anywhere; }
+.fx-feedback { display: flex; align-items: center; justify-content: flex-end; gap: 2px; margin-top: 8px; }
+.fx-feedback--compact { margin-top: 4px; }
+.fx-coach-row .fx-feedback { margin-top: 0; }
+.fx-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; border-radius: 9999px;
+  color: hsl(var(--muted-foreground)); transition: background-color 150ms ease, color 150ms ease;
+}
+.fx-icon-btn:hover { background: hsl(var(--foreground) / 0.06); color: hsl(var(--foreground)); }
+.fx-icon-btn[aria-pressed='true'] { color: hsl(var(--accent-text)); }
+.fx-link { padding: 2px 6px; border-radius: 6px; font-size: 13px; line-height: 18px; font-weight: 500; color: hsl(var(--accent-text)); }
+.fx-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.fx-link--muted { color: hsl(var(--muted-foreground)); }
+.fx-link--muted:hover { color: hsl(var(--foreground)); }
+.fx-done-line { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; font-size: 13px; line-height: 18px; color: hsl(var(--foreground)); }
+.fx-reply { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+.fx-reply-input {
+  height: 32px; min-width: 0; flex: 1; padding: 0 12px; border-radius: 9999px; font-size: 13px; color: hsl(var(--foreground));
+  background: hsl(var(--card)); box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.1);
+}
+.fx-reply-input::placeholder { color: hsl(var(--muted-foreground)); }
+.fx-finish .fx-reply-input { background: hsl(var(--well)); box-shadow: none; }
+.fx-loading--sm { margin-top: 6px; height: 20px; font-size: 13px; }
+.fx-checklist { margin-top: 6px; }
+.fx-checklist .fx-steps { margin-top: 8px; }
+.fx-checkin-stats { margin-top: 18px; font-size: 13px; line-height: 18px; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
+
+/* ---- Mini card and background pill (over the normal app) ---- */
+.fx-mini {
+  position: fixed; z-index: 45; width: 320px; border-radius: 18px; overflow: hidden;
+  background: hsl(var(--card)); color: hsl(var(--card-foreground));
+  box-shadow: 0 18px 48px rgb(15 20 40 / 0.18), 0 0 0 1px hsl(var(--foreground) / 0.07);
+  transition: right 260ms var(--fx-ease);
+}
+.dark .fx-mini, .dark .fx-pill { box-shadow: 0 18px 48px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.08); }
+.fx-mini[data-dragging='true'] { transition: none; cursor: grabbing; }
+.fx-mini-tint { position: absolute; inset: 0; pointer-events: none; opacity: 0.5; }
+.fx-mini-tint > i { position: absolute; width: 70%; height: 140%; top: -20%; border-radius: 9999px; filter: blur(36px); background-color: rgb(var(--fx-rgb) / calc(var(--fx-alpha) * 0.6)); transition: background-color 2500ms linear; }
+.fx-mini-tint > i:first-child { left: -20%; }
+.fx-mini-tint > i:last-child { right: -20%; }
+.fx-mini-clock {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-weight: 300; font-size: 30px; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.fx-mini[data-paused='true'] .fx-mini-clock { opacity: 0.72; }
+.fx-mini .fx-hair { left: 0; right: 0; }
+.fx-pill {
+  position: fixed; z-index: 45; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 8px; border-radius: 9999px;
+  background: hsl(var(--card)); color: hsl(var(--card-foreground)); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+  box-shadow: 0 10px 30px rgb(15 20 40 / 0.16), 0 0 0 1px hsl(var(--foreground) / 0.07);
+  transition: right 260ms var(--fx-ease), transform 200ms ease;
+}
+.fx-pill:hover { transform: translateY(-1px); }
+.fx-pop-in { animation: fx-pop-in 420ms var(--fx-spring) both; transform-origin: bottom right; }
+@keyframes fx-pop-in { from { opacity: 0; transform: translateY(16px) scale(0.86); filter: blur(4px); } }
+
+/* Pomodoro + focus stage: calm, subtle motion. Everything below is off under reduced motion. */
+.ui-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: none;
+  transform-origin: top center;
+  transition:
+    grid-template-rows 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease-out,
+    transform 220ms ease-out;
+}
+/* Inner padding + negative margin keeps focus rings from being clipped while collapsed rows stay 0px. */
+.ui-reveal__inner { min-height: 0; overflow: hidden; padding: 4px 6px 16px; margin: -4px -6px -16px; }
+.ui-reveal[data-open='false'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: scale(0.97);
+  pointer-events: none;
+}
+
+.pomo-arc { transition: stroke-dashoffset 600ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms ease-out; }
+.pomo-ring[data-running='true'] .pomo-arc { transition: stroke-dashoffset 1000ms linear, opacity 300ms ease-out; }
+.pomo-glow { filter: blur(6px); opacity: 0.35; transition: opacity 400ms ease-out; }
+.pomo-ring[data-running='true'] .pomo-glow { animation: pomo-glow 5s ease-in-out infinite; }
+.pomo-ring[data-running='true'][data-phase='break'] .pomo-glow { animation-duration: 8s; }
+@keyframes pomo-glow { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.7; } }
+
+.pomo-burst {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid hsl(var(--accent) / 0.55);
+  pointer-events: none;
+  animation: pomo-burst 1100ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.pomo-ring[data-phase='break'] .pomo-burst { border-color: hsl(var(--success-fill) / 0.55); }
+@keyframes pomo-burst { 0% { opacity: 0.8; transform: scale(1); } 100% { opacity: 0; transform: scale(1.22); } }
+
+.pomo-pop { animation: pomo-pop 180ms ease-out both; transform-origin: top center; }
+@keyframes pomo-pop { from { opacity: 0; transform: scale(0.95) translateY(-2px); } to { opacity: 1; transform: none; } }
+.pomo-in { animation: pomo-pop 220ms ease-out both; }
+
+/* Quiet fade+scale for controls that appear on hover or by state. */
+.pomo-fade { transition: opacity 200ms ease-out, transform 200ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-reveal, .ui-reveal[data-open='false'] { transition: none; transform: none; }
+  .pomo-arc, .pomo-ring[data-running='true'] .pomo-arc, .pomo-glow, .pomo-fade { transition: none; }
+  .pomo-ring[data-running='true'] .pomo-glow { animation: none; }
+  .pomo-burst { display: none; }
+  .pomo-pop, .pomo-in { animation: none; }
+}
+
+/* Animations off (setting or prefers-reduced-motion): no drift, pulse, blink, ripple, wave or draw. */
+html[data-motion='off'] :is(
+  .fx-amb > i, .fx-amb, .fx-clock .c, .fx-digit-in, .fx-step-enter, .fx-check, .fx-check::after,
+  .fx-shimmer-text, .fx-wave, .fx-finish, .fx-mark circle, .fx-mark path, .fx-pop-in, .fx-mini-tint > i,
+  .fx-mark-bloom, .fx-coach, .fx-coach-steps, .fx-coach-turn, .fx-step
+) { animation: none !important; }
+html[data-motion='off'] :is(.fx-veil, .fx-amb, .fx-amb > i, .fx-fade, .fx-note, .fx-sub, .fx-clock, .fx-hair > i, .fx-mini, .fx-pill, .fx-step, .fx-check, .fx-check svg path, .fx-step-label > span::after, .fx-chip, .fx-icon-btn) {
+  transition: none !important;
+}
+html[data-motion='off'] :is(.fx-wave, .fx-mark-bloom, .fx-bloom) { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .fx-amb > i, .fx-amb, .fx-clock .c, .fx-digit-in, .fx-step-enter, .fx-check::after, .fx-shimmer-text,
+  .fx-finish, .fx-mark circle, .fx-mark path, .fx-pop-in, .fx-mini-tint > i, .fx-mark-bloom, .fx-step,
+  .fx-coach, .fx-coach-steps, .fx-coach-turn { animation: none; }
+  .fx-chip, .fx-icon-btn { transition: none; }
+  .fx-wave, .fx-mark-bloom { display: none; }
 }

@@ -129,7 +129,7 @@ describe('App', () => {
         });
     });
 
-    it('opens the manual onboarding flow and seeds data from Start using Stride', async () => {
+    it('opens the onboarding flow on replay and persists the dismissed flag on Skip setup', async () => {
         const { getByRole, queryByRole } = renderWithProviders(<App />);
 
         act(() => {
@@ -137,16 +137,12 @@ describe('App', () => {
         });
 
         expect(getByRole('dialog', { name: /welcome to stride/i })).toBeInTheDocument();
-        fireEvent.click(getByRole('button', { name: /^start using stride/i }));
+        fireEvent.click(getByRole('button', { name: /skip setup/i }));
 
         await waitFor(() => {
             expect(queryByRole('dialog', { name: /welcome to stride/i })).not.toBeInTheDocument();
         });
-        expect(useTaskStore.getState().projects.some((project) => project.title === 'Getting Started')).toBe(true);
-        expect(useTaskStore.getState().tasks).toHaveLength(9);
-        expect(useUiStore.getState().projectView.selectedProjectId).toBe(
-            useTaskStore.getState().projects.find((project) => project.title === 'Getting Started')?.id
-        );
+        expect(window.localStorage.getItem('stride:desktop:first-run-onboarding:v1')).toBe('dismissed');
     });
 
     it('does not mark onboarding dismissed when routing to sync setup', async () => {

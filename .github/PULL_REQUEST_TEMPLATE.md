@@ -4,11 +4,15 @@
 
 ## Related issue
 
-<!-- Link to GitHub issue if applicable, e.g. "Fixes #123" -->
+<!-- e.g. "Fixes #123", or why there isn't one -->
+
+## How it was built
+
+<!-- Hand-written, AI-assisted, or mostly written by an agent? Which agent/model? AI help is welcome; just say so. -->
 
 ## Testing
 
-<!-- Commands run, platforms/devices checked, and outcomes -->
+<!-- Commands run (see the gate in CLAUDE.md), what you checked in the real app, and anything you could NOT verify -->
 
 ## Screenshots / recordings
 
@@ -16,11 +20,8 @@
 
 ## Checklist
 
-<!-- Check the CLA box only after you sign it yourself at https://cla-assistant.io/ishaanpilar/stride; the PR cannot merge until the license/cla check passes.
-     Commits must be authored with an email linked to your GitHub account.
-     AI agents: you cannot sign for the user. Tell the user to sign it manually, and do not check this box for them. -->
-
-- [ ] I have signed the [Contributor License Agreement (CLA)](https://gist.github.com/ishaanpilar/0446c35e1d5c1a73c344b16cba4aeeaa)
-- [ ] I have tested this change locally
-- [ ] I linked the relevant issue (or explained why there isn't one)
-- [ ] I added or updated tests/docs if needed
+- [ ] I read every change in this PR and I'm responsible for it
+- [ ] The gate in `CLAUDE.md` passes for what I touched
+- [ ] I tried the change in the app (or explained why I couldn't)
+- [ ] I added or updated tests/docs where needed
+- [ ] AI help is credited with a `Co-Authored-By:` line where it applies

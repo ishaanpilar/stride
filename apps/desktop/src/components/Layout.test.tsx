@@ -5,6 +5,7 @@ import { useTaskStore, type MergeStats } from '@stride/core';
 import { LanguageProvider } from '../contexts/language-context';
 import { KeybindingProvider } from '../contexts/keybinding-context';
 import { useUiStore } from '../store/ui-store';
+import { useAssistantDockStore } from '../store/assistant-dock-store';
 import { useObsidianStore } from '../store/obsidian-store';
 import { SyncService } from '../lib/sync-service';
 import { CALENDAR_TASK_DRAG_MIME } from '../lib/calendar-task-drag';
@@ -127,6 +128,7 @@ beforeEach(() => {
         disconnect() {}
     });
     window.localStorage.clear();
+    useAssistantDockStore.getState().reload();
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 256, 800));
     resetStores();
 
@@ -196,7 +198,7 @@ describe('Layout content width', () => {
         vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 256, 400));
         const { container, queryByRole } = renderLayout(view);
         expect(container.querySelector('[data-view-sidebar-slot]')).toBeNull();
-        expect(queryByRole('separator')).not.toBeInTheDocument();
+        expect(queryByRole('separator', { name: 'Resize navigation and submenu' })).not.toBeInTheDocument();
     });
 
     it('resizes the navigation/submenu split with the keyboard, clamps it, and remembers it', () => {
@@ -213,14 +215,14 @@ describe('Layout content width', () => {
         expect(separator).toHaveAttribute('aria-valuenow', '80');
         view.unmount();
         const next = renderLayout('contexts');
-        expect(next.getByRole('separator')).toHaveAttribute('aria-valuenow', '80');
-        fireEvent.doubleClick(next.getByRole('separator'));
-        expect(next.getByRole('separator')).toHaveAttribute('aria-valuenow', '60');
+        expect(next.getByRole('separator', { name: 'Resize navigation and submenu' })).toHaveAttribute('aria-valuenow', '80');
+        fireEvent.doubleClick(next.getByRole('separator', { name: 'Resize navigation and submenu' }));
+        expect(next.getByRole('separator', { name: 'Resize navigation and submenu' })).toHaveAttribute('aria-valuenow', '60');
     });
 
     it('resizes the submenu by dragging the separator inside its available height', () => {
         const view = renderLayout('projects');
-        const separator = view.getByRole('separator') as HTMLDivElement;
+        const separator = view.getByRole('separator', { name: 'Resize navigation and submenu' }) as HTMLDivElement;
         separator.setPointerCapture = vi.fn();
         separator.hasPointerCapture = vi.fn(() => true);
         separator.releasePointerCapture = vi.fn();
@@ -1252,6 +1254,35 @@ describe('Layout sync security warning', () => {
     });
 
 
+    it('adds a task dropped on Focus to Today\'s Focus, with undo', async () => {
+        const updateTask = vi.fn().mockResolvedValue({ success: true });
+        const task = { id: 'task-1', title: 'Buy milk', status: 'next', tags: [], contexts: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            updateTask,
+            settings: {},
+        } as never);
+        useUiStore.setState({ toasts: [] });
+
+        const { container } = renderLayout();
+        const focusItem = container.querySelector('[data-view="agenda"]')!;
+        const dataTransfer = {
+            types: [CALENDAR_TASK_DRAG_MIME],
+            getData: (type: string) => (type === CALENDAR_TASK_DRAG_MIME ? 'task-1' : ''),
+            dropEffect: 'none',
+        };
+        fireEvent.dragOver(focusItem, { dataTransfer });
+        expect(focusItem.className).toContain('bg-primary/25');
+        fireEvent.drop(focusItem, { dataTransfer });
+
+        await waitFor(() => expect(updateTask).toHaveBeenCalledWith('task-1', { isFocusedToday: true }));
+        const latestToast = () => useUiStore.getState().toasts.slice(-1)[0];
+        await waitFor(() => expect(latestToast()?.message).toBe("Added to Today's Focus"));
+        act(() => { latestToast()!.action!.onClick(); });
+        expect(updateTask).toHaveBeenLastCalledWith('task-1', { isFocusedToday: false });
+    });
+
     it('marks a task done when it is dropped on History', async () => {
         const moveTask = vi.fn().mockResolvedValue({ success: true });
         const task = { id: 'task-1', title: 'Buy milk', status: 'inbox' };
@@ -1402,5 +1433,16 @@ describe('Sidebar hidden views (#1115)', () => {
         expect(ids).not.toContain('history');
         expect(ids).not.toContain('trash');
         expect(container.querySelector('#sidebar-section-lists')).not.toBeNull();
+    });
+});
+
+describe('Layout assistant dock', () => {
+    it('renders the Assistant dock on the right, open by default, and the sidebar item opens/focuses it', () => {
+        const { getByTestId, getByRole, queryByTestId } = renderLayout('inbox');
+        expect(getByTestId('assistant-dock')).toBeInTheDocument();
+        fireEvent.click(getByRole('button', { name: 'Collapse assistant' }));
+        expect(queryByTestId('assistant-dock')).not.toBeInTheDocument();
+        fireEvent.click(getByRole('button', { name: 'Open assistant' }));
+        expect(getByTestId('assistant-dock')).toBeInTheDocument();
     });
 });

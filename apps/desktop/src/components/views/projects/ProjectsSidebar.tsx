@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { AlertTriangle, ChevronDown, ChevronRight, ChevronsLeft, Folder, Plus } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { Collapse } from '../../ui/Collapse';
 import { isImeComposing } from '../../../lib/ime';
 import { FocusStarIcon } from '../../FocusStarIcon';
 import { SortableProjectRow } from './SortableRows';
@@ -17,6 +18,7 @@ import {
     useOptionalKeybindings,
     type ProjectListScope,
 } from '../../../contexts/keybinding-context';
+import { ExitGhost } from '../../ui/ExitGhost';
 
 const PROJECT_SELECTION_IGNORE_SELECTOR = '[data-project-selection-ignore="true"]';
 
@@ -661,9 +663,9 @@ export function ProjectsSidebar({
                                             {area?.icon && <span className="text-[10px]">{area.icon}</span>}
                                             {areaLabel}
                                         </span>
-                                        {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                        <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
                                     </button>
-                                    {!isCollapsed && (
+                                    <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                             <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
                                                 {areaProjects.map((project) => {
                                             const summary = projectTaskSummaryById.get(project.id);
@@ -752,7 +754,7 @@ export function ProjectsSidebar({
                                             );
                                                 })}
                                             </SortableContext>
-                                    )}
+                                    </Collapse>
                                 </ProjectAreaDropZone>
                             );
                         })}
@@ -768,10 +770,10 @@ export function ProjectsSidebar({
                             className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{t('projects.deferredSection')}</span>
-                            {showDeferredProjects ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                            <ChevronRight className={cn('motion-chevron w-4 h-4', showDeferredProjects && 'rotate-90')} />
                         </button>
                         {showDeferredProjects && (
-                            <div className="space-y-3">
+                            <div className="motion-expand-in space-y-3">
                                     {groupedDeferredProjects.map(([areaId, areaProjects]) => {
                                         const area = areaById.get(areaId);
                                         const areaLabel = area ? area.name : t('projects.noArea');
@@ -794,9 +796,9 @@ export function ProjectsSidebar({
                                                         {area?.icon && <span className="text-[10px]">{area.icon}</span>}
                                                         {areaLabel}
                                                     </span>
-                                                    {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                                    <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
                                                 </button>
-                                                {!isCollapsed && (
+                                                <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                                         <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
                                                             {areaProjects.map((project) => (
                                                             <SortableProjectRow key={project.id} projectId={project.id} section="deferred">
@@ -853,7 +855,7 @@ export function ProjectsSidebar({
                                                             </SortableProjectRow>
                                                             ))}
                                                         </SortableContext>
-                                                )}
+                                                </Collapse>
                                             </ProjectAreaDropZone>
                                         );
                                     })}
@@ -871,10 +873,10 @@ export function ProjectsSidebar({
                             className="w-full flex items-center justify-between py-2 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <span>{tFallback(t, 'projects.closed', 'Closed')}</span>
-                            {showArchivedProjects ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                            <ChevronRight className={cn('motion-chevron w-4 h-4', showArchivedProjects && 'rotate-90')} />
                         </button>
                         {showArchivedProjects && (
-                            <div className="space-y-3">
+                            <div className="motion-expand-in space-y-3">
                                     {groupedArchivedProjects.map(([areaId, areaProjects]) => {
                                         const area = areaById.get(areaId);
                                         const areaLabel = area ? area.name : t('projects.noArea');
@@ -897,9 +899,9 @@ export function ProjectsSidebar({
                                                         {area?.icon && <span className="text-[10px]">{area.icon}</span>}
                                                         {areaLabel}
                                                     </span>
-                                                    {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                                    <ChevronRight className={cn('motion-chevron w-4 h-4', !isCollapsed && 'rotate-90')} />
                                                 </button>
-                                                {!isCollapsed && (
+                                                <Collapse open={!isCollapsed} unmountWhenClosed innerClassName="space-y-1">
                                                         <SortableContext items={areaProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
                                                             {areaProjects.map((project) => (
                                                                 <SortableProjectRow key={project.id} projectId={project.id} section="archived">
@@ -956,7 +958,7 @@ export function ProjectsSidebar({
                                                                 </SortableProjectRow>
                                                             ))}
                                                         </SortableContext>
-                                                )}
+                                                </Collapse>
                                             </ProjectAreaDropZone>
                                         );
                                     })}
@@ -994,9 +996,10 @@ export function ProjectsSidebar({
                 <div
                     ref={contextMenuRef}
                     role="menu"
-                    className="fixed z-50 min-w-[160px] rounded-control bg-card shadow-soft-sm shadow-lg p-1 text-sm"
+                    className="motion-popover fixed z-50 min-w-[160px] rounded-control bg-card shadow-soft-sm shadow-lg p-1 text-sm [--motion-origin:top_left]"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
                 >
+                    <ExitGhost />
                     <button
                         type="button"
                         role="menuitem"

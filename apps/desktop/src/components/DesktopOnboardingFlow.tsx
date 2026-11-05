@@ -1,135 +1,165 @@
-import { Database, Download, RefreshCw, X } from 'lucide-react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { Dialog } from './ui/Dialog';
+import { ProgressBar } from './ui/ProgressBar';
+import { Button } from './ui/Button';
 import { useLanguage } from '../contexts/language-context';
-import { Dialog, DialogBody, DialogFooter, DialogHeader } from './ui/Dialog';
+import { useOnboardingCopy } from './onboarding/copy';
+import { WelcomeStep } from './onboarding/WelcomeStep';
+import { AiStep } from './onboarding/AiStep';
+import { SweepStep } from './onboarding/SweepStep';
+import { CustomizeStep } from './onboarding/CustomizeStep';
+import { DoneStep } from './onboarding/DoneStep';
+import { StepTransition } from './onboarding/ui';
+import {
+    defaultOnboardingServices,
+    type OnboardingProviderChoice,
+    type OnboardingServices,
+} from './onboarding/onboarding-services';
+
+export type OnboardingDestination = 'inbox' | 'focus';
 
 type DesktopOnboardingFlowProps = {
     isOpen: boolean;
-    busy?: boolean;
-    error?: string | null;
-    onOpenSync: () => void;
-    onOpenImport: () => void;
-    onStartFresh: () => void;
+    /** Skip setup (or confirmed leave): the host persists the dismissed flag. */
     onSkip: () => void;
+    /** Finished the last step; the host persists the dismissed flag and navigates. */
+    onFinish: (destination: OnboardingDestination) => void;
+    onOpenSync?: () => void;
+    onOpenImport?: () => void;
+    onOpenLink?: (url: string) => void;
+    /** Test seam: replaces the real AI, capture and system integrations. */
+    services?: Partial<OnboardingServices>;
 };
 
-export function DesktopOnboardingFlow({
-    isOpen,
-    busy = false,
-    error = null,
-    onOpenSync,
-    onOpenImport,
-    onStartFresh,
-    onSkip,
-}: DesktopOnboardingFlowProps) {
-    const { t } = useLanguage();
-    if (!isOpen) return null;
+const TOTAL_STEPS = 5;
+
+export function DesktopOnboardingFlow(props: DesktopOnboardingFlowProps) {
+    if (!props.isOpen) return null;
+    return <OnboardingSheet {...props} />;
+}
+
+function OnboardingSheet({ onSkip, onFinish, onOpenSync, onOpenImport, onOpenLink, services: serviceOverrides }: DesktopOnboardingFlowProps) {
+    const ob = useOnboardingCopy();
+    const { language } = useLanguage();
+    const services = useMemo<OnboardingServices>(
+        () => ({ ...defaultOnboardingServices, ...serviceOverrides }),
+        [serviceOverrides],
+    );
+    const [step, setStep] = useState(0);
+    const [provider, setProvider] = useState<OnboardingProviderChoice>('deepseek');
+    const [apiKey, setApiKey] = useState('');
+    const [aiReady, setAiReady] = useState(false);
+    const [sweepText, setSweepText] = useState('');
+    const [addedCount, setAddedCount] = useState(0);
+    const [confirmLeave, setConfirmLeave] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        services.isAiReady().then((ready) => { if (!cancelled && ready) setAiReady(true); }).catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [services]);
+
+    const dirty = (step === 1 && apiKey.trim().length > 0) || (step === 2 && sweepText.trim().length > 0);
+    const back = () => setStep((current) => Math.max(0, current - 1));
+    const forward = () => setStep((current) => Math.min(TOTAL_STEPS - 1, current + 1));
+    const openLink = (url: string) => { if (onOpenLink) onOpenLink(url); else window.open(url, '_blank', 'noopener,noreferrer'); };
+
+    const requestLeave = () => {
+        if (dirty) setConfirmLeave(true);
+        else onSkip();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Enter' || event.metaKey || event.ctrlKey || event.shiftKey || event.defaultPrevented) return;
+        if (event.nativeEvent.isComposing) return;
+        const target = event.target as HTMLElement;
+        if (['TEXTAREA', 'BUTTON', 'A', 'SELECT'].includes(target.tagName) || target.getAttribute('role') === 'switch') return;
+        const primary = event.currentTarget.querySelector<HTMLButtonElement>('[data-onboarding-primary]');
+        if (primary && !primary.disabled) {
+            event.preventDefault();
+            primary.click();
+        }
+    };
 
     return (
         <Dialog
-
-
-            onClose={() => { if (!busy) onSkip(); }}
+            onClose={requestLeave}
             labelledBy="desktop-onboarding-title"
-
-
             closeOnBackdrop={false}
+            onKeyDown={handleKeyDown}
             overlayClassName="z-[70] bg-black/55 px-6 py-8"
-            panelClassName="max-w-2xl border-border"
+            panelClassName="max-w-[560px] border-border"
         >
-            <DialogHeader className="flex items-start justify-between gap-4 px-6 py-5">
-                <div className="min-w-0">
-                    <h2 id="desktop-onboarding-title" className="text-[17px] font-semibold">
-                        {t('onboarding.title')}
-                    </h2>
-                    <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-                        {t('onboarding.subtitle')}
-                    </p>
-                </div>
-                <button
-                    type="button"
-                    onClick={onSkip}
-                    disabled={busy}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label={t('onboarding.skip')}
-                >
-                    <X className="h-4 w-4" aria-hidden="true" />
-                </button>
-            </DialogHeader>
-
-            <DialogBody className="grid gap-3 p-6">
-                <button
-                    type="button"
-                    onClick={onStartFresh}
-                    disabled={busy}
-                    aria-busy={busy}
-                    className="group flex items-center gap-4 rounded-card btn-gradient px-4 py-4 text-left transition-colors focus-ring focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/20">
-                        <Database className="h-5 w-5" aria-hidden="true" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold">
-                            {busy ? t('onboarding.startFreshBusy') : t('onboarding.startFreshTitle')}
-                        </span>
-                        <span className="mt-0.5 block text-xs text-on-accent">
-                            {t('onboarding.startFreshDesc')}
-                        </span>
-                    </span>
-                </button>
-                <button
-                    type="button"
-                    onClick={onOpenSync}
-                    disabled={busy}
-                    className="group flex items-center gap-4 rounded-card bg-card shadow-soft-sm px-4 py-4 text-left transition-colors hover:bg-accent focus-ring disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-text">
-                        <RefreshCw className="h-5 w-5" aria-hidden="true" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-foreground">{t('onboarding.syncTitle')}</span>
-                        <span className="mt-0.5 block text-xs text-muted-foreground">
-                            {t('onboarding.syncDesc')}
-                        </span>
-                    </span>
-                </button>
-
-                <button
-                    type="button"
-                    onClick={onOpenImport}
-                    disabled={busy}
-                    className="group flex items-center gap-4 rounded-card bg-card shadow-soft-sm px-4 py-4 text-left transition-colors hover:bg-accent focus-ring disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-text">
-                        <Download className="h-5 w-5" aria-hidden="true" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-foreground">{t('onboarding.importTitle')}</span>
-                        <span className="mt-0.5 block text-xs text-muted-foreground">
-                            {t('onboarding.importDesc')}
-                        </span>
-                    </span>
-                </button>
-
-                {error ? (
-                    <div className="rounded-control bg-destructive/10 px-3 py-2 text-xs text-danger-text">
-                        {error}
+            <div className="flex items-center gap-4 px-8 pt-6">
+                <div className="min-w-0 flex-1">
+                    <div className="mb-1.5 text-xs text-muted-foreground" aria-live="polite">
+                        {ob('onboarding.flow.stepOf', { current: step + 1, total: TOTAL_STEPS })}
                     </div>
+                    <ProgressBar
+                        value={step + 1}
+                        max={TOTAL_STEPS}
+                        aria-label={ob('onboarding.flow.stepOf', { current: step + 1, total: TOTAL_STEPS })}
+                    />
+                </div>
+                {step < TOTAL_STEPS - 1 ? (
+                    <Button variant="ghost" size="sm" onClick={onSkip}>{ob('onboarding.flow.skipSetup')}</Button>
                 ) : null}
-            </DialogBody>
+            </div>
 
-            <DialogFooter className="flex flex-wrap items-center justify-between gap-4 bg-well px-6 py-4">
-                <p className="text-xs text-muted-foreground">
-                    {t('onboarding.footer')}
-                </p>
-                <button
-                    type="button"
-                    onClick={onSkip}
-                    disabled={busy}
-                    className="min-h-9 shrink-0 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    {t('onboarding.skipForNow')}
-                </button>
-            </DialogFooter>
+            {confirmLeave ? (
+                <div role="alertdialog" aria-live="assertive" className="mx-8 mt-4 rounded-card bg-well px-4 py-3 shadow-soft-inset">
+                    <div className="text-sm font-semibold">{ob('onboarding.flow.leaveTitle')}</div>
+                    <p className="mt-0.5 text-[13px] text-muted-foreground">{ob('onboarding.flow.leaveBody')}</p>
+                    <div className="mt-3 flex gap-2">
+                        <Button variant="primary" size="sm" onClick={() => setConfirmLeave(false)}>{ob('onboarding.flow.keepGoing')}</Button>
+                        <Button variant="secondary" size="sm" onClick={onSkip}>{ob('onboarding.flow.leave')}</Button>
+                    </div>
+                </div>
+            ) : null}
+
+            <div className="min-h-0 overflow-y-auto px-8 pb-8 pt-6">
+                <StepTransition key={step}>
+                    {step === 0 ? (
+                        <WelcomeStep onNext={forward} onOpenSync={onOpenSync} onOpenImport={onOpenImport} />
+                    ) : null}
+                    {step === 1 ? (
+                        <AiStep
+                            provider={provider}
+                            onProviderChange={setProvider}
+                            apiKey={apiKey}
+                            onApiKeyChange={setApiKey}
+                            testKey={(choice, key) => services.testKey(choice, key, language)}
+                            saveAi={services.saveAi}
+                            onOpenLink={openLink}
+                            onBack={back}
+                            onDone={(ai) => {
+                                setApiKey('');
+                                if (ai) setAiReady(true);
+                                forward();
+                            }}
+                        />
+                    ) : null}
+                    {step === 2 ? (
+                        <SweepStep
+                            text={sweepText}
+                            onTextChange={setSweepText}
+                            aiReady={aiReady}
+                            language={language}
+                            generateProposal={services.generateProposal}
+                            applyProposal={services.applyProposal}
+                            seedGuide={services.seedGuide}
+                            onBack={back}
+                            onDone={(count) => {
+                                setAddedCount(count);
+                                setSweepText('');
+                                forward();
+                            }}
+                        />
+                    ) : null}
+                    {step === 3 ? <CustomizeStep services={services} onBack={back} onNext={forward} /> : null}
+                    {step === 4 ? <DoneStep onOpen={() => onFinish(addedCount > 0 ? 'inbox' : 'focus')} /> : null}
+                </StepTransition>
+            </div>
         </Dialog>
     );
 }

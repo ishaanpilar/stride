@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
+import { Collapse } from '../../ui/Collapse';
 
 
 type SettingKeyProps = {
@@ -115,13 +116,14 @@ export function SettingsDisclosureCard({
                     {description ? <div className="text-xs text-muted-foreground mt-1">{description}</div> : null}
                     {hint ? <div className="text-xs text-muted-foreground">{hint}</div> : null}
                 </div>
-                {open ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />}
+                <ChevronRight
+                    aria-hidden="true"
+                    className={cn('motion-chevron w-4 h-4 text-muted-foreground shrink-0', open && 'rotate-90')}
+                />
             </button>
-            {open ? (
-                <div className="border-t border-border divide-y divide-border">
-                    {children}
-                </div>
-            ) : null}
+            <Collapse open={open} unmountWhenClosed innerClassName="border-t border-border divide-y divide-border">
+                {children}
+            </Collapse>
         </div>
     );
 }

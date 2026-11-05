@@ -10,13 +10,29 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { Switch } from '../../ui/Switch';
+import { dispatchDesktopOnboardingEvent } from '../../../lib/desktop-onboarding-events';
 import { SettingRow, SettingsCard, SettingsDisclosureCard, SettingsSectionHeader } from './SettingRow';
 import { useUiStore } from '../../../store/ui-store';
 import { HIDEABLE_SIDEBAR_VIEW_IDS, type HideableSidebarViewId } from '../../../lib/sidebar-views';
 import { canListInstalledFonts, loadInstalledFontFamilies } from '../../../lib/font-family';
 import { AutocompleteTextInput } from '../../ui/AutocompleteTextInput';
+import { useMotionPreference } from '../../../lib/motion';
 
 const FLATPAK_QUICK_ADD_COMMAND = 'flatpak run com.ishaanpilar.stride --quick-add';
+
+function AnimationsSettingRow({ translate }: { translate: TranslateFn }) {
+    const [motionPreference, setMotionPreference] = useMotionPreference();
+    const title = translate('settings.animations');
+    return (
+        <SettingRow padded settingsKey="animations" title={title} description={translate('settings.animationsDesc')}>
+            <Switch
+                checked={motionPreference === 'on'}
+                aria-label={title}
+                onCheckedChange={(checked) => setMotionPreference(checked ? 'on' : 'off')}
+            />
+        </SettingRow>
+    );
+}
 
 type ThemeMode = DesktopThemeMode;
 type DensityMode = 'comfortable' | 'compact' | 'condensed';
@@ -310,6 +326,7 @@ export function SettingsMainPage({
                 <SettingRow padded settingsKey="fontFamily" title={t.fontFamily} description={t.fontFamilyDesc}>
                     <FontFamilyControl t={t} value={fontFamily} onChange={onFontFamilyChange} />
                 </SettingRow>
+                <AnimationsSettingRow translate={translate} />
                 <SettingRow padded settingsKey="showTaskAge" title={t.showTaskAge} description={t.showTaskAgeDesc}>
                     <Switch
                         checked={showTaskAge}
@@ -523,6 +540,15 @@ export function SettingsMainPage({
                         aria-label={t.undoNotifications}
                         onCheckedChange={() => onUndoNotificationsChange(!undoNotificationsEnabled)}
                     />
+                </SettingRow>
+                <SettingRow padded settingsKey="replayWelcome" title={translate('settings.replayWelcome')} description={translate('settings.replayWelcomeDesc')}>
+                    <button
+                        type="button"
+                        onClick={dispatchDesktopOnboardingEvent}
+                        className="h-8 rounded-control border border-border bg-card px-3 text-[13px] font-medium shadow-soft-sm hover:bg-accent focus-ring"
+                    >
+                        {translate('settings.replayWelcome')}
+                    </button>
                 </SettingRow>
             </SettingsCard>
         </div>

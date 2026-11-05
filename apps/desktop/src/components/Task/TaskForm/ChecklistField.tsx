@@ -13,6 +13,7 @@ import {
     useSortable,
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
+import { SORTABLE_TRANSITION } from '../../../lib/motion';
 import { CSS } from '@dnd-kit/utilities';
 import { Check, GripVertical, ListChecks, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -113,6 +114,7 @@ function SortableChecklistRow({
     itemId: string;
 }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+        transition: SORTABLE_TRANSITION,
         id: itemId,
         disabled: !canReorder,
     });

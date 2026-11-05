@@ -1,9 +1,12 @@
+import { cn } from '../../../lib/utils';
+import { Collapse } from '../../ui/Collapse';
 import { logInfo } from '../../../lib/app-log';
 import { useState, useCallback } from 'react';
 import { DndContext, type DragEndEvent, closestCenter, useSensor, useSensors, PointerSensor } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { SORTABLE_TRANSITION } from '../../../lib/motion';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Trash2, ChevronDown, ChevronRight, Pencil, Check, X, ExternalLink } from 'lucide-react';
+import { GripVertical, Trash2, ChevronRight, Pencil, Check, X, ExternalLink } from 'lucide-react';
 import { buildPersonSearchQuery, DEFAULT_AREA_COLOR, formatI18nTemplate, getPersonNameKey, getPersonTaskCounts, sortViewSectionDefinitions, translateWithFallback, useTaskStore, type Area, type Person, type ViewSectionDefinition,
     baseTextCollator, buildSomedaySectionsSettingsUpdate, isManageAreaNameTaken, isSafePersonReferenceLink, orderSomedaySections, removeSomedaySection, renameSomedaySection, updateSettingsFromLatest,
 } from '@stride/core';
@@ -37,7 +40,7 @@ function SortableAreaRow({
     onUpdateColor: (id: string, color: string | undefined) => void;
     translate: (key: string) => string;
 }) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: area.id });
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: area.id, transition: SORTABLE_TRANSITION });
     const style = {
         transform: CSS.Transform.toString(transform),
         transition,
@@ -110,7 +113,7 @@ function SortableViewSectionRow({
     onUpdateTitle: (id: string, title: string) => void;
     translate: (key: string) => string;
 }) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: section.id });
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: section.id, transition: SORTABLE_TRANSITION });
     const style = {
         transform: CSS.Transform.toString(transform),
         transition,
@@ -421,13 +424,19 @@ function ManageSection({
                 type="button"
                 data-settings-key={settingsKey}
                 onClick={() => setOpen((prev) => !prev)}
-                className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-accent transition-colors"
+                className={cn(
+                    'w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-accent transition-colors focus-ring-inset',
+                    open ? 'rounded-t-card' : 'rounded-card',
+                )}
             >
-                {open ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                <ChevronRight
+                    aria-hidden="true"
+                    className={cn('motion-chevron w-4 h-4 text-muted-foreground', open && 'rotate-90')}
+                />
                 <span className="font-medium text-sm">{title}</span>
                 <span className="text-xs text-muted-foreground ml-auto">{count}</span>
             </button>
-            {open && <div className="px-4 pb-4 space-y-2">{children}</div>}
+            <Collapse open={open} unmountWhenClosed innerClassName="px-4 pb-4 space-y-2">{children}</Collapse>
         </div>
     );
 }

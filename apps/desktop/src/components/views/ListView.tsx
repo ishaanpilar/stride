@@ -120,6 +120,10 @@ import {
 import { QuickAddSyntaxHint } from '../ui/QuickAddSyntaxHint';
 import { useFutureStartRevealTick, useLocalDayKey } from '../../hooks/useLocalDayKey';
 import { resolveDoneTaskSortBy, resolveNonDoneTaskSortBy } from '@stride/core';
+import { effectiveViewStatus, moveIdToTop, partitionDoneLast, sortTasksByManualOrder, type RetainedCompletions } from '@stride/core';
+import { useCompletionRetention } from '../../lib/completion-retention';
+import { ReorderDropZone, ReorderProvider, ReorderableTaskRow, useReorderController, type ReorderHandler } from './list/task-reorder';
+import { snapshotBoardOrder, switchToManualOrderWithUndo, useManualOrderMode } from '../../lib/manual-order';
 
 
 interface ListViewProps {
@@ -133,6 +137,9 @@ const NEXT_WARNING_THRESHOLD = 15;
 
 const SOMEDAY_NO_SECTION_GROUP_ID = 'view-section:someday:';
 
+
+const FLAT_REORDER_GROUP = '__flat__';
+const NO_RETAINED_COMPLETIONS: RetainedCompletions = new Map();
 
 const getListViewStateStorageKey = (statusFilter: string) => (
     statusFilter === 'reference' ? 'stride:view:reference:v1' : `stride:view:list:${statusFilter}:v1`
@@ -194,6 +201,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         queryTasks,
         getDerivedState,
         setHighlightTask,
+        reorderBoardTasks,
     } = useTaskStore((state) => ({
         updateSettings: state.updateSettings,
         addTask: state.addTask,
@@ -208,6 +216,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         queryTasks: state.queryTasks,
         getDerivedState: state.getDerivedState,
         setHighlightTask: state.setHighlightTask,
+        reorderBoardTasks: state.reorderBoardTasks,
     }), shallow);
     const { t, language } = useLanguage();
     const { registerTaskListScope } = useKeybindings();
@@ -260,6 +269,16 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
     const sortBy: TaskSortBy = statusFilter === 'done'
         ? resolveDoneTaskSortBy(globalSortBy, doneSortBy, settings)
         : resolveNonDoneTaskSortBy(globalSortBy, settings);
+    // Completion rule: a task ticked done this session keeps showing in the view it was ticked in, struck
+    // through, and drops to the bottom of its list/section after a short settle delay (see core
+    // task-completion-order.ts). Earlier days' completions follow the normal rules (Done view only).
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    // The Done and Archived views list by their real status; retention only applies to open-status views.
+    const retainedCompletions = statusFilter === 'done' || statusFilter === 'archived' ? NO_RETAINED_COMPLETIONS : sessionCompletions;
+    const reorderableStatus = statusFilter === 'inbox' || statusFilter === 'next'
+        || statusFilter === 'waiting' || statusFilter === 'someday';
+    const [manualOrderFlag, setManualOrderFlag] = useManualOrderMode(statusFilter);
+    const manualActive = reorderableStatus && manualOrderFlag;
     const collapseAllTaskDetails = useUiStore((state) => state.collapseAllTaskDetails);
     const setProjectView = useUiStore((state) => state.setProjectView);
     const [baseTasks, setBaseTasks] = useState<Task[]>(() => (statusFilter === 'archived' ? [] : tasks));
@@ -304,7 +323,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         const allowDeferredProjectTasks = statusFilter === 'done' || statusFilter === 'archived';
         return baseTasks.filter((task) => {
             if (task.deletedAt) return false;
-            if (statusFilter !== 'all' && task.status !== statusFilter) return false;
+            if (statusFilter !== 'all' && effectiveViewStatus(task, retainedCompletions) !== statusFilter) return false;
             if (isReferenceView) {
                 if (!isReferenceInVisibleProject(task, projectMap, includeArchivedReferenceProjects)) return false;
             } else if (!allowDeferredProjectTasks && !isTaskInActiveProject(task, projectMap)) return false;
@@ -320,6 +339,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         isReferenceView,
         projectMap,
         resolvedAreaFilter,
+        retainedCompletions,
         statusFilter,
     ]);
     const metadataFilterVisibility = useMemo(() => getTaskMetadataFilterVisibility(listFilterableTasks, {
@@ -433,9 +453,15 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         const cached = queryCacheRef.current.get(cacheKey);
         if (statusFilter !== 'archived') {
             const { activeTasksByStatus } = getDerivedState();
-            const indexedTasks = statusFilter === 'all'
+            let indexedTasks = statusFilter === 'all'
                 ? tasks
                 : activeTasksByStatus.get(statusFilter) ?? [];
+            if (statusFilter !== 'all' && statusFilter !== 'done' && retainedCompletions.size > 0) {
+                const keptDone = tasks.filter((task) => (
+                    task.status === 'done' && retainedCompletions.get(task.id)?.previousStatus === statusFilter
+                ));
+                if (keptDone.length > 0) indexedTasks = [...indexedTasks, ...keptDone];
+            }
             setBaseTasks(indexedTasks);
             queryCacheRef.current.set(cacheKey, indexedTasks);
             if (queryCacheRef.current.size > 10) {
@@ -469,7 +495,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         return () => {
             cancelled = true;
         };
-    }, [statusFilter, queryTasks, getDerivedState, lastDataChangeAt, showToast, tasks]);
+    }, [statusFilter, queryTasks, getDerivedState, lastDataChangeAt, showToast, tasks, retainedCompletions]);
 
     useEffect(() => {
         setSearchQuery('');
@@ -539,6 +565,9 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         areaById,
         selectedWaitingPerson,
         includeArchivedReferenceProjects,
+        retainedCompletions,
+        settledCompletionIds,
+        manualActive,
     }), [
         baseTasks,
         statusFilter,
@@ -553,6 +582,9 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         areaById,
         selectedWaitingPerson,
         includeArchivedReferenceProjects,
+        retainedCompletions,
+        settledCompletionIds,
+        manualActive,
     ]);
     const deferredFilterInputs = useDeferredValue(filterInputs);
     const nextVisibilityEnabled = statusFilter === 'next';
@@ -576,7 +608,8 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
 
                 if (t.deletedAt) return false;
 
-                if (deferredFilterInputs.statusFilter !== 'all' && t.status !== deferredFilterInputs.statusFilter) return false;
+                if (deferredFilterInputs.statusFilter !== 'all'
+                    && effectiveViewStatus(t, deferredFilterInputs.retainedCompletions) !== deferredFilterInputs.statusFilter) return false;
 
                 if (deferredFilterInputs.statusFilter === 'reference') {
                     if (!isReferenceInVisibleProject(
@@ -624,14 +657,34 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 return true;
             });
 
-            if (deferredFilterInputs.statusFilter === 'next' && deferredFilterInputs.sortBy === 'default') {
-                return deferredFilterInputs.sortByProjectOrder(filtered);
-            }
             if (deferredFilterInputs.statusFilter === 'done' && deferredFilterInputs.sortBy === 'default') {
                 return sortDoneTasksForListView(filtered);
             }
+            if (deferredFilterInputs.statusFilter === 'archived' || deferredFilterInputs.statusFilter === 'done') {
+                return sortTasksBy(filtered, deferredFilterInputs.sortBy);
+            }
 
-            return sortTasksBy(filtered, deferredFilterInputs.sortBy);
+            // Sort retained (ticked this session) tasks as if still open so the default sort's
+            // status ranking does not yank them away before the settle delay; then restore them.
+            const swapped = new Map<string, Task>();
+            const sortable = deferredFilterInputs.retainedCompletions.size === 0 ? filtered : filtered.map((task) => {
+                const effective = effectiveViewStatus(task, deferredFilterInputs.retainedCompletions);
+                if (effective === task.status) return task;
+                swapped.set(task.id, task);
+                return { ...task, status: effective };
+            });
+            let sorted: Task[];
+            if (deferredFilterInputs.manualActive) {
+                sorted = sortTasksByManualOrder(sortable, 'boardOrder');
+            } else if (deferredFilterInputs.statusFilter === 'next' && deferredFilterInputs.sortBy === 'default') {
+                sorted = deferredFilterInputs.sortByProjectOrder(sortable);
+            } else {
+                sorted = sortTasksBy(sortable, deferredFilterInputs.sortBy);
+            }
+            const restored = swapped.size === 0 ? sorted : sorted.map((task) => swapped.get(task.id) ?? task);
+            return partitionDoneLast(restored, {
+                holdInPlace: (task) => !deferredFilterInputs.settledCompletionIds.has(task.id),
+            });
         });
     }, [deferredFilterInputs, nextVisibilityDayKey, nextVisibilityTick, normalizedSearchQuery, referenceSearchPredicate, showViewFilterInput]);
     const activeNextGroupBy: NextGroupBy = statusFilter !== 'reference' && statusFilter !== 'done' && statusFilter !== 'someday'
@@ -1192,10 +1245,41 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 };
         }
     })();
-    const renderListTask = useCallback((task: Task) => {
+    const [reorderAnnouncement, setReorderAnnouncement] = useState('');
+    const handleReorder = useCallback<ReorderHandler>(({ nextIds, movedId, source, groupKey, sourceGroupKey }) => {
+        if (!reorderableStatus || groupKey !== sourceGroupKey) return;
+        if (!manualOrderFlag) {
+            switchToManualOrderWithUndo({ viewKey: statusFilter, snapshot: snapshotBoardOrder([statusFilter as TaskStatus]), t });
+        }
+        void Promise.resolve(reorderBoardTasks(statusFilter as TaskStatus, nextIds, movedId))
+            .catch((error) => reportError('Failed to reorder tasks', error));
+        if (source === 'keyboard') setReorderAnnouncement(tFallback(t, 'list.reorder.moved', 'Task moved'));
+    }, [manualOrderFlag, reorderBoardTasks, reorderableStatus, statusFilter, t]);
+    const reorderLabels = useMemo(() => ({
+        sortedByTime: tFallback(t, 'list.reorder.sortedByTime', 'Sorted by time'),
+        cannotDropHere: tFallback(t, 'list.reorder.cannotDropHere', "Can't move here"),
+    }), [t]);
+    const reorderController = useReorderController(handleReorder, { labels: reorderLabels });
+    const reorderSiblings = useMemo(() => {
+        const map = new Map<string, readonly string[]>();
+        if (!reorderableStatus || readOnly) return map;
+        const openIds = (list: readonly Task[]) => list.filter((task) => task.status !== 'done').map((task) => task.id);
+        if (isListGrouping) groupedTasks.forEach((group) => map.set(group.id, openIds(group.tasks)));
+        else map.set(FLAT_REORDER_GROUP, openIds(filteredTasks));
+        return map;
+    }, [filteredTasks, groupedTasks, isListGrouping, readOnly, reorderableStatus]);
+    const handleMoveToTop = useCallback((taskId: string) => {
+        const entry = [...reorderSiblings.entries()].find(([, ids]) => ids.includes(taskId));
+        if (!entry || entry[1][0] === taskId) return;
+        const [groupKey, siblings] = entry;
+        handleReorder({ groupKey, sourceGroupKey: groupKey, siblingIds: siblings, nextIds: moveIdToTop(siblings, taskId), movedId: taskId, source: 'keyboard' });
+    }, [handleReorder, reorderSiblings]);
+    const renderListTask = useCallback((task: Task, group?: TaskGroup) => {
         const index = taskIndexById.get(task.id) ?? 0;
         const isHistoricalReference = isHistoricalReferenceTask(task);
-        return (
+        const groupKey = group?.id ?? FLAT_REORDER_GROUP;
+        const siblingIds = reorderSiblings.get(groupKey);
+        const item = (
             <StoreTaskItem
                 key={task.id}
                 taskId={task.id}
@@ -1212,9 +1296,25 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 showProjectBadgeInActions={false}
                 interactionDisabled={isHistoricalReference}
                 onMoveToSomedaySection={statusFilter === 'someday' ? openSomedayMove : undefined}
+                onMoveToTop={siblingIds && task.status !== 'done' ? handleMoveToTop : undefined}
             />
         );
+        if (!siblingIds || task.status === 'done') return item;
+        return (
+            <ReorderableTaskRow
+                key={task.id}
+                taskId={task.id}
+                groupKey={groupKey}
+                siblingIds={siblingIds}
+                dragLabel={tFallback(t, 'list.reorder.drag', 'Drag to reorder')}
+            >
+                {item}
+            </ReorderableTaskRow>
+        );
     }, [
+        handleMoveToTop,
+        reorderSiblings,
+        t,
         handleSelectIndex,
         isHistoricalReferenceTask,
         multiSelectedIds,
@@ -1252,7 +1352,13 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         filterSummarySuffix={filterSummarySuffix}
                         sortBy={sortBy}
                         defaultSortBy="default"
+                        manualSort={reorderableStatus ? {
+                            label: tFallback(t, 'sort.manual', 'Manual'),
+                            selected: manualActive,
+                            onSelect: () => setManualOrderFlag(true),
+                        } : undefined}
                         onChangeSortBy={(value) => {
+                            if (manualOrderFlag) setManualOrderFlag(false);
                             if (statusFilter === 'done') {
                                 setListOptions({ doneSortBy: value });
                                 return;
@@ -1582,15 +1688,17 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                         onAddTask={() => openQuickAdd(statusFilter)}
                         primaryAction={isInbox && !hasFilters
                             ? (
-                                <div className="flex flex-col gap-2">
+                                <>
                                     <QuickCaptureTrigger t={t} variant="primary" />
                                     <MindSweepTrigger t={t} onOpen={openMindSweep} variant="secondary" />
-                                </div>
+                                </>
                             )
                             : undefined}
                         t={t}
                     />
                 ) : (
+                    <ReorderProvider value={reorderController}>
+                    <ReorderDropZone>
                     <GroupedTaskList
                         groups={groupedTasks}
                         tasks={filteredTasks}
@@ -1613,7 +1721,10 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                                 : 'pb-2.5'}
                         renderTask={renderListTask}
                     />
+                    </ReorderDropZone>
+                    </ReorderProvider>
                 )}
+                <span className="sr-only" role="status" aria-live="polite">{reorderAnnouncement}</span>
                 <div data-list-end className={LIST_END_GAP} aria-hidden="true" />
             </div>
         </div>

@@ -7,6 +7,7 @@ import {
 import { resolveTaskNavigationView } from '../lib/task-navigation';
 import { dispatchNavigateEvent, type DesktopViewId } from '../lib/navigation-events';
 import {
+    MENUBAR_FOCUS_EXPAND_EVENT,
     MENUBAR_OPEN_EVENT,
     MENUBAR_POMODORO_CHANGED_EVENT,
     setTrayTitle,
@@ -18,6 +19,7 @@ import { logError } from '../lib/app-log';
 import { isTauriRuntime } from '../lib/runtime';
 import { useAssistantStore } from '../store/assistant-store';
 import { usePomodoroStore } from '../store/pomodoro-store';
+import { useFocusSessionStore } from '../store/focus-session-store';
 
 /** Time for the Assistant view to mount and hydrate its thread before a question is sent. */
 const ASSISTANT_MOUNT_DELAY_MS = 250;
@@ -60,12 +62,16 @@ export function useMenuBarPanelBridge({ enabled, language }: { enabled: boolean;
                     autoStartFocus: settings.gtd?.pomodoro?.autoStartFocus === true,
                 });
             });
+            const offFocus = await listen(MENUBAR_FOCUS_EXPAND_EVENT, () => {
+                useFocusSessionStore.getState().expand();
+            });
             if (disposed) {
                 offOpen();
                 offPomodoro();
+                offFocus();
                 return;
             }
-            unlisteners.push(offOpen, offPomodoro);
+            unlisteners.push(offOpen, offPomodoro, offFocus);
         };
         setup().catch((error) => void logError(error, { scope: 'menubar', step: 'listen' }));
         return () => {

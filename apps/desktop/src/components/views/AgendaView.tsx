@@ -1,23 +1,12 @@
 import { getProjectAccentColor } from '@stride/core';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import {
-    DndContext,
-    DragOverlay,
-    KeyboardSensor,
-    PointerSensor,
-    closestCenter,
-    useSensor,
-    useSensors,
-    type DragEndEvent,
-    type DragStartEvent,
-} from '@dnd-kit/core';
-import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { shallow, useTaskStore, TaskPriority, TimeEstimate, TIME_ESTIMATE_OPTIONS, buildFocusPools, compareProjectsByOrder, planFocusFilterCriterionRemoval, formatFocusTaskLimitText,
     getFocusHiddenByAreaLabel, logInfo, getFocusStarBlockedText, formatTimeEstimateLabel, generateUUID, getUsedTaskTokens, deriveFocusTaskLists, getProjectDeadlineBoostLabel, getTaskMetadataFilterVisibility, isTaskFutureFocusCandidate, markSavedFilterDeleted, normalizeFocusTaskLimit, resolveFeatureFlags, resolveTaskPerspectiveForFeatures, safeFormatDate, safeParseDate, selectFocusSavedFilters, isDueForReview, shouldShowTaskForStart, splitTodayTasksByStartTime, translateWithFallback, tFallback, updateSettingsFromLatest } from '@stride/core';
 import { DEFAULT_FOCUS_SORT_BY } from '@stride/core';
+import { moveIdToTop, retainCompletedInSections, sortTasksByFocusOrder, sortTasksByManualOrder, type SectionMembership } from '@stride/core';
 import type { MultiValueFilterMatchMode, SavedFilter, SortField, Task, TaskEnergyLevel } from '@stride/core';
 import { useTaskFilterSelections } from '@stride/core/task-filter-selections';
 import { buildAdvancedChips, buildSelectionChips, type ActiveFilterChipDeps } from './list/active-filter-chips';
@@ -36,7 +25,12 @@ import { AgendaFiltersPanel, type AgendaActiveFilterChip, type AgendaProjectFilt
 import { AgendaHeader } from './agenda/AgendaHeader';
 import { DailyBriefingCard } from './agenda/DailyBriefingCard';
 import { AgendaCollapsibleSection, AgendaProjectSection } from './agenda/AgendaSections';
-import { SortableFocusRow } from './agenda/SortableFocusRow';
+import { ReorderDropZone, ReorderProvider, ReorderableTaskRow, useReorderController, type CrossGroupDropCheck, type ReorderHandler } from './list/task-reorder';
+import { commitBoardOrder, MANUAL_ORDER_KEYS, snapshotBoardOrder, statusesOf, switchedToManualOrderMessage, switchToManualOrderWithUndo, useManualOrderMode } from '../../lib/manual-order';
+import { addTaskToFocusFromDrop, focusDropBlockedReason } from '../../lib/focus-drop';
+import { showUndoToast } from '../../lib/undo-registry';
+import { reportError } from '../../lib/report-error';
+import { useCompletionRetention } from '../../lib/completion-retention';
 import { StoreTaskItem } from './list/StoreTaskItem';
 import { GroupedTaskSectionHeader } from './list/GroupedTaskSections';
 import { useTaskGroupCollapse } from './list/useTaskGroupCollapse';
@@ -55,10 +49,16 @@ import { PromptModal } from '../PromptModal';
 import { dispatchNavigateEvent } from '../../lib/navigation-events';
 import { FocusStarIcon } from '../FocusStarIcon';
 import { useFutureStartRevealTick, useLocalDayKey } from '../../hooks/useLocalDayKey';
+import { ExitGhost } from '../ui/ExitGhost';
 
 const AGENDA_VIRTUALIZATION_THRESHOLD = 25;
 const AGENDA_ACTIVE_STATUSES: Task['status'][] = ['inbox', 'next', 'waiting', 'someday'];
 const FOCUS_VIEW_STATE_STORAGE_KEY = 'stride:view:focus:v1';
+const FOCUS_REORDER_GROUP = 'focus';
+const TODAY_READY_REORDER_GROUP = 'today-ready';
+const NEXT_REORDER_GROUP = 'next';
+
+type AgendaListReorder = { groupKey: string; locked?: boolean; dragLabel: string };
 
 type FocusSectionKey = 'focus' | 'schedule' | 'nextActions' | 'upcoming' | 'reviewDue' | 'reviewProjects';
 type SetFocusCollapsedGroups = (
@@ -229,13 +229,14 @@ function SavedFocusFilterChip({
                     role="menu"
                     aria-label={moreOptionsLabel}
                     style={menuStyle}
-                    className="z-50 min-w-44 rounded-control bg-popover p-1 shadow-soft"
+                    className="motion-popover z-50 min-w-44 rounded-control bg-popover p-1 shadow-soft"
                     onKeyDown={(event) => {
                         if (event.key !== 'Tab') return;
                         setMenuOpen(false);
                         menuButtonRef.current?.focus();
                     }}
                 >
+                    <ExitGhost />
                     <button
                         type="button"
                         role="menuitem"
@@ -263,6 +264,7 @@ function AgendaTaskList({
     getProjectDeadlineLabel,
     showListDetails,
     highlightTaskId,
+    reorder,
 }: {
     tasks: Task[];
     buildFocusToggle: (task: Task) => {
@@ -277,8 +279,26 @@ function AgendaTaskList({
     getProjectDeadlineLabel?: (taskId: string) => string | undefined;
     showListDetails: boolean;
     highlightTaskId: string | null;
+    reorder?: AgendaListReorder;
 }) {
     const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
+    const reorderSiblingIds = useMemo(
+        () => (reorder && !reorder.locked ? tasks.filter((task) => task.status !== 'done').map((task) => task.id) : []),
+        [reorder, tasks],
+    );
+    const wrapRow = (task: Task, row: ReactNode) => (reorder ? (
+        <ReorderableTaskRow
+            key={task.id}
+            taskId={task.id}
+            groupKey={reorder.groupKey}
+            siblingIds={reorderSiblingIds}
+            locked={reorder.locked}
+            enabled={task.status !== 'done'}
+            dragLabel={reorder.dragLabel}
+        >
+            {row}
+        </ReorderableTaskRow>
+    ) : row);
     const [scrollMargin, setScrollMargin] = useState(0);
 
     const scrollElement = getAgendaScrollElement(containerElement);
@@ -319,7 +339,7 @@ function AgendaTaskList({
     if (!shouldVirtualize) {
         return (
             <div className="flex flex-col gap-2.5">
-                {tasks.map((task) => (
+                {tasks.map((task) => wrapRow(task, (
                     <StoreTaskItem
                         key={task.id}
                         taskId={task.id}
@@ -330,7 +350,7 @@ function AgendaTaskList({
                         appearsAtLabel={getAppearsAtLabel?.(task.id)}
                         projectDeadlineLabel={getProjectDeadlineLabel?.(task.id)}
                     />
-                ))}
+                )))}
             </div>
         );
     }
@@ -360,15 +380,17 @@ function AgendaTaskList({
                             transform: `translateY(${virtualRow.start - scrollMargin}px)`,
                         }}
                     >
-                        <StoreTaskItem
-                            taskId={task.id}
-                            buildFocusToggle={buildFocusToggle}
-                            showProjectBadgeInActions={false}
-                            compactMetaEnabled={showListDetails}
-                            enableDoubleClickEdit
-                            appearsAtLabel={getAppearsAtLabel?.(task.id)}
-                            projectDeadlineLabel={getProjectDeadlineLabel?.(task.id)}
-                        />
+                        {wrapRow(task, (
+                            <StoreTaskItem
+                                taskId={task.id}
+                                buildFocusToggle={buildFocusToggle}
+                                showProjectBadgeInActions={false}
+                                compactMetaEnabled={showListDetails}
+                                enableDoubleClickEdit
+                                appearsAtLabel={getAppearsAtLabel?.(task.id)}
+                                projectDeadlineLabel={getProjectDeadlineLabel?.(task.id)}
+                            />
+                        ))}
                     </div>
                 );
             })}
@@ -797,12 +819,15 @@ export function AgendaView() {
     }, [highlightTaskId, setHighlightTask]);
 
 
-    const focusDragEnabled = effectiveFocusSortBy === DEFAULT_FOCUS_SORT_BY && !hasTaskFilters;
+    const isDefaultFocusSort = effectiveFocusSortBy === DEFAULT_FOCUS_SORT_BY;
+    const [nextManualFlag, setNextManualFlag] = useManualOrderMode(MANUAL_ORDER_KEYS.next);
+    const [todayManualFlag, setTodayManualFlag] = useManualOrderMode(MANUAL_ORDER_KEYS.today);
+    const nextManual = isDefaultFocusSort && nextManualFlag;
+    const todayManual = isDefaultFocusSort && todayManualFlag;
 
-
-    const sections = useMemo(() => {
+    const baseSections = useMemo(() => {
         void localDayKey;
-        return deriveFocusTaskLists(focusPools, {
+        const lists = deriveFocusTaskLists(focusPools, {
             now: new Date(),
             projects,
             sections: projectSections,
@@ -811,17 +836,47 @@ export function AgendaView() {
             sortOrder: activeSavedFilter?.sortOrder,
             focusIncludeStartDates: settings?.gtd?.focusIncludeStartDates,
         });
+        return {
+            ...lists,
+            schedule: todayManual ? sortTasksByManualOrder(lists.schedule, 'boardOrder') : lists.schedule,
+            nextActions: nextManual ? sortTasksByManualOrder(lists.nextActions, 'boardOrder') : lists.nextActions,
+        };
     }, [
         activeSavedFilter?.sortOrder,
         effectiveFocusSortBy,
         focusPools,
         localDayKey,
+        nextManual,
+        todayManual,
         prioritiesEnabled,
         projects,
         projectSections,
         settings?.gtd?.focusIncludeStartDates,
     ]);
+    // Completion rule: tasks ticked done this session stay in the section they were in, struck through,
+    // and drop to the bottom of that section after the settle delay (core task-completion-order.ts).
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const sectionMembershipRef = useRef<SectionMembership>(new Map());
+    const sections = useMemo(() => {
+        if (sessionCompletions.size === 0 && sectionMembershipRef.current.size === 0) return baseSections;
+        const lists = retainCompletedInSections(
+            {
+                focusedTasks: baseSections.focusedTasks,
+                schedule: baseSections.schedule,
+                reviewDue: baseSections.reviewDue,
+                nextActions: baseSections.nextActions,
+                upcoming: baseSections.upcoming,
+            },
+            sectionMembershipRef.current,
+            sessionCompletions,
+            settledCompletionIds,
+            (id) => tasksById.get(id),
+        );
+        return { ...baseSections, ...lists };
+    }, [baseSections, sessionCompletions, settledCompletionIds, tasksById]);
     const focusedTasks = sections.focusedTasks;
+    const focusedOpenTasks = useMemo(() => focusedTasks.filter((task) => task.status !== 'done'), [focusedTasks]);
+    const focusedDoneTasks = useMemo(() => focusedTasks.filter((task) => task.status === 'done'), [focusedTasks]);
     const nextActionGroups = useMemo(() => (
         groupTasks(effectiveNextGroupBy, { tasks: sections.nextActions, areas, projectMap, t, theme: settings?.theme })
     ), [areas, effectiveNextGroupBy, projectMap, sections.nextActions, settings?.theme, t]);
@@ -957,6 +1012,7 @@ export function AgendaView() {
     }, [collapseOtherSections, setPersistedViewState]);
     const nextActionsCount = sections.nextActions.length;
     const hasAgendaContent = focusedCount > 0
+        || focusedTasks.length > 0
         || sections.schedule.length > 0
         || sections.nextActions.length > 0
         || sections.upcoming.length > 0
@@ -984,65 +1040,133 @@ export function AgendaView() {
         }
         setListOptions({ showDetails: true });
     }, [collapseAllTaskDetails, setListOptions, showListDetails]);
-    const focusDndSensors = useSensors(
-        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-    );
-    const [activeFocusDragId, setActiveFocusDragId] = useState<string | null>(null);
-    const handleFocusDragStart = useCallback((event: DragStartEvent) => {
-        setActiveFocusDragId(String(event.active.id));
-    }, []);
-    const handleFocusDragCancel = useCallback(() => setActiveFocusDragId(null), []);
-    const handleFocusDragEnd = useCallback((event: DragEndEvent) => {
-        setActiveFocusDragId(null);
-        const { active, over } = event;
-        if (!over || active.id === over.id) return;
-        const ids = focusedTasks.map((task) => task.id);
-        const oldIndex = ids.indexOf(String(active.id));
-        const newIndex = ids.indexOf(String(over.id));
-        if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return;
+    const [reorderAnnouncement, setReorderAnnouncement] = useState('');
+    const announceReorder = useCallback((change: { nextIds: readonly string[]; movedId: string; source: 'drag' | 'keyboard' }) => {
+        if (change.source !== 'keyboard') return;
+        const position = change.nextIds.indexOf(change.movedId) + 1;
+        setReorderAnnouncement(`${tFallback(t, 'list.reorder.moved', 'Task moved')} (${position}/${change.nextIds.length})`);
+    }, [t]);
+    const sortRestoreRef = useRef({ applySavedSelections, setFocusSortBy });
+    sortRestoreRef.current = { applySavedSelections, setFocusSortBy };
+    const captureSortRestore = useCallback(() => {
+        const previousSaved = activeSavedFilter;
+        const previousSort = focusSortBy;
+        return () => {
+            const latest = sortRestoreRef.current;
+            if (previousSaved) {
+                latest.applySavedSelections(previousSaved);
+                latest.setFocusSortBy(previousSaved.sortBy ?? DEFAULT_FOCUS_SORT_BY);
+                return;
+            }
+            latest.setFocusSortBy(previousSort);
+        };
+    }, [activeSavedFilter, focusSortBy]);
+    const commitFocusOrder = useCallback((nextIds: string[]) => {
+        void Promise.resolve(reorderFocusedTasks(nextIds))
+            .then((result) => {
+                if (result && result.success === false) throw new Error(result.error || 'Failed to reorder Focus');
+            })
+            .catch((error) => reportError('Failed to reorder Focus', error));
+    }, [reorderFocusedTasks]);
+    const handleAgendaReorder = useCallback<ReorderHandler>((change) => {
+        const { groupKey, sourceGroupKey, nextIds, movedId } = change;
+        if (groupKey === FOCUS_REORDER_GROUP) {
+            if (sourceGroupKey !== FOCUS_REORDER_GROUP) {
+                void addTaskToFocusFromDrop(movedId, t, () => nextIds);
+                return;
+            }
+            if (!isDefaultFocusSort) {
+                const previousFocusIds = sortTasksByFocusOrder(globalFocusedTasks).map((task) => task.id);
+                const restoreSort = captureSortRestore();
+                updateFocusSortBy(DEFAULT_FOCUS_SORT_BY);
+                showUndoToast(switchedToManualOrderMessage(t), () => {
+                    restoreSort();
+                    commitFocusOrder(previousFocusIds);
+                }, t);
+            }
+            commitFocusOrder(nextIds);
+            announceReorder(change);
+            return;
+        }
+        if (groupKey !== sourceGroupKey) return;
+        const isToday = groupKey === TODAY_READY_REORDER_GROUP;
+        if (!isToday && !groupKey.startsWith(NEXT_REORDER_GROUP)) return;
+        const flag = isToday ? todayManualFlag : nextManualFlag;
+        if (!(isDefaultFocusSort && flag)) {
+            const restoreSort = isDefaultFocusSort ? undefined : captureSortRestore();
+            if (!isDefaultFocusSort) updateFocusSortBy(DEFAULT_FOCUS_SORT_BY);
+            switchToManualOrderWithUndo({
+                viewKey: isToday ? MANUAL_ORDER_KEYS.today : MANUAL_ORDER_KEYS.next,
+                snapshot: snapshotBoardOrder(statusesOf(nextIds)),
+                t,
+                restoreSort,
+                previousManual: flag,
+            });
+        }
+        void commitBoardOrder(nextIds, movedId).catch((error) => reportError('Failed to reorder tasks', error));
+        announceReorder(change);
+    }, [announceReorder, captureSortRestore, commitFocusOrder, globalFocusedTasks, isDefaultFocusSort, nextManualFlag, t, todayManualFlag, updateFocusSortBy]);
+    const canDropAcrossAgenda = useCallback<CrossGroupDropCheck>(({ movedId, targetGroupKey }) => {
+        if (targetGroupKey !== FOCUS_REORDER_GROUP) return false;
+        return focusDropBlockedReason(movedId, t) ?? true;
+    }, [t]);
+    const agendaReorderLabels = useMemo(() => ({
+        sortedByTime: tFallback(t, 'list.reorder.sortedByTime', 'Sorted by time'),
+        cannotDropHere: tFallback(t, 'list.reorder.cannotDropHere', "Can't move here"),
+    }), [t]);
+    const agendaReorderController = useReorderController(handleAgendaReorder, {
+        canDropAcross: canDropAcrossAgenda,
+        labels: agendaReorderLabels,
+    });
+    const reorderDragLabel = tFallback(t, 'list.reorder.drag', 'Drag to reorder');
+    const focusOpenIds = useMemo(() => focusedOpenTasks.map((task) => task.id), [focusedOpenTasks]);
+    const handleFocusMoveToTop = useCallback((taskId: string) => {
+        if (focusOpenIds[0] === taskId || !focusOpenIds.includes(taskId)) return;
+        handleAgendaReorder({
+            groupKey: FOCUS_REORDER_GROUP,
+            sourceGroupKey: FOCUS_REORDER_GROUP,
+            siblingIds: focusOpenIds,
+            nextIds: moveIdToTop(focusOpenIds, taskId),
+            movedId: taskId,
+            source: 'keyboard',
+        });
+    }, [focusOpenIds, handleAgendaReorder]);
+    const manualSortOption = useMemo(() => ({
+        label: tFallback(t, 'sort.manual', 'Manual'),
+        selected: isDefaultFocusSort && (nextManualFlag || todayManualFlag),
+        onSelect: () => {
+            if (!isDefaultFocusSort) updateFocusSortBy(DEFAULT_FOCUS_SORT_BY);
+            setNextManualFlag(true);
+            setTodayManualFlag(true);
+        },
+    }), [isDefaultFocusSort, nextManualFlag, setNextManualFlag, setTodayManualFlag, t, todayManualFlag, updateFocusSortBy]);
+    const handleChangeFocusSortBy = useCallback((value: SortField) => {
+        setNextManualFlag(false);
+        setTodayManualFlag(false);
+        updateFocusSortBy(value);
+    }, [setNextManualFlag, setTodayManualFlag, updateFocusSortBy]);
 
-        void Promise.resolve(reorderFocusedTasks(arrayMove(ids, oldIndex, newIndex))).catch(() => undefined);
-    }, [focusedTasks, reorderFocusedTasks]);
-    const focusDragAriaLabel = resolveText('projects.reorderTasks', 'Order');
-    const activeFocusDragTask = activeFocusDragId
-        ? focusedTasks.find((task) => task.id === activeFocusDragId) ?? null
-        : null;
-
-    const focusListBody = focusDragEnabled ? (
-        <DndContext
-            sensors={focusDndSensors}
-            collisionDetection={closestCenter}
-            onDragStart={handleFocusDragStart}
-            onDragCancel={handleFocusDragCancel}
-            onDragEnd={handleFocusDragEnd}
-        >
-            <SortableContext items={focusedTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-                <div className="flex flex-col gap-2.5">
-                    {focusedTasks.map(task => (
-                        <SortableFocusRow
-                            key={task.id}
-                            taskId={task.id}
-                            dragAriaLabel={focusDragAriaLabel}
-                            buildFocusToggle={buildFocusToggle}
-                            showProjectBadgeInActions={false}
-                            compactMetaEnabled={showListDetails}
-                            enableDoubleClickEdit
-                        />
-                    ))}
-                </div>
-            </SortableContext>
-            <DragOverlay dropAnimation={null}>
-                {activeFocusDragTask ? (
-                    <div className="pointer-events-none max-w-[280px] truncate rounded-card bg-card shadow-soft-sm px-3 py-2 text-sm shadow-lg">
-                        {activeFocusDragTask.title}
-                    </div>
-                ) : null}
-            </DragOverlay>
-        </DndContext>
-    ) : (
+    const focusListBody = (
         <div className="flex flex-col gap-2.5">
-            {focusedTasks.map(task => (
+            {focusedOpenTasks.map((task) => (
+                <ReorderableTaskRow
+                    key={task.id}
+                    taskId={task.id}
+                    groupKey={FOCUS_REORDER_GROUP}
+                    siblingIds={focusOpenIds}
+                    dragLabel={reorderDragLabel}
+                >
+                    <StoreTaskItem
+                        taskId={task.id}
+                        onMoveToTop={handleFocusMoveToTop}
+                        buildFocusToggle={buildFocusToggle}
+                        showProjectBadgeInActions={false}
+                        compactMetaEnabled={showListDetails}
+                        enableDoubleClickEdit
+                    />
+                </ReorderableTaskRow>
+            ))}
+            {focusedDoneTasks.map((task) => (
                 <StoreTaskItem
                     key={task.id}
                     taskId={task.id}
@@ -1055,7 +1179,8 @@ export function AgendaView() {
         </div>
     );
 
-    const todaysFocusSection = focusedCount > 0 ? (
+    const todaysFocusSection = focusedCount > 0 || focusedTasks.length > 0 ? (
+        <ReorderDropZone groupKey={FOCUS_REORDER_GROUP} siblingIds={focusOpenIds}>
         <div
             data-testid="todays-focus-section"
             className="rounded-card bg-card p-5 shadow-soft-sm"
@@ -1082,10 +1207,13 @@ export function AgendaView() {
             {focusHiddenByAreaLabel && <p className="mb-3 text-sm text-muted-foreground" data-testid="focus-hidden-by-area">{focusHiddenByAreaLabel}</p>}
             {expandedSections.focus && <div id="agenda-section-focus">{focusListBody}</div>}
         </div>
+        </ReorderDropZone>
     ) : null;
 
     return (
         <ErrorBoundary>
+            <ReorderProvider value={agendaReorderController}>
+            <ReorderDropZone>
             <div className={cn("space-y-6 w-full", LIST_END_GAP)} data-list-end>
             <DailyBriefingCard />
             <AgendaHeader
@@ -1097,7 +1225,8 @@ export function AgendaView() {
                 canToggleOtherSections={canToggleOtherSections}
                 collapseOtherSections={collapseOtherSections}
                 onChangeGroupBy={updateFocusGroupBy}
-                onChangeSortBy={updateFocusSortBy}
+                onChangeSortBy={handleChangeFocusSortBy}
+                manualSort={manualSortOption}
                 onToggleFilters={() => setFiltersOpen((prev) => !prev)}
                 onToggleDetails={handleToggleDetails}
                 onToggleOtherSections={toggleOtherSections}
@@ -1231,6 +1360,7 @@ export function AgendaView() {
                                 getAppearsAtLabel={getScheduleAppearsAtLabel}
                                 showListDetails={showListDetails}
                                 highlightTaskId={highlightTaskId}
+                                reorder={{ groupKey: TODAY_READY_REORDER_GROUP, dragLabel: reorderDragLabel }}
                             />
                         )}
                         {todayTaskGroups.laterToday.length > 0 && (
@@ -1244,6 +1374,7 @@ export function AgendaView() {
                                     getAppearsAtLabel={getScheduleAppearsAtLabel}
                                     showListDetails={showListDetails}
                                     highlightTaskId={highlightTaskId}
+                                    reorder={{ groupKey: 'today-later', locked: true, dragLabel: reorderDragLabel }}
                                 />
                             </div>
                         )}
@@ -1267,6 +1398,7 @@ export function AgendaView() {
                                 getProjectDeadlineLabel={getProjectDeadlineLabel}
                                 showListDetails={showListDetails}
                                 highlightTaskId={highlightTaskId}
+                                reorder={{ groupKey: NEXT_REORDER_GROUP, dragLabel: reorderDragLabel }}
                             />
                         </AgendaCollapsibleSection>
                     )
@@ -1301,6 +1433,7 @@ export function AgendaView() {
                                                         getProjectDeadlineLabel={getProjectDeadlineLabel}
                                                         showListDetails={showListDetails}
                                                         highlightTaskId={highlightTaskId}
+                                                        reorder={{ groupKey: `${NEXT_REORDER_GROUP}:${group.id}`, dragLabel: reorderDragLabel }}
                                                     />
                                                 </div>
                                             )}
@@ -1327,6 +1460,7 @@ export function AgendaView() {
                             buildFocusToggle={buildFocusToggle}
                             showListDetails={showListDetails}
                             highlightTaskId={highlightTaskId}
+                            reorder={{ groupKey: 'review-due', locked: true, dragLabel: reorderDragLabel }}
                         />
                     </AgendaCollapsibleSection>
                 )}
@@ -1347,6 +1481,7 @@ export function AgendaView() {
                             getAppearsAtLabel={getUpcomingAppearsAtLabel}
                             showListDetails={showListDetails}
                             highlightTaskId={highlightTaskId}
+                            reorder={{ groupKey: 'upcoming', locked: true, dragLabel: reorderDragLabel }}
                         />
                     </AgendaCollapsibleSection>
                 )}
@@ -1388,7 +1523,10 @@ export function AgendaView() {
                 onCancel={() => setSaveFilterPromptOpen(false)}
             />
             {confirmModal}
+            <span className="sr-only" role="status" aria-live="polite" data-testid="agenda-reorder-announcement">{reorderAnnouncement}</span>
             </div>
+            </ReorderDropZone>
+            </ReorderProvider>
         </ErrorBoundary>
     );
 }

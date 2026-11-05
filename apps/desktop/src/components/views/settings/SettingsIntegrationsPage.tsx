@@ -1,6 +1,7 @@
 import type { ExternalCalendarSubscription } from '@stride/core';
 import type { SystemCalendarPermissionStatus, SystemCalendarPushTarget } from '../../../lib/system-calendar';
 
+import type { CalendarSyncSectionProps } from './CalendarSyncSection';
 import { SettingsCalendarPage } from './SettingsCalendarPage';
 import { SettingsEmailCaptureSection } from './SettingsEmailCaptureSection';
 import { SettingsObsidianSection } from './SettingsObsidianSection';
@@ -120,6 +121,7 @@ type SettingsIntegrationsPageProps = {
     onToggleCalendarPush: (enabled: boolean) => Promise<void> | void;
     onCalendarPushTargetChange: (id: string | null) => Promise<void> | void;
     onRefreshCalendarPushTargets: () => Promise<void> | void;
+    calendarSync?: CalendarSyncSectionProps;
     maskCalendarUrl: (url: string) => string;
     obsidianVaultPath: string;
     obsidianEnabled: boolean;
@@ -176,6 +178,7 @@ export function SettingsIntegrationsPage({
     onToggleCalendarPush,
     onCalendarPushTargetChange,
     onRefreshCalendarPushTargets,
+    calendarSync,
     maskCalendarUrl,
     obsidianVaultPath,
     obsidianEnabled,
@@ -231,6 +234,7 @@ export function SettingsIntegrationsPage({
                 onToggleCalendarPush={onToggleCalendarPush}
                 onCalendarPushTargetChange={onCalendarPushTargetChange}
                 onRefreshCalendarPushTargets={onRefreshCalendarPushTargets}
+                calendarSync={calendarSync}
                 maskCalendarUrl={maskCalendarUrl}
             />
 

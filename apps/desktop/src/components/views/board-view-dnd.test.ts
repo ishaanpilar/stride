@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveBoardDragEnd } from './board-view-dnd';
+import { resolveBoardDragEnd, resolveBoardEdgeMove } from './board-view-dnd';
 
 const COLUMN_IDS = ['inbox', 'next', 'waiting', 'someday', 'done'] as const;
 
@@ -141,5 +141,40 @@ describe('resolveBoardDragEnd', () => {
         });
 
         expect(action).toEqual({ type: 'none' });
+    });
+});
+
+import { resolveBoardKeyboardMove } from './board-view-dnd';
+
+describe('resolveBoardKeyboardMove', () => {
+    const base = {
+        taskId: 'b',
+        columnIds: [...COLUMN_IDS],
+        status: 'next' as const,
+        columnTaskIds: ['a', 'b', 'c'],
+        canReorder: true,
+    };
+
+    it('moves across columns with Left/Right and stops at the edges', () => {
+        expect(resolveBoardKeyboardMove({ ...base, direction: 'right' })).toEqual({ type: 'move', taskId: 'b', status: 'waiting' });
+        expect(resolveBoardKeyboardMove({ ...base, direction: 'left' })).toEqual({ type: 'move', taskId: 'b', status: 'inbox' });
+        expect(resolveBoardKeyboardMove({ ...base, status: 'inbox', direction: 'left' })).toEqual({ type: 'none' });
+        expect(resolveBoardKeyboardMove({ ...base, status: 'done', direction: 'right' })).toEqual({ type: 'none' });
+    });
+
+    it('reorders within the column with Up/Down', () => {
+        expect(resolveBoardKeyboardMove({ ...base, direction: 'up' })).toEqual({ type: 'reorder', status: 'next', orderedIds: ['b', 'a', 'c'] });
+        expect(resolveBoardKeyboardMove({ ...base, direction: 'down' })).toEqual({ type: 'reorder', status: 'next', orderedIds: ['a', 'c', 'b'] });
+        expect(resolveBoardKeyboardMove({ ...base, taskId: 'a', direction: 'up' })).toEqual({ type: 'none' });
+        expect(resolveBoardKeyboardMove({ ...base, direction: 'down', canReorder: false })).toEqual({ type: 'none' });
+    });
+});
+
+describe('resolveBoardEdgeMove', () => {
+    it('sends a card to the top or bottom and ignores no-ops', () => {
+        expect(resolveBoardEdgeMove('b', 'next', 'top', ['a', 'b', 'c'], true)).toEqual({ type: 'reorder', status: 'next', orderedIds: ['b', 'a', 'c'] });
+        expect(resolveBoardEdgeMove('b', 'next', 'bottom', ['a', 'b', 'c'], true)).toEqual({ type: 'reorder', status: 'next', orderedIds: ['a', 'c', 'b'] });
+        expect(resolveBoardEdgeMove('a', 'next', 'top', ['a', 'b'], true)).toEqual({ type: 'none' });
+        expect(resolveBoardEdgeMove('b', 'next', 'top', ['a', 'b'], false)).toEqual({ type: 'none' });
     });
 });

@@ -8,6 +8,7 @@ import { Pill } from '../../ui/Pill';
 import { ViewHeader, type ViewHeaderProgress } from '../../ui/ViewHeader';
 import { ViewControls } from './ViewControls';
 import { ViewHeaderActions } from './ViewHeaderActions';
+import { ExitGhost } from '../../ui/ExitGhost';
 
 type ListHeaderProps = {
     title: string;
@@ -22,6 +23,7 @@ type ListHeaderProps = {
     defaultSortBy?: TaskSortBy;
     sortByOptions?: readonly TaskSortBy[];
     onChangeSortBy: (value: TaskSortBy) => void;
+    manualSort?: { label: string; selected: boolean; onSelect: () => void };
     showGroupBy?: boolean;
     groupBy?: TaskListGroupBy;
     defaultGroupBy?: TaskListGroupBy;
@@ -54,6 +56,7 @@ export function ListHeader({
     defaultSortBy = 'default',
     sortByOptions,
     onChangeSortBy,
+    manualSort,
     showGroupBy = false,
     groupBy = 'none',
     defaultGroupBy = 'none',
@@ -126,6 +129,7 @@ export function ListHeader({
                 defaultSortBy={defaultSortBy}
                 sortByOptions={sortByOptions}
                 onChangeSortBy={onChangeSortBy}
+                manualSort={manualSort}
                 groupBy={showGroupBy && onChangeGroupBy ? groupBy : undefined}
                 defaultGroupBy={showGroupBy && onChangeGroupBy ? defaultGroupBy : undefined}
                 groupByOptions={showGroupBy && onChangeGroupBy ? groupByOptions : undefined}
@@ -154,7 +158,8 @@ export function ListHeader({
                         <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
                     </IconButton>
                     {overflowOpen && (
-                        <div role="menu" aria-label={moreOptionsLabel} className="absolute right-0 top-full z-50 mt-2 w-48 rounded-control border border-border bg-popover p-1 text-popover-foreground shadow-soft">
+                        <div role="menu" aria-label={moreOptionsLabel} className="motion-popover absolute right-0 top-full z-50 mt-2 w-48 rounded-control border border-border bg-popover p-1 text-popover-foreground shadow-soft [--motion-origin:top_right]">
+                            <ExitGhost />
                             <button
                                 type="button"
                                 role="menuitem"

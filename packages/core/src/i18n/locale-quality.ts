@@ -402,7 +402,14 @@ export const nativeEnglishHomographsByLocale: Record<string, readonly string[]> 
 };
 
 
-export const allowedEnglishResidueKeysByLocale: Record<string, readonly string[]> = {};
+// 'Getting Things Done' is a book/method title kept in English.
+const GTD_TITLE_KEYS = ['onboarding.welcome.steps', 'onboarding.welcome.tribute'] as const;
+export const allowedEnglishResidueKeysByLocale: Record<string, readonly string[]> = {
+    es: GTD_TITLE_KEYS,
+    hu: GTD_TITLE_KEYS,
+    sv: GTD_TITLE_KEYS,
+    da: GTD_TITLE_KEYS,
+};
 
 const WORD_PATTERN = /\p{L}[\p{L}\p{N}_'’-]*/gu;
 

@@ -23,7 +23,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const baseStyles =
-    'inline-flex items-center justify-center gap-2 rounded-control font-medium transition-[background-color,box-shadow,transform,filter] duration-200 ease-out motion-reduce:transition-none ' +
+    'motion-press inline-flex items-center justify-center gap-2 rounded-control font-medium transition-[background-color,box-shadow,transform,filter,scale] duration-200 ease-out motion-reduce:transition-none ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
     'disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none ' +
     'whitespace-nowrap';

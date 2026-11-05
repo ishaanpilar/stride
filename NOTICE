@@ -4,6 +4,16 @@ Copyright (C) 2026 Ishaan Pilar
 Stride is a modified version of Mindwtr (https://github.com/dongdongbh/Mindwtr),
 copyright the Mindwtr authors, licensed under the GNU Affero General Public
 License v3.0. Stride was renamed, rebranded and extended starting 4 November
-2026 (AI assistant, AI capture, AI morning briefing, menu bar panel and more).
+2026. Changes include: a macOS-focused Soft UI redesign that follows the system
+accent colour, an AI assistant with validated tools and undo, AI capture, an
+AI morning briefing, Focus mode with a focus coach, a redesigned menu bar
+panel, a Trello-style board, onboarding, app-wide animations and one-way
+calendar sync through macOS Calendar.
+
+Much of Stride's own code was written with AI coding agents (Claude, through
+Claude Code) under human direction and review.
+
+Stride is inspired by David Allen's "Getting Things Done". It is not affiliated
+with or endorsed by David Allen or the David Allen Company.
 
 Stride is distributed under the same licence. See LICENSE for the full text.

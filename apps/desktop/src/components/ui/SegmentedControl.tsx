@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { cn } from '../../lib/utils';
 
 export interface SegmentedOption<T extends string = string> {
@@ -53,13 +53,30 @@ export function SegmentedControl<T extends string = string>({
     };
 
     const selectedIndex = options.findIndex((option) => option.value === value);
+    const [thumb, setThumb] = useState<CSSProperties | null>(null);
+    useLayoutEffect(() => {
+        const selected = refs.current[selectedIndex];
+        if (!selected || selected.offsetWidth === 0) {
+            setThumb(null);
+            return;
+        }
+        setThumb({ width: selected.offsetWidth, transform: `translateX(${selected.offsetLeft}px)` });
+    }, [selectedIndex, options.length, size]);
 
     return (
         <div
             role="radiogroup"
             aria-label={props['aria-label']}
-            className={cn('inline-flex items-center gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset', className)}
+            className={cn('relative isolate inline-flex items-center gap-0.5 rounded-control bg-well p-0.5 shadow-soft-inset', className)}
         >
+            {thumb && (
+                <span
+                    aria-hidden="true"
+                    data-segmented-thumb
+                    className="motion-segmented-thumb pointer-events-none absolute inset-y-0.5 left-0 -z-10 rounded-[8px] bg-card shadow-soft-sm"
+                    style={thumb}
+                />
+            )}
             {options.map((option, index) => {
                 const selected = option.value === value;
                 return (
@@ -75,11 +92,11 @@ export function SegmentedControl<T extends string = string>({
                         onClick={() => onChange(option.value)}
                         onKeyDown={(event) => onKeyDown(event, index)}
                         className={cn(
-                            'inline-flex items-center justify-center gap-1.5 rounded-[8px] px-3 text-[13px] font-medium transition-[background-color,box-shadow] duration-200 ease-out motion-reduce:transition-none',
+                            'motion-press inline-flex items-center justify-center gap-1.5 rounded-[8px] px-3 text-[13px] font-medium transition-[color,background-color,box-shadow,scale] duration-200 ease-out motion-reduce:transition-none',
                             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
                             size === 'md' ? 'h-8 min-w-8' : 'h-7 min-w-7',
                             selected
-                                ? 'bg-card text-foreground shadow-soft-sm'
+                                ? cn('text-foreground', !thumb && 'bg-card shadow-soft-sm')
                                 : 'text-muted-foreground hover:text-foreground',
                         )}
                     >

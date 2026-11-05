@@ -23,6 +23,7 @@ export const SETTINGS_SEARCH_PAGE_KEYS: Record<SettingsSearchPageId, readonly Se
         { key: 'density', section: 'lookAndFeel' },
         { key: 'textSize', section: 'lookAndFeel' },
         { key: 'fontFamily', section: 'lookAndFeel' },
+        { key: 'animations', section: 'lookAndFeel' },
         { key: 'showTaskAge', section: 'lookAndFeel' },
         { key: 'sidebarViews', section: 'lookAndFeel' },
         { key: 'language', section: 'localization' },
@@ -32,6 +33,7 @@ export const SETTINGS_SEARCH_PAGE_KEYS: Record<SettingsSearchPageId, readonly Se
         { key: 'timeFormat', section: 'regionalFormats' },
         { key: 'globalQuickAddShortcut', section: 'input' },
         { key: 'undoNotifications', section: 'input' },
+        { key: 'replayWelcome', section: 'input' },
     ],
     gtd: [
         'gtd',
@@ -198,7 +200,6 @@ export const SETTINGS_SEARCH_PAGE_KEYS: Record<SettingsSearchPageId, readonly Se
         'feedback',
         'documentation',
         'github',
-        'license',
     ],
 };
 
@@ -264,6 +265,7 @@ export const SETTINGS_SEARCH_MOBILE_EXCLUSIONS: Record<string, string> = {
     featureTimeline: 'Timeline view exists on desktop only; the mobile GTD > Features screen has no row for it (#1145).',
     density: 'No adjustable list density setting on mobile.',
     textSize: 'Mobile follows the OS text-size setting automatically; no in-app override.',
+    animations: 'Desktop-only motion switch; mobile follows the OS Reduce Motion setting.',
     keybindings: 'No hardware-keyboard shortcuts configuration on mobile.',
     globalQuickAddShortcut: 'System-wide hotkey; no equivalent on mobile.',
     windowDecorations: 'Desktop window chrome; not applicable on mobile.',
@@ -272,6 +274,7 @@ export const SETTINGS_SEARCH_MOBILE_EXCLUSIONS: Record<string, string> = {
     launchAtStartup: 'No user-facing autostart setting on mobile.',
     desktopAppLock: 'Desktop privacy lock; mobile has its own App lock row under General.',
     undoNotifications: 'Desktop-only preference; not present on mobile.',
+    replayWelcome: 'Desktop-only first-run tour; not present on mobile.',
     inboxDefaultMode: 'Mobile inbox processing has no guided/quick default-mode row.',
     inboxTwoMinuteFirst: 'Mobile inbox processing has no two-minute-rule ordering row.',
     taskEditorPresentation: 'Desktop-only inline/modal task-editor choice; the mobile editor has one fixed presentation.',

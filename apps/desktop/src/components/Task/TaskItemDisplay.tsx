@@ -45,7 +45,8 @@ interface TaskItemDisplayActions {
         alwaysVisible?: boolean;
     };
     pomodoroQuickStart?: {
-        onStart: () => void;
+        /** The clicked button, so Focus mode can grow out of the task row. */
+        onStart: (source?: HTMLElement) => void;
         sessionCount: number;
     };
 }
@@ -79,6 +80,8 @@ interface TaskItemDisplayProps {
     dense?: boolean;
     actionsOverlay?: boolean;
     dragHandle?: ReactNode;
+    /** Status to restore to when a completed row is unticked (defaults to Next). */
+    restoreStatus?: TaskStatus;
     showTaskAge?: boolean;
     showHoverHint?: boolean;
 
@@ -130,6 +133,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
     dense = false,
     actionsOverlay = false,
     dragHandle,
+    restoreStatus,
     showTaskAge = false,
     showHoverHint = true,
     appearsAtLabel,
@@ -196,6 +200,8 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
         && Boolean(ageLabel);
     const taskIsCancelled = isTaskCancelled(task);
     const taskIsCompleted = isTaskCompleted(task);
+    const completedAtMount = useRef(taskIsCompleted);
+    const completedThisMount = taskIsCompleted && !completedAtMount.current;
     const completionTimestamp = taskIsCancelled
         ? task.cancelledAt || task.updatedAt
         : taskIsCompleted
@@ -700,7 +706,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                     : undefined}
             aria-label={quickActionIsPromote ? t('status.next') : tFallback(t, 'review.markDone', 'Mark Done')}
             className={cn(
-                "focus-ring inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full transition-colors duration-200 motion-reduce:transition-none",
+                "motion-press focus-ring inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full transition-[color,background-color,border-color,scale] duration-200 ease-out motion-reduce:transition-none",
                 quickActionIsPromote
                     ? "text-accent-text hover:bg-accent-soft"
                     : "border-[1.5px] border-solid border-tertiary text-transparent hover:border-accent-fill hover:bg-accent-soft hover:text-accent-text",
@@ -709,8 +715,31 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
             {quickActionIsPromote ? <ArrowRight className="w-4 h-4" /> : <Check className="h-3 w-3" strokeWidth={3} aria-hidden="true" />}
         </button>
     );
+    // Only rows ticked this session (restoreStatus known) get the untick button; others stay read-only.
+    const canUntick = task.status === 'done' && !interactionDisabled && restoreStatus !== undefined;
+    const completedIndicatorClass = cn(
+        "inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-accent-gradient text-on-accent",
+        completedThisMount && "motion-check-pop",
+    );
+    const completedCheckClass = cn("h-3 w-3", completedThisMount && "motion-check-draw");
     const completionControl = showCompletedIndicator
-        ? <span className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-accent-gradient text-on-accent" role="img" aria-label={t('status.done')}><Check className="h-3 w-3" strokeWidth={3} aria-hidden="true" /></span>
+        ? (canUntick
+            ? (
+                <button
+                    type="button"
+                    data-task-uncomplete
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onStatusChange(restoreStatus ?? readOnlyRestoreStatus);
+                    }}
+                    aria-label={readOnlyRestoreLabel}
+                    title={readOnlyRestoreLabel}
+                    className={cn(completedIndicatorClass, "focus-ring transition-transform duration-200 active:scale-90 motion-reduce:transition-none motion-reduce:active:scale-100")}
+                >
+                    <Check className={completedCheckClass} strokeWidth={3} aria-hidden="true" />
+                </button>
+            )
+            : <span className={completedIndicatorClass} role="img" aria-label={t('status.done')}><Check className={completedCheckClass} strokeWidth={3} aria-hidden="true" /></span>)
         : quickDoneButton;
 
     return (
@@ -831,6 +860,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                                 "task-item-display__title font-semibold leading-5 whitespace-normal break-words text-foreground transition-colors",
                                 dense ? "text-sm" : "text-[15px]",
                                 taskIsCompleted && "line-through text-muted-foreground",
+                                completedThisMount && "motion-strike",
                                 actionsOverlay && "pr-28",
                                 (overlayDragHandle || overlayQuickDone) && "pl-12"
                             )}
@@ -901,7 +931,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                     )}
 
                     {isViewOpen && (
-                        <div data-task-row-ignore-double-click onClick={(e) => e.stopPropagation()}>
+                        <div data-task-row-ignore-double-click className="motion-expand-in" onClick={(e) => e.stopPropagation()}>
                             {task.description && (
                                 <div
                                     className={cn(
@@ -1096,7 +1126,7 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                             type="button"
                             onClick={(event) => {
                                 event.stopPropagation();
-                                pomodoroQuickStart.onStart();
+                                pomodoroQuickStart.onStart(event.currentTarget);
                             }}
                             title={pomodoroQuickStartTitle}
                             aria-label={pomodoroQuickStartTitle}

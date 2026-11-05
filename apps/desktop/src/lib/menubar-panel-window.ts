@@ -8,6 +8,8 @@ export const MENUBAR_PANEL_SHOWN_EVENT = 'menubar-panel-shown';
 export const MENUBAR_OPEN_EVENT = 'menubar-open';
 /** Emitted by the panel to the main window after it changed the shared Pomodoro snapshot. */
 export const MENUBAR_POMODORO_CHANGED_EVENT = 'menubar-pomodoro-changed';
+/** Emitted by the panel to the main window to bring Focus mode back to its full stage. */
+export const MENUBAR_FOCUS_EXPAND_EVENT = 'menubar-focus-expand';
 
 export type MenuBarOpenPayload = { taskId?: string | null; ask?: string | null; openCapture?: boolean };
 

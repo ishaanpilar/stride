@@ -12,6 +12,8 @@ export interface ThreadMessage {
     text: string;
     createdAt: string;
     isError?: boolean;
+    /** Validated follow-up chips for an assistant message. */
+    suggestions?: string[];
     /** Change entries / pending confirmations caused by this (user) message's turn are keyed by messageId. */
     turnId?: string;
 }

@@ -1,3 +1,4 @@
+import { Button } from './ui/Button';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Brain, X } from 'lucide-react';
 import { getMindSweepGroups, tFallback, type MindSweepScope, type StoreActionResult, type Task } from '@stride/core';
@@ -247,14 +248,16 @@ type MindSweepTriggerProps = {
 };
 
 export function MindSweepTrigger({ t, onOpen, variant = 'secondary' }: MindSweepTriggerProps) {
-    const buttonClass = variant === 'primary'
-        ? 'w-full flex items-center justify-center gap-2 btn-gradient py-3 px-4 rounded-control font-medium focus-ring transition-colors'
-        : 'flex items-center justify-center gap-2 whitespace-nowrap border border-border text-muted-foreground px-3 rounded-lg text-sm font-medium hover:bg-accent hover:text-foreground transition-colors';
     return (
-        <button type="button" onClick={onOpen} className={buttonClass}>
-            <Brain className="w-4 h-4" />
+        <Button
+            type="button"
+            variant={variant}
+            size={variant === 'primary' ? 'lg' : 'md'}
+            onClick={onOpen}
+            leadingIcon={<Brain className="w-4 h-4" aria-hidden="true" />}
+        >
             {tFallback(t, 'mindSweep.guidedLabel', 'Guided sweep')}
-        </button>
+        </Button>
     );
 }
 

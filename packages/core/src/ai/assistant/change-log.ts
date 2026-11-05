@@ -1,5 +1,5 @@
 import { generateUUID } from '../../uuid';
-import type { Task } from '../../types';
+import type { Area, Project, Task } from '../../types';
 import type { AssistantStorePort, ChangeEntry, ToolOutcome, UndoOp } from './types';
 
 export type UndoResult = { ok: boolean; error?: string };
@@ -69,5 +69,17 @@ async function runUndoOp(op: UndoOp, port: AssistantStorePort): Promise<UndoResu
         case 'restoreTask': return wrap(await port.restoreTask(op.taskId));
         case 'deleteProject': return wrap(await port.deleteProject(op.projectId));
         case 'restoreProject': return wrap(await port.restoreProject(op.projectId));
+        case 'restoreProjectFields': {
+            const updates: Record<string, unknown> = { ...op.fields };
+            for (const key of op.clear) updates[key] = undefined;
+            return wrap(await port.updateProject(op.projectId, updates as Partial<Project>));
+        }
+        case 'deleteArea': return wrap(await port.deleteArea(op.areaId));
+        case 'restoreArea': return wrap(await port.restoreArea(op.areaId));
+        case 'restoreAreaFields': {
+            const updates: Record<string, unknown> = { ...op.fields };
+            for (const key of op.clear) updates[key] = undefined;
+            return wrap(await port.updateArea(op.areaId, updates as Partial<Area>));
+        }
     }
 }

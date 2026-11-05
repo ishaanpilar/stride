@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stride Focus Directions</title>
+<style>
+:root { color-scheme: light; --bg: #F0F4F8; --surface: #fff; --well: #E9EEF4; --fg: #1F2937; --muted: #4B5563; --tertiary: #6B7280; --border: rgba(209,217,230,.6);
+  --accent: #4F46E5; --accent-2: #7C5CF0; --accent-text: #4338CA; --shadow: -6px -6px 15px #fff, 6px 6px 15px #D1D9E6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; --bg: #14161C; --surface: #1E222A; --well: #171A20; --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08); --accent: #6366F1; --accent-2: #8B6CF6; --accent-text: #A5B4FC; --shadow: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35); } }
+:root[data-theme="dark"] { color-scheme: dark; --bg: #14161C; --surface: #1E222A; --well: #171A20; --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08); --accent: #6366F1; --accent-2: #8B6CF6; --accent-text: #A5B4FC; --shadow: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif; -webkit-font-smoothing: antialiased; }
+main { max-width: 1120px; margin: 0 auto; padding: 56px 24px 72px; }
+h1 { font-size: 34px; letter-spacing: -.02em; margin: 0; }
+.lede { color: var(--muted); max-width: 720px; margin: 10px 0 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; margin-top: 36px; }
+a.card { display: flex; flex-direction: column; text-decoration: none; color: inherit; background: var(--surface); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; transition: transform .25s cubic-bezier(.2,.8,.2,1); }
+a.card:hover { transform: translateY(-3px); }
+a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.card img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: var(--well); }
+.card .body { padding: 18px 20px 22px; }
+.tag { font-size: 12.5px; font-weight: 600; color: var(--accent-text); }
+.card h2 { margin: 4px 0 6px; font-size: 20px; letter-spacing: -.01em; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; }
+.card .go { margin-top: 14px; font-size: 13.5px; font-weight: 600; color: var(--accent-text); }
+.notes { margin-top: 40px; padding: 20px 22px; border-radius: 16px; background: var(--well); color: var(--muted); font-size: 14px; }
+.notes b { color: var(--fg); }
+.notes ul { margin: 8px 0 0; padding-left: 18px; }
+kbd { font: 12px -apple-system, sans-serif; padding: 1px 6px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Focus, three directions</h1>
+  <p class="lede">Each prototype is the whole flow in one place: pick a task, start, work through the AI steps, take a break, finish. Open one, hover a task and press its Focus button. Everything runs offline.</p>
+  <div class="grid">
+    <a class="card" href="option-a.html">
+      <img src="shots/option-a-running.png" alt="Option A running: large thin timer above a glass task card on a soft shifting gradient">
+      <div class="body"><div class="tag">A</div><h2>Still</h2>
+        <p>Apple-calm. A big, thin timer and the task card on an ambient light that slowly warms from indigo to dusk as the session goes on. Steps expand in place.</p>
+        <div class="go">Open prototype</div></div>
+    </a>
+    <a class="card" href="option-b.html">
+      <img src="shots/option-b-running.png" alt="Option B running: a plant grows beside the task card, sun rising behind it">
+      <div class="body"><div class="tag">B</div><h2>Grow</h2>
+        <p>A living metaphor. A plant grows with time and its flower opens as you tick steps; finished sessions join today's garden.</p>
+        <div class="go">Open prototype</div></div>
+    </a>
+    <a class="card" href="option-c.html">
+      <img src="shots/option-c-running.png" alt="Option C running: one large task card with the current step, filling from the bottom">
+      <div class="body"><div class="tag">C</div><h2>Stage</h2>
+        <p>Task first. The card is the progress: it fills as steps are done and lights up when the task is finished. Only the current step is big; the time is a small pill.</p>
+        <div class="go">Open prototype</div></div>
+    </a>
+  </div>
+  <div class="notes">
+    <b>Prototype controls</b> sit at the bottom of each page (faded until hovered):
+    <ul>
+      <li><b>Window / Menu bar</b> switches to the 380px menu bar panel. It shares the same live state.</li>
+      <li><b>Speed</b> runs the clock at 30× or 300× to reach the finish and break quickly.</li>
+      <li><b>Sound</b> turns on a soft WebAudio chime (off by default). <b>Theme</b> cycles auto, light, dark.</li>
+      <li><kbd>Space</kbd> pauses, <kbd>Esc</kbd> ends the session. Reduced motion is respected.</li>
+    </ul>
+    Research behind these: <a href="../focus-timer-research.md">focus-timer-research.md</a>.
+  </div>
+</main>
+</body>
+</html>

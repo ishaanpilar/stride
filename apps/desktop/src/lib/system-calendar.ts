@@ -10,8 +10,15 @@ export type SystemCalendarPushTarget = {
     id: string;
     name: string;
     sourceName?: string;
+    sourceId?: string;
     color?: string;
     isStrideDedicated: boolean;
+};
+
+export type SystemCalendarSource = {
+    id: string;
+    name: string;
+    type?: string;
 };
 
 export type SystemCalendarEventDetails = {
@@ -207,6 +214,9 @@ const sanitizePushTarget = (target: SystemCalendarPushTarget): SystemCalendarPus
         sourceName: typeof target.sourceName === 'string' && target.sourceName.trim().length > 0
             ? target.sourceName.trim()
             : undefined,
+        sourceId: typeof target.sourceId === 'string' && target.sourceId.trim().length > 0
+            ? target.sourceId.trim()
+            : undefined,
         color: typeof target.color === 'string' && target.color.trim().length > 0 ? target.color.trim() : undefined,
         isStrideDedicated: target.isStrideDedicated === true,
     };
@@ -229,7 +239,32 @@ export async function getSystemCalendarPushTargets(): Promise<SystemCalendarPush
     }
 }
 
-export async function ensureSystemStrideCalendar(storedCalendarId?: string | null): Promise<SystemCalendarPushTarget | null> {
+export async function getSystemCalendarSources(): Promise<SystemCalendarSource[]> {
+    if (getSystemCalendarPlatform() !== 'macos' || !isTauriRuntime()) return [];
+    try {
+        const sources = await invokeNative<SystemCalendarSource[]>('get_macos_calendar_sources');
+        return Array.isArray(sources)
+            ? sources.filter((source) => typeof source?.id === 'string' && source.id.trim() && typeof source?.name === 'string')
+            : [];
+    } catch (error) {
+        reportError('Failed to read system calendar accounts', error);
+        return [];
+    }
+}
+
+export async function openSystemCalendarPrivacySettings(): Promise<void> {
+    if (getSystemCalendarPlatform() !== 'macos' || !isTauriRuntime()) return;
+    try {
+        await invokeNative('open_macos_calendar_privacy_settings');
+    } catch (error) {
+        reportError('Failed to open calendar privacy settings', error);
+    }
+}
+
+export async function ensureSystemStrideCalendar(
+    storedCalendarId?: string | null,
+    sourceId?: string | null,
+): Promise<SystemCalendarPushTarget | null> {
     const platform = getSystemCalendarPlatform();
     if (!isTauriRuntime() || !platform) return null;
     try {
@@ -238,6 +273,7 @@ export async function ensureSystemStrideCalendar(storedCalendarId?: string | nul
             : 'ensure_linux_stride_calendar';
         const target = await invokeNative<SystemCalendarPushTarget | null>(command, {
             storedCalendarId: storedCalendarId?.trim() || null,
+            ...(platform === 'macos' ? { sourceId: sourceId?.trim() || null } : {}),
         });
         return target ? sanitizePushTarget(target) : null;
     } catch (error) {

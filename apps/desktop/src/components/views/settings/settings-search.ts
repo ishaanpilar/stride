@@ -20,7 +20,7 @@ export const SETTINGS_PAGE_SYNONYMS: Record<SettingsSearchPageId, readonly strin
     integrations: ['obsidian', 'vault', 'calendar', 'ICS', 'apple calendar', 'integration'],
     ai: ['OpenAI', 'Gemini', 'Anthropic', 'API key', 'speech', 'whisper', 'copilot', 'model', 'timeout'],
     advanced: ['automation', 'local api', 'localhost', 'port', 'mcp', 'Claude', 'LLM', 'launch at startup', 'autostart', 'login item'],
-    about: ['version', 'update', 'license', 'sponsor'],
+    about: ['version', 'update', 'sponsor'],
 };
 
 export function buildDesktopSettingsSearchResults(

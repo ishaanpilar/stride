@@ -1,6 +1,6 @@
 import { taskDraftToUpdatePatch } from '@stride/core/task-draft';
 import { TaskProjectConversionDialog } from './TaskProjectConversionDialog';
-import { useState, memo, useEffect, useRef, useCallback, useMemo, type DragEvent, type ReactNode } from 'react';
+import { useState, memo, useEffect, useRef, useCallback, useMemo, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
     prepareChecklistProjectConversion,
     DEFAULT_PROJECT_COLOR,
@@ -36,6 +36,7 @@ import {
     type TaskDraftSetter,
 } from '@stride/core';
 import { cn } from '../lib/utils';
+import { ExitGhost } from './ui/ExitGhost';
 import { useObsidianStore } from '../store/obsidian-store';
 import { useLanguage } from '../contexts/language-context';
 import { TaskItemEditor } from './Task/TaskItemEditor';
@@ -65,6 +66,8 @@ import { useTaskItemSubmit } from './Task/useTaskItemSubmit';
 import { formatTaskMarkedDoneMessage, formatTaskMovedMessage } from '@stride/core';
 import { dispatchNavigateEvent } from '../lib/navigation-events';
 import { usePomodoroStore } from '../store/pomodoro-store';
+import { useFocusSessionStore } from '../store/focus-session-store';
+import { rectOf } from './focus/focus-anchors';
 import { dispatchContextsTokenSelection } from '../lib/contexts-view-state';
 import { reportError } from '../lib/report-error';
 import { logInfo } from '../lib/app-log';
@@ -73,11 +76,20 @@ import { undoTaskCompletion } from '../lib/undo-task-completion';
 import { createSomedaySection } from '../lib/someday-section-actions';
 import { resolveNativeDateInputLocale } from '../lib/native-date-input-locale';
 import { setCalendarTaskDragData } from '../lib/calendar-task-drag';
+import { useRetainedPreviousStatus } from '../lib/completion-retention';
 import { useTaskItemStoreState, useTaskItemUiState } from './Task/useTaskItemStoreState';
 import type { TaskInputAcceptedSuggestion } from './Task/TaskInput';
 import { TASK_ROW_ACTION_EVENT, type TaskRowAction } from '../lib/task-row-actions';
 
 const IS_MAC_PLATFORM = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
+const ROW_DRAG_BLOCKING_CONTROLS = 'button, a[href], input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="checkbox"], [role="menuitem"], [data-row-drag-ignore]';
+
+function isRowDragBlockedByControl(pressTarget: EventTarget | null, row: HTMLElement): boolean {
+    if (!(pressTarget instanceof Element) || pressTarget === row) return false;
+    const control = pressTarget.closest(ROW_DRAG_BLOCKING_CONTROLS);
+    if (!control || control === row || !row.contains(control)) return false;
+    return !control.matches('[data-task-view-toggle]');
+}
 
 interface TaskItemProps {
     task: Task;
@@ -110,6 +122,8 @@ interface TaskItemProps {
     appearsAtLabel?: string;
     projectDeadlineLabel?: string;
     onMoveToSomedaySection?: (taskId: string) => void;
+    /** "Move to top": this is the priority right now. Provided by lists with a manual order. */
+    onMoveToTop?: (taskId: string) => void;
 }
 
 type ProjectNextActionPromptState = {
@@ -145,6 +159,7 @@ export const TaskItem = memo(function TaskItem({
     appearsAtLabel,
     projectDeadlineLabel,
     onMoveToSomedaySection,
+    onMoveToTop,
 }: TaskItemProps) {
     const [isEditing, setIsEditing] = useState(false);
     const [autoFocusTitle, setAutoFocusTitle] = useState(false);
@@ -294,6 +309,7 @@ export const TaskItem = memo(function TaskItem({
     const recurrenceRule = getRecurrenceRuleValue(task.recurrence);
     const recurrenceStrategy = getRecurrenceStrategyValue(task.recurrence);
     const isStagnant = (task.pushCount ?? 0) > 3;
+    const retainedPreviousStatus = useRetainedPreviousStatus(task.id);
     const effectiveReadOnly = interactionDisabled || readOnly || task.status === 'done';
     const mutationOwnerRef = useRef({
         taskId: task.id,
@@ -370,7 +386,8 @@ export const TaskItem = memo(function TaskItem({
         if (!pomodoroQuickStartEligible) return undefined;
         return {
             sessionCount: pomodoroSessionCount,
-            onStart: () => {
+            onStart: (source?: HTMLElement) => {
+                useFocusSessionStore.getState().setOrigin(rectOf(source?.closest('[data-task-id]') ?? source));
                 usePomodoroStore.getState().startPomodoroFocusForTask(task.id, {
                     autoStartBreaks: pomodoroAutoStartBreaks,
                     autoStartFocus: pomodoroAutoStartFocus,
@@ -380,6 +397,28 @@ export const TaskItem = memo(function TaskItem({
         };
     }, [pomodoroAutoStartBreaks, pomodoroAutoStartFocus, pomodoroQuickStartEligible, pomodoroSessionCount, task.id]);
 
+
+    const canStartFocusFromMenu = resolvedFeatureFlags.pomodoro
+        && !effectiveReadOnly
+        && task.status !== 'done'
+        && task.status !== 'archived'
+        && task.status !== 'reference';
+    const startFocusFromMenu = useMemo(() => {
+        if (!canStartFocusFromMenu) return undefined;
+        return {
+            label: tFallback(t, 'focus.startOnTask', 'Start Pomodoro'),
+            onSelect: () => {
+                const row = typeof document !== 'undefined'
+                    ? document.querySelector(`[data-task-id="${CSS.escape(task.id)}"]`)
+                    : null;
+                useFocusSessionStore.getState().setOrigin(rectOf(row));
+                usePomodoroStore.getState().startPomodoroFocusForTask(task.id, {
+                    autoStartBreaks: pomodoroAutoStartBreaks,
+                    autoStartFocus: pomodoroAutoStartFocus,
+                });
+            },
+        };
+    }, [canStartFocusFromMenu, pomodoroAutoStartBreaks, pomodoroAutoStartFocus, t, task.id]);
 
     const canCalendarDrag = !actionsOverlay && !dragHandle && !selectionMode && !isEditing && !effectiveReadOnly && !isTaskExpanded;
 
@@ -1696,12 +1735,20 @@ export const TaskItem = memo(function TaskItem({
         toggleTaskExpanded,
         updateTask,
     ]);
+    const dragPressTargetRef = useRef<EventTarget | null>(null);
+    const handleDragPressStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        dragPressTargetRef.current = event.target;
+    }, []);
     const handleCalendarDragStart = useCallback((event: DragEvent<HTMLDivElement>) => {
-        if (!canCalendarDrag) {
+        const pressTarget = dragPressTargetRef.current ?? event.target;
+        dragPressTargetRef.current = null;
+        if (!canCalendarDrag || isRowDragBlockedByControl(pressTarget, event.currentTarget)) {
             event.preventDefault();
             return;
         }
-        setCalendarTaskDragData(event.dataTransfer, task.id);
+        setCalendarTaskDragData(event.dataTransfer, task.id, {
+            row: { element: event.currentTarget, clientX: event.clientX, clientY: event.clientY },
+        });
     }, [canCalendarDrag, task.id]);
     const showConfiguredStatusSelect = showStatusSelect && basicFields.includes('status');
 
@@ -1712,6 +1759,7 @@ export const TaskItem = memo(function TaskItem({
                 data-task-id={task.id}
                 draggable={canCalendarDrag}
                 tabIndex={-1}
+                onPointerDownCapture={canCalendarDrag ? handleDragPressStart : undefined}
                 onDragStart={handleCalendarDragStart}
                 onClickCapture={onSelect ? (event) => {
                     if (!event.currentTarget.contains(event.target as Node)) return;
@@ -1737,7 +1785,7 @@ export const TaskItem = memo(function TaskItem({
                 }}
                 onContextMenu={interactionDisabled ? undefined : handleOpenQuickActionMenu}
                 className={cn(
-                    "group rounded-card bg-card text-card-foreground shadow-soft-sm hover:shadow-soft transition-[box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none animate-in fade-in slide-in-from-bottom-2 motion-reduce:animate-none",
+                    "group rounded-card bg-card text-card-foreground shadow-soft-sm hover:shadow-soft transition-[box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
                     isCondensed ? "px-3 py-2" : isCompact ? "p-3" : "p-4",
                     "focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:bg-primary/5",
                     canCalendarDrag && "cursor-grab active:cursor-grabbing",
@@ -1748,6 +1796,7 @@ export const TaskItem = memo(function TaskItem({
                     quickActionMenu !== null && "ring-2 ring-inset ring-primary/40 bg-primary/5"
                 )}
             >
+                <ExitGhost preset="row" />
                 <div className={cn("flex items-start", isCondensed ? "gap-1.5" : isCompact ? "gap-2" : "gap-3")}>
                     {selectionMode && !interactionDisabled && (
                         <input
@@ -1799,6 +1848,7 @@ export const TaskItem = memo(function TaskItem({
                                 dense={isDense}
                                 actionsOverlay={actionsOverlay}
                                 dragHandle={dragHandle}
+                                restoreStatus={retainedPreviousStatus}
                                 showTaskAge={showTaskAge}
                                 showHoverHint={showHoverHint}
                                 appearsAtLabel={appearsAtLabel}
@@ -1821,16 +1871,26 @@ export const TaskItem = memo(function TaskItem({
                     overrides={{
                         readOnly: effectiveReadOnly,
                         onRename: () => setRenameRequestToken((token) => token + 1),
+                        startFocusAction: startFocusFromMenu,
                         focusAction: quickActionFocus,
                         onBeforeDelete: closeQuickEditSession,
                         onStatusChange: handleStatusChange,
-                        extraActions: onMoveToSomedaySection && !effectiveReadOnly
-                            ? [{
-                                id: 'move-to-someday-section',
-                                label: tFallback(t, 'viewSections.moveToSection', 'Move to section…'),
-                                onSelect: () => onMoveToSomedaySection(task.id),
-                            }]
-                            : undefined,
+                        extraActions: [
+                            ...(onMoveToTop && task.status !== 'done'
+                                ? [{
+                                    id: 'move-to-top',
+                                    label: tFallback(t, 'list.reorder.moveToTop', 'Move to top'),
+                                    onSelect: () => onMoveToTop(task.id),
+                                }]
+                                : []),
+                            ...(onMoveToSomedaySection && !effectiveReadOnly
+                                ? [{
+                                    id: 'move-to-someday-section',
+                                    label: tFallback(t, 'viewSections.moveToSection', 'Move to section…'),
+                                    onSelect: () => onMoveToSomedaySection(task.id),
+                                }]
+                                : []),
+                        ],
                     }}
                 />
             )}

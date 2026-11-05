@@ -9,6 +9,8 @@ const SRC_ROOT = existsSync(LOCAL_SRC) ? LOCAL_SRC : join(process.cwd(), 'apps',
 
 const ALLOWED_OVERLAY_FILES = new Map<string, string>([
     ['components/ui/Dialog.tsx', 'the module itself'],
+    ['components/AssistantDock.tsx', 'below 1100px the docked Assistant becomes a side drawer: a persistent panel (not a modal dialog) that closes on Esc or backdrop click and never traps the rest of the app'],
+    ['components/focus/FocusStage.tsx', 'the Focus mode stage is a portalled modal dialog (role=dialog, aria-modal, Tab trap, Esc handling) that must sit outside the dimmed and inert app shell, so it cannot live inside the shell-bound Dialog module'],
     ['components/AppLockGate.tsx', 'the privacy lock screen is not a dismissable dialog: no Escape, no click-outside, and it must cover every Dialog'],
 ]);
 

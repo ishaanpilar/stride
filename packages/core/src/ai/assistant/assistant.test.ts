@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { runAssistantTurn, executeConfirmed, capHistory, runToolCall } from './agent';
 import { AssistantChangeLog } from './change-log';
 import { parseToolArguments, validateAgainstSchema } from './schema';
-import { ASSISTANT_TOOLS } from './tools';
+import { ASSISTANT_TOOLS } from './registry';
 import { parseWhen } from './dates';
 import { parseChatCompletion, toWireMessage, createOpenAICompatibleChatClient } from './chat-client';
 import { loadThread, saveThread, clearThread, toModelHistory, emptyThread } from './conversation';

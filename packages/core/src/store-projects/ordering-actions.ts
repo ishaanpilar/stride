@@ -43,7 +43,11 @@ const boardOrderedIds = (currentIds: string[], shownIds: string[], movedTaskId?:
     const currentShown = currentIds.filter((id) => shown.has(id));
     if (sameOrder(currentShown, shownIds)) return currentIds;
     const moved = movedTaskId && shown.has(movedTaskId) ? movedTaskId : findSingleMovedId(currentShown, shownIds);
-    if (moved) {
+    const othersKeepTheirOrder = moved !== null && moved !== undefined && sameOrder(
+        currentShown.filter((id) => id !== moved),
+        shownIds.filter((id) => id !== moved),
+    );
+    if (moved && othersKeepTheirOrder) {
         const remaining = currentIds.filter((id) => id !== moved);
         const shownWithoutMoved = shownIds.filter((id) => id !== moved);
         const at = shownIds.indexOf(moved);

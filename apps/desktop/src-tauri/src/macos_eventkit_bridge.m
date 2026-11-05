@@ -107,6 +107,8 @@ static NSDictionary *stride_calendar_push_payload(EKCalendar *calendar) {
     payload[@"name"] = title;
     NSString *sourceName = stride_trimmed_string(calendar.source.title);
     if (sourceName) payload[@"sourceName"] = sourceName;
+    NSString *sourceId = stride_trimmed_string(calendar.source.sourceIdentifier);
+    if (sourceId) payload[@"sourceId"] = sourceId;
     NSString *color = stride_calendar_color_hex(calendar);
     if (color) payload[@"color"] = color;
     payload[@"isStrideDedicated"] = @(stride_is_stride_calendar(calendar));
@@ -145,6 +147,44 @@ static EKSource *stride_preferred_calendar_source(EKEventStore *store) {
         if (source.sourceType == EKSourceTypeLocal) return source;
     }
     return [sources firstObject];
+}
+
+static NSString *stride_source_type_string(EKSourceType type) {
+    switch (type) {
+        case EKSourceTypeLocal: return @"local";
+        case EKSourceTypeExchange: return @"exchange";
+        case EKSourceTypeCalDAV: return @"caldav";
+        case EKSourceTypeMobileMe: return @"icloud";
+        case EKSourceTypeSubscribed: return @"subscribed";
+        case EKSourceTypeBirthdays: return @"birthdays";
+    }
+    return @"other";
+}
+
+static EKSource *stride_source_with_identifier(EKEventStore *store, NSString *sourceId) {
+    if (!sourceId) return nil;
+    for (EKSource *source in [store sources]) {
+        if ([source.sourceIdentifier isEqualToString:sourceId]) return source;
+    }
+    return nil;
+}
+
+static NSArray<NSDictionary *> *stride_account_source_payloads(EKEventStore *store) {
+    NSMutableArray<NSDictionary *> *payload = [NSMutableArray array];
+    for (EKSource *source in [store sources]) {
+        if (source.sourceType == EKSourceTypeSubscribed || source.sourceType == EKSourceTypeBirthdays) continue;
+        NSString *identifier = stride_trimmed_string(source.sourceIdentifier);
+        if (!identifier) continue;
+        NSMutableDictionary *item = [NSMutableDictionary dictionary];
+        item[@"id"] = identifier;
+        item[@"name"] = stride_trimmed_string(source.title) ?: @"Account";
+        item[@"type"] = stride_source_type_string(source.sourceType);
+        [payload addObject:item];
+    }
+    [payload sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+    }];
+    return payload;
 }
 
 static NSDictionary *stride_calendar_write_error(NSString *error) {
@@ -371,27 +411,43 @@ char *stride_macos_writable_calendars_json(void) {
     }
 }
 
-char *stride_macos_ensure_stride_calendar_json(const char *stored_calendar_id) {
+char *stride_macos_calendar_sources_json(void) {
+    @autoreleasepool {
+        EKEventStore *store = [[EKEventStore alloc] init];
+        NSString *permission = stride_permission_status_string([EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent]);
+        if (![permission isEqualToString:@"granted"]) return stride_copy_json(@[]);
+        return stride_copy_json(stride_account_source_payloads(store));
+    }
+}
+
+char *stride_macos_ensure_stride_calendar_json(const char *stored_calendar_id, const char *source_id) {
     @autoreleasepool {
         EKEventStore *store = [[EKEventStore alloc] init];
         NSString *permission = stride_permission_status_string([EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent]);
         if (![permission isEqualToString:@"granted"]) return stride_copy_null_json();
 
         NSString *storedId = stride_trimmed_string(stored_calendar_id ? [NSString stringWithUTF8String:stored_calendar_id] : nil);
+        NSString *wantedSourceId = stride_trimmed_string(source_id ? [NSString stringWithUTF8String:source_id] : nil);
+        EKSource *wantedSource = stride_source_with_identifier(store, wantedSourceId);
+        // A chosen account that no longer exists must not silently fall back to another account.
+        if (wantedSourceId && !wantedSource) return stride_copy_null_json();
+
         if (storedId) {
             EKCalendar *stored = [store calendarWithIdentifier:storedId];
-            NSDictionary *storedPayload = stored ? stride_calendar_push_payload(stored) : nil;
+            BOOL inWantedSource = !wantedSource || [stored.source.sourceIdentifier isEqualToString:wantedSource.sourceIdentifier];
+            NSDictionary *storedPayload = (stored && inWantedSource) ? stride_calendar_push_payload(stored) : nil;
             if (storedPayload) return stride_copy_json(storedPayload);
         }
 
         NSArray<EKCalendar *> *allCalendars = [store calendarsForEntityType:EKEntityTypeEvent];
         for (EKCalendar *calendar in allCalendars) {
             if (!stride_is_stride_calendar(calendar)) continue;
+            if (wantedSource && ![calendar.source.sourceIdentifier isEqualToString:wantedSource.sourceIdentifier]) continue;
             NSDictionary *payload = stride_calendar_push_payload(calendar);
             if (payload) return stride_copy_json(payload);
         }
 
-        EKSource *source = stride_preferred_calendar_source(store);
+        EKSource *source = wantedSource ?: stride_preferred_calendar_source(store);
         if (!source) return stride_copy_null_json();
 
         EKCalendar *calendar = [EKCalendar calendarForEntityType:EKEntityTypeEvent eventStore:store];

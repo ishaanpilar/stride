@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef, useLayoutEffect, type Key, type ReactNode, type RefObject } from 'react';
-import { isGettingStartedProject } from '@stride/core';
+import { isGettingStartedProject, moveIdByOffset, moveIdToTop, partitionDoneLast } from '@stride/core';
+import { useCompletionRetention } from '../../../lib/completion-retention';
 import { GettingStartedActions } from '../../GettingStartedActions';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Attachment,
@@ -621,9 +622,16 @@ export function ProjectWorkspace({
         });
     }, [projectTaskSource, normalizedSearchQuery, selectedProjectId]);
 
+    // Completion rule: tasks ticked done this session stay in the open list, struck through, and drop to
+    // the bottom of their section after the settle delay. They do not go to the collapsed Completed group
+    // until the app restarts; earlier completions follow the "Show completed" setting.
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
     const projectTasks = useMemo(
-        () => projectAllTasks.filter((task) => shouldShowProjectWorkspaceTask(task, selectedProject, showCompletedTasks)),
-        [projectAllTasks, selectedProject, showCompletedTasks],
+        () => projectAllTasks.filter((task) => (
+            (task.status === 'done' && sessionCompletions.has(task.id))
+            || shouldShowProjectWorkspaceTask(task, selectedProject, showCompletedTasks)
+        )),
+        [projectAllTasks, selectedProject, sessionCompletions, showCompletedTasks],
     );
 
     const handleProjectTaskSortByChange = useCallback((next: TaskSortBy) => {
@@ -635,11 +643,14 @@ export function ProjectWorkspace({
     }, [getMutableSelectedProject, updateProject]);
 
     const sortProjectTasks = useCallback((items: Task[]) => {
-        if (projectTaskSortBy !== 'default') {
-            return sortTasksBy(items, projectTaskSortBy);
-        }
-        return [...items].sort(compareTasksByProjectOrder);
-    }, [projectTaskSortBy]);
+        const sorted = projectTaskSortBy !== 'default'
+            ? sortTasksBy(items, projectTaskSortBy)
+            : [...items].sort(compareTasksByProjectOrder);
+        if (sessionCompletions.size === 0) return sorted;
+        return partitionDoneLast(sorted, {
+            holdInPlace: (task) => !sessionCompletions.has(task.id) || !settledCompletionIds.has(task.id),
+        });
+    }, [projectTaskSortBy, sessionCompletions, settledCompletionIds]);
 
     const sortedProjectTasks = useMemo(() => {
         if (!selectedProject) return projectTasks;
@@ -651,11 +662,15 @@ export function ProjectWorkspace({
             return { activeTasks: sortedProjectTasks, completedTasks: [] as Task[] };
         }
         const { activeTasks, completedTasks } = splitCompletedTasks(sortedProjectTasks);
+        const sessionDone = completedTasks.filter((task) => sessionCompletions.has(task.id));
+        const olderDone = sessionDone.length === 0
+            ? completedTasks
+            : completedTasks.filter((task) => !sessionCompletions.has(task.id));
         return {
-            activeTasks,
-            completedTasks: sortDoneTasksForListView(completedTasks),
+            activeTasks: sessionDone.length === 0 ? activeTasks : [...activeTasks, ...sessionDone],
+            completedTasks: sortDoneTasksForListView(olderDone),
         };
-    }, [shouldGroupCompletedTasks, sortedProjectTasks]);
+    }, [sessionCompletions, shouldGroupCompletedTasks, sortedProjectTasks]);
 
     const projectSections = useMemo(
         () => getProjectSectionsForView(selectedProject, sections, allSections),
@@ -1080,6 +1095,25 @@ export function ProjectWorkspace({
         })().catch(failTaskMove);
     }, [canDragSections, canReorderProjectTasks, getMutableSelectedProject, handleReorderSection, isArchivedProject, reorderProjectTasks, selectedProject, showToast, t, taskIdToContainer, taskIdsByContainer, updateTask]);
 
+    const moveProjectTask = useCallback((taskId: string, move: 'top' | -1 | 1) => {
+        const current = getMutableSelectedProject();
+        if (!current || !canReorderProjectTasks) return;
+        const container = taskIdToContainer.get(taskId);
+        if (!container) return;
+        const items = taskIdsByContainer.get(container) ?? [];
+        const next = move === 'top' ? moveIdToTop(items, taskId) : moveIdByOffset(items, taskId, move);
+        if (next.every((id, index) => id === items[index])) return;
+        void Promise.resolve(
+            reorderProjectTasks(current.id, next, getSectionIdFromContainer(container), taskId),
+        ).catch((error) => {
+            reportError('Failed to reorder project tasks', error);
+            showToast(tFallback(t, 'projects.taskMoveFailed', 'Failed to move task'), 'error');
+        });
+        window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`)?.focus();
+        });
+    }, [canReorderProjectTasks, getMutableSelectedProject, reorderProjectTasks, showToast, t, taskIdToContainer, taskIdsByContainer]);
+
     useEffect(() => {
         taskDragEndRef.current = handleTaskDragEnd;
         return () => {
@@ -1105,6 +1139,8 @@ export function ProjectWorkspace({
                         availableSequenceLabel={availableSequenceLabel}
                         laterSequenceLabel={laterSequenceLabel}
                         dragLabel={`${t('board.dragTask')}: ${t('task.moveToProjectOrArea')}`}
+                        onMoveToTop={task.status === 'done' ? undefined : (taskId) => moveProjectTask(taskId, 'top')}
+                        onNudge={task.status === 'done' ? undefined : moveProjectTask}
                     />
                 )}
             />

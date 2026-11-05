@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 
 import { cn } from '../../lib/utils';
 import { isImeComposing } from '../../lib/ime';
+import { useExitGhost } from '../../lib/exit-ghost';
 
 const FOCUSABLE_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
@@ -51,6 +52,8 @@ export function Dialog({
 }: DialogProps) {
     const fallbackPanelRef = useRef<HTMLDivElement | null>(null);
     const panel = panelRef ?? fallbackPanelRef;
+    const overlayRef = useRef<HTMLDivElement | null>(null);
+    useExitGhost(overlayRef, 'dialog');
 
 
     const pressStartedOnBackdrop = useRef(false);
@@ -113,9 +116,10 @@ export function Dialog({
 
     const dialog = (
         <div
+            ref={overlayRef}
             role="presentation"
             className={cn(
-                'fixed inset-0 z-50 flex justify-center bg-black/40',
+                'motion-overlay fixed inset-0 z-50 flex justify-center bg-black/40',
                 placement === 'center' ? 'items-center' : 'items-start',
                 overlayClassName,
             )}
@@ -141,7 +145,8 @@ export function Dialog({
                 aria-labelledby={labelledBy}
                 aria-describedby={describedBy}
                 className={cn(
-                    'flex w-full max-w-md max-h-[85vh] flex-col overflow-hidden rounded-sheet border border-border bg-popover text-popover-foreground shadow-soft',
+                    'motion-dialog flex w-full max-w-md max-h-[85vh] flex-col overflow-hidden rounded-sheet border border-border bg-popover text-popover-foreground shadow-soft',
+                    placement === 'top' && 'motion-dialog--top',
                     panelClassName,
                 )}
                 onKeyDown={handleKeyDown}

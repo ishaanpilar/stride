@@ -84,6 +84,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
                     [{
                         id: generateUUID(), role: 'assistant', text: result.reply || 'Done.', createdAt: new Date().toISOString(), turnId,
                         ...(result.status === 'error' ? { isError: true } : {}),
+                        ...(result.status !== 'error' && result.suggestions?.length ? { suggestions: result.suggestions } : {}),
                     }],
                     { pending: [...get().thread.pending, ...result.pending], changes: changeLog.list() },
                 );

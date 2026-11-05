@@ -13,6 +13,7 @@ import { useDocumentationLanguage } from '../../../contexts/language-context';
 
 import { cn } from '../../../lib/utils';
 import { Switch } from '../../ui/Switch';
+import { CalendarSyncSection, type CalendarSyncSectionLabels, type CalendarSyncSectionProps } from './CalendarSyncSection';
 
 type Labels = {
     calendarIntegrationGuideTitle: string;
@@ -71,6 +72,8 @@ type SettingsCalendarPageProps = {
     onToggleCalendarPush: (enabled: boolean) => Promise<void> | void;
     onCalendarPushTargetChange: (id: string | null) => Promise<void> | void;
     onRefreshCalendarPushTargets: () => Promise<void> | void;
+    /** When present, the "Sync to your calendar" section replaces the plain push toggle. */
+    calendarSync?: CalendarSyncSectionProps;
     maskCalendarUrl: (url: string) => string;
 };
 
@@ -98,6 +101,7 @@ export function SettingsCalendarPage({
     onToggleCalendarPush,
     onCalendarPushTargetChange,
     onRefreshCalendarPushTargets,
+    calendarSync,
     maskCalendarUrl,
 }: SettingsCalendarPageProps) {
     const language = useDocumentationLanguage();
@@ -145,7 +149,12 @@ export function SettingsCalendarPage({
                     {systemCalendarPermission === 'denied' && (
                         <p className="text-xs text-muted-foreground">{t.calendarSystemDeniedHint}</p>
                     )}
-                    <div className="border-t border-border pt-4 space-y-3">
+                    {calendarSync && (
+                        <div className="border-t border-border pt-4">
+                            <CalendarSyncSection t={t as unknown as CalendarSyncSectionLabels} sync={calendarSync} />
+                        </div>
+                    )}
+                    {!calendarSync && <div className="border-t border-border pt-4 space-y-3">
                         <div className="flex items-start justify-between gap-4">
                             <div data-settings-key="calendarPushTitle" className="space-y-1">
                                 <div className="text-sm font-medium">{t.calendarPushTitle}</div>
@@ -188,7 +197,7 @@ export function SettingsCalendarPage({
                                 </button>
                             </div>
                         )}
-                    </div>
+                    </div>}
                 </div>
             )}
 

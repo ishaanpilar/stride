@@ -43,6 +43,9 @@ import {
 const DESKTOP_CALENDAR_PUSH_ENABLED_KEY = 'stride:desktop-calendar-push:enabled';
 const DESKTOP_CALENDAR_PUSH_TARGET_ID_KEY = 'stride:desktop-calendar-push:target-calendar-id';
 const DESKTOP_CALENDAR_PUSH_MANAGED_ID_KEY = 'stride:desktop-calendar-push:managed-calendar-id';
+const DESKTOP_CALENDAR_PUSH_ACCOUNT_ID_KEY = 'stride:desktop-calendar-push:account-id';
+const DESKTOP_CALENDAR_PUSH_LAST_SYNC_KEY = 'stride:desktop-calendar-push:last-sync-at';
+const FOCUS_SYNC_MIN_INTERVAL_MS = 30_000;
 const ACCOUNT_TARGET_TITLE_PREFIX = 'Stride: ';
 const PROJECTED_RECURRENCE_EVENT_DATE_FORMAT = 'PP';
 
@@ -54,7 +57,7 @@ type CalendarPushTarget = {
 type DesktopCalendarPushDependencies = {
     createEvent: (details: SystemCalendarEventDetails) => Promise<SystemCalendarEventWriteResult>;
     deleteEvent: (eventId: string) => Promise<SystemCalendarEventWriteResult>;
-    ensureStrideCalendar: (storedCalendarId?: string | null) => Promise<SystemCalendarPushTarget | null>;
+    ensureStrideCalendar: (storedCalendarId?: string | null, sourceId?: string | null) => Promise<SystemCalendarPushTarget | null>;
     getAllSyncEntries: (platform: string) => Promise<CalendarSyncEntry[]>;
     getManagedCalendarId: () => Promise<string | null>;
     getPermissionStatus: typeof getSystemCalendarPermissionStatus;
@@ -124,6 +127,65 @@ export const setDesktopCalendarPushTargetCalendarId = async (calendarId: string 
     writeLocalStorage(DESKTOP_CALENDAR_PUSH_TARGET_ID_KEY, trimmed);
 };
 
+export const getDesktopCalendarPushAccountId = async (): Promise<string | null> => {
+    const value = readLocalStorage(DESKTOP_CALENDAR_PUSH_ACCOUNT_ID_KEY)?.trim() ?? '';
+    return value.length > 0 ? value : null;
+};
+
+/** Choosing a different account forgets the old managed calendar so a Stride calendar is made in the new one. */
+export const setDesktopCalendarPushAccountId = async (accountId: string | null): Promise<void> => {
+    const trimmed = accountId?.trim() ?? '';
+    const previous = await getDesktopCalendarPushAccountId();
+    if (trimmed) writeLocalStorage(DESKTOP_CALENDAR_PUSH_ACCOUNT_ID_KEY, trimmed);
+    else removeLocalStorage(DESKTOP_CALENDAR_PUSH_ACCOUNT_ID_KEY);
+    if ((previous ?? '') !== trimmed) {
+        await dependencies.removeManagedCalendarId();
+    }
+};
+
+export type DesktopCalendarPushRuntimeStatus = {
+    syncing: boolean;
+    lastSyncAt: string | null;
+    lastError: string | null;
+};
+
+let runtimeStatus: DesktopCalendarPushRuntimeStatus = {
+    syncing: false,
+    lastSyncAt: readLocalStorage(DESKTOP_CALENDAR_PUSH_LAST_SYNC_KEY),
+    lastError: null,
+};
+const statusListeners = new Set<() => void>();
+
+const updateRuntimeStatus = (patch: Partial<DesktopCalendarPushRuntimeStatus>): void => {
+    runtimeStatus = { ...runtimeStatus, ...patch };
+    statusListeners.forEach((listener) => listener());
+};
+
+export const getDesktopCalendarPushRuntimeStatus = (): DesktopCalendarPushRuntimeStatus => runtimeStatus;
+
+export const subscribeDesktopCalendarPushRuntimeStatus = (listener: () => void): (() => void) => {
+    statusListeners.add(listener);
+    return () => { statusListeners.delete(listener); };
+};
+
+async function trackSyncRun(run: () => Promise<{ failed: number } | void>): Promise<void> {
+    updateRuntimeStatus({ syncing: true });
+    try {
+        const result = await run();
+        const failed = result && typeof result === 'object' ? result.failed : 0;
+        if (failed > 0) {
+            updateRuntimeStatus({ syncing: false, lastError: `${failed} task(s) could not be synced` });
+            return;
+        }
+        const at = dependencies.nowIso();
+        writeLocalStorage(DESKTOP_CALENDAR_PUSH_LAST_SYNC_KEY, at);
+        updateRuntimeStatus({ syncing: false, lastSyncAt: at, lastError: null });
+    } catch (error) {
+        updateRuntimeStatus({ syncing: false, lastError: error instanceof Error ? error.message : String(error) });
+        throw error;
+    }
+}
+
 const getDesktopCalendarPushManagedCalendarId = async (): Promise<string | null> => {
     const value = readLocalStorage(DESKTOP_CALENDAR_PUSH_MANAGED_ID_KEY)?.trim() ?? '';
     return value.length > 0 ? value : null;
@@ -192,7 +254,8 @@ const isStrideDedicatedTarget = (target: Pick<SystemCalendarPushTarget, 'isStrid
 
 async function ensureDesktopStrideCalendar(): Promise<SystemCalendarPushTarget | null> {
     const storedCalendarId = await dependencies.getManagedCalendarId();
-    const target = await dependencies.ensureStrideCalendar(storedCalendarId);
+    const accountId = await getDesktopCalendarPushAccountId();
+    const target = await dependencies.ensureStrideCalendar(storedCalendarId, accountId);
     if (!target) {
         await dependencies.removeManagedCalendarId();
         return null;
@@ -385,7 +448,9 @@ const calendarPushScheduler = createCalendarPushScheduler({
 
 export const runFullDesktopCalendarPushSync = (): Promise<void> => calendarPushScheduler.runFull();
 
-const runFullDesktopCalendarPushSyncUnsafe = async (): Promise<void> => {
+const runFullDesktopCalendarPushSyncUnsafe = (): Promise<void> => trackSyncRun(runFullDesktopCalendarPushSyncCore);
+
+const runFullDesktopCalendarPushSyncCore = async (): Promise<{ failed: number } | void> => {
     if (!isTauriRuntime()) return;
     const enabled = await dependencies.getPushEnabled();
     if (!enabled) return;
@@ -393,7 +458,7 @@ const runFullDesktopCalendarPushSyncUnsafe = async (): Promise<void> => {
     if (permission !== 'granted') return;
 
     const target = await resolveCalendarPushTarget();
-    if (!target) return;
+    if (!target) throw new Error('No writable calendar available in the chosen account');
 
     const { _allTasks } = dependencies.getStoreState();
     const result = await runCalendarPushFullSync({
@@ -411,13 +476,19 @@ const runFullDesktopCalendarPushSyncUnsafe = async (): Promise<void> => {
             releaseCheck: 'v1.3.0/calendar-push-inventory',
         },
     });
+    return { failed: result.failed + result.staleFailed };
 };
 
 export const scheduleDesktopCalendarPushSyncDebounced = (taskIds: string[]): void => {
     calendarPushScheduler.scheduleDebounced(taskIds);
 };
 
-const runPartialDesktopCalendarPushSyncUnsafe = async (taskIds: string[]): Promise<void> => {
+const runPartialDesktopCalendarPushSyncUnsafe = (taskIds: string[]): Promise<void> => (
+    // Failures are recorded in the runtime status (shown in settings); a background run must never throw unhandled.
+    trackSyncRun(() => runPartialDesktopCalendarPushSyncCore(taskIds)).catch(() => undefined)
+);
+
+const runPartialDesktopCalendarPushSyncCore = async (taskIds: string[]): Promise<{ failed: number } | void> => {
     if (!isTauriRuntime()) return;
     const enabled = await dependencies.getPushEnabled();
     if (!enabled) return;
@@ -425,24 +496,43 @@ const runPartialDesktopCalendarPushSyncUnsafe = async (taskIds: string[]): Promi
     if (permission !== 'granted') return;
 
     const target = await resolveCalendarPushTarget();
-    if (!target) return;
+    if (!target) throw new Error('No writable calendar available in the chosen account');
 
     const { _tasksById } = dependencies.getStoreState();
-    await runCalendarPushPartialSync({
+    const result = await runCalendarPushPartialSync({
         taskIds,
         tasksById: _tasksById as Map<string, Task>,
         target,
         ports: createCalendarPushRunPorts(target),
         concurrency: CALENDAR_PUSH_SYNC_CONCURRENCY,
     });
+    return { failed: result.failed + result.removedFailed };
 };
 
+/** "Sync now" button: same serialized full sync the automatic runs use. */
+export const syncDesktopCalendarPushNow = (): Promise<void> => runFullDesktopCalendarPushSync();
+
 let unsubscribeStore: (() => void) | null = null;
+let removeFocusListener: (() => void) | null = null;
+let lastFocusSyncAt = 0;
+
+const installFocusSync = (): void => {
+    if (removeFocusListener || typeof window === 'undefined') return;
+    const onFocus = () => {
+        const now = Date.now();
+        if (now - lastFocusSyncAt < FOCUS_SYNC_MIN_INTERVAL_MS) return;
+        lastFocusSyncAt = now;
+        void runFullDesktopCalendarPushSync().catch(() => undefined);
+    };
+    window.addEventListener('focus', onFocus);
+    removeFocusListener = () => window.removeEventListener('focus', onFocus);
+};
 
 const buildCalendarSyncTaskMap = (tasks: Task[]) => new Map(tasks.map((task) => [task.id, task]));
 
 export const startDesktopCalendarPushSync = (): (() => void) => {
     if (unsubscribeStore) return unsubscribeStore;
+    installFocusSync();
 
     let previousTaskMap = buildCalendarSyncTaskMap(dependencies.getStoreState()._allTasks as Task[]);
 
@@ -492,6 +582,8 @@ export const startDesktopCalendarPushSync = (): (() => void) => {
 export const stopDesktopCalendarPushSync = (): void => {
     unsubscribeStore?.();
     unsubscribeStore = null;
+    removeFocusListener?.();
+    removeFocusListener = null;
     calendarPushScheduler.cancelPending();
 };
 
@@ -499,6 +591,8 @@ export const __desktopCalendarPushSyncTestUtils = {
     resetForTests() {
         stopDesktopCalendarPushSync();
         calendarPushScheduler.reset();
+        lastFocusSyncAt = 0;
+        runtimeStatus = { syncing: false, lastSyncAt: null, lastError: null };
         dependencies = { ...defaultDependencies };
     },
     setDependenciesForTests(overrides: Partial<DesktopCalendarPushDependencies>) {

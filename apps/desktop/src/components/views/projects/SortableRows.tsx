@@ -1,12 +1,14 @@
 import { type Area, type Project, type ProjectSequenceTaskCue, type RangeSelectionOptions, type StoreActionResult, type Task } from '@stride/core';
 import { useDraggable } from '@dnd-kit/core';
 import { useSortable } from '@dnd-kit/sortable';
+import { SORTABLE_TRANSITION } from '../../../lib/motion';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Trash2 } from 'lucide-react';
 import { TaskItem } from '../../TaskItem';
 import { AreaColorPicker } from './AreaColorPicker';
 import type { ProjectAreaSection } from './project-area-collapse';
 import { isImeComposing } from '../../../lib/ime';
+import { cn } from '../../../lib/utils';
 
 type AreaRowProps = {
     area: Area;
@@ -23,7 +25,7 @@ export function SortableAreaRow({
     onUpdateColor,
     t,
 }: AreaRowProps) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: area.id });
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: area.id, transition: SORTABLE_TRANSITION });
     const style = {
         transform: CSS.Transform.toString(transform),
         transition,
@@ -97,6 +99,7 @@ export function SortableProjectRow({
     children: (props: { handle: React.ReactNode; isDragging: boolean; isTaskOver: boolean }) => React.ReactNode;
 }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver, active } = useSortable({
+        transition: SORTABLE_TRANSITION,
         id: projectId,
         data: { type: 'project', section },
     });
@@ -168,6 +171,8 @@ export function SortableProjectTaskRow({
     dragLabel,
     narrow,
     interactionDisabled = false,
+    onMoveToTop,
+    onNudge,
 }: {
     task: Task;
     project: Project;
@@ -178,8 +183,13 @@ export function SortableProjectTaskRow({
     dragLabel: string;
     narrow?: boolean;
     interactionDisabled?: boolean;
+    /** "Move to top" (this is the priority right now) in the task menu. */
+    onMoveToTop?: (taskId: string) => void;
+    /** Alt+Up / Alt+Down on the row: keyboard reorder. */
+    onNudge?: (taskId: string, offset: -1 | 1) => void;
 }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+        transition: SORTABLE_TRANSITION,
         id: task.id,
         data: { type: 'task', sortable: true },
         disabled: interactionDisabled,
@@ -188,6 +198,7 @@ export function SortableProjectTaskRow({
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.45 : 1,
+        zIndex: isDragging ? 10 : undefined,
     };
 
     const { taskContainerClassName, title } = getSequenceCuePresentation(
@@ -197,7 +208,24 @@ export function SortableProjectTaskRow({
     );
 
     return (
-        <div ref={setNodeRef} style={style} className="flex items-start gap-2">
+        <div
+            ref={setNodeRef}
+            style={style}
+            className={cn('flex items-start gap-2', !interactionDisabled && (isDragging ? 'cursor-grabbing' : 'cursor-grab'))}
+            // Press the card body and drag (not just the grip); controls and text inputs keep their own behaviour.
+            onPointerDown={interactionDisabled ? undefined : (event) => {
+                if (event.target instanceof HTMLElement
+                    && event.target.closest('button, a, input, textarea, select, [contenteditable], [role="button"]')) return;
+                listeners?.onPointerDown?.(event);
+            }}
+            onKeyDown={!interactionDisabled && onNudge ? (event) => {
+                if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+                event.preventDefault();
+                onNudge(task.id, event.key === 'ArrowUp' ? -1 : 1);
+            } : undefined}
+        >
             <div
                 className={taskContainerClassName}
                 title={title}
@@ -210,6 +238,7 @@ export function SortableProjectTaskRow({
                     showProjectBadgeInActions={false}
                     showProjectBadgeInMetadata={false}
                     interactionDisabled={interactionDisabled}
+                    onMoveToTop={interactionDisabled ? undefined : onMoveToTop}
                     {...(narrow ? NARROW_TASK_ITEM_PROPS : {})}
                     dragHandle={interactionDisabled ? undefined : (
                         <button

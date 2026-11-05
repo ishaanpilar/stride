@@ -547,6 +547,14 @@ describe('reorderBoardTasks', () => {
         expect(after.get(b.id)).toBe((before.get(b.id) ?? 0) + 1);
     });
 
+    it('keeps the shown order when the list was displayed in a different order than the stored one', async () => {
+        const a = await addStatusTask('A oldest', 'next');
+        const b = await addStatusTask('B', 'next');
+        const c = await addStatusTask('C newest', 'next');
+        await useTaskStore.getState().reorderBoardTasks('next', [a.id, c.id, b.id], a.id);
+        expect(orderedNextIds()).toEqual([a.id, c.id, b.id]);
+    });
+
     it('places a moved card directly after its shown anchor', async () => {
         const a = await addStatusTask('A shown', 'next');
         const hidden = await addStatusTask('Hidden', 'next');

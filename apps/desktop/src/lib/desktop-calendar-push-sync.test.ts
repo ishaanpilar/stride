@@ -3,6 +3,9 @@ import { useTaskStore, type CalendarSyncEntry, type Project, type Section, type 
 
 import {
     __desktopCalendarPushSyncTestUtils,
+    getDesktopCalendarPushRuntimeStatus,
+    startDesktopCalendarPushSync,
+    stopDesktopCalendarPushSync,
     enableDesktopCalendarPush,
     runFullDesktopCalendarPushSync,
 } from './desktop-calendar-push-sync';
@@ -356,5 +359,53 @@ describe('desktop calendar push sync', () => {
 
         expect(setPushEnabled.mock.calls).toEqual([[true], [false]]);
         expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+    it('creates the Stride calendar inside the account the user chose', async () => {
+        localStorage.setItem('stride:desktop-calendar-push:account-id', 'google-source');
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(ensureStrideCalendar).toHaveBeenCalledWith(null, 'google-source');
+        localStorage.removeItem('stride:desktop-calendar-push:account-id');
+    });
+
+    it('records the last successful sync time and clears errors', async () => {
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync();
+
+        expect(getDesktopCalendarPushRuntimeStatus()).toEqual({
+            syncing: false,
+            lastSyncAt: '2026-01-01T12:00:00.000Z',
+            lastError: null,
+        });
+    });
+
+    it('records an error when events cannot be written, without losing the task', async () => {
+        createEvent.mockResolvedValueOnce(writeFailed('permission-denied'));
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+
+        await runFullDesktopCalendarPushSync().catch(() => undefined);
+
+        expect(getDesktopCalendarPushRuntimeStatus().lastError).toBeTruthy();
+        expect(useTaskStore.getState()._allTasks).toHaveLength(1);
+    });
+
+    it('syncs again when the window regains focus, at most once per 30 seconds', async () => {
+        setStoreTasks([makeTask({ dueDate: '2026-01-10' })]);
+        startDesktopCalendarPushSync();
+
+        window.dispatchEvent(new Event('focus'));
+        window.dispatchEvent(new Event('focus'));
+        await vi.waitFor(() => expect(createEvent).toHaveBeenCalledTimes(1));
+        await runFullDesktopCalendarPushSync();
+        expect(ensureStrideCalendar.mock.calls.length).toBeLessThanOrEqual(3);
+
+        stopDesktopCalendarPushSync();
+        const before = ensureStrideCalendar.mock.calls.length;
+        window.dispatchEvent(new Event('focus'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(ensureStrideCalendar.mock.calls.length).toBe(before);
     });
 });

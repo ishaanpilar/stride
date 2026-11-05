@@ -11,7 +11,7 @@ export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Parti
     const projects: Project[] = (seed.projects ?? []).map((p, i) => ({
         id: `proj${i + 1}-0000-0000-0000-000000000000`, title: `Project ${i + 1}`, status: 'active', color: '#fff', order: i, tagIds: [], createdAt: stamp, updatedAt: stamp, ...p,
     }) as Project);
-    const areas: Area[] = seed.areas ?? [];
+    const areas: Area[] = [...(seed.areas ?? [])];
     const calls: string[] = [];
     const port: AssistantStorePort = {
         getSnapshot: () => ({ tasks: tasks.map((t) => ({ ...t })), projects: projects.map((p) => ({ ...p })), areas }),
@@ -70,8 +70,45 @@ export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Parti
             delete p.deletedAt;
             return { success: true };
         },
+        async updateProject(id, updates) {
+            calls.push('updateProject');
+            const p = projects.find((x) => x.id === id);
+            if (!p) return { success: false, error: 'Project not found' };
+            for (const [k, v] of Object.entries(updates)) {
+                if (v === undefined) delete (p as any)[k];
+                else (p as any)[k] = v;
+            }
+            return { success: true };
+        },
+        async addArea(name, props) {
+            const a = { id: generateUUID(), name, order: areas.length, createdAt: stamp, updatedAt: stamp, ...props } as Area;
+            areas.push(a);
+            return a;
+        },
+        async updateArea(id, updates) {
+            const a = areas.find((x) => x.id === id);
+            if (!a) return { success: false, error: 'Area not found' };
+            for (const [k, v] of Object.entries(updates)) {
+                if (v === undefined) delete (a as any)[k];
+                else (a as any)[k] = v;
+            }
+            return { success: true };
+        },
+        async deleteArea(id) {
+            calls.push('deleteArea');
+            const a = areas.find((x) => x.id === id);
+            if (!a) return { success: false, error: 'Area not found' };
+            a.deletedAt = stamp;
+            return { success: true };
+        },
+        async restoreArea(id) {
+            const a = areas.find((x) => x.id === id);
+            if (!a) return { success: false, error: 'Area not found' };
+            delete a.deletedAt;
+            return { success: true };
+        },
     };
-    return { port, tasks, projects, calls };
+    return { port, tasks, projects, areas, calls };
 }
 
 export type ScriptedReply = Partial<AssistantMessage> | ((req: AssistantModelRequest) => Partial<AssistantMessage>);

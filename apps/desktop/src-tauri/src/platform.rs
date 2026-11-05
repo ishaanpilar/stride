@@ -259,16 +259,66 @@ pub(crate) fn get_macos_writable_calendars() -> Result<Vec<MacOsCalendarPushTarg
     }
 }
 
+/// Trims a user-chosen calendar account (EventKit source) id; empty means "automatic".
+fn normalize_calendar_source_id(source_id: Option<String>) -> String {
+    source_id.map(|value| value.trim().to_string()).unwrap_or_default()
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_macos_calendar_sources() -> Result<Vec<MacOsCalendarSource>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let value = parse_macos_eventkit_json(unsafe { stride_macos_calendar_sources_json() })?;
+        let parsed = serde_json::from_value::<Vec<MacOsCalendarSource>>(value)
+            .map_err(|error| format!("Failed to decode EventKit calendar accounts: {error}"))?;
+        return Ok(parsed);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+/// Opens System Settings at Privacy & Security > Calendars so the user can re-grant access.
+#[tauri::command(async)]
+pub(crate) fn open_macos_calendar_privacy_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg(MACOS_CALENDAR_PRIVACY_URL)
+            .status()
+            .map_err(|error| format!("Failed to open System Settings: {error}"))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err("System Settings did not open".to_string())
+                }
+            })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+const MACOS_CALENDAR_PRIVACY_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars";
+
 #[tauri::command(async)]
 pub(crate) fn ensure_macos_stride_calendar(
     stored_calendar_id: Option<String>,
+    source_id: Option<String>,
 ) -> Result<Option<MacOsCalendarPushTarget>, String> {
     #[cfg(target_os = "macos")]
     {
         let stored = CString::new(stored_calendar_id.unwrap_or_default())
             .map_err(|error| format!("Invalid stored calendar ID: {error}"))?;
+        let source = CString::new(normalize_calendar_source_id(source_id))
+            .map_err(|error| format!("Invalid calendar account ID: {error}"))?;
         let value = parse_macos_eventkit_json(unsafe {
-            stride_macos_ensure_stride_calendar_json(stored.as_ptr())
+            stride_macos_ensure_stride_calendar_json(stored.as_ptr(), source.as_ptr())
         })?;
         if value.is_null() {
             return Ok(None);
@@ -279,7 +329,7 @@ pub(crate) fn ensure_macos_stride_calendar(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = stored_calendar_id;
+        let _ = (stored_calendar_id, source_id);
         Ok(None)
     }
 }
@@ -1046,6 +1096,37 @@ pub(crate) fn open_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calendar_source_id_is_trimmed_and_empty_means_automatic() {
+        assert_eq!(normalize_calendar_source_id(None), "");
+        assert_eq!(normalize_calendar_source_id(Some("  ".into())), "");
+        assert_eq!(normalize_calendar_source_id(Some(" abc-1 ".into())), "abc-1");
+    }
+
+    #[test]
+    fn calendar_push_target_decodes_with_and_without_source_id() {
+        let with: MacOsCalendarPushTarget = serde_json::from_value(serde_json::json!({
+            "id": "c1", "name": "Stride", "sourceName": "me@gmail.com",
+            "sourceId": "s1", "isStrideDedicated": true
+        }))
+        .unwrap();
+        assert_eq!(with.source_id.as_deref(), Some("s1"));
+        let without: MacOsCalendarPushTarget = serde_json::from_value(serde_json::json!({
+            "id": "c1", "name": "Work", "isStrideDedicated": false
+        }))
+        .unwrap();
+        assert_eq!(without.source_id, None);
+    }
+
+    #[test]
+    fn calendar_source_decodes_type_field() {
+        let source: MacOsCalendarSource = serde_json::from_value(
+            serde_json::json!({"id": "s1", "name": "me@gmail.com", "type": "caldav"}),
+        )
+        .unwrap();
+        assert_eq!(source.kind, "caldav");
+    }
 
     #[test]
     fn a_standard_install_is_recognized_from_every_profile_marker() {

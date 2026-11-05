@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stride Focus: B, Grow</title>
+<style>
+/* ---------- Stride Soft UI tokens ---------- */
+:root {
+  color-scheme: light;
+  --bg: #F0F4F8;
+  --sidebar: #EAEEF5;
+  --surface: #FFFFFF;
+  --well: #E9EEF4;
+  --shadow-light: #FFFFFF;
+  --shadow-dark: #D1D9E6;
+  --fg: #1F2937;
+  --muted: #4B5563;
+  --tertiary: #6B7280;
+  --border: rgba(209, 217, 230, .6);
+  --accent: #4F46E5;
+  --accent-rgb: 79 70 229;
+  --accent-2: #7C5CF0;
+  --accent-soft: rgba(79, 70, 229, .12);
+  --accent-text: #4338CA;
+  --success: #22C55E;
+  --success-text: #15803D;
+  --danger-text: #B91C1C;
+  --danger-soft: rgba(239, 68, 68, .10);
+  --warning-text: #C2410C;
+  --raised: -6px -6px 15px var(--shadow-light), 6px 6px 15px var(--shadow-dark);
+  --raised-sm: -3px -3px 8px var(--shadow-light), 3px 3px 8px var(--shadow-dark);
+  --inset: inset -4px -4px 10px var(--shadow-light), inset 4px 4px 10px var(--shadow-dark);
+  --wall: radial-gradient(1200px 700px at 15% 10%, #DCE3F6 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #E7DDF7 0%, transparent 60%), #E4E9F2;
+  --scrim: rgba(240, 244, 248, .55);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-soft: cubic-bezier(.4, 0, .2, 1);
+  --spring: cubic-bezier(.34, 1.4, .64, 1);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #14161C; --sidebar: #181B22; --surface: #1E222A; --well: #171A20;
+    --shadow-light: rgba(255,255,255,.04); --shadow-dark: rgba(0,0,0,.45);
+    --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08);
+    --accent: #6366F1; --accent-rgb: 99 102 241; --accent-2: #8B6CF6;
+    --accent-soft: rgba(99, 102, 241, .20); --accent-text: #A5B4FC;
+    --success-text: #4ADE80; --danger-text: #F87171; --danger-soft: rgba(248,113,113,.14); --warning-text: #FB923C;
+    --raised: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35);
+    --raised-sm: 0 1px 0 rgba(255,255,255,.04) inset, 0 3px 10px rgba(0,0,0,.3);
+    --inset: inset 2px 2px 6px rgba(0,0,0,.45), inset -1px -1px 2px rgba(255,255,255,.04);
+    --wall: radial-gradient(1200px 700px at 15% 10%, #1D2240 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #2A1D3F 0%, transparent 60%), #0D0F14;
+    --scrim: rgba(20, 22, 28, .5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #14161C; --sidebar: #181B22; --surface: #1E222A; --well: #171A20;
+  --shadow-light: rgba(255,255,255,.04); --shadow-dark: rgba(0,0,0,.45);
+  --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08);
+  --accent: #6366F1; --accent-rgb: 99 102 241; --accent-2: #8B6CF6;
+  --accent-soft: rgba(99, 102, 241, .20); --accent-text: #A5B4FC;
+  --success-text: #4ADE80; --danger-text: #F87171; --danger-soft: rgba(248,113,113,.14); --warning-text: #FB923C;
+  --raised: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35);
+  --raised-sm: 0 1px 0 rgba(255,255,255,.04) inset, 0 3px 10px rgba(0,0,0,.3);
+  --inset: inset 2px 2px 6px rgba(0,0,0,.45), inset -1px -1px 2px rgba(255,255,255,.04);
+  --wall: radial-gradient(1200px 700px at 15% 10%, #1D2240 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #2A1D3F 0%, transparent 60%), #0D0F14;
+  --scrim: rgba(20, 22, 28, .5);
+}
+
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.3 var(--font); color: var(--fg); background: var(--wall); background-attachment: fixed; -webkit-font-smoothing: antialiased; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.ic { width: 16px; height: 16px; flex: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+.tnum { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.btn-gradient { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-weight: 600; font-size: 13px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 14px rgb(var(--accent-rgb) / .35); transition: transform .2s var(--ease), filter .2s, box-shadow .2s; }
+.btn-gradient:hover { transform: translateY(-1px); filter: brightness(1.04); }
+.btn-gradient:active { transform: none; box-shadow: 0 2px 6px rgb(var(--accent-rgb) / .3); }
+.btn-soft { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 10px; font-weight: 500; font-size: 13px; color: var(--muted);
+  background: var(--surface); box-shadow: var(--raised-sm); border: 1px solid var(--border); transition: color .2s, transform .2s var(--ease); }
+.btn-soft:hover { color: var(--fg); transform: translateY(-1px); }
+.btn-text { height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--tertiary); transition: color .2s, background .2s; }
+.btn-text:hover { color: var(--fg); background: var(--well); }
+.icon-btn { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); transition: color .2s, background .2s, transform .2s var(--ease); }
+.icon-btn:hover { color: var(--fg); background: rgb(127 127 127 / .12); }
+.icon-btn:active { transform: scale(.94); }
+
+/* ---------- desk + window ---------- */
+.desk { position: fixed; inset: 0; padding: 22px; display: flex; }
+.window { position: relative; flex: 1; border-radius: 14px; overflow: hidden; background: var(--bg); box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 24px 70px rgba(15, 20, 40, .28); isolation: isolate; }
+.lights { position: absolute; left: 18px; top: 18px; display: flex; gap: 8px; z-index: 30; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: #FF5F57; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.15); }
+.lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+.app { position: absolute; inset: 0; display: flex; transform-origin: 50% 40%;
+  transition: filter 1s var(--ease), opacity 1s var(--ease), transform 1.1s var(--ease); }
+.window.is-focusing .app { filter: blur(16px) saturate(.15); opacity: .38; transform: scale(.975); pointer-events: none; }
+.window.is-focusing .lights { opacity: .5; transition: opacity 1s; }
+
+.sidebar { width: 248px; flex: none; padding: 54px 14px 16px; background: var(--sidebar); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.sidebar::after { content: ""; position: absolute; left: -80px; bottom: -80px; width: 260px; height: 260px; border-radius: 50%; background: radial-gradient(circle, rgb(var(--accent-rgb) / .16), transparent 70%); pointer-events: none; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; padding: 0 6px 14px; }
+.mark { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); display: grid; place-items: center; color: #fff; box-shadow: 0 4px 12px rgb(var(--accent-rgb) / .35); }
+.mark .ic { width: 17px; height: 17px; stroke-width: 2.6; }
+.capture { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 12px; border-radius: 12px; background: var(--surface); box-shadow: var(--raised-sm); margin-bottom: 14px; font-weight: 500; }
+.capture kbd, .search kbd { margin-left: auto; font: 12px var(--font); color: var(--tertiary); }
+.navgroup { font-size: 12px; font-weight: 600; color: var(--tertiary); padding: 12px 10px 6px; }
+.navitem { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 10px; color: var(--fg); }
+.navitem .ic { color: var(--muted); width: 17px; height: 17px; }
+.navitem .n { margin-left: auto; color: var(--tertiary); font-size: 13px; font-variant-numeric: tabular-nums; }
+.navitem.sel { background: var(--accent-soft); font-weight: 600; }
+.navitem.sel .ic { color: var(--accent-text); }
+
+.content { flex: 1; min-width: 0; padding: 14px 30px 30px; overflow: hidden; display: flex; flex-direction: column; }
+.toolbar { display: flex; align-items: center; gap: 10px; height: 40px; margin-bottom: 26px; }
+.search { display: flex; align-items: center; gap: 9px; width: 420px; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--well); box-shadow: var(--inset); color: var(--tertiary); font-size: 13.5px; }
+.grow { flex: 1; }
+.vh { display: flex; align-items: baseline; gap: 12px; }
+.vh h1 { margin: 0; font-size: 30px; line-height: 36px; letter-spacing: -.02em; }
+.vh .count { color: var(--muted); font-size: 15px; }
+.vh-sub { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; margin: 12px 0 8px; }
+.pbar { height: 6px; border-radius: 99px; background: var(--well); box-shadow: var(--inset); overflow: hidden; margin-bottom: 20px; }
+.pbar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .8s var(--ease); }
+
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.row { position: relative; display: flex; align-items: flex-start; gap: 14px; padding: 15px 16px; border-radius: 14px; background: var(--surface); box-shadow: var(--raised-sm); transition: background .2s, box-shadow .25s, transform .25s var(--ease), opacity .4s, max-height .5s var(--ease), padding .5s var(--ease), margin .5s var(--ease); max-height: 120px; }
+.row:hover, .row.hover { box-shadow: var(--raised); }
+.row.is-lifted { visibility: hidden; }
+.cb { width: 22px; height: 22px; flex: none; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--tertiary); display: grid; place-items: center; color: #fff; transition: box-shadow .2s, background .3s; }
+.cb .ic { width: 13px; height: 13px; stroke-width: 3; stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset .35s .1s var(--ease); }
+.row .cb:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.row.done .cb { background: var(--accent); box-shadow: none; animation: cbpop .45s var(--spring); }
+.row.done .cb .ic { stroke-dashoffset: 0; }
+.row.done .row-title { color: var(--tertiary); text-decoration: line-through; text-decoration-color: var(--tertiary); }
+.row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: -10px; overflow: hidden; }
+@keyframes cbpop { 0% { transform: scale(.6); } 100% { transform: scale(1); } }
+.row-main { flex: 1; min-width: 0; }
+.row-title { font-size: 15px; line-height: 20px; font-weight: 600; transition: color .3s; }
+.row-note { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.chips { display: flex; gap: 8px; margin-top: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; background: var(--well); font-size: 12.5px; color: var(--muted); }
+.chip i { width: 7px; height: 7px; border-radius: 50%; }
+.chip.today { background: var(--accent-soft); color: var(--accent-text); }
+.chip .ic { width: 13px; height: 13px; }
+.row-end { position: relative; align-self: center; display: flex; align-items: center; gap: 8px; }
+.prio { height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; background: var(--danger-soft); color: var(--danger-text); transition: opacity .2s; }
+.prio.med { background: rgba(234, 88, 12, .1); color: var(--warning-text); }
+.prio.low { background: var(--well); color: var(--tertiary); }
+
+/* ---------- stage (option fills) ---------- */
+.stage { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+.window.is-focusing .stage { pointer-events: auto; }
+
+/* ---------- menubar view ---------- */
+.mbview { position: fixed; inset: 0; display: none; align-items: flex-start; justify-content: center; padding-top: 40px; }
+body.view-menubar .desk { display: none; }
+body.view-menubar .mbview { display: flex; }
+.mb-scene { position: relative; width: 600px; height: 380px; border-radius: 16px; overflow: hidden; background: var(--wall); box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 20px 60px rgba(15,20,40,.22); }
+.mb-strip { height: 30px; display: flex; align-items: center; gap: 16px; padding: 0 14px; font-size: 13px; font-weight: 500; color: var(--fg); background: rgb(255 255 255 / .45); backdrop-filter: blur(20px); }
+:root[data-theme="dark"] .mb-strip { background: rgb(20 22 28 / .55); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .mb-strip { background: rgb(20 22 28 / .55); } }
+.mb-strip .r { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.mb-strip .ic { width: 15px; height: 15px; }
+.mb-item { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; background: rgb(127 127 127 / .2); font-variant-numeric: tabular-nums; }
+.mb-panel { position: absolute; top: 38px; right: 92px; width: 380px; border-radius: 14px; overflow: hidden; background: color-mix(in srgb, var(--surface) 86%, transparent); backdrop-filter: blur(30px) saturate(1.4);
+  box-shadow: 0 0 0 .5px rgba(0,0,0,.15), 0 18px 50px rgba(15,20,40,.28); }
+.mb-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; transition: background .2s; }
+.mb-row:hover { background: rgb(127 127 127 / .1); }
+.mb-row .t { flex: 1; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-row .p { font-size: 12px; color: var(--tertiary); }
+
+/* ---------- prototype controls ---------- */
+.proto { position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 12px; font-size: 12px;
+  background: rgb(20 22 30 / .78); color: #E5E7EB; backdrop-filter: blur(16px); box-shadow: 0 6px 24px rgba(0,0,0,.25); opacity: .35; transition: opacity .25s; }
+.proto:hover, .proto:focus-within { opacity: 1; }
+.proto .lbl { padding: 0 6px 0 8px; color: #9CA3AF; }
+.proto button { height: 26px; padding: 0 9px; border-radius: 8px; color: #D1D5DB; }
+.proto button:hover { background: rgba(255,255,255,.08); }
+.proto button.on { background: rgba(255,255,255,.16); color: #fff; }
+.proto .sep { width: 1px; height: 16px; background: rgba(255,255,255,.15); margin: 0 4px; }
+body.shot .proto { display: none; }
+body.instant *, body.instant *::before, body.instant *::after { transition: none !important; animation-delay: -10s !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; transition-delay: 0s !important; }
+  .window.is-focusing .app { transform: none; }
+}
+
+
+/* ================= Option B: Grow (a living plant) ================= */
+:root { --leaf-a: #2F9E62; --leaf-b: #86D9A8; --stem: #3C9A66; --petal-a: var(--accent); --petal-b: #E879F9; --sun: 253 224 140; --sun-a: .8; --ground: rgba(31, 41, 55, .18); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --leaf-a: #2A8F5A; --leaf-b: #6EE7A8; --stem: #4CC285; --petal-b: #F0ABFC; --sun: 251 191 36; --sun-a: .32; --ground: rgba(255,255,255,.16); } }
+:root[data-theme="dark"] { --leaf-a: #2A8F5A; --leaf-b: #6EE7A8; --stem: #4CC285; --petal-b: #F0ABFC; --sun: 251 191 36; --sun-a: .32; --ground: rgba(255,255,255,.16); }
+
+.start-btn { position: absolute; right: 0; top: 50%; transform: translateY(-50%) scale(.96); opacity: 0; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; color: var(--success-text); background: rgba(34, 197, 94, .12); transition: opacity .2s, transform .25s var(--ease); white-space: nowrap; }
+.start-btn .ic { width: 15px; height: 15px; }
+.row:hover .start-btn, .row.hover .start-btn, .start-btn:focus-visible { opacity: 1; transform: translateY(-50%); }
+.row:hover .prio, .row.hover .prio { opacity: 0; }
+.garden-strip { display: flex; align-items: center; gap: 14px; margin: -6px 0 18px; padding: 8px 14px; height: 52px; border-radius: 14px; background: var(--well); box-shadow: var(--inset); font-size: 13px; color: var(--muted); }
+.garden-strip .minis { display: flex; align-items: flex-end; gap: 4px; height: 36px; }
+.mini { width: 22px; height: 34px; overflow: visible; }
+.mini .st { stroke: var(--stem); stroke-width: 1.6; fill: none; stroke-linecap: round; }
+.mini .lf { fill: var(--leaf-a); }
+.mini .fl { fill: url(#petalGrad); }
+.mini.seed .st, .mini.seed .lf, .mini.seed .fl { display: none; }
+.mini .soil { fill: var(--ground); }
+.mini.pop { animation: miniPop .9s var(--spring) both; transform-origin: 50% 100%; transform-box: fill-box; }
+@keyframes miniPop { from { transform: scale(0); opacity: 0; } }
+
+.b-veil { position: absolute; inset: 0; background: var(--scrim); opacity: 0; transition: opacity 1.2s; }
+.b-sky { position: absolute; inset: 0; opacity: 0; transition: opacity 1.4s, background 2s; background: radial-gradient(900px 600px at 34% 110%, rgb(var(--sun) / .22), transparent 70%); }
+.stage.lit .b-veil, .stage.lit .b-sky { opacity: 1; }
+.stage[data-phase="break"] .b-sky { background: radial-gradient(900px 600px at 34% 110%, rgba(56, 189, 248, .14), transparent 70%), linear-gradient(rgba(30, 41, 90, .10), transparent 60%); }
+
+.b-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 56px; padding-bottom: 40px; opacity: 0; visibility: hidden; transition: opacity .4s, visibility 0s .4s; }
+.stage.on .b-center { opacity: 1; visibility: visible; transition: opacity .3s; }
+.b-plantcol { display: flex; flex-direction: column; align-items: center; }
+.b-plant { width: 340px; height: 440px; overflow: visible; }
+.b-time { margin-top: -6px; font-family: var(--display); font-weight: 300; font-size: 44px; letter-spacing: -.03em; font-variant-numeric: tabular-nums; line-height: 1; transition: opacity .4s; }
+.b-tlabel { margin-top: 6px; font-size: 13px; color: var(--tertiary); height: 18px; }
+.stage.paused .b-time { opacity: .45; }
+.stage[data-phase="finish"] .b-time, .stage[data-phase="finish"] .b-tlabel { opacity: 0; }
+
+/* plant parts */
+.p-stem { fill: none; stroke: var(--stem); stroke-width: 3.2; stroke-linecap: round; }
+.p-leaf { transform: scale(0); transition: transform 1.4s var(--spring); }
+.p-leaf.open { transform: scale(1); }
+.p-leaf path { fill: url(#leafGrad); }
+.p-leaf .rib { fill: none; stroke: rgba(255, 255, 255, .45); stroke-width: 1; }
+.p-petal { transition: transform 1.1s var(--spring), opacity .6s; }
+.p-petal ellipse { fill: url(#petalGrad); }
+.p-petal.in ellipse { fill: url(#innerGrad); }
+.p-flower { transition: transform 1.2s var(--spring); }
+.p-core { fill: #FBBF24; transition: transform .8s var(--spring); }
+.p-bud { fill: url(#budGrad); transition: opacity .6s; }
+.p-sway { transform-origin: 170px 392px; transform-box: view-box; animation: sway 7s ease-in-out infinite alternate; }
+.stage[data-phase="break"] .p-sway { animation-duration: 12s; }
+.stage.paused .p-sway { animation-play-state: paused; }
+@keyframes sway { from { transform: rotate(-1.3deg); } to { transform: rotate(1.3deg); } }
+.p-sun { transition: fill-opacity 2s; }
+.p-ground { stroke: url(#groundGrad); stroke-width: 1.2; }
+.p-shadow { fill: var(--ground); opacity: .5; }
+.p-star { fill: var(--fg); opacity: 0; }
+.stage[data-phase="break"] .p-star { animation: twinkle 3.2s ease-in-out infinite; }
+@keyframes twinkle { 0%, 100% { opacity: 0; } 50% { opacity: .55; } }
+.p-glow { opacity: 0; transition: opacity 1.2s; }
+.stage[data-phase="finish"][data-kind="task"] .p-glow { opacity: 1; }
+.p-seed { opacity: 0; }
+.pollen { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: #FCD34D; box-shadow: 0 0 8px #FCD34D; pointer-events: none; animation: pollen var(--d) var(--ease-soft) forwards; }
+@keyframes pollen { 0% { opacity: 0; transform: translate(0, 0) scale(.6); } 15% { opacity: 1; } 100% { opacity: 0; transform: translate(var(--x), var(--y)) scale(1); } }
+.spark { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); pointer-events: none; animation: spark .7s var(--ease) forwards; }
+@keyframes spark { from { opacity: 1; transform: translate(0, 0); } to { opacity: 0; transform: translate(var(--x), var(--y)); } }
+
+.b-col { width: 440px; }
+.b-card { position: relative; padding: 22px 24px 20px; border-radius: 22px; background: color-mix(in srgb, var(--surface) 80%, transparent); backdrop-filter: blur(28px) saturate(1.3);
+  box-shadow: 0 1px 0 rgb(255 255 255 / .35) inset, 0 24px 60px rgba(15, 20, 40, .14), 0 0 0 .5px var(--border); transition: background .4s, box-shadow .4s; }
+.b-ghost { position: absolute; display: none; border-radius: 22px; background: color-mix(in srgb, var(--surface) 84%, transparent); backdrop-filter: blur(28px); box-shadow: 0 24px 60px rgba(15, 20, 40, .16); }
+.b-card.flying { background: transparent; box-shadow: none; backdrop-filter: none; }
+.b-card.flying, .b-card.flying > * { transition: none !important; }
+.b-card.flying > *:not(.b-title) { opacity: 0; }
+.b-card > * { transition: opacity .45s var(--ease); }
+.b-head { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.b-head .dot { width: 7px; height: 7px; border-radius: 50%; }
+.b-head .count { margin-left: auto; color: var(--tertiary); font-variant-numeric: tabular-nums; }
+.b-title { margin: 8px 0 0; font-size: 22px; line-height: 28px; font-weight: 650; letter-spacing: -.012em; }
+.b-wrap { overflow: hidden; }
+.b-steps { list-style: none; margin: 12px 0 0; padding: 0; }
+.b-step { display: flex; align-items: center; gap: 12px; min-height: 42px; color: var(--tertiary); font-size: 14.5px; transition: color .4s; }
+.b-step.cur { color: var(--fg); }
+.b-step .sc { position: relative; width: 22px; height: 22px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; display: grid; place-items: center; transition: background .35s var(--ease), box-shadow .3s, transform .2s; }
+.b-step.cur .sc { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.b-step .sc:hover { transform: scale(1.08); } .b-step .sc:active { transform: scale(.9); }
+.b-step .sc .ic { width: 13px; height: 13px; stroke-width: 3; color: #fff; stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset .35s .12s var(--ease); }
+.b-step .lbl { position: relative; }
+.b-step .lbl::after { content: ""; position: absolute; left: 0; top: 54%; height: 1px; width: 0; background: currentColor; opacity: .8; transition: width .45s .1s var(--ease); }
+.b-step.done .sc { background: linear-gradient(135deg, var(--accent), var(--petal-b)); box-shadow: none; animation: cbpop .5s var(--spring); }
+.b-step.done .sc .ic { stroke-dashoffset: 0; }
+.b-step.done .lbl::after { width: 100%; }
+.b-step.enter { animation: stepIn .55s var(--ease) both; }
+@keyframes stepIn { from { opacity: 0; transform: translateY(8px); filter: blur(4px); } }
+.b-load { display: flex; align-items: center; gap: 8px; margin-top: 16px; height: 26px; font-size: 13.5px; font-weight: 500;
+  background: linear-gradient(90deg, var(--tertiary) 0%, var(--tertiary) 35%, var(--accent-text) 50%, var(--tertiary) 65%, var(--tertiary) 100%); background-size: 300% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+.b-load .ic { color: var(--accent-text); width: 15px; height: 15px; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.b-foot { margin-top: 10px; font-size: 12px; color: var(--tertiary); display: flex; gap: 6px; align-items: center; }
+.b-foot .ic { width: 13px; height: 13px; color: var(--accent-text); }
+.b-card.loading .b-foot { opacity: 0; }
+.b-note { height: 22px; margin-top: 16px; padding-left: 4px; font-size: 14px; color: var(--muted); opacity: 0; transform: translateY(4px); transition: opacity .5s, transform .5s var(--ease); }
+.b-note.show { opacity: 1; transform: none; }
+.b-ctl { display: flex; gap: 8px; margin-top: 4px; }
+.b-ctl .icon-btn { background: color-mix(in srgb, var(--surface) 55%, transparent); backdrop-filter: blur(20px); box-shadow: var(--raised-sm); }
+.b-ctl .icon-btn .ic { width: 14px; height: 14px; }
+.b-ctl .ready { display: none; }
+.stage.ready .b-ctl .ready { display: inline-flex; } .stage.ready .b-ctl #runBtn { display: none; }
+.b-brk { display: none; margin-top: 6px; font-size: 14px; color: var(--muted); }
+.stage[data-phase="break"] .b-brk { display: block; }
+.stage[data-phase="break"] .b-title { font-size: 17px; color: var(--muted); font-weight: 600; }
+.stage[data-phase="break"] .b-wrap, .stage[data-phase="finish"] .b-wrap { height: 0 !important; }
+.stage[data-phase="break"] .b-foot, .stage[data-phase="finish"] .b-foot { display: none; }
+.b-fin { display: none; margin-top: 22px; }
+.stage[data-phase="finish"] .b-fin { display: block; animation: stepIn .7s .9s var(--ease) both; }
+.stage[data-phase="finish"] .b-note, .stage[data-phase="finish"] .b-ctl { display: none; }
+.b-fin .line { font-size: 21px; line-height: 28px; font-weight: 500; letter-spacing: -.01em; }
+.b-fin .meta { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.b-fin .btns { display: flex; gap: 10px; margin-top: 20px; align-items: center; }
+
+.b-garden { position: absolute; left: 0; right: 0; bottom: 26px; display: flex; justify-content: center; align-items: flex-end; gap: 6px; opacity: .85; }
+.b-garden .mini { width: 26px; height: 40px; }
+.b-garden .lbl { margin-left: 10px; font-size: 12.5px; color: var(--tertiary); align-self: center; }
+
+/* menu bar */
+.mb-item .ic { width: 14px; height: 14px; color: var(--success-text); }
+.pb { padding: 16px; }
+.pb-h { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 4px 8px; }
+.pb-main { display: flex; gap: 14px; align-items: center; }
+.pb-plant { width: 104px; height: 134px; flex: none; margin: -6px -6px -6px -10px; overflow: visible; }
+.pb-time { font-family: var(--display); font-weight: 300; font-size: 40px; line-height: 1; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.pb-title { font-weight: 600; font-size: 14.5px; margin-top: 8px; }
+.pb-step { display: flex; align-items: center; gap: 9px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.pb-step .sc { width: 18px; height: 18px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.pb-step .sc:hover { background: var(--accent-soft); }
+.pb-foot { display: flex; align-items: center; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.pb-foot .minis { display: flex; align-items: flex-end; gap: 2px; }
+.pb-foot .mini { width: 16px; height: 24px; }
+.pb-foot .lbl { margin-left: 6px; font-size: 12px; color: var(--tertiary); }
+.pb-foot .icon-btn { width: 32px; height: 32px; } .pb-foot .icon-btn .ic { width: 13px; height: 13px; }
+.pb-row-btn { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--success-text); background: rgba(34,197,94,.12); }
+.pb-row-btn .ic { width: 14px; height: 14px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="leafGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0" style="stop-color:var(--leaf-a)"/><stop offset="1" style="stop-color:var(--leaf-b)"/></linearGradient>
+    <linearGradient id="petalGrad" x1="0" y1="1" x2="0" y2="0"><stop offset="0" style="stop-color:var(--petal-a)"/><stop offset="1" style="stop-color:var(--petal-b)"/></linearGradient>
+    <linearGradient id="innerGrad" x1="0" y1="1" x2="0" y2="0"><stop offset="0" style="stop-color:var(--petal-b)"/><stop offset="1" stop-color="#fff" stop-opacity=".9"/></linearGradient>
+    <radialGradient id="budGrad" cx=".5" cy=".7" r=".7"><stop offset="0" style="stop-color:var(--leaf-b)"/><stop offset="1" style="stop-color:var(--leaf-a)"/></radialGradient>
+    <linearGradient id="groundGrad" gradientUnits="userSpaceOnUse" x1="-30" y1="0" x2="370" y2="0"><stop offset="0" style="stop-color:var(--fg);stop-opacity:0"/><stop offset=".5" style="stop-color:var(--fg);stop-opacity:.4"/><stop offset="1" style="stop-color:var(--fg);stop-opacity:0"/></linearGradient>
+    <radialGradient id="sunGrad"><stop offset="0" style="stop-color:rgb(var(--sun));stop-opacity:var(--sun-a)"/><stop offset=".5" style="stop-color:rgb(var(--sun));stop-opacity:calc(var(--sun-a) * .35)"/><stop offset="1" style="stop-color:rgb(var(--sun))" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glowGrad"><stop offset="0" style="stop-color:var(--petal-b)" stop-opacity=".55"/><stop offset="1" style="stop-color:var(--petal-b)" stop-opacity="0"/></radialGradient>
+    <clipPath id="aboveGround"><rect x="-200" y="-200" width="740" height="592"/></clipPath>
+  </defs>
+</svg>
+
+<template id="stageTpl">
+  <div class="b-veil"></div><div class="b-sky"></div>
+  <div class="b-ghost" id="ghost"></div>
+  <div class="b-center" id="center">
+    <div class="b-plantcol">
+      <svg class="b-plant" id="plant" viewBox="0 0 340 440" role="img" aria-label="Your plant grows as you focus"></svg>
+      <div class="b-time" id="time" role="timer"></div>
+      <div class="b-tlabel" id="tlabel"></div>
+    </div>
+    <div class="b-col">
+      <div class="b-card" id="card">
+        <div class="b-head"><span class="dot" id="pdot"></span><span id="proj"></span><span class="count" id="count"></span></div>
+        <h2 class="b-title" id="title"></h2>
+        <div class="b-brk">Stretch, drink some water. Your plant is resting too.</div>
+        <div class="b-wrap" id="wrap"><div class="b-load" id="load">ICON_SPARKLE Breaking it into small steps</div><ol class="b-steps" id="steps"></ol></div>
+        <div class="b-foot">ICON_SPARKLE Each step you tick opens a petal.</div>
+      </div>
+      <div class="b-note" id="note" aria-live="polite"></div>
+      <div class="b-ctl"><button class="icon-btn" id="runBtn"></button><button class="btn-gradient ready" id="readyBtn">ICON_PLAY Start next session</button><button class="icon-btn" id="stopBtn" aria-label="End session" title="End session (Esc)">ICON_STOP</button><button class="icon-btn" id="skipBtn" aria-label="Skip break" title="Skip break" style="display:none">ICON_ARROW</button></div>
+      <div class="b-fin"><div class="line" id="finLine"></div><div class="meta" id="finMeta"></div><div class="btns" id="finBtns"></div></div>
+    </div>
+  </div>
+  <div class="b-garden" id="garden"></div>
+</template>
+
+<script>
+/* Shared prototype core: app shell, focus state machine, timer, chime, helpers. */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const ICONS = {
+  play: '<path d="M7 4.5v15l12.5-7.5z" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6.5" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  sparkle: '<path d="M12 3.5l1.7 5.2 5.3 1.8-5.3 1.8L12 17.5l-1.7-5.2L5 10.5l5.3-1.8z"/><path d="M19 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>',
+  calendar: '<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+  next: '<circle cx="12" cy="12" r="9.5"/><path d="M10.2 8.5l5 3.5-5 3.5z"/>',
+  clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.5 2"/>',
+  moon: '<path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>',
+  folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h7.4A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4.5-4.5"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+  x: '<path d="M17 7 7 17M7 7l10 10"/>',
+  coffee: '<path d="M4 9h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5v2.5M12 3.5v2.5"/>',
+  sprout: '<path d="M12 21v-8"/><path d="M12 13c0-4 2.5-6.5 7-6.5 0 4.5-2.8 6.5-7 6.5z"/><path d="M12 15.5c0-3-2-5-5.5-5 0 3.4 2.2 5 5.5 5z"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.2" r=".9" fill="currentColor"/>',
+  battery: '<rect x="2.5" y="7" width="17" height="10" rx="2.5"/><rect x="4.5" y="9" width="11" height="6" rx="1" fill="currentColor" stroke="none"/><path d="M21.5 10.5v3"/>',
+  apple: '<path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2-1.1 2.8-2.3.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.5-.9-2.5-3.8zM14.1 5.8c.6-.8 1.1-1.8 1-2.8-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.3z" fill="currentColor" stroke="none"/>',
+};
+const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
+
+const TASKS = [
+  { id: 't1', title: 'Write the quarterly report', project: 'Work', color: '#3B82F6', due: 'Today', prio: 'High',
+    steps: ['Pull the Q3 numbers from the dashboard', 'Draft the revenue summary', 'Add the two key charts', 'Write the outlook paragraph', 'Read it once, then send to Priya'],
+    tips: ['Just copy them in. Tidy later.', 'Three plain sentences is a fine first pass.', 'Revenue by month, then pipeline. That is enough.', 'What changes next quarter, in one paragraph.', 'One read-through, then let it go.'] },
+  { id: 't2', title: 'Reply to Sam about the offsite', project: 'Team', color: '#A855F7', due: 'Today', prio: 'Med',
+    steps: ['Check the two date options', 'Confirm the venue budget', 'Write the reply'],
+    tips: ['Look at the shared calendar.', 'The number is in the planning doc.', 'Short and clear is kind.'] },
+  { id: 't3', title: 'Plan the November content calendar', project: 'Marketing', color: '#F59E0B', due: 'Sat, 8 Nov', prio: null,
+    steps: ['List the four launch dates', 'Draft one post idea per week', 'Assign owners', 'Share with Nijrika'],
+    tips: ['Start from the product roadmap.', 'Rough is fine.', 'One name per post.', 'Drop it in the team channel.'] },
+  { id: 't4', title: 'Book dentist appointment', project: 'Personal', color: '#22C55E', due: null, prio: 'Low',
+    steps: ['Find the clinic number', 'Pick two free mornings', 'Call and book'],
+    tips: ['It is in your contacts.', 'Tuesday or Thursday works.', 'Two minutes, tops.'] },
+];
+const taskById = (id) => TASKS.find((t) => t.id === id);
+
+/* ---------- state ---------- */
+const S = {
+  view: 'window', phase: 'idle', taskId: null, steps: [], stepsLoading: false,
+  focusSec: 25 * 60, breakSec: 5 * 60, elapsed: 0, running: false, speed: 1, sound: false,
+  sessionsToday: 2, finishKind: null, completed: new Set(),
+};
+const listeners = {};
+const on = (e, f) => (listeners[e] ||= []).push(f);
+const emit = (e, ...a) => (listeners[e] || []).forEach((f) => f(...a));
+
+const total = () => (S.phase === 'break' ? S.breakSec : S.focusSec);
+const progress = () => Math.min(1, S.elapsed / total());
+const remaining = () => Math.max(0, Math.ceil(total() - S.elapsed));
+const fmt = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+const fmt2 = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+const doneCount = () => S.steps.filter((s) => s.done).length;
+const currentStep = () => S.steps.findIndex((s) => !s.done);
+const task = () => taskById(S.taskId);
+
+function encourage() {
+  const d = doneCount(), n = S.steps.length;
+  if (!n) return '';
+  if (d === n) return 'Every step done.';
+  if (n - d === 1) return 'Last one. Finish it off.';
+  if (d / n >= .5) return 'Past halfway. Keep the pace.';
+  if (d === 1) return 'Nice. One down.';
+  return 'Good. On to the next.';
+}
+function finishLine() {
+  if (S.finishKind === 'task') return 'Every step done. You finished the whole thing.';
+  return `${Math.round(S.focusSec / 60)} minutes on one thing. That counts.`;
+}
+
+const Focus = {
+  start(id) {
+    if (S.phase !== 'idle') return;
+    S.taskId = id; S.steps = []; S.stepsLoading = true; S.elapsed = 0; S.running = true; S.finishKind = null;
+    S.phase = 'focus';
+    emit('phase', 'idle', 'focus', {});
+    chime('start');
+    setTimeout(() => {
+      if (S.taskId !== id || !S.stepsLoading) return;
+      S.steps = task().steps.map((title) => ({ title, done: false }));
+      S.stepsLoading = false;
+      emit('steps');
+    }, RM ? 200 : 1300);
+  },
+  toggleRun() { if (S.phase === 'focus' || S.phase === 'break') { S.running = !S.running; emit('run'); } },
+  toggleStep(i) {
+    const s = S.steps[i]; if (!s || S.phase !== 'focus') return;
+    s.done = !s.done; emit('step', i, s.done);
+    if (s.done) chime('tick');
+    if (S.steps.every((x) => x.done)) setTimeout(() => { if (S.phase === 'focus' && S.steps.every((x) => x.done)) Focus.finish('task'); }, RM ? 300 : 1000);
+  },
+  finish(kind) {
+    const from = S.phase; S.running = false; S.finishKind = kind; S.sessionsToday += 1; S.phase = 'finish';
+    emit('phase', from, 'finish', {}); chime('finish');
+  },
+  takeBreak() { const from = S.phase; S.phase = 'break'; S.elapsed = 0; S.running = true; emit('phase', from, 'break', {}); },
+  keepGoing() { const from = S.phase; S.phase = 'focus'; S.elapsed = 0; S.running = true; S.finishKind = null; emit('phase', from, 'focus', { again: true }); },
+  markDone() { const from = S.phase; const id = S.taskId; S.phase = 'idle'; S.running = false; S.completed.add(id); emit('phase', from, 'idle', { completed: id }); },
+  stop() { if (S.phase === 'idle') return; const from = S.phase; S.phase = 'idle'; S.running = false; emit('phase', from, 'idle', {}); },
+};
+
+/* ---------- timer loop ---------- */
+let last = performance.now();
+function loop(t) {
+  const dt = Math.min(.25, (t - last) / 1000); last = t;
+  if (S.running && (S.phase === 'focus' || S.phase === 'break')) {
+    S.elapsed += dt * S.speed;
+    if (S.elapsed >= total()) {
+      S.elapsed = total();
+      if (S.phase === 'focus') Focus.finish('time');
+      else { S.phase = 'focus'; S.elapsed = 0; S.running = false; emit('phase', 'break', 'focus', { ready: true }); chime('soft'); }
+    }
+  }
+  emit('tick', t);
+  requestAnimationFrame(loop);
+}
+
+/* ---------- chime (WebAudio, off by default) ---------- */
+let ac;
+function chime(kind) {
+  if (!S.sound) return;
+  ac ||= new (window.AudioContext || window.webkitAudioContext)();
+  const seq = { start: [[523.25, 0], [783.99, .09]], tick: [[1174.66, 0]], finish: [[523.25, 0], [659.25, .14], [783.99, .28], [1046.5, .42]], soft: [[659.25, 0], [987.77, .12]] }[kind];
+  const len = kind === 'tick' ? .45 : 2.2;
+  seq.forEach(([f, d]) => {
+    [[f, 'sine', kind === 'tick' ? .045 : .07], [f * 2, 'triangle', .012]].forEach(([freq, type, vol]) => {
+      const o = ac.createOscillator(), g = ac.createGain(), t0 = ac.currentTime + d;
+      o.type = type; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + .012); g.gain.exponentialRampToValueAtTime(.0001, t0 + len);
+      o.connect(g).connect(ac.destination); o.start(t0); o.stop(t0 + len + .05);
+    });
+  });
+}
+
+/* ---------- animation helpers ---------- */
+function rel(el, box) { const a = el.getBoundingClientRect(), b = box.getBoundingClientRect(); return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height }; }
+/** Animate an absolutely-positioned box between two rects (left/top/width/height). */
+function flyBox(el, from, to, { duration = 760, easing = 'cubic-bezier(.2,.8,.2,1)', delay = 0 } = {}) {
+  if (RM) return el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1, fill: 'both' });
+  const k = (r) => ({ left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+  return el.animate([k(from), k(to)], { duration, easing, delay, fill: 'both' });
+}
+/** Shared-element text: animate `el` (in its final place) from where `fromEl` is. */
+function flyText(el, fromEl, { duration = 760, easing = 'cubic-bezier(.2,.8,.2,1)', reverse = false } = {}) {
+  if (RM) return null;
+  const a = fromEl.getBoundingClientRect(), b = el.getBoundingClientRect();
+  const s = parseFloat(getComputedStyle(fromEl).fontSize) / parseFloat(getComputedStyle(el).fontSize);
+  const k0 = { transformOrigin: '0 0', transform: `translate(${a.left - b.left}px, ${a.top - b.top}px) scale(${s})` };
+  const k1 = { transformOrigin: '0 0', transform: 'none' };
+  return el.animate(reverse ? [k1, k0] : [k0, k1], { duration, easing, fill: 'both' });
+}
+
+/* ---------- shell ---------- */
+const Shell = {
+  win: null, app: null, stage: null, list: null,
+  mount({ startLabel = 'Focus', startIcon = 'play', aboveList = '' } = {}) {
+    const nav = [['Plan', [['sun', 'Today', 6, true], ['calendar', 'Calendar', '']]], ['Do', [['inbox', 'Inbox', 3], ['next', 'Next Actions', 15], ['clock', 'Waiting', 2], ['moon', 'Someday', 8]]], ['Organise', [['folder', 'Projects', 5]]]];
+    const rows = TASKS.map((t) => `
+      <li class="row" data-id="${t.id}">
+        <button class="cb" aria-label="Complete ${t.title}">${icon('check')}</button>
+        <div class="row-main"><div class="row-title">${t.title}</div>
+          <div class="chips"><span class="chip"><i style="background:${t.color}"></i>${t.project}</span>${t.due ? `<span class="chip ${t.due === 'Today' ? 'today' : ''}">${icon('calendar')}${t.due}</span>` : ''}</div></div>
+        <div class="row-end">${t.prio ? `<span class="prio ${t.prio === 'Med' ? 'med' : t.prio === 'Low' ? 'low' : ''}">${t.prio === 'Med' ? 'Medium' : t.prio}</span>` : ''}
+          <button class="start-btn" data-start="${t.id}" aria-label="${startLabel}: ${t.title}">${icon(startIcon)}<span>${startLabel}</span></button></div>
+      </li>`).join('');
+    document.body.insertAdjacentHTML('afterbegin', `
+    <div class="desk"><div class="window" id="win">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="app" id="app">
+        <aside class="sidebar">
+          <div class="brand"><span class="mark">${icon('check')}</span>Stride</div>
+          <button class="capture">${icon('plus')}Capture<kbd>⌘K</kbd></button>
+          ${nav.map(([g, items]) => `<div class="navgroup">${g}</div>${items.map(([ic, l, n, sel]) => `<div class="navitem ${sel ? 'sel' : ''}">${icon(ic)}${l}<span class="n">${n}</span></div>`).join('')}`).join('')}
+        </aside>
+        <main class="content">
+          <div class="toolbar"><div class="search">${icon('search')}Search tasks, projects, or tags...<kbd>⌘F</kbd></div><span class="grow"></span><button class="btn-gradient">${icon('plus')}Capture <span style="opacity:.75;font-weight:500">⌘K</span></button></div>
+          <div class="vh"><h1>Today</h1><span class="count" id="vhCount">4 tasks</span></div>
+          <div class="vh-sub"><span id="vhDone">Today: 3 of 7 done</span><span>4 left · about 2 h 10 m</span></div>
+          <div class="pbar"><i id="vhBar" style="width:43%"></i></div>
+          ${aboveList}
+          <ul class="list" id="list">${rows}</ul>
+        </main>
+      </div>
+      <div class="stage" id="stage"></div>
+    </div></div>
+    <div class="mbview" id="mbview"><div class="mb-scene">
+      <div class="mb-strip">${icon('apple')}<b>Stride</b><span style="font-weight:400">File</span><span style="font-weight:400">Edit</span><span style="font-weight:400">View</span>
+        <span class="r"><span class="mb-item" id="mbItem"></span>${icon('wifi')}${icon('battery')}<span>Thu 5 Nov  10:42</span></span></div>
+      <div class="mb-panel" id="mbPanel"></div>
+    </div></div>`);
+    this.win = $('#win'); this.app = $('#app'); this.stage = $('#stage'); this.list = $('#list');
+    this.list.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-start]'); if (b) { Focus.start(b.dataset.start); return; }
+      const cb = e.target.closest('.cb'); if (cb) this.completeRow(cb.closest('.row').dataset.id);
+    });
+  },
+  row(id) { return this.list.querySelector(`.row[data-id="${id}"]`); },
+  async completeRow(id) {
+    const r = this.row(id); if (!r || r.classList.contains('done')) return;
+    S.completed.add(id); r.classList.add('done');
+    const left = TASKS.filter((t) => !S.completed.has(t.id)).length;
+    $('#vhCount').textContent = `${left} tasks`;
+    $('#vhDone').textContent = `Today: ${3 + S.completed.size} of 7 done`;
+    $('#vhBar').style.width = `${((3 + S.completed.size) / 7) * 100}%`;
+    await wait(RM ? 50 : 900); r.classList.add('gone');
+  },
+  setFocusing(on) { this.win.classList.toggle('is-focusing', on); },
+};
+
+/* ---------- prototype controls + hash state (for screenshots) ---------- */
+function mountProto() {
+  const el = document.createElement('div');
+  el.className = 'proto'; el.setAttribute('aria-label', 'Prototype controls');
+  el.innerHTML = `<span class="lbl">Prototype</span>
+    <button data-view="window" class="on">Window</button><button data-view="menubar">Menu bar</button><span class="sep"></span>
+    <span class="lbl">Speed</span><button data-speed="1" class="on">1×</button><button data-speed="30">30×</button><button data-speed="300">300×</button><span class="sep"></span>
+    <button data-sound>Sound off</button><button data-theme-btn>Theme: auto</button><button data-reset>Reset</button>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.view) setView(b.dataset.view);
+    if (b.dataset.speed) { S.speed = +b.dataset.speed; $$('[data-speed]', el).forEach((x) => x.classList.toggle('on', x === b)); }
+    if (b.hasAttribute('data-sound')) { S.sound = !S.sound; b.textContent = S.sound ? 'Sound on' : 'Sound off'; b.classList.toggle('on', S.sound); if (S.sound) chime('soft'); }
+    if (b.hasAttribute('data-theme-btn')) { const order = ['auto', 'light', 'dark']; const cur = document.documentElement.dataset.theme || 'auto'; const nx = order[(order.indexOf(cur) + 1) % 3];
+      if (nx === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = nx; b.textContent = `Theme: ${nx}`; emit('theme'); }
+    if (b.hasAttribute('data-reset')) { location.hash = ''; location.reload(); }
+  });
+}
+function setView(v) {
+  S.view = v; document.body.classList.toggle('view-menubar', v === 'menubar');
+  $$('.proto [data-view]').forEach((x) => x.classList.toggle('on', x.dataset.view === v)); emit('view');
+}
+function applyHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.has('theme')) document.documentElement.dataset.theme = p.get('theme');
+  if (p.has('shot')) document.body.classList.add('shot');
+  if (p.has('view')) setView(p.get('view'));
+  if (p.has('hover')) Shell.row(p.get('hover'))?.classList.add('hover');
+  if (p.has('speed')) S.speed = +p.get('speed');
+  const ph = p.get('phase');
+  if (!ph || ph === 'idle') return;
+  document.body.classList.add('instant');
+  S.taskId = p.get('task') || 't1';
+  const d = +(p.get('done') || 0);
+  S.steps = task().steps.map((title, i) => ({ title, done: i < d }));
+  S.phase = ph; S.running = p.get('running') !== '0'; S.finishKind = p.get('kind') || (d === S.steps.length ? 'task' : 'time');
+  S.elapsed = (+(p.get('p') || 0)) * total();
+  if (ph === 'finish') S.sessionsToday += 1;
+  if (p.has('speed')) S.speed = +p.get('speed');
+  emit('phase', 'idle', ph, { instant: true });
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove('instant')));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea')) return;
+  if (e.code === 'Space' && (S.phase === 'focus' || S.phase === 'break')) { e.preventDefault(); Focus.toggleRun(); }
+  if (e.key === 'Escape') Focus.stop();
+});
+
+function boot(init) {
+  mountProto();
+  init();
+  applyHash();
+  requestAnimationFrame(loop);
+}
+
+
+/* ================= Option B logic ================= */
+const NS = 'http://www.w3.org/2000/svg';
+const STEM_D = 'M170 392 C 165 345, 182 305, 172 262 S 154 182, 168 136 S 178 84, 170 52';
+const LEAVES = [[.14, -1, .8], [.26, 1, .95], [.4, -1, 1.05], [.53, 1, 1], [.66, -1, .9], [.78, 1, .75]];
+const GARDEN_PAST = 2;
+
+function miniSVG(kind = 'grown', cls = '') {
+  return `<svg class="mini ${kind === 'seed' ? 'seed' : ''} ${cls}" viewBox="0 0 22 34" aria-hidden="true"><ellipse class="soil" cx="11" cy="33" rx="7" ry="1.4"/>
+    <path class="st" d="M11 33 C 10 26, 12.5 21, 11 13"/><path class="lf" d="M11 25 c 3 -4, 7 -4, 8 -2 c -3 3, -6 3, -8 2z"/><path class="lf" d="M11 21 c -3 -4, -7 -4, -8 -2 c 3 3, 6 3, 8 2z"/>
+    <g class="fl" transform="translate(11 11)">${[0, 72, 144, 216, 288].map((a) => `<ellipse rx="2.6" ry="4.6" cy="-4" transform="rotate(${a})"/>`).join('')}<circle r="1.8" fill="#FBBF24"/></g>
+    ${kind === 'seed' ? '<circle cx="11" cy="31.2" r="2" fill="none" stroke="var(--tertiary)" stroke-dasharray="1.6 1.6"/>' : ''}</svg>`;
+}
+
+/** Build the plant into an <svg>. Returns an updater. */
+function buildPlant(svg) {
+  svg.innerHTML = `
+    <g clip-path="url(#aboveGround)"><circle class="p-sun" cx="170" cy="392" r="165" fill="url(#sunGrad)"/></g>
+    ${[[40, 60], [290, 40], [250, 120], [70, 150], [310, 200], [20, 230]].map(([x, y], i) => `<circle class="p-star" cx="${x}" cy="${y}" r="1.4" style="animation-delay:${i * .5}s"/>`).join('')}
+    <ellipse class="p-shadow" cx="170" cy="394" rx="56" ry="5"/>
+    <line class="p-ground" x1="-30" y1="392.5" x2="370" y2="392.5"/>
+    <g class="p-sway">
+      <path class="p-stem" d="${STEM_D}"/>
+      <g class="p-leaves"></g>
+      <g class="p-flower"><circle class="p-glow" r="70" fill="url(#glowGrad)"/><path class="p-bud" d="M0 4 C -7 0, -7 -10, 0 -18 C 7 -10, 7 0, 0 4z"/><g class="p-petals"></g><g class="p-inner"></g><circle class="p-core" r="5"/></g>
+    </g>
+    <circle class="p-seed" cx="170" cy="386" r="5" fill="var(--leaf-a)"/>`;
+  const stem = svg.querySelector('.p-stem'); const L = stem.getTotalLength();
+  stem.style.strokeDasharray = L; stem.style.strokeDashoffset = L;
+  const lg = svg.querySelector('.p-leaves');
+  LEAVES.forEach(([t, side, s]) => {
+    const pt = stem.getPointAtLength(L * t);
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', `translate(${pt.x} ${pt.y}) rotate(${side < 0 ? 200 : -20}) scale(${s})`);
+    g.innerHTML = `<g class="p-leaf"><path d="M0 0 C 12 -15, 36 -16, 50 -3 C 36 9, 13 9, 0 0z"/><path class="rib" d="M2 0 C 18 -4, 32 -4, 46 -3"/></g>`;
+    g.dataset.t = t; lg.appendChild(g);
+  });
+  const fl = svg.querySelector('.p-flower');
+  let lastN = -1;
+  return function update(growth, open, n, opts = {}) {
+    stem.style.strokeDashoffset = L * (1 - growth);
+    lg.querySelectorAll(':scope > g').forEach((g) => g.firstElementChild.classList.toggle('open', growth >= +g.dataset.t + .02));
+    const tip = stem.getPointAtLength(L * growth);
+    fl.style.transform = `translate(${tip.x}px, ${tip.y}px) scale(${(.55 + .45 * growth) * (opts.big ? 1.35 : 1)})`;
+    fl.style.opacity = growth < .03 ? 0 : 1;
+    const pg = fl.querySelector('.p-petals');
+    if (n !== lastN) {
+      pg.innerHTML = Array.from({ length: n }, (_, i) => `<g class="p-petal"><ellipse rx="9.5" ry="19" cy="-17"/></g>`).join(''); lastN = n;
+      fl.querySelector('.p-inner').innerHTML = Array.from({ length: n }, () => `<g class="p-petal in"><ellipse rx="5.5" ry="11" cy="-10"/></g>`).join('');
+    }
+    const petals = [...pg.children];
+    const f = n ? Math.min(1, open / n) : 0;
+    petals.forEach((p, i) => {
+      const a = (360 / n) * i;
+      p.style.transform = `rotate(${a * (.08 + .92 * f)}deg) scale(${.42 + .58 * f}, ${.55 + .45 * f})`;
+      p.style.opacity = f > 0 ? 1 : 0;
+    });
+    const f2 = Math.max(0, Math.min(1, (f - .45) / .55));
+    [...fl.querySelector('.p-inner').children].forEach((p, i) => { const a = (360 / n) * i + 30; p.style.transform = `rotate(${a * (.1 + .9 * f2)}deg) scale(${.3 + .7 * f2})`; p.style.opacity = f2 > 0 ? 1 : 0; });
+    fl.querySelector('.p-bud').style.opacity = f >= .99 ? 0 : 1 - f * .8;
+    fl.querySelector('.p-core').style.transform = `scale(${open > 0 ? .7 + .3 * Math.min(1, open / n) : 0})`;
+    const sun = svg.querySelector('.p-sun');
+    const p = opts.sunP ?? growth;
+    sun.setAttribute('cy', 392 - p * 250);
+  };
+}
+
+let stage, updPlant, updPanelPlant, seeding = false;
+const growth = () => S.phase === 'idle' ? 0 : S.phase === 'finish' ? (S.finishKind === 'task' ? Math.max(.75, S._g || 0) : 1) : S.phase === 'break' ? (S._g || 1) : .07 + .93 * progress();
+function drawPlant() {
+  const g = growth(); if (S.phase === 'focus') S._g = g;
+  const sunP = S.phase === 'break' ? -.15 : S.phase === 'finish' ? 1 : g;
+  const big = S.phase === 'finish' && S.finishKind === 'task';
+  const f = S.steps.length ? doneCount() / S.steps.length : 0;
+  if (!seeding) updPlant?.(g, f * 6, 6, { sunP, big });
+  updPanelPlant?.(g, f * 6, 6, { sunP, big });
+}
+
+function renderSteps(stagger) {
+  const ul = $('#steps'); const cur = currentStep();
+  $('#load').style.display = S.stepsLoading ? 'flex' : 'none'; $('#card').classList.toggle('loading', S.stepsLoading);
+  ul.innerHTML = S.steps.map((s, i) => `<li class="b-step ${s.done ? 'done' : ''} ${i === cur ? 'cur' : ''} ${stagger ? 'enter' : ''}" style="animation-delay:${i * 90}ms">
+    <button class="sc" data-step="${i}" aria-label="${s.done ? 'Undo' : 'Complete'}: ${s.title}" aria-pressed="${s.done}">${icon('check')}</button><span class="lbl">${s.title}</span></li>`).join('');
+  $('#count').textContent = S.steps.length ? `${doneCount()} of ${S.steps.length}` : '';
+}
+function updateCur() {
+  const cur = currentStep();
+  $$('#steps .b-step').forEach((li, i) => { li.classList.toggle('cur', i === cur); li.classList.toggle('done', S.steps[i].done); li.querySelector('.sc').setAttribute('aria-pressed', S.steps[i].done); });
+  $('#count').textContent = `${doneCount()} of ${S.steps.length}`;
+}
+function morphHeight(el, change) { const h0 = el.offsetHeight; change(); const h1 = el.offsetHeight; if (RM || h0 === h1) return; el.animate([{ height: h0 + 'px' }, { height: h1 + 'px' }], { duration: 650, easing: 'cubic-bezier(.2,.8,.2,1)' }); }
+let noteTimer;
+function note(text) { const n = $('#note'); n.textContent = text; n.classList.add('show'); clearTimeout(noteTimer); noteTimer = setTimeout(() => n.classList.remove('show'), 3200); }
+function fillCard() { const t = task(); $('#title').textContent = t.title; $('#proj').textContent = t.project; $('#pdot').style.background = t.color; }
+function setRunBtn() {
+  const b = $('#runBtn'); b.innerHTML = icon(S.running ? 'pause' : 'play'); b.setAttribute('aria-label', S.running ? 'Pause' : 'Resume');
+  stage.classList.toggle('paused', !S.running && S.phase !== 'finish' && !stage.classList.contains('ready'));
+  $('#tlabel').textContent = S.phase === 'break' ? 'Break' : stage.classList.contains('ready') ? 'Ready when you are' : S.running ? '' : 'Paused';
+}
+function setPhaseAttr() {
+  stage.dataset.phase = S.phase; stage.dataset.kind = S.finishKind || '';
+  $('#skipBtn').style.display = S.phase === 'break' ? '' : 'none'; $('#stopBtn').style.display = S.phase === 'break' ? 'none' : '';
+}
+function renderGarden(popNew) {
+  const n = GARDEN_PAST + (S.phase === 'finish' ? 1 : 0) + (S._extra || 0);
+  const minis = Array.from({ length: n }, (_, i) => miniSVG('grown', popNew && i === n - 1 ? 'pop' : '')).join('');
+  $('#garden').innerHTML = minis + (S.phase === 'finish' ? '' : miniSVG('seed')) + `<span class="lbl">${n} grown today</span>`;
+}
+function burst(cls, n, from, spread) {
+  if (RM) return;
+  const r = from.getBoundingClientRect(), b = stage.getBoundingClientRect();
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('i'); d.className = cls;
+    d.style.left = r.left - b.left + r.width / 2 + 'px'; d.style.top = r.top - b.top + r.height / 2 + 'px';
+    const ang = Math.random() * Math.PI * 2;
+    d.style.setProperty('--x', (cls === 'pollen' ? (Math.random() - .5) * 160 : Math.cos(ang) * spread) + 'px');
+    d.style.setProperty('--y', (cls === 'pollen' ? -80 - Math.random() * 220 : Math.sin(ang) * spread) + 'px');
+    d.style.setProperty('--d', 2200 + Math.random() * 1800 + 'ms'); d.style.animationDelay = (cls === 'pollen' ? Math.random() * 900 : 0) + 'ms';
+    stage.appendChild(d); setTimeout(() => d.remove(), 5200);
+  }
+}
+
+async function enterFocus(instant) {
+  fillCard(); renderSteps(false); setPhaseAttr(); stage.classList.remove('ready'); renderGarden(false);
+  $('#time').textContent = fmt(remaining()); setRunBtn();
+  Shell.setFocusing(true); stage.classList.add('on', 'lit');
+  const row = Shell.row(S.taskId); row.classList.add('is-lifted');
+  if (instant) { drawPlant(); return; }
+  // plant starts as a seed that drops into the soil, then sprouts
+  updPlant(0, 0, 6, { sunP: 0 }); seeding = !RM;
+  const seed = $('#plant .p-seed');
+  const card = $('#card'), ghost = $('#ghost');
+  card.classList.add('flying');
+  const to = rel(card, stage), from = rel(row, stage);
+  ghost.style.display = 'block';
+  const a = flyBox(ghost, from, to, { duration: 820 });
+  ghost.animate([{ borderRadius: '14px' }, { borderRadius: '22px' }], { duration: 820, fill: 'both' });
+  flyText($('#title'), row.querySelector('.row-title'), { duration: 820 });
+  if (!RM) {
+    seed.animate([{ opacity: 0, transform: 'translateY(-160px)' }, { opacity: 1, transform: 'translateY(-150px)', offset: .1 }, { opacity: 1, transform: 'translateY(0)', easing: 'cubic-bezier(.5,0,.8,.6)', offset: .75 }, { opacity: 1, transform: 'translateY(-6px)', offset: .87 }, { opacity: 0, transform: 'translateY(0)' }],
+      { duration: 1100, delay: 250, fill: 'both', easing: 'ease-in' });
+    $('#time').animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 700, delay: 700, fill: 'backwards', easing: 'cubic-bezier(.2,.8,.2,1)' });
+    $('#plant .p-sun').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1600, delay: 300, fill: 'backwards' });
+    $$('.b-ctl, .b-garden, .b-note').forEach((el) => el.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 600, delay: 900, fill: 'backwards', easing: 'cubic-bezier(.2,.8,.2,1)' }));
+  }
+  setTimeout(() => { seeding = false; drawPlant(); }, RM ? 0 : 1250);
+  await a.finished; card.classList.remove('flying'); ghost.style.display = 'none'; a.cancel();
+}
+async function exitFocus(o) {
+  const row = Shell.row(S.taskId || o.completed);
+  const card = $('#card'), ghost = $('#ghost');
+  const from = rel(card, stage), to = rel(row, stage);
+  card.classList.add('flying'); ghost.style.display = 'block';
+  $$('.b-plantcol, .b-note, .b-ctl, .b-fin, .b-garden').forEach((el) => el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, fill: 'forwards' }));
+  stage.classList.remove('lit'); Shell.setFocusing(false);
+  const a = flyBox(ghost, from, to, { duration: 700 });
+  ghost.animate([{ borderRadius: '22px' }, { borderRadius: '14px' }], { duration: 700, fill: 'both' });
+  flyText($('#title'), row.querySelector('.row-title'), { duration: 700, reverse: true });
+  await a.finished;
+  row.classList.remove('is-lifted'); ghost.style.display = 'none'; a.cancel(); stage.classList.remove('on');
+  card.classList.remove('flying'); stage.getAnimations({ subtree: true }).forEach((x) => x.cancel());
+  stage.dataset.phase = 'idle'; S._g = 0;
+  if (o.completed) { Shell.completeRow(o.completed); }
+  S._extra = (S._extra || 0) + 1; renderIdleGarden(true);
+}
+function enterFinish(instant) {
+  setPhaseAttr(); drawPlant(); renderGarden(!instant);
+  const d = doneCount(), n = S.steps.length;
+  $('#finLine').textContent = finishLine();
+  $('#finMeta').textContent = S.finishKind === 'task' ? `${d} of ${n} steps · fully in bloom · ${GARDEN_PAST + 1} plants in today's garden` : `${d} of ${n} steps · ${GARDEN_PAST + 1} plants in today's garden`;
+  $('#finBtns').innerHTML = S.finishKind === 'task'
+    ? `<button class="btn-gradient" data-act="done">${icon('check')}Mark as done</button><button class="btn-soft" data-act="break">${icon('coffee')}Take a break</button>`
+    : `<button class="btn-gradient" data-act="break">${icon('coffee')}Take a break</button><button class="btn-soft" data-act="again">Keep going</button><button class="btn-text" data-act="done">Mark as done</button>`;
+  if (!instant) setTimeout(() => burst('pollen', 16, $('#plant .p-core'), 0), 400);
+}
+function renderIdleGarden(pop) {
+  const n = GARDEN_PAST + (S._extra || 0);
+  $('#idleGarden').innerHTML = `<div class="minis">${Array.from({ length: n }, (_, i) => miniSVG('grown', pop && i === n - 1 ? 'pop' : '')).join('')}</div><span>${n} grown today. Pick a task to grow the next one.</span>`;
+}
+
+function initB() {
+  Shell.mount({ startLabel: 'Focus', startIcon: 'sprout', aboveList: '<div class="garden-strip" id="idleGarden"></div>' });
+  renderIdleGarden(false);
+  stage = Shell.stage;
+  stage.innerHTML = $('#stageTpl').innerHTML.replaceAll('ICON_SPARKLE', icon('sparkle')).replaceAll('ICON_STOP', icon('stop')).replaceAll('ICON_PLAY', icon('play')).replaceAll('ICON_ARROW', icon('arrowRight'));
+  updPlant = buildPlant($('#plant'));
+  stage.addEventListener('click', (e) => {
+    const s = e.target.closest('[data-step]'); if (s) { Focus.toggleStep(+s.dataset.step); return; }
+    if (e.target.closest('#runBtn')) Focus.toggleRun();
+    if (e.target.closest('#stopBtn')) Focus.stop();
+    if (e.target.closest('#skipBtn')) S.elapsed = total();
+    if (e.target.closest('#readyBtn')) { stage.classList.remove('ready'); S.running = true; emit('run'); }
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'done') Focus.markDone(); if (act === 'break') Focus.takeBreak(); if (act === 'again') Focus.keepGoing();
+  });
+  on('phase', (from, to, o) => {
+    if (to === 'focus' && from === 'idle') enterFocus(o.instant);
+    else if (to === 'focus') { fillCard(); setPhaseAttr(); stage.classList.toggle('ready', !!o.ready); $('#time').textContent = fmt(remaining()); setRunBtn(); renderGarden(false); if (!o.ready) { S._g = .07; note('A fresh 25 minutes. Keep growing.'); } drawPlant(); }
+    else if (to === 'break') {
+      if (o.instant) { fillCard(); renderSteps(false); Shell.setFocusing(true); stage.classList.add('on', 'lit'); Shell.row(S.taskId).classList.add('is-lifted'); S._g = .85; }
+      setPhaseAttr(); setRunBtn(); drawPlant(); renderGarden(false); const c = currentStep(); $('#title').textContent = c >= 0 ? `Up next: ${S.steps[c].title}` : task().title; $('#time').textContent = fmt(remaining());
+    }
+    else if (to === 'finish') { if (o.instant) { fillCard(); renderSteps(false); Shell.setFocusing(true); stage.classList.add('on', 'lit'); Shell.row(S.taskId).classList.add('is-lifted'); S._g = Math.max(.8, .07 + .93 * (+(new URLSearchParams(location.hash.slice(1)).get('p') || .9))); } enterFinish(o.instant); setRunBtn(); }
+    else if (to === 'idle') exitFocus(o);
+    renderPanel();
+  });
+  on('steps', () => { morphHeight($('#wrap'), () => renderSteps(true)); drawPlant(); renderPanel(); });
+  on('step', (i, done) => {
+    updateCur(); drawPlant();
+    if (done) {
+      setTimeout(() => burst('spark', 10, $('#plant .p-core'), 46), 150);
+      const c = currentStep(); if (c >= 0) note(`A petal opens. Next: ${S.steps[c].title.toLowerCase()}.`);
+    }
+    renderPanel();
+  });
+  on('run', () => { setRunBtn(); renderPanel(); });
+  on('view', renderPanel);
+  let lastSec = -1;
+  on('tick', () => {
+    if (S.phase === 'focus' || S.phase === 'break') {
+      const r = remaining();
+      if (r !== lastSec) { lastSec = r; $('#time').textContent = fmt(r); const pt = $('#pbTime'); if (pt) pt.textContent = fmt(r); if (S.phase === 'focus' && !S.stepsLoading) drawPlant(); else if (S.phase === 'focus' && stage.classList.contains('on')) drawPlant(); }
+    }
+    const mi = $('#mbItem');
+    const txt = S.phase === 'focus' || S.phase === 'break' ? `${icon(S.phase === 'break' ? 'coffee' : 'sprout')}${Math.ceil(remaining() / 60)}m` : S.phase === 'finish' ? `${icon('sprout')}Grown` : icon('sprout');
+    if (mi.dataset.k !== txt) { mi.innerHTML = txt; mi.dataset.k = txt; }
+  });
+}
+
+/* -------- menu bar panel -------- */
+function renderPanel() {
+  const P = $('#mbPanel'); const t = task();
+  const garden = `<div class="minis">${Array.from({ length: GARDEN_PAST + (S.phase === 'finish' ? 1 : 0) + (S._extra || 0) }, () => miniSVG()).join('')}</div><span class="lbl">${GARDEN_PAST + (S.phase === 'finish' ? 1 : 0) + (S._extra || 0)} today</span>`;
+  updPanelPlant = null;
+  if (S.phase === 'idle') {
+    const list = TASKS.filter((x) => !S.completed.has(x.id)).slice(0, 3);
+    P.innerHTML = `<div class="pb"><div class="pb-h">Grow something</div>${list.map((x) => `<div class="mb-row"><span style="width:7px;height:7px;border-radius:50%;background:${x.color}"></span><span class="t">${x.title}</span><button class="pb-row-btn" data-pstart="${x.id}" aria-label="Focus: ${x.title}">${icon('sprout')}</button></div>`).join('')}<div class="pb-foot">${garden}</div></div>`;
+    return;
+  }
+  const c = currentStep(); const brk = S.phase === 'break', fin = S.phase === 'finish';
+  P.innerHTML = `<div class="pb" data-phase="${S.phase}"><div class="pb-main"><svg class="pb-plant" id="pbPlant" viewBox="0 0 340 440"></svg><div style="min-width:0;flex:1">
+    ${fin ? `<div style="font-size:15px;font-weight:600;line-height:1.35">${finishLine()}</div><div style="display:flex;gap:8px;margin-top:12px">${S.finishKind === 'task' ? `<button class="btn-gradient" style="height:32px" data-pact="done">Mark as done</button><button class="btn-soft" style="height:32px" data-pact="break">Break</button>` : `<button class="btn-gradient" style="height:32px" data-pact="break">Take a break</button><button class="btn-soft" style="height:32px" data-pact="again">Keep going</button>`}</div>`
+      : `<div class="pb-time" id="pbTime" style="${S.running ? '' : 'opacity:.45'}">${fmt(remaining())}</div><div class="pb-title">${brk ? 'Break' : t.title}</div>
+    ${brk ? `<div class="pb-step">Stretch, drink some water.</div>` : S.stepsLoading ? `<div class="pb-step">${icon('sparkle')}Breaking it into steps</div>` : c >= 0 ? `<div class="pb-step"><button class="sc" data-pstep="${c}" aria-label="Complete: ${S.steps[c].title}"></button>${S.steps[c].title}</div>` : ''}`}
+    </div></div><div class="pb-foot">${garden}<span class="grow"></span>${fin ? '' : `${brk ? '' : `<button class="icon-btn" data-pact="stop" aria-label="End session">${icon('stop')}</button>`}<button class="icon-btn" data-pact="run" aria-label="${S.running ? 'Pause' : 'Resume'}">${icon(S.running ? 'pause' : 'play')}</button>`}</div></div>`;
+  updPanelPlant = buildPlant($('#pbPlant'));
+  $('#pbPlant').classList.toggle('brk', brk);
+  drawPlant();
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#mbPanel')) return;
+  const st = e.target.closest('[data-pstart]'); if (st) Focus.start(st.dataset.pstart);
+  const sp = e.target.closest('[data-pstep]'); if (sp) Focus.toggleStep(+sp.dataset.pstep);
+  const a = e.target.closest('[data-pact]')?.dataset.pact;
+  if (a === 'run') Focus.toggleRun(); if (a === 'stop') Focus.stop(); if (a === 'done') Focus.markDone(); if (a === 'break') Focus.takeBreak(); if (a === 'again') Focus.keepGoing();
+});
+
+boot(initB);
+</script>
+</body>
+</html>

@@ -131,6 +131,7 @@ use platform::{
     cloudkit_fetch_attachment_asset, cloudkit_fetch_changes, cloudkit_register_for_notifications,
     cloudkit_save_attachment_asset, cloudkit_save_records, create_macos_calendar_event,
     delete_macos_calendar_event, ensure_macos_stride_calendar, get_device_managed_data_dir,
+    get_macos_calendar_sources, open_macos_calendar_privacy_settings,
     get_macos_calendar_events, get_macos_calendar_permission_status, get_macos_writable_calendars,
     get_managed_data_dir, import_attachment_file, migrate_portable_attachments, open_path,
     remember_link_folder_access, request_macos_calendar_permission, set_macos_activation_policy,
@@ -783,8 +784,19 @@ struct MacOsCalendarPushTarget {
     id: String,
     name: String,
     source_name: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
     color: Option<String>,
     is_stride_dedicated: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MacOsCalendarSource {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -819,8 +831,11 @@ unsafe extern "C" {
         range_end: *const c_char,
     ) -> *mut c_char;
     fn stride_macos_writable_calendars_json() -> *mut c_char;
-    fn stride_macos_ensure_stride_calendar_json(stored_calendar_id: *const c_char)
-        -> *mut c_char;
+    fn stride_macos_calendar_sources_json() -> *mut c_char;
+    fn stride_macos_ensure_stride_calendar_json(
+        stored_calendar_id: *const c_char,
+        source_id: *const c_char,
+    ) -> *mut c_char;
     fn stride_macos_create_calendar_event_json(event_json: *const c_char) -> *mut c_char;
     fn stride_macos_update_calendar_event_json(
         event_id: *const c_char,
@@ -2174,6 +2189,8 @@ pub fn run() {
             get_macos_calendar_events,
             get_macos_writable_calendars,
             ensure_macos_stride_calendar,
+            get_macos_calendar_sources,
+            open_macos_calendar_privacy_settings,
             create_macos_calendar_event,
             update_macos_calendar_event,
             delete_macos_calendar_event,
@@ -2223,6 +2240,7 @@ pub fn run() {
             set_tray_visible,
             set_tray_tooltip,
             menubar_panel::hide_menubar_panel,
+            menubar_panel::menubar_panel_resize,
             menubar_panel::menubar_lock,
             menubar_panel::menubar_quit,
             menubar_panel::menubar_open_main,

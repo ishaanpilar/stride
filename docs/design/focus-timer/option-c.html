@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stride Focus: C, Stage</title>
+<style>
+/* ---------- Stride Soft UI tokens ---------- */
+:root {
+  color-scheme: light;
+  --bg: #F0F4F8;
+  --sidebar: #EAEEF5;
+  --surface: #FFFFFF;
+  --well: #E9EEF4;
+  --shadow-light: #FFFFFF;
+  --shadow-dark: #D1D9E6;
+  --fg: #1F2937;
+  --muted: #4B5563;
+  --tertiary: #6B7280;
+  --border: rgba(209, 217, 230, .6);
+  --accent: #4F46E5;
+  --accent-rgb: 79 70 229;
+  --accent-2: #7C5CF0;
+  --accent-soft: rgba(79, 70, 229, .12);
+  --accent-text: #4338CA;
+  --success: #22C55E;
+  --success-text: #15803D;
+  --danger-text: #B91C1C;
+  --danger-soft: rgba(239, 68, 68, .10);
+  --warning-text: #C2410C;
+  --raised: -6px -6px 15px var(--shadow-light), 6px 6px 15px var(--shadow-dark);
+  --raised-sm: -3px -3px 8px var(--shadow-light), 3px 3px 8px var(--shadow-dark);
+  --inset: inset -4px -4px 10px var(--shadow-light), inset 4px 4px 10px var(--shadow-dark);
+  --wall: radial-gradient(1200px 700px at 15% 10%, #DCE3F6 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #E7DDF7 0%, transparent 60%), #E4E9F2;
+  --scrim: rgba(240, 244, 248, .55);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-soft: cubic-bezier(.4, 0, .2, 1);
+  --spring: cubic-bezier(.34, 1.4, .64, 1);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #14161C; --sidebar: #181B22; --surface: #1E222A; --well: #171A20;
+    --shadow-light: rgba(255,255,255,.04); --shadow-dark: rgba(0,0,0,.45);
+    --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08);
+    --accent: #6366F1; --accent-rgb: 99 102 241; --accent-2: #8B6CF6;
+    --accent-soft: rgba(99, 102, 241, .20); --accent-text: #A5B4FC;
+    --success-text: #4ADE80; --danger-text: #F87171; --danger-soft: rgba(248,113,113,.14); --warning-text: #FB923C;
+    --raised: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35);
+    --raised-sm: 0 1px 0 rgba(255,255,255,.04) inset, 0 3px 10px rgba(0,0,0,.3);
+    --inset: inset 2px 2px 6px rgba(0,0,0,.45), inset -1px -1px 2px rgba(255,255,255,.04);
+    --wall: radial-gradient(1200px 700px at 15% 10%, #1D2240 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #2A1D3F 0%, transparent 60%), #0D0F14;
+    --scrim: rgba(20, 22, 28, .5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #14161C; --sidebar: #181B22; --surface: #1E222A; --well: #171A20;
+  --shadow-light: rgba(255,255,255,.04); --shadow-dark: rgba(0,0,0,.45);
+  --fg: #F3F4F6; --muted: #A1A8B5; --tertiary: #8A92A0; --border: rgba(255,255,255,.08);
+  --accent: #6366F1; --accent-rgb: 99 102 241; --accent-2: #8B6CF6;
+  --accent-soft: rgba(99, 102, 241, .20); --accent-text: #A5B4FC;
+  --success-text: #4ADE80; --danger-text: #F87171; --danger-soft: rgba(248,113,113,.14); --warning-text: #FB923C;
+  --raised: 0 1px 0 rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35);
+  --raised-sm: 0 1px 0 rgba(255,255,255,.04) inset, 0 3px 10px rgba(0,0,0,.3);
+  --inset: inset 2px 2px 6px rgba(0,0,0,.45), inset -1px -1px 2px rgba(255,255,255,.04);
+  --wall: radial-gradient(1200px 700px at 15% 10%, #1D2240 0%, transparent 60%), radial-gradient(900px 700px at 90% 90%, #2A1D3F 0%, transparent 60%), #0D0F14;
+  --scrim: rgba(20, 22, 28, .5);
+}
+
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.3 var(--font); color: var(--fg); background: var(--wall); background-attachment: fixed; -webkit-font-smoothing: antialiased; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.ic { width: 16px; height: 16px; flex: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+.tnum { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.btn-gradient { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-weight: 600; font-size: 13px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 14px rgb(var(--accent-rgb) / .35); transition: transform .2s var(--ease), filter .2s, box-shadow .2s; }
+.btn-gradient:hover { transform: translateY(-1px); filter: brightness(1.04); }
+.btn-gradient:active { transform: none; box-shadow: 0 2px 6px rgb(var(--accent-rgb) / .3); }
+.btn-soft { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 10px; font-weight: 500; font-size: 13px; color: var(--muted);
+  background: var(--surface); box-shadow: var(--raised-sm); border: 1px solid var(--border); transition: color .2s, transform .2s var(--ease); }
+.btn-soft:hover { color: var(--fg); transform: translateY(-1px); }
+.btn-text { height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--tertiary); transition: color .2s, background .2s; }
+.btn-text:hover { color: var(--fg); background: var(--well); }
+.icon-btn { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); transition: color .2s, background .2s, transform .2s var(--ease); }
+.icon-btn:hover { color: var(--fg); background: rgb(127 127 127 / .12); }
+.icon-btn:active { transform: scale(.94); }
+
+/* ---------- desk + window ---------- */
+.desk { position: fixed; inset: 0; padding: 22px; display: flex; }
+.window { position: relative; flex: 1; border-radius: 14px; overflow: hidden; background: var(--bg); box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 24px 70px rgba(15, 20, 40, .28); isolation: isolate; }
+.lights { position: absolute; left: 18px; top: 18px; display: flex; gap: 8px; z-index: 30; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: #FF5F57; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.15); }
+.lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+.app { position: absolute; inset: 0; display: flex; transform-origin: 50% 40%;
+  transition: filter 1s var(--ease), opacity 1s var(--ease), transform 1.1s var(--ease); }
+.window.is-focusing .app { filter: blur(16px) saturate(.15); opacity: .38; transform: scale(.975); pointer-events: none; }
+.window.is-focusing .lights { opacity: .5; transition: opacity 1s; }
+
+.sidebar { width: 248px; flex: none; padding: 54px 14px 16px; background: var(--sidebar); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.sidebar::after { content: ""; position: absolute; left: -80px; bottom: -80px; width: 260px; height: 260px; border-radius: 50%; background: radial-gradient(circle, rgb(var(--accent-rgb) / .16), transparent 70%); pointer-events: none; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; padding: 0 6px 14px; }
+.mark { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); display: grid; place-items: center; color: #fff; box-shadow: 0 4px 12px rgb(var(--accent-rgb) / .35); }
+.mark .ic { width: 17px; height: 17px; stroke-width: 2.6; }
+.capture { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 12px; border-radius: 12px; background: var(--surface); box-shadow: var(--raised-sm); margin-bottom: 14px; font-weight: 500; }
+.capture kbd, .search kbd { margin-left: auto; font: 12px var(--font); color: var(--tertiary); }
+.navgroup { font-size: 12px; font-weight: 600; color: var(--tertiary); padding: 12px 10px 6px; }
+.navitem { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 10px; color: var(--fg); }
+.navitem .ic { color: var(--muted); width: 17px; height: 17px; }
+.navitem .n { margin-left: auto; color: var(--tertiary); font-size: 13px; font-variant-numeric: tabular-nums; }
+.navitem.sel { background: var(--accent-soft); font-weight: 600; }
+.navitem.sel .ic { color: var(--accent-text); }
+
+.content { flex: 1; min-width: 0; padding: 14px 30px 30px; overflow: hidden; display: flex; flex-direction: column; }
+.toolbar { display: flex; align-items: center; gap: 10px; height: 40px; margin-bottom: 26px; }
+.search { display: flex; align-items: center; gap: 9px; width: 420px; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--well); box-shadow: var(--inset); color: var(--tertiary); font-size: 13.5px; }
+.grow { flex: 1; }
+.vh { display: flex; align-items: baseline; gap: 12px; }
+.vh h1 { margin: 0; font-size: 30px; line-height: 36px; letter-spacing: -.02em; }
+.vh .count { color: var(--muted); font-size: 15px; }
+.vh-sub { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; margin: 12px 0 8px; }
+.pbar { height: 6px; border-radius: 99px; background: var(--well); box-shadow: var(--inset); overflow: hidden; margin-bottom: 20px; }
+.pbar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .8s var(--ease); }
+
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.row { position: relative; display: flex; align-items: flex-start; gap: 14px; padding: 15px 16px; border-radius: 14px; background: var(--surface); box-shadow: var(--raised-sm); transition: background .2s, box-shadow .25s, transform .25s var(--ease), opacity .4s, max-height .5s var(--ease), padding .5s var(--ease), margin .5s var(--ease); max-height: 120px; }
+.row:hover, .row.hover { box-shadow: var(--raised); }
+.row.is-lifted { visibility: hidden; }
+.cb { width: 22px; height: 22px; flex: none; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--tertiary); display: grid; place-items: center; color: #fff; transition: box-shadow .2s, background .3s; }
+.cb .ic { width: 13px; height: 13px; stroke-width: 3; stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset .35s .1s var(--ease); }
+.row .cb:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.row.done .cb { background: var(--accent); box-shadow: none; animation: cbpop .45s var(--spring); }
+.row.done .cb .ic { stroke-dashoffset: 0; }
+.row.done .row-title { color: var(--tertiary); text-decoration: line-through; text-decoration-color: var(--tertiary); }
+.row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: -10px; overflow: hidden; }
+@keyframes cbpop { 0% { transform: scale(.6); } 100% { transform: scale(1); } }
+.row-main { flex: 1; min-width: 0; }
+.row-title { font-size: 15px; line-height: 20px; font-weight: 600; transition: color .3s; }
+.row-note { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.chips { display: flex; gap: 8px; margin-top: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; background: var(--well); font-size: 12.5px; color: var(--muted); }
+.chip i { width: 7px; height: 7px; border-radius: 50%; }
+.chip.today { background: var(--accent-soft); color: var(--accent-text); }
+.chip .ic { width: 13px; height: 13px; }
+.row-end { position: relative; align-self: center; display: flex; align-items: center; gap: 8px; }
+.prio { height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; background: var(--danger-soft); color: var(--danger-text); transition: opacity .2s; }
+.prio.med { background: rgba(234, 88, 12, .1); color: var(--warning-text); }
+.prio.low { background: var(--well); color: var(--tertiary); }
+
+/* ---------- stage (option fills) ---------- */
+.stage { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+.window.is-focusing .stage { pointer-events: auto; }
+
+/* ---------- menubar view ---------- */
+.mbview { position: fixed; inset: 0; display: none; align-items: flex-start; justify-content: center; padding-top: 40px; }
+body.view-menubar .desk { display: none; }
+body.view-menubar .mbview { display: flex; }
+.mb-scene { position: relative; width: 600px; height: 380px; border-radius: 16px; overflow: hidden; background: var(--wall); box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 20px 60px rgba(15,20,40,.22); }
+.mb-strip { height: 30px; display: flex; align-items: center; gap: 16px; padding: 0 14px; font-size: 13px; font-weight: 500; color: var(--fg); background: rgb(255 255 255 / .45); backdrop-filter: blur(20px); }
+:root[data-theme="dark"] .mb-strip { background: rgb(20 22 28 / .55); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .mb-strip { background: rgb(20 22 28 / .55); } }
+.mb-strip .r { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.mb-strip .ic { width: 15px; height: 15px; }
+.mb-item { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; background: rgb(127 127 127 / .2); font-variant-numeric: tabular-nums; }
+.mb-panel { position: absolute; top: 38px; right: 92px; width: 380px; border-radius: 14px; overflow: hidden; background: color-mix(in srgb, var(--surface) 86%, transparent); backdrop-filter: blur(30px) saturate(1.4);
+  box-shadow: 0 0 0 .5px rgba(0,0,0,.15), 0 18px 50px rgba(15,20,40,.28); }
+.mb-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; transition: background .2s; }
+.mb-row:hover { background: rgb(127 127 127 / .1); }
+.mb-row .t { flex: 1; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-row .p { font-size: 12px; color: var(--tertiary); }
+
+/* ---------- prototype controls ---------- */
+.proto { position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 12px; font-size: 12px;
+  background: rgb(20 22 30 / .78); color: #E5E7EB; backdrop-filter: blur(16px); box-shadow: 0 6px 24px rgba(0,0,0,.25); opacity: .35; transition: opacity .25s; }
+.proto:hover, .proto:focus-within { opacity: 1; }
+.proto .lbl { padding: 0 6px 0 8px; color: #9CA3AF; }
+.proto button { height: 26px; padding: 0 9px; border-radius: 8px; color: #D1D5DB; }
+.proto button:hover { background: rgba(255,255,255,.08); }
+.proto button.on { background: rgba(255,255,255,.16); color: #fff; }
+.proto .sep { width: 1px; height: 16px; background: rgba(255,255,255,.15); margin: 0 4px; }
+body.shot .proto { display: none; }
+body.instant *, body.instant *::before, body.instant *::after { transition: none !important; animation-delay: -10s !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; transition-delay: 0s !important; }
+  .window.is-focusing .app { transform: none; }
+}
+
+
+/* ================= Option C: Stage (the task card is the progress) ================= */
+.row { cursor: default; }
+.row.sel { background: color-mix(in srgb, var(--surface) 92%, var(--accent)); box-shadow: var(--raised-sm), 0 0 0 1px rgb(var(--accent-rgb) / .35); }
+.start-btn { position: absolute; right: 0; top: 50%; transform: translateY(-50%) scale(.96); opacity: 0; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; color: var(--accent-text); background: var(--accent-soft); transition: opacity .2s, transform .25s var(--ease); white-space: nowrap; }
+.start-btn .ic { width: 12px; height: 12px; }
+.row:hover .start-btn, .row.hover .start-btn, .start-btn:focus-visible { opacity: 1; transform: translateY(-50%); }
+.row:hover .prio, .row.hover .prio { opacity: 0; }
+.row.lift { transform: translateY(-3px) scale(1.012); box-shadow: 0 18px 40px rgba(15, 20, 40, .16); }
+
+.c-veil { position: absolute; inset: 0; background: var(--scrim); opacity: 0; transition: opacity 1.1s; }
+.c-halo { position: absolute; left: 50%; top: 50%; width: 900px; height: 700px; margin: -350px 0 0 -450px; border-radius: 50%; opacity: 0; transition: opacity 1.4s, transform 1.4s var(--ease);
+  background: radial-gradient(closest-side, rgb(var(--accent-rgb) / calc(.10 + var(--fill, 0) * .22)), transparent); }
+.stage.lit .c-veil, .stage.lit .c-halo { opacity: 1; }
+
+.c-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 20px; perspective: 1600px; opacity: 0; visibility: hidden; transition: opacity .4s, visibility 0s .4s; }
+.stage.on .c-center { opacity: 1; visibility: visible; transition: opacity .3s; }
+.c-flip { position: relative; display: grid; width: 640px; transform-style: preserve-3d; transition: transform 1s var(--ease); }
+.stage[data-phase="break"] .c-flip { transform: rotateY(180deg); }
+.c-face { grid-area: 1 / 1; border-radius: 26px; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+.c-card { position: relative; overflow: hidden; padding: 26px 32px 30px; --fa: .17; --fb: .07; background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 1px 0 rgb(255 255 255 / .4) inset, 0 30px 80px rgba(15, 20, 40, .16), 0 0 0 .5px var(--border), 0 0 calc(var(--fill, 0) * 60px) rgb(var(--accent-rgb) / calc(var(--fill, 0) * .35));
+  transition: box-shadow 1s var(--ease), background .6s; }
+.c-back { position: relative; transform: rotateY(180deg); background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 30px 80px rgba(15, 20, 40, .16), 0 0 0 .5px var(--border);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 28px; }
+.c-ghost { position: absolute; display: none; border-radius: 26px; background: var(--surface); box-shadow: 0 30px 80px rgba(15, 20, 40, .18); }
+.stage .c-card.flying { background: transparent !important; box-shadow: none !important; }
+.c-card.flying, .c-card.flying > * { transition: none !important; }
+.c-card.flying > *:not(.c-title) { opacity: 0; }
+.c-card > * { position: relative; transition: opacity .45s var(--ease); }
+
+/* the fill: the card itself is the progress */
+.c-fill { position: absolute !important; left: 0; right: 0; bottom: 0; height: calc(var(--fill, 0) * 100% + 10px); transition: height 1.2s var(--spring);
+  background: linear-gradient(to top, rgb(var(--accent-rgb) / var(--fa, .17)), rgb(var(--accent-rgb) / var(--fb, .07))); pointer-events: none; }
+:root[data-theme="dark"] .c-card, :root[data-theme="dark"] .pc { --fa: .16; --fb: .05; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .c-card, :root:not([data-theme="light"]) .pc { --fa: .16; --fb: .05; } }
+.c-wave .edge { fill: none; stroke: rgb(var(--accent-rgb) / .45); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.c-wave { position: absolute; left: 0; top: -14px; width: 200%; height: 16px; animation: wave 7s linear infinite; }
+.c-wave.w2 { animation-duration: 11s; opacity: .55; top: -11px; }
+.c-wave path { fill: rgb(var(--accent-rgb) / var(--fb, .07)); }
+@keyframes wave { to { transform: translateX(-50%); } }
+.stage.paused .c-wave { animation-play-state: paused; }
+.c-sweep { position: absolute !important; inset: 0; pointer-events: none; background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / .55) 50%, transparent 65%); background-size: 250% 100%; background-position: 130% 0; opacity: 0; }
+:root[data-theme="dark"] .c-sweep { background-image: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / .12) 50%, transparent 65%); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .c-sweep { background-image: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / .12) 50%, transparent 65%); } }
+.c-sweep.go { animation: sweep 1.1s var(--ease-soft); }
+@keyframes sweep { 0% { opacity: 1; background-position: 130% 0; } 100% { opacity: 1; background-position: -30% 0; } }
+.c-timebar { position: absolute !important; left: 0; top: 0; height: 2px; width: 0; background: linear-gradient(90deg, rgb(var(--accent-rgb) / .2), var(--accent)); }
+
+.c-head { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.c-head .dot { width: 7px; height: 7px; border-radius: 50%; }
+.c-pill { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 9px; border-radius: 999px; background: var(--well); color: var(--muted); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; transition: color .2s, background .2s; }
+.c-pill:hover { color: var(--fg); }
+.c-pill svg { width: 14px; height: 14px; } .c-pill svg.ring { transform: rotate(-90deg); }
+.c-pill .trk { fill: none; stroke: currentColor; stroke-opacity: .2; stroke-width: 3; }
+.c-pill .arc { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
+.stage.paused .c-pill { color: var(--accent-text); background: var(--accent-soft); }
+.c-x { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--tertiary); }
+.c-x:hover { background: var(--well); color: var(--fg); }
+.c-x .ic { width: 14px; height: 14px; }
+.c-title { margin: 10px 0 0; font-size: 28px; line-height: 34px; font-weight: 700; letter-spacing: -.02em; }
+.c-done { display: inline-flex; align-items: center; gap: 6px; height: 24px; margin-top: 12px; padding: 0 10px 0 7px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--accent-text); background: var(--accent-soft); font-variant-numeric: tabular-nums; }
+.c-done .ic { width: 13px; height: 13px; stroke-width: 2.6; }
+.c-done.empty { visibility: hidden; }
+.c-done.bump { animation: bump .5s var(--spring); }
+@keyframes bump { 40% { transform: scale(1.12); } }
+
+.c-now { margin-top: 22px; }
+.c-label { font-size: 12.5px; font-weight: 600; color: var(--accent-text); height: 18px; display: flex; align-items: center; gap: 6px; }
+.c-label .ic { width: 13px; height: 13px; }
+.c-nowrow { display: flex; align-items: flex-start; gap: 16px; margin-top: 10px; }
+.c-check { position: relative; width: 46px; height: 46px; flex: none; border-radius: 50%; display: grid; place-items: center; color: #fff;
+  box-shadow: inset 0 0 0 2px var(--accent), 0 6px 18px rgb(var(--accent-rgb) / .18); background: var(--surface); transition: background .35s var(--ease), transform .2s var(--ease), box-shadow .3s; }
+.c-check:hover { background: var(--accent-soft); transform: scale(1.05); }
+.c-check:active { transform: scale(.92); }
+.c-check .ic { width: 20px; height: 20px; stroke-width: 2.8; stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset .35s .1s var(--ease); }
+.c-check.on { background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 6px 18px rgb(var(--accent-rgb) / .35); animation: cbpop .5s var(--spring); }
+.c-check.on .ic { stroke-dashoffset: 0; }
+.c-check::after { content: ""; position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 2px var(--accent); opacity: 0; }
+.c-check.on::after { animation: ripple .8s var(--ease) forwards; }
+@keyframes ripple { from { opacity: .6; transform: scale(1); } to { opacity: 0; transform: scale(2); } }
+.c-steptext { font-size: 22px; line-height: 29px; font-weight: 600; letter-spacing: -.01em; padding-top: 7px; }
+.c-tip { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 14px; color: var(--muted); }
+.c-tip .ic { width: 13px; height: 13px; color: var(--accent-text); flex: none; }
+.c-load { margin-top: 22px; display: flex; flex-direction: column; gap: 12px; }
+.c-load .t { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500;
+  background: linear-gradient(90deg, var(--tertiary) 0%, var(--tertiary) 35%, var(--accent-text) 50%, var(--tertiary) 65%, var(--tertiary) 100%); background-size: 300% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+.c-load .t .ic { color: var(--accent-text); }
+.c-load .bar { height: 12px; border-radius: 6px; background: var(--well); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes pulse { 50% { opacity: .5; } }
+.c-then { list-style: none; margin: 24px 0 0; padding: 18px 0 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.c-then li { display: flex; align-items: center; gap: 12px; font-size: 14.5px; color: var(--tertiary); }
+.c-then li .n { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11.5px; font-weight: 600; color: var(--tertiary); box-shadow: inset 0 0 0 1.2px var(--border); flex: none; font-variant-numeric: tabular-nums; }
+.c-then:empty { display: none; }
+.enter { animation: stepIn .6s var(--ease) both; }
+@keyframes stepIn { from { opacity: 0; transform: translateY(14px); filter: blur(4px); } }
+
+/* finish */
+.c-fin { display: none; text-align: center; padding: 14px 0 4px; }
+.stage[data-phase="finish"] .c-fin { display: block; }
+.stage[data-phase="finish"] .c-now, .stage[data-phase="finish"] .c-then, .stage[data-phase="finish"] .c-done, .stage[data-phase="finish"] .c-load, .stage[data-phase="finish"] .c-pill { display: none !important; }
+.stage[data-phase="finish"] .c-head { justify-content: center; }
+.stage[data-phase="finish"] .c-x { display: none; }
+.stage[data-phase="finish"] .c-title { text-align: center; }
+.c-mark { width: 76px; height: 76px; margin: 0 auto 6px; display: block; }
+.c-mark circle { fill: none; stroke: currentColor; stroke-width: 1.6; opacity: .45; stroke-dasharray: 283; stroke-dashoffset: 283; }
+.c-mark path { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 60; stroke-dashoffset: 60; }
+.stage[data-phase="finish"] .c-mark circle { stroke-dashoffset: 0; transition: stroke-dashoffset 1s .5s var(--ease); }
+.stage[data-phase="finish"] .c-mark path { stroke-dashoffset: 0; transition: stroke-dashoffset .6s 1.2s var(--ease); }
+.c-fin .line { font-size: 20px; line-height: 27px; font-weight: 500; margin-top: 14px; }
+.c-fin .meta { margin-top: 6px; font-size: 13px; opacity: .8; }
+.c-fin .btns { display: flex; justify-content: center; gap: 10px; margin-top: 22px; }
+.c-fin { animation: stepIn .7s .7s var(--ease) both; }
+/* task finished: the whole card lights up */
+.stage[data-phase="finish"][data-kind="task"] .c-card { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 30px 90px rgb(var(--accent-rgb) / .45), 0 0 0 .5px rgb(255 255 255 / .2) inset; }
+.stage[data-phase="finish"][data-kind="task"] .c-head { color: rgb(255 255 255 / .85); }
+.stage[data-phase="finish"][data-kind="task"] .c-fill { opacity: 0; }
+.stage[data-phase="finish"][data-kind="task"] .c-mark { color: #fff; }
+.stage[data-phase="finish"][data-kind="task"] .btn-light { background: #fff; color: #3730A3; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.stage[data-phase="finish"][data-kind="task"] .btn-ghost { color: #fff; background: rgb(255 255 255 / .16); box-shadow: none; border: 0; }
+.stage[data-phase="finish"][data-kind="time"] .c-mark { color: var(--accent-text); }
+.btn-light, .btn-ghost { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 16px; border-radius: 11px; font-weight: 600; font-size: 13.5px; transition: transform .2s var(--ease); }
+.btn-light:hover, .btn-ghost:hover { transform: translateY(-1px); }
+.btn-light .ic, .btn-ghost .ic { width: 15px; height: 15px; }
+.c-confetti { position: absolute; width: 6px; height: 10px; border-radius: 2px; pointer-events: none; animation: conf var(--d) cubic-bezier(.2,.6,.4,1) forwards; }
+@keyframes conf { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--x), var(--y)) rotate(var(--r)); } }
+
+/* break (back face) */
+.c-back .lbl { font-size: 13px; font-weight: 600; color: var(--success-text); display: flex; gap: 6px; align-items: center; }
+.c-back .lbl .ic { width: 15px; height: 15px; }
+.c-back .tm { font-family: var(--display); font-weight: 200; font-size: 76px; letter-spacing: -.04em; line-height: 1; margin-top: 12px; font-variant-numeric: tabular-nums; }
+.c-back .sub { margin-top: 12px; font-size: 14px; color: var(--muted); }
+.c-back .nx { margin-top: 18px; padding: 10px 14px; border-radius: 12px; background: var(--well); font-size: 13.5px; color: var(--muted); }
+.c-back .nx b { color: var(--fg); font-weight: 600; }
+.c-back .skip { margin-top: 16px; }
+.c-breathe { width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: breathe 8s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: .5; } 50% { transform: scale(2.2); opacity: 1; } }
+.c-ready { display: none; }
+.stage.ready .c-ready { display: inline-flex; margin-top: 16px; }
+
+/* menu bar */
+.mb-item svg.pie { width: 14px; height: 14px; transform: rotate(-90deg); }
+.mb-item .pie .trk { fill: none; stroke: currentColor; stroke-opacity: .3; stroke-width: 4; }
+.mb-item .pie .arc { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }
+.pc { position: relative; padding: 16px 16px 18px; overflow: hidden; }
+.pc > * { position: relative; }
+.pc .c-fill { border-radius: 0; }
+.pc-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.pc-title { font-size: 16px; font-weight: 700; margin-top: 6px; letter-spacing: -.01em; }
+.pc-now { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.pc-now .c-check { width: 34px; height: 34px; }
+.pc-now .c-check .ic { width: 16px; height: 16px; }
+.pc-now .t { font-size: 14.5px; font-weight: 600; line-height: 1.3; }
+.pc-now .s { font-size: 12.5px; color: var(--tertiary); margin-top: 2px; }
+.pc .c-pill { height: 26px; }
+.pc-row-btn { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--accent-text); background: var(--accent-soft); }
+.pc-row-btn .ic { width: 11px; height: 11px; }
+.pc-h2 { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 4px 8px; }
+</style>
+</head>
+<body>
+<template id="stageTpl">
+  <div class="c-veil"></div><div class="c-halo" id="halo"></div>
+  <div class="c-ghost" id="ghost"></div>
+  <div class="c-center" id="center">
+    <div class="c-flip" id="flip">
+      <div class="c-card c-face" id="card">
+        <div class="c-fill" id="fill"><svg class="c-wave" viewBox="0 0 1200 16" preserveAspectRatio="none"><path d="M0 8 Q 75 0 150 8 T 300 8 T 450 8 T 600 8 T 750 8 T 900 8 T 1050 8 T 1200 8 V16 H0z"/><path class="edge" d="M0 8 Q 75 0 150 8 T 300 8 T 450 8 T 600 8 T 750 8 T 900 8 T 1050 8 T 1200 8"/></svg><svg class="c-wave w2" viewBox="0 0 1200 16" preserveAspectRatio="none"><path d="M0 8 Q 100 16 200 8 T 400 8 T 600 8 T 800 8 T 1000 8 T 1200 8 V16 H0z"/></svg></div>
+        <div class="c-sweep" id="sweep"></div>
+        <div class="c-timebar" id="timebar"></div>
+        <div class="c-head"><span class="dot" id="pdot"></span><span id="proj"></span>
+          <button class="c-pill" id="pill" aria-label="Pause" title="Pause (Space)"><svg class="ring" viewBox="0 0 20 20"><circle class="trk" cx="10" cy="10" r="7"/><circle class="arc" id="pillArc" cx="10" cy="10" r="7" stroke-dasharray="44" stroke-dashoffset="44"/></svg><span id="pillTime"></span></button>
+          <button class="c-x" id="stopBtn" aria-label="End session" title="End session (Esc)">ICON_X</button></div>
+        <svg class="c-mark" viewBox="0 0 100 100" aria-hidden="true" style="display:none" id="mark"><circle cx="50" cy="50" r="45"/><path d="M32 51l12 12 24-26"/></svg>
+        <h2 class="c-title" id="title"></h2>
+        <div class="c-done empty" id="done">ICON_CHECK<span id="doneN">0 done</span></div>
+        <div class="c-load" id="load"><div class="t">ICON_SPARKLE Breaking it into small steps</div><div class="bar" style="width:72%"></div><div class="bar" style="width:46%"></div></div>
+        <div class="c-now" id="now"></div>
+        <ol class="c-then" id="then"></ol>
+        <div class="c-fin"><div class="line" id="finLine"></div><div class="meta" id="finMeta"></div><div class="btns" id="finBtns"></div></div>
+      </div>
+      <div class="c-back c-face" id="back">
+        <div class="lbl"><span class="c-breathe"></span>&nbsp;Break</div>
+        <div class="tm" id="backTime">5:00</div>
+        <div class="sub">Breathe with the dot. Look at something far away.</div>
+        <div class="nx">Back to: <b id="backNext"></b></div>
+        <button class="btn-text skip" id="skipBtn">Skip break</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+/* Shared prototype core: app shell, focus state machine, timer, chime, helpers. */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const ICONS = {
+  play: '<path d="M7 4.5v15l12.5-7.5z" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6.5" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  sparkle: '<path d="M12 3.5l1.7 5.2 5.3 1.8-5.3 1.8L12 17.5l-1.7-5.2L5 10.5l5.3-1.8z"/><path d="M19 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>',
+  calendar: '<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+  next: '<circle cx="12" cy="12" r="9.5"/><path d="M10.2 8.5l5 3.5-5 3.5z"/>',
+  clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.5 2"/>',
+  moon: '<path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>',
+  folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h7.4A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4.5-4.5"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+  x: '<path d="M17 7 7 17M7 7l10 10"/>',
+  coffee: '<path d="M4 9h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5v2.5M12 3.5v2.5"/>',
+  sprout: '<path d="M12 21v-8"/><path d="M12 13c0-4 2.5-6.5 7-6.5 0 4.5-2.8 6.5-7 6.5z"/><path d="M12 15.5c0-3-2-5-5.5-5 0 3.4 2.2 5 5.5 5z"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.2" r=".9" fill="currentColor"/>',
+  battery: '<rect x="2.5" y="7" width="17" height="10" rx="2.5"/><rect x="4.5" y="9" width="11" height="6" rx="1" fill="currentColor" stroke="none"/><path d="M21.5 10.5v3"/>',
+  apple: '<path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2-1.1 2.8-2.3.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.5-.9-2.5-3.8zM14.1 5.8c.6-.8 1.1-1.8 1-2.8-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.3z" fill="currentColor" stroke="none"/>',
+};
+const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
+
+const TASKS = [
+  { id: 't1', title: 'Write the quarterly report', project: 'Work', color: '#3B82F6', due: 'Today', prio: 'High',
+    steps: ['Pull the Q3 numbers from the dashboard', 'Draft the revenue summary', 'Add the two key charts', 'Write the outlook paragraph', 'Read it once, then send to Priya'],
+    tips: ['Just copy them in. Tidy later.', 'Three plain sentences is a fine first pass.', 'Revenue by month, then pipeline. That is enough.', 'What changes next quarter, in one paragraph.', 'One read-through, then let it go.'] },
+  { id: 't2', title: 'Reply to Sam about the offsite', project: 'Team', color: '#A855F7', due: 'Today', prio: 'Med',
+    steps: ['Check the two date options', 'Confirm the venue budget', 'Write the reply'],
+    tips: ['Look at the shared calendar.', 'The number is in the planning doc.', 'Short and clear is kind.'] },
+  { id: 't3', title: 'Plan the November content calendar', project: 'Marketing', color: '#F59E0B', due: 'Sat, 8 Nov', prio: null,
+    steps: ['List the four launch dates', 'Draft one post idea per week', 'Assign owners', 'Share with Nijrika'],
+    tips: ['Start from the product roadmap.', 'Rough is fine.', 'One name per post.', 'Drop it in the team channel.'] },
+  { id: 't4', title: 'Book dentist appointment', project: 'Personal', color: '#22C55E', due: null, prio: 'Low',
+    steps: ['Find the clinic number', 'Pick two free mornings', 'Call and book'],
+    tips: ['It is in your contacts.', 'Tuesday or Thursday works.', 'Two minutes, tops.'] },
+];
+const taskById = (id) => TASKS.find((t) => t.id === id);
+
+/* ---------- state ---------- */
+const S = {
+  view: 'window', phase: 'idle', taskId: null, steps: [], stepsLoading: false,
+  focusSec: 25 * 60, breakSec: 5 * 60, elapsed: 0, running: false, speed: 1, sound: false,
+  sessionsToday: 2, finishKind: null, completed: new Set(),
+};
+const listeners = {};
+const on = (e, f) => (listeners[e] ||= []).push(f);
+const emit = (e, ...a) => (listeners[e] || []).forEach((f) => f(...a));
+
+const total = () => (S.phase === 'break' ? S.breakSec : S.focusSec);
+const progress = () => Math.min(1, S.elapsed / total());
+const remaining = () => Math.max(0, Math.ceil(total() - S.elapsed));
+const fmt = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+const fmt2 = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+const doneCount = () => S.steps.filter((s) => s.done).length;
+const currentStep = () => S.steps.findIndex((s) => !s.done);
+const task = () => taskById(S.taskId);
+
+function encourage() {
+  const d = doneCount(), n = S.steps.length;
+  if (!n) return '';
+  if (d === n) return 'Every step done.';
+  if (n - d === 1) return 'Last one. Finish it off.';
+  if (d / n >= .5) return 'Past halfway. Keep the pace.';
+  if (d === 1) return 'Nice. One down.';
+  return 'Good. On to the next.';
+}
+function finishLine() {
+  if (S.finishKind === 'task') return 'Every step done. You finished the whole thing.';
+  return `${Math.round(S.focusSec / 60)} minutes on one thing. That counts.`;
+}
+
+const Focus = {
+  start(id) {
+    if (S.phase !== 'idle') return;
+    S.taskId = id; S.steps = []; S.stepsLoading = true; S.elapsed = 0; S.running = true; S.finishKind = null;
+    S.phase = 'focus';
+    emit('phase', 'idle', 'focus', {});
+    chime('start');
+    setTimeout(() => {
+      if (S.taskId !== id || !S.stepsLoading) return;
+      S.steps = task().steps.map((title) => ({ title, done: false }));
+      S.stepsLoading = false;
+      emit('steps');
+    }, RM ? 200 : 1300);
+  },
+  toggleRun() { if (S.phase === 'focus' || S.phase === 'break') { S.running = !S.running; emit('run'); } },
+  toggleStep(i) {
+    const s = S.steps[i]; if (!s || S.phase !== 'focus') return;
+    s.done = !s.done; emit('step', i, s.done);
+    if (s.done) chime('tick');
+    if (S.steps.every((x) => x.done)) setTimeout(() => { if (S.phase === 'focus' && S.steps.every((x) => x.done)) Focus.finish('task'); }, RM ? 300 : 1000);
+  },
+  finish(kind) {
+    const from = S.phase; S.running = false; S.finishKind = kind; S.sessionsToday += 1; S.phase = 'finish';
+    emit('phase', from, 'finish', {}); chime('finish');
+  },
+  takeBreak() { const from = S.phase; S.phase = 'break'; S.elapsed = 0; S.running = true; emit('phase', from, 'break', {}); },
+  keepGoing() { const from = S.phase; S.phase = 'focus'; S.elapsed = 0; S.running = true; S.finishKind = null; emit('phase', from, 'focus', { again: true }); },
+  markDone() { const from = S.phase; const id = S.taskId; S.phase = 'idle'; S.running = false; S.completed.add(id); emit('phase', from, 'idle', { completed: id }); },
+  stop() { if (S.phase === 'idle') return; const from = S.phase; S.phase = 'idle'; S.running = false; emit('phase', from, 'idle', {}); },
+};
+
+/* ---------- timer loop ---------- */
+let last = performance.now();
+function loop(t) {
+  const dt = Math.min(.25, (t - last) / 1000); last = t;
+  if (S.running && (S.phase === 'focus' || S.phase === 'break')) {
+    S.elapsed += dt * S.speed;
+    if (S.elapsed >= total()) {
+      S.elapsed = total();
+      if (S.phase === 'focus') Focus.finish('time');
+      else { S.phase = 'focus'; S.elapsed = 0; S.running = false; emit('phase', 'break', 'focus', { ready: true }); chime('soft'); }
+    }
+  }
+  emit('tick', t);
+  requestAnimationFrame(loop);
+}
+
+/* ---------- chime (WebAudio, off by default) ---------- */
+let ac;
+function chime(kind) {
+  if (!S.sound) return;
+  ac ||= new (window.AudioContext || window.webkitAudioContext)();
+  const seq = { start: [[523.25, 0], [783.99, .09]], tick: [[1174.66, 0]], finish: [[523.25, 0], [659.25, .14], [783.99, .28], [1046.5, .42]], soft: [[659.25, 0], [987.77, .12]] }[kind];
+  const len = kind === 'tick' ? .45 : 2.2;
+  seq.forEach(([f, d]) => {
+    [[f, 'sine', kind === 'tick' ? .045 : .07], [f * 2, 'triangle', .012]].forEach(([freq, type, vol]) => {
+      const o = ac.createOscillator(), g = ac.createGain(), t0 = ac.currentTime + d;
+      o.type = type; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + .012); g.gain.exponentialRampToValueAtTime(.0001, t0 + len);
+      o.connect(g).connect(ac.destination); o.start(t0); o.stop(t0 + len + .05);
+    });
+  });
+}
+
+/* ---------- animation helpers ---------- */
+function rel(el, box) { const a = el.getBoundingClientRect(), b = box.getBoundingClientRect(); return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height }; }
+/** Animate an absolutely-positioned box between two rects (left/top/width/height). */
+function flyBox(el, from, to, { duration = 760, easing = 'cubic-bezier(.2,.8,.2,1)', delay = 0 } = {}) {
+  if (RM) return el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1, fill: 'both' });
+  const k = (r) => ({ left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+  return el.animate([k(from), k(to)], { duration, easing, delay, fill: 'both' });
+}
+/** Shared-element text: animate `el` (in its final place) from where `fromEl` is. */
+function flyText(el, fromEl, { duration = 760, easing = 'cubic-bezier(.2,.8,.2,1)', reverse = false } = {}) {
+  if (RM) return null;
+  const a = fromEl.getBoundingClientRect(), b = el.getBoundingClientRect();
+  const s = parseFloat(getComputedStyle(fromEl).fontSize) / parseFloat(getComputedStyle(el).fontSize);
+  const k0 = { transformOrigin: '0 0', transform: `translate(${a.left - b.left}px, ${a.top - b.top}px) scale(${s})` };
+  const k1 = { transformOrigin: '0 0', transform: 'none' };
+  return el.animate(reverse ? [k1, k0] : [k0, k1], { duration, easing, fill: 'both' });
+}
+
+/* ---------- shell ---------- */
+const Shell = {
+  win: null, app: null, stage: null, list: null,
+  mount({ startLabel = 'Focus', startIcon = 'play', aboveList = '' } = {}) {
+    const nav = [['Plan', [['sun', 'Today', 6, true], ['calendar', 'Calendar', '']]], ['Do', [['inbox', 'Inbox', 3], ['next', 'Next Actions', 15], ['clock', 'Waiting', 2], ['moon', 'Someday', 8]]], ['Organise', [['folder', 'Projects', 5]]]];
+    const rows = TASKS.map((t) => `
+      <li class="row" data-id="${t.id}">
+        <button class="cb" aria-label="Complete ${t.title}">${icon('check')}</button>
+        <div class="row-main"><div class="row-title">${t.title}</div>
+          <div class="chips"><span class="chip"><i style="background:${t.color}"></i>${t.project}</span>${t.due ? `<span class="chip ${t.due === 'Today' ? 'today' : ''}">${icon('calendar')}${t.due}</span>` : ''}</div></div>
+        <div class="row-end">${t.prio ? `<span class="prio ${t.prio === 'Med' ? 'med' : t.prio === 'Low' ? 'low' : ''}">${t.prio === 'Med' ? 'Medium' : t.prio}</span>` : ''}
+          <button class="start-btn" data-start="${t.id}" aria-label="${startLabel}: ${t.title}">${icon(startIcon)}<span>${startLabel}</span></button></div>
+      </li>`).join('');
+    document.body.insertAdjacentHTML('afterbegin', `
+    <div class="desk"><div class="window" id="win">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="app" id="app">
+        <aside class="sidebar">
+          <div class="brand"><span class="mark">${icon('check')}</span>Stride</div>
+          <button class="capture">${icon('plus')}Capture<kbd>⌘K</kbd></button>
+          ${nav.map(([g, items]) => `<div class="navgroup">${g}</div>${items.map(([ic, l, n, sel]) => `<div class="navitem ${sel ? 'sel' : ''}">${icon(ic)}${l}<span class="n">${n}</span></div>`).join('')}`).join('')}
+        </aside>
+        <main class="content">
+          <div class="toolbar"><div class="search">${icon('search')}Search tasks, projects, or tags...<kbd>⌘F</kbd></div><span class="grow"></span><button class="btn-gradient">${icon('plus')}Capture <span style="opacity:.75;font-weight:500">⌘K</span></button></div>
+          <div class="vh"><h1>Today</h1><span class="count" id="vhCount">4 tasks</span></div>
+          <div class="vh-sub"><span id="vhDone">Today: 3 of 7 done</span><span>4 left · about 2 h 10 m</span></div>
+          <div class="pbar"><i id="vhBar" style="width:43%"></i></div>
+          ${aboveList}
+          <ul class="list" id="list">${rows}</ul>
+        </main>
+      </div>
+      <div class="stage" id="stage"></div>
+    </div></div>
+    <div class="mbview" id="mbview"><div class="mb-scene">
+      <div class="mb-strip">${icon('apple')}<b>Stride</b><span style="font-weight:400">File</span><span style="font-weight:400">Edit</span><span style="font-weight:400">View</span>
+        <span class="r"><span class="mb-item" id="mbItem"></span>${icon('wifi')}${icon('battery')}<span>Thu 5 Nov  10:42</span></span></div>
+      <div class="mb-panel" id="mbPanel"></div>
+    </div></div>`);
+    this.win = $('#win'); this.app = $('#app'); this.stage = $('#stage'); this.list = $('#list');
+    this.list.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-start]'); if (b) { Focus.start(b.dataset.start); return; }
+      const cb = e.target.closest('.cb'); if (cb) this.completeRow(cb.closest('.row').dataset.id);
+    });
+  },
+  row(id) { return this.list.querySelector(`.row[data-id="${id}"]`); },
+  async completeRow(id) {
+    const r = this.row(id); if (!r || r.classList.contains('done')) return;
+    S.completed.add(id); r.classList.add('done');
+    const left = TASKS.filter((t) => !S.completed.has(t.id)).length;
+    $('#vhCount').textContent = `${left} tasks`;
+    $('#vhDone').textContent = `Today: ${3 + S.completed.size} of 7 done`;
+    $('#vhBar').style.width = `${((3 + S.completed.size) / 7) * 100}%`;
+    await wait(RM ? 50 : 900); r.classList.add('gone');
+  },
+  setFocusing(on) { this.win.classList.toggle('is-focusing', on); },
+};
+
+/* ---------- prototype controls + hash state (for screenshots) ---------- */
+function mountProto() {
+  const el = document.createElement('div');
+  el.className = 'proto'; el.setAttribute('aria-label', 'Prototype controls');
+  el.innerHTML = `<span class="lbl">Prototype</span>
+    <button data-view="window" class="on">Window</button><button data-view="menubar">Menu bar</button><span class="sep"></span>
+    <span class="lbl">Speed</span><button data-speed="1" class="on">1×</button><button data-speed="30">30×</button><button data-speed="300">300×</button><span class="sep"></span>
+    <button data-sound>Sound off</button><button data-theme-btn>Theme: auto</button><button data-reset>Reset</button>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.view) setView(b.dataset.view);
+    if (b.dataset.speed) { S.speed = +b.dataset.speed; $$('[data-speed]', el).forEach((x) => x.classList.toggle('on', x === b)); }
+    if (b.hasAttribute('data-sound')) { S.sound = !S.sound; b.textContent = S.sound ? 'Sound on' : 'Sound off'; b.classList.toggle('on', S.sound); if (S.sound) chime('soft'); }
+    if (b.hasAttribute('data-theme-btn')) { const order = ['auto', 'light', 'dark']; const cur = document.documentElement.dataset.theme || 'auto'; const nx = order[(order.indexOf(cur) + 1) % 3];
+      if (nx === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = nx; b.textContent = `Theme: ${nx}`; emit('theme'); }
+    if (b.hasAttribute('data-reset')) { location.hash = ''; location.reload(); }
+  });
+}
+function setView(v) {
+  S.view = v; document.body.classList.toggle('view-menubar', v === 'menubar');
+  $$('.proto [data-view]').forEach((x) => x.classList.toggle('on', x.dataset.view === v)); emit('view');
+}
+function applyHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.has('theme')) document.documentElement.dataset.theme = p.get('theme');
+  if (p.has('shot')) document.body.classList.add('shot');
+  if (p.has('view')) setView(p.get('view'));
+  if (p.has('hover')) Shell.row(p.get('hover'))?.classList.add('hover');
+  if (p.has('speed')) S.speed = +p.get('speed');
+  const ph = p.get('phase');
+  if (!ph || ph === 'idle') return;
+  document.body.classList.add('instant');
+  S.taskId = p.get('task') || 't1';
+  const d = +(p.get('done') || 0);
+  S.steps = task().steps.map((title, i) => ({ title, done: i < d }));
+  S.phase = ph; S.running = p.get('running') !== '0'; S.finishKind = p.get('kind') || (d === S.steps.length ? 'task' : 'time');
+  S.elapsed = (+(p.get('p') || 0)) * total();
+  if (ph === 'finish') S.sessionsToday += 1;
+  if (p.has('speed')) S.speed = +p.get('speed');
+  emit('phase', 'idle', ph, { instant: true });
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove('instant')));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea')) return;
+  if (e.code === 'Space' && (S.phase === 'focus' || S.phase === 'break')) { e.preventDefault(); Focus.toggleRun(); }
+  if (e.key === 'Escape') Focus.stop();
+});
+
+function boot(init) {
+  mountProto();
+  init();
+  applyHash();
+  requestAnimationFrame(loop);
+}
+
+
+/* ================= Option C logic ================= */
+let stage;
+const fillVal = () => (S.steps.length ? doneCount() / S.steps.length : 0);
+function setFill() {
+  const f = S.phase === 'finish' && S.finishKind === 'task' ? 1 : fillVal();
+  $('#card').style.setProperty('--fill', f); $('#halo').style.setProperty('--fill', f);
+  $$('#mbPanel .pc').forEach((el) => el.style.setProperty('--fill', f));
+}
+function renderNow(animate) {
+  const now = $('#now'), then = $('#then');
+  $('#load').style.display = S.stepsLoading ? 'flex' : 'none';
+  if (S.stepsLoading) { now.innerHTML = ''; then.innerHTML = ''; return; }
+  const c = currentStep(); const t = task();
+  now.innerHTML = c < 0 ? '' : `<div class="c-label" id="nowLabel">${icon('sparkle')}<span>Now</span></div>
+    <div class="c-nowrow ${animate ? 'enter' : ''}"><button class="c-check" id="check" data-step="${c}" aria-label="Complete: ${S.steps[c].title}">${icon('check')}</button>
+    <div><div class="c-steptext">${S.steps[c].title}</div><div class="c-tip">${t.tips[c] || ''}</div></div></div>`;
+  const upcoming = S.steps.map((s, i) => [s, i]).filter(([s, i]) => !s.done && i !== c).slice(0, 3);
+  then.innerHTML = upcoming.map(([s, i], k) => `<li class="${animate ? 'enter' : ''}" style="animation-delay:${animate === 'deal' ? 200 + k * 110 : 120 + k * 60}ms"><span class="n">${i + 1}</span>${s.title}</li>`).join('');
+  const d = doneCount(); const de = $('#done'); de.classList.toggle('empty', d === 0); $('#doneN').textContent = `${d} of ${S.steps.length} done`;
+}
+function fillCard() { const t = task(); $('#title').textContent = t.title; $('#proj').textContent = t.project; $('#pdot').style.background = t.color; }
+function setRun() {
+  stage.classList.toggle('paused', !S.running && S.phase === 'focus' && !stage.classList.contains('ready'));
+  $('#pill').setAttribute('aria-label', S.running ? 'Pause' : 'Resume'); $('#pill').title = S.running ? 'Pause (Space)' : 'Resume (Space)';
+}
+function setPhaseAttr() { stage.dataset.phase = S.phase; stage.dataset.kind = S.finishKind || ''; $('#mark').style.display = S.phase === 'finish' ? 'block' : 'none'; }
+function updClock() {
+  const r = remaining();
+  $('#pillTime').textContent = S.running || S.phase !== 'focus' ? `${fmt(r)}` : `Paused · ${fmt(r)}`;
+  $('#pillArc').setAttribute('stroke-dashoffset', 44 * (1 - progress()));
+  $('#timebar').style.width = progress() * 100 + '%';
+  $('#backTime').textContent = fmt(r);
+}
+
+async function enterFocus(instant) {
+  fillCard(); setPhaseAttr(); renderNow(false); setFill(); updClock(); setRun(); stage.classList.remove('ready');
+  const row = Shell.row(S.taskId);
+  if (instant) { Shell.setFocusing(true); stage.classList.add('on', 'lit'); row.classList.add('is-lifted'); return; }
+  // 1. lift the row off the list while everything else is still crisp
+  row.classList.add('lift');
+  await wait(RM ? 0 : 260);
+  Shell.setFocusing(true); stage.classList.add('on', 'lit');
+  // 2. fly it to centre and grow into the stage card
+  const card = $('#card'), ghost = $('#ghost');
+  card.classList.add('flying');
+  const to = rel(card, stage), from = rel(row, stage);
+  row.classList.add('is-lifted'); row.classList.remove('lift');
+  ghost.style.display = 'block';
+  const a = flyBox(ghost, from, to, { duration: 850 });
+  ghost.animate([{ borderRadius: '14px' }, { borderRadius: '26px' }], { duration: 850, fill: 'both' });
+  flyText($('#title'), row.querySelector('.row-title'), { duration: 850 });
+  await a.finished; card.classList.remove('flying'); ghost.style.display = 'none'; a.cancel();
+}
+async function exitFocus(o) {
+  const row = Shell.row(S.taskId || o.completed);
+  const card = $('#card'), ghost = $('#ghost');
+  const from = rel(card, stage), to = rel(row, stage);
+  const lit = stage.dataset.kind === 'task' && stage.dataset.phase === 'finish';
+  ghost.style.background = lit ? 'linear-gradient(135deg, var(--accent), var(--accent-2))' : '';
+  card.classList.add('flying'); ghost.style.display = 'block';
+  stage.classList.remove('lit'); Shell.setFocusing(false);
+  const a = flyBox(ghost, from, to, { duration: 720 });
+  ghost.animate([{ borderRadius: '26px', opacity: 1 }, { borderRadius: '14px', opacity: lit ? 0 : 1 }], { duration: 720, fill: 'both' });
+  flyText($('#title'), row.querySelector('.row-title'), { duration: 720, reverse: true });
+  await a.finished;
+  row.classList.remove('is-lifted'); ghost.style.display = 'none'; ghost.style.background = ''; a.cancel(); stage.classList.remove('on');
+  card.classList.remove('flying'); stage.getAnimations({ subtree: true }).forEach((x) => x.cancel());
+  stage.dataset.phase = 'idle'; $('#card').style.setProperty('--fill', 0);
+  if (o.completed) Shell.completeRow(o.completed);
+}
+function confetti() {
+  if (RM) return;
+  const b = stage.getBoundingClientRect(), r = $('#card').getBoundingClientRect();
+  const cols = ['var(--accent)', 'var(--accent-2)', '#F472B6', '#FBBF24', '#34D399'];
+  for (let i = 0; i < 26; i++) {
+    const d = document.createElement('i'); d.className = 'c-confetti';
+    d.style.left = r.left - b.left + r.width / 2 + (Math.random() - .5) * 120 + 'px'; d.style.top = r.top - b.top + 70 + 'px';
+    d.style.background = cols[i % cols.length];
+    const ang = -Math.PI / 2 + (Math.random() - .5) * 2.2, sp = 160 + Math.random() * 220;
+    d.style.setProperty('--x', Math.cos(ang) * sp + 'px'); d.style.setProperty('--y', Math.sin(ang) * sp + 260 + 'px');
+    d.style.setProperty('--r', (Math.random() - .5) * 720 + 'deg'); d.style.setProperty('--d', 1400 + Math.random() * 900 + 'ms');
+    stage.appendChild(d); setTimeout(() => d.remove(), 2600);
+  }
+}
+function enterFinish(instant) {
+  setPhaseAttr(); setFill();
+  const d = doneCount(), n = S.steps.length;
+  $('#finLine').textContent = finishLine();
+  $('#finMeta').textContent = S.finishKind === 'task' ? `${n} steps in ${Math.max(1, Math.round(S.elapsed / 60))} min` : `${d} of ${n} steps done. A good place to pause.`;
+  $('#finBtns').innerHTML = S.finishKind === 'task'
+    ? `<button class="btn-light" data-act="done">${icon('check')}Mark as done</button><button class="btn-ghost" data-act="break">${icon('coffee')}Take a break</button>`
+    : `<button class="btn-gradient" data-act="break">${icon('coffee')}Take a break</button><button class="btn-soft" data-act="again">Keep going</button><button class="btn-text" data-act="done">Mark as done</button>`;
+  if (!instant && S.finishKind === 'task') { const sw = $('#sweep'); sw.classList.remove('go'); void sw.offsetWidth; sw.classList.add('go'); setTimeout(confetti, 250); }
+}
+
+function initC() {
+  Shell.mount({ startLabel: 'Focus', startIcon: 'play' });
+  stage = Shell.stage;
+  stage.innerHTML = $('#stageTpl').innerHTML.replaceAll('ICON_CHECK', icon('check')).replaceAll('ICON_SPARKLE', icon('sparkle')).replaceAll('ICON_X', icon('x')).replaceAll('ICON_PLAY', icon('play'));
+  $('#back').insertAdjacentHTML('beforeend', `<button class="btn-gradient c-ready" id="readyBtn">${icon('play')}Start next session</button>`);
+  stage.addEventListener('click', async (e) => {
+    const s = e.target.closest('[data-step]');
+    if (s && !s.classList.contains('on')) { s.classList.add('on'); await wait(RM ? 0 : 420); Focus.toggleStep(+s.dataset.step); return; }
+    if (e.target.closest('#pill')) Focus.toggleRun();
+    if (e.target.closest('#stopBtn')) Focus.stop();
+    if (e.target.closest('#skipBtn')) S.elapsed = total();
+    if (e.target.closest('#readyBtn')) { stage.classList.remove('ready'); S.running = true; emit('run'); }
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'done') Focus.markDone(); if (act === 'break') Focus.takeBreak(); if (act === 'again') Focus.keepGoing();
+  });
+  on('phase', (from, to, o) => {
+    if (to === 'focus' && from === 'idle') enterFocus(o.instant);
+    else if (to === 'focus') {
+      setPhaseAttr(); renderNow(true); setFill(); updClock(); setRun();
+      if (o.ready) { stage.dataset.phase = 'break'; stage.classList.add('ready'); $('#backTime').textContent = fmt(S.focusSec); $('#skipBtn').style.display = 'none'; $('.c-back .sub').textContent = 'Break is over. Ready when you are.'; }
+    }
+    else if (to === 'break') {
+      if (o.instant) { fillCard(); renderNow(false); Shell.setFocusing(true); stage.classList.add('on', 'lit'); Shell.row(S.taskId).classList.add('is-lifted'); }
+      setPhaseAttr(); setFill(); updClock(); stage.classList.remove('ready'); $('#skipBtn').style.display = ''; $('.c-back .sub').textContent = 'Breathe with the dot. Look at something far away.';
+      const c = currentStep(); $('#backNext').textContent = c >= 0 ? S.steps[c].title : task().title;
+    }
+    else if (to === 'finish') { if (o.instant) { fillCard(); renderNow(false); Shell.setFocusing(true); stage.classList.add('on', 'lit'); Shell.row(S.taskId).classList.add('is-lifted'); } enterFinish(o.instant); }
+    else if (to === 'idle') exitFocus(o);
+    renderPanel();
+  });
+  on('steps', () => { renderNow('deal'); setFill(); renderPanel(); });
+  on('step', (i, done) => {
+    if (done) {
+      const row = $('.c-nowrow');
+      const goNext = () => {
+        renderNow(true); setFill();
+        const de = $('#done'); de.classList.remove('bump'); void de.offsetWidth; de.classList.add('bump');
+        const sw = $('#sweep'); sw.classList.remove('go'); void sw.offsetWidth; sw.classList.add('go');
+        const lbl = $('#nowLabel span'); if (lbl && currentStep() >= 0) { lbl.textContent = encourage(); setTimeout(() => { const l = $('#nowLabel span'); if (l) l.textContent = 'Now'; }, 2600); }
+      };
+      if (row && !RM) row.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-26px) scale(.96)', filter: 'blur(3px)' }], { duration: 380, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' }).finished.then(goNext);
+      else goNext();
+    } else { renderNow(false); setFill(); }
+    renderPanel();
+  });
+  on('run', () => { setRun(); updClock(); renderPanel(); });
+  on('view', renderPanel);
+  let lastSec = -1;
+  on('tick', () => {
+    if (S.phase === 'focus' || S.phase === 'break') {
+      const r = remaining(); if (r !== lastSec) { lastSec = r; updClock(); const pt = $('#pcTime'); if (pt) pt.textContent = fmt(r); }
+      $('#timebar').style.width = progress() * 100 + '%';
+    }
+    const mi = $('#mbItem'); const n = S.steps.length, d = doneCount();
+    const pie = (f) => `<svg class="pie" viewBox="0 0 20 20"><circle class="trk" cx="10" cy="10" r="7"/><circle class="arc" cx="10" cy="10" r="7" stroke-dasharray="44" stroke-dashoffset="${44 * (1 - f)}"/></svg>`;
+    const txt = S.phase === 'focus' ? `${pie(n ? d / n : 0)}${n ? `${d}/${n}` : '…'}` : S.phase === 'break' ? `${icon('coffee')}${fmt(remaining())}` : S.phase === 'finish' ? `${pie(1)}Done` : pie(0);
+    if (mi.dataset.k !== txt) { mi.innerHTML = txt; mi.dataset.k = txt; }
+  });
+  // select-then-start affordance: clicking a row selects it
+  Shell.list.addEventListener('click', (e) => { const r = e.target.closest('.row'); if (!r || e.target.closest('button')) return; $$('.row.sel').forEach((x) => x.classList.remove('sel')); r.classList.add('sel'); });
+}
+
+/* -------- menu bar panel -------- */
+function renderPanel() {
+  const P = $('#mbPanel'); const t = task();
+  if (S.phase === 'idle') {
+    const list = TASKS.filter((x) => !S.completed.has(x.id)).slice(0, 3);
+    P.innerHTML = `<div class="pc"><div class="pc-h2">Focus on</div>${list.map((x) => `<div class="mb-row"><span style="width:7px;height:7px;border-radius:50%;background:${x.color}"></span><span class="t">${x.title}</span><button class="pc-row-btn" data-pstart="${x.id}" aria-label="Focus: ${x.title}">${icon('play')}</button></div>`).join('')}</div>`;
+    return;
+  }
+  const c = currentStep(); const lit = S.phase === 'finish' && S.finishKind === 'task';
+  const fill = `<div class="c-fill" style="${lit ? 'height:100%;background:linear-gradient(135deg,var(--accent),var(--accent-2))' : ''}"><svg class="c-wave" viewBox="0 0 1200 16" preserveAspectRatio="none"><path d="M0 8 Q 75 0 150 8 T 300 8 T 450 8 T 600 8 T 750 8 T 900 8 T 1050 8 T 1200 8 V16 H0z"/></svg></div>`;
+  let body;
+  if (S.phase === 'break') body = `<div class="pc-h">${icon('coffee')}Break</div><div class="pc-title" style="font-family:var(--display);font-weight:200;font-size:44px;letter-spacing:-.04em" id="pcTime">${fmt(remaining())}</div><div class="pc-now"><div><div class="s">Back to</div><div class="t">${c >= 0 ? S.steps[c].title : t.title}</div></div></div>`;
+  else if (S.phase === 'finish') body = `<div class="pc-h" style="${lit ? 'color:rgb(255 255 255 / .85)' : ''}">${t.project}</div><div class="pc-title" style="${lit ? 'color:#fff' : ''}">${t.title}</div><div style="margin-top:8px;font-size:14px;${lit ? 'color:#fff' : ''}">${finishLine()}</div>
+    <div style="display:flex;gap:8px;margin-top:14px">${S.finishKind === 'task' ? `<button class="btn-light" style="height:32px;background:#fff;color:#3730A3" data-pact="done">${icon('check')}Mark as done</button><button class="btn-ghost" style="height:32px;color:#fff;background:rgb(255 255 255 / .16)" data-pact="break">Break</button>` : `<button class="btn-gradient" style="height:32px" data-pact="break">Take a break</button><button class="btn-soft" style="height:32px" data-pact="again">Keep going</button>`}</div>`;
+  else body = `<div class="pc-h"><span class="dot" style="width:7px;height:7px;border-radius:50%;background:${t.color}"></span>${t.project}<button class="c-pill" data-pact="run" aria-label="${S.running ? 'Pause' : 'Resume'}">${icon(S.running ? 'pause' : 'play')}<span id="pcTime">${fmt(remaining())}</span></button></div>
+    <div class="pc-title">${t.title}</div>
+    ${S.stepsLoading ? `<div class="pc-now"><div class="s">${icon('sparkle')} Breaking it into steps</div></div>` : c >= 0 ? `<div class="pc-now"><button class="c-check" data-pstep="${c}" aria-label="Complete: ${S.steps[c].title}">${icon('check')}</button><div><div class="t">${S.steps[c].title}</div><div class="s">Step ${doneCount() + 1} of ${S.steps.length}</div></div></div>` : ''}`;
+  P.innerHTML = `<div class="pc">${fill}${body}</div>`;
+  const f = lit ? 1 : fillVal(); P.querySelector('.pc').style.setProperty('--fill', f);
+}
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest('#mbPanel')) return;
+  const st = e.target.closest('[data-pstart]'); if (st) Focus.start(st.dataset.pstart);
+  const sp = e.target.closest('[data-pstep]'); if (sp) { sp.classList.add('on'); await wait(RM ? 0 : 400); Focus.toggleStep(+sp.dataset.pstep); }
+  const a = e.target.closest('[data-pact]')?.dataset.pact;
+  if (a === 'run') Focus.toggleRun(); if (a === 'stop') Focus.stop(); if (a === 'done') Focus.markDone(); if (a === 'break') Focus.takeBreak(); if (a === 'again') Focus.keepGoing();
+});
+
+boot(initC);
+</script>
+</body>
+</html>

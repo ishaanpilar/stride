@@ -11,10 +11,15 @@ interface PomodoroTaskPickerProps {
     selectedTaskId?: string;
     onSelect: (taskId: string | undefined) => void;
     label: string;
+    /** Quiet placeholder shown on the trigger when no task is linked ("Choose a task"). */
+    placeholder: string;
     timerOnlyLabel: string;
     noTaskLabel: string;
     searchPlaceholder: string;
     noMatchesLabel: string;
+    className?: string;
+    /** Extra classes for the trigger button (alignment, size). */
+    triggerClassName?: string;
 }
 
 export function PomodoroTaskPicker({
@@ -22,10 +27,13 @@ export function PomodoroTaskPicker({
     selectedTaskId,
     onSelect,
     label,
+    placeholder,
     timerOnlyLabel,
     noTaskLabel,
     searchPlaceholder,
     noMatchesLabel,
+    className,
+    triggerClassName,
 }: PomodoroTaskPickerProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
@@ -104,7 +112,7 @@ export function PomodoroTaskPicker({
     };
 
     return (
-        <div ref={containerRef} className="relative flex-1 min-w-0">
+        <div ref={containerRef} className={cn('relative min-w-0', className)}>
             <button
                 type="button"
                 onClick={() => setOpen((prev) => !prev)}
@@ -117,22 +125,26 @@ export function PomodoroTaskPicker({
                 aria-label={label}
                 aria-haspopup="listbox"
                 aria-expanded={open}
-                className="w-full flex items-center justify-between gap-2 h-9 rounded-control bg-well px-3 text-sm text-foreground shadow-soft-inset focus-ring"
+                title={selectedTask?.title}
+                className={cn('group/picker mx-auto flex max-w-full items-center justify-center gap-1.5 rounded-control px-3 py-1.5 text-center transition-colors hover:bg-well focus-ring [@container_(min-width:30rem)]:mx-0 [@container_(min-width:30rem)]:-ml-3 [@container_(min-width:30rem)]:justify-start [@container_(min-width:30rem)]:text-left', triggerClassName)}
             >
-                <span className="flex items-center gap-1.5 min-w-0">
-                    {!selectedTask && <Timer className="w-3.5 h-3.5 opacity-70 shrink-0" />}
-                    <span className={cn('truncate', !selectedTask && 'text-muted-foreground')}>
-                        {selectedTask?.title ?? timerOnlyLabel}
-                    </span>
+                <span className={cn('line-clamp-2 break-words text-[15px] leading-5', selectedTask ? 'font-semibold' : 'text-muted-foreground')}>
+                    {selectedTask?.title ?? placeholder}
                 </span>
-                <ChevronDown className="h-3.5 w-3.5 opacity-70 shrink-0" />
+                <ChevronDown
+                    className={cn(
+                        'h-3.5 w-3.5 shrink-0 text-tertiary opacity-60 transition-[opacity,transform] duration-200 group-hover/picker:opacity-100 motion-reduce:transition-none',
+                        open && 'rotate-180 opacity-100',
+                    )}
+                    aria-hidden
+                />
             </button>
             {open && (
                 <ModalPortal>
                     <div
                         ref={dropdownRef}
                         style={fixedDropdownStyle}
-                        className="z-[70] rounded-control bg-popover text-popover-foreground shadow-soft p-1 text-sm"
+                        className="pomo-pop z-[70] rounded-card bg-popover text-popover-foreground shadow-soft p-1 text-sm"
                         onKeyDown={handleDropdownKeyDown}
                     >
                         <input

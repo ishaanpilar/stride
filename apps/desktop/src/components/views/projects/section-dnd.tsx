@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { useSortable } from '@dnd-kit/sortable';
+import { SORTABLE_TRANSITION } from '../../../lib/motion';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { cn } from '../../../lib/utils';
@@ -16,6 +17,7 @@ export function SortableSectionHeader({ projectId, sectionId, label, disabled, c
     children: ReactNode;
 }) {
     const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+        transition: SORTABLE_TRANSITION,
         id: getSectionHeaderId(sectionId),
         data: { type: 'project-section', projectId, sectionId } satisfies ProjectsSectionDragData,
         disabled,

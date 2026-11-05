@@ -19,6 +19,7 @@ export function validateAgainstSchema(schema: JsonSchema, input: unknown, path =
             const src = input as Record<string, unknown>;
             const props = schema.properties ?? {};
             const out: Record<string, unknown> = {};
+            if (schema.additionalProperties === true && !schema.properties) return { ok: true, value: { ...src } };
             for (const key of Object.keys(src)) {
                 if (!(key in props)) {
                     return { ok: false, error: `${path}.${key} is not a known argument. Allowed: ${Object.keys(props).join(', ')}` };

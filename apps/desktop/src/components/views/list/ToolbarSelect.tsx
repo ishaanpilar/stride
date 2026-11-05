@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { ExitGhost } from '../../ui/ExitGhost';
 import { ModalPortal } from '../../ModalPortal';
 import { useDropdownPosition } from '../../ui/use-dropdown-position';
 
@@ -190,9 +191,10 @@ export function ToolbarSelect({ active = false, label, icon, value, options, onC
                         ref={dropdownRef}
                         data-selector-dropdown="true"
                         style={{ ...fixedDropdownStyle, width: 'max-content', minWidth: fixedDropdownStyle.width }}
-                        className={cn('z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft p-1', pill ? 'text-sm' : 'text-xs')}
+                        className={cn('motion-popover z-[70] rounded-control border border-border bg-popover text-popover-foreground shadow-soft p-1', pill ? 'text-sm' : 'text-xs')}
                         onKeyDown={handleDropdownKeyDown}
                     >
+                        <ExitGhost />
                         <div role="listbox" id={listboxId} aria-label={label}>
                             {options.map((option) => (
                                 <button

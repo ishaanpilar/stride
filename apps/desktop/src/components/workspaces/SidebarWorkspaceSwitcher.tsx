@@ -4,6 +4,7 @@ import { Check, ChevronDown, FolderOpen } from 'lucide-react';
 import { useLanguage } from '../../contexts/language-context';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from './use-workspaces';
+import { ExitGhost } from '../ui/ExitGhost';
 
 function ColorDot({ color }: { color: string | null }) {
     return (
@@ -81,8 +82,8 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
                     role="menu"
                     aria-label={t('workspaces.switcherLabel')}
                     className={cn(
-                        'absolute z-20 rounded-lg border border-border bg-popover p-1 shadow-lg',
-                        collapsed ? 'bottom-0 left-full ml-2 w-52' : 'bottom-full mb-1 w-full',
+                        'motion-popover absolute z-20 rounded-lg border border-border bg-popover p-1 shadow-lg [--motion-pop-y:4px]',
+                        collapsed ? 'bottom-0 left-full ml-2 w-52 [--motion-origin:bottom_left]' : 'bottom-full mb-1 w-full [--motion-origin:bottom_center]',
                     )}
                     onKeyDown={(event) => {
                         if (event.key === 'Escape') {
@@ -91,6 +92,7 @@ export function SidebarWorkspaceSwitcher({ collapsed = false }: { collapsed?: bo
                         }
                     }}
                 >
+                    <ExitGhost />
                     {list.workspaces.map((workspace) => {
                         const isActive = workspace.id === list.activeId;
                         return (

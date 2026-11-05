@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { Section } from '@stride/core';
 import { ChevronDown, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { ExitGhost } from './ExitGhost';
 import { isImeComposing } from '../../lib/ime';
 import { useDropdownPosition } from './use-dropdown-position';
 
@@ -161,9 +162,10 @@ export function SectionSelector({
             {open && (
                 <div
                     ref={dropdownRef}
-                    className={cn('absolute z-20 w-full rounded-control border border-border bg-popover shadow-soft-sm p-1 text-xs', dropdownClassName)}
+                    className={cn('motion-popover absolute z-20 w-full rounded-control border border-border bg-popover shadow-soft-sm p-1 text-xs', dropdownClassName)}
                     onKeyDown={handleDropdownKeyDown}
                 >
+                    <ExitGhost />
                     <input
                         autoFocus
                         value={query}

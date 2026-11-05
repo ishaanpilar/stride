@@ -16,6 +16,7 @@ type AgendaHeaderProps = {
     collapseOtherSections: boolean;
     onChangeGroupBy: (value: NextGroupBy) => void;
     onChangeSortBy: (value: SortField) => void;
+    manualSort?: { label: string; selected: boolean; onSelect: () => void };
     onToggleFilters: () => void;
     onToggleDetails: () => void;
     onToggleOtherSections: () => void;
@@ -34,6 +35,7 @@ export function AgendaHeader({
     collapseOtherSections,
     onChangeGroupBy,
     onChangeSortBy,
+    manualSort,
     onToggleFilters,
     onToggleDetails,
     onToggleOtherSections,
@@ -87,6 +89,7 @@ export function AgendaHeader({
                     defaultSortBy={DEFAULT_FOCUS_SORT_BY}
                     sortByOptions={FOCUS_SORT_OPTIONS}
                     onChangeSortBy={onChangeSortBy}
+                    manualSort={manualSort}
                     groupBy={nextGroupBy}
                     defaultGroupBy="none"
                     groupByOptions={FOCUS_AXES}

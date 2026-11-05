@@ -50,6 +50,8 @@ export function useDropdownPosition({ open, containerRef, dropdownRef }: UseDrop
                 top: shouldOpenUp ? 'auto' : triggerRect.bottom + DROPDOWN_GAP_PX,
                 bottom: shouldOpenUp ? window.innerHeight - triggerRect.top + DROPDOWN_GAP_PX : 'auto',
                 width: dropdownWidth,
+                ['--motion-origin' as string]: shouldOpenUp ? 'bottom left' : 'top left',
+                ['--motion-pop-y' as string]: shouldOpenUp ? '4px' : '-4px',
             });
 
             const availableSpace = shouldOpenUp ? spaceAbove : spaceBelow;

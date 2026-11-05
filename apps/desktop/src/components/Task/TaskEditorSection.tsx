@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
+
+import { cn } from '../../lib/utils';
 
 interface TaskEditorSectionProps {
     title: string;
@@ -59,11 +61,9 @@ export function TaskEditorSection({ title, count, open, onToggle, children }: Ta
                         <span className="text-[11px] px-2 py-0.5 rounded-full bg-accent-soft text-accent-text">{count}</span>
                     )}
                 </span>
-                {open
-                    ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                <ChevronRight className={cn('motion-chevron h-3.5 w-3.5 shrink-0', open && 'rotate-90')} aria-hidden="true" />
             </button>
-            <div id={contentId} hidden={!open} className="pb-3 space-y-3">{open && children}</div>
+            <div id={contentId} hidden={!open} className={cn('pb-3 space-y-3', open && 'motion-expand-in')}>{open && children}</div>
         </div>
     );
 }

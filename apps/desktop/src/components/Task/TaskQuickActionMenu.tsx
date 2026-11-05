@@ -10,7 +10,7 @@ import {
     type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Calendar, CalendarClock, Check, ChevronRight, Copy, Flag, Folder, ListChecks, Pencil, Tag, Trash2 } from 'lucide-react';
+import { Calendar, CalendarClock, Check, ChevronRight, Copy, Flag, Folder, ListChecks, Pencil, Play, Tag, Trash2 } from 'lucide-react';
 import {
     buildTaskMovePatch,
     getAdvancedReviewDate,
@@ -43,6 +43,7 @@ import { ContextsField } from './fields/TaskMetadataFields';
 import { PriorityFlag } from './PriorityFlag';
 import { DateField } from '../ui/DateField';
 import { TimeInput } from '../ui/TimeInput';
+import { ExitGhost } from '../ui/ExitGhost';
 
 const VIEWPORT_MARGIN_PX = 8;
 const PANEL_GAP_PX = 8;
@@ -67,6 +68,11 @@ export interface TaskQuickActionMenuProps {
     sections?: Section[];
     readOnly: boolean;
     prioritiesEnabled: boolean;
+    /** Starts a focus session (Pomodoro) on this task. */
+    startFocusAction?: {
+        label: string;
+        onSelect: () => void;
+    };
     focusAction?: {
         isFocused: boolean;
         canToggle: boolean;
@@ -186,6 +192,7 @@ export function TaskQuickActionMenu({
     sections = [],
     readOnly,
     prioritiesEnabled,
+    startFocusAction,
     focusAction,
     onClose,
     onRename,
@@ -851,10 +858,20 @@ export function TaskQuickActionMenu({
                     role="menu"
                     aria-label={moreOptionsLabel}
                     tabIndex={-1}
-                    className="fixed z-50 w-56 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-xl focus:outline-none"
+                    className="motion-popover fixed z-50 w-56 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-xl focus:outline-none"
                     style={{ top: menuPosition.top, left: menuPosition.left }}
                     onContextMenu={(event) => event.preventDefault()}
                 >
+                <ExitGhost />
+                {startFocusAction && renderMenuAction({
+                    icon: <Play className="h-4 w-4 text-accent-text" />,
+                    label: startFocusAction.label,
+                    onClick: () => {
+                        onClose();
+                        startFocusAction.onSelect();
+                    },
+                })}
+                {startFocusAction && !(!readOnly && focusAction) ? <div className="my-1 h-px bg-border/70" role="separator" /> : null}
                 {!readOnly && focusAction && renderMenuAction({
                     icon: (
                         <FocusStarIcon

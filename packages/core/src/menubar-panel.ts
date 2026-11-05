@@ -2,6 +2,7 @@ import { endOfDay, startOfDay } from 'date-fns';
 
 import { safeParseDate, safeParseDueDate } from './date';
 import { isTaskInActiveProject } from './project-utils';
+import { sortTasksByManualOrder } from './task-completion-order';
 import { isTaskActionable } from './task-status';
 import { isTaskFocusedNow, shouldShowTaskForStart, sortFocusNextActions } from './task-utils';
 import type { Project, Task } from './types';
@@ -24,6 +25,7 @@ export interface MenuBarPanelOptions {
     projects?: Project[];
     now?: Date;
     nextLimit?: number;
+    manualOrder?: MenuBarManualOrder;
 }
 
 const PRIORITY_URGENCY: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -44,6 +46,39 @@ function sortUrgentFirst(tasks: Task[]): Task[] {
         if (aTime !== bTime) return aTime < bTime ? -1 : 1;
         return String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? ''));
     });
+}
+
+export function applyMenuBarFocusOrder(tasks: Task[], now: Date = new Date(), manualToday = false): Task[] {
+    const focused: Task[] = [];
+    const rest: Task[] = [];
+    for (const task of tasks) {
+        if (isTaskFocusedNow(task, now)) focused.push(task);
+        else rest.push(task);
+    }
+    const orderedRest = manualToday ? sortTasksByManualOrder(rest, 'boardOrder') : rest;
+    if (!manualToday && !focused.some((task) => Number.isFinite(task.focusOrder))
+        && focused.every((task, index) => tasks[index] === task)) return tasks;
+    return [...sortTasksByManualOrder(focused, 'focusOrder'), ...orderedRest];
+}
+
+export type MenuBarReorderKind = 'focus' | 'today' | 'board';
+
+export interface MenuBarManualOrder {
+    today?: boolean;
+    upcoming?: boolean;
+    inbox?: boolean;
+    next?: boolean;
+}
+
+export function isMenuBarTaskReorderable(task: Task, kind: MenuBarReorderKind, now: Date = new Date()): boolean {
+    if (task.deletedAt || task.status === 'done' || task.status === 'archived' || task.status === 'reference') return false;
+    if (kind === 'board') return true;
+    return kind === 'focus' ? isTaskFocusedNow(task, now) : !isTaskFocusedNow(task, now);
+}
+
+/** Ids of the rows of `list` that take part in manual reordering, in display order. */
+export function getMenuBarReorderIds(list: readonly Task[], kind: MenuBarReorderKind, now: Date = new Date()): string[] {
+    return list.filter((task) => isMenuBarTaskReorderable(task, kind, now)).map((task) => task.id);
 }
 
 export function selectMenuBarPanelSections(tasks: Task[], options: MenuBarPanelOptions = {}): MenuBarPanelSections {
@@ -151,15 +186,22 @@ export function selectMenuBarPanelTabs(tasks: Task[], options: MenuBarPanelOptio
         }
     }
 
+    const manual = options.manualOrder ?? {};
+    const byManual = (list: Task[], enabled: boolean | undefined) => (enabled ? sortTasksByManualOrder(list, 'boardOrder') : list);
     const upcoming = [...byDay.values()]
         .sort((a, b) => a.date.getTime() - b.date.getTime())
-        .map((day) => ({ ...day, tasks: sortUrgentFirst(day.tasks) }));
-    const sortedInbox = [...inbox].sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
-    const next = sortFocusNextActions(nextCandidates, { now, prioritizeByPriority: true, projects })
-        .slice(0, MENUBAR_PANEL_LIST_LIMIT);
+        .map((day) => ({ ...day, tasks: byManual(sortUrgentFirst(day.tasks), manual.upcoming) }));
+    const sortedInbox = byManual(
+        [...inbox].sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? ''))),
+        manual.inbox,
+    );
+    const next = byManual(
+        sortFocusNextActions(nextCandidates, { now, prioritizeByPriority: true, projects }),
+        manual.next,
+    ).slice(0, MENUBAR_PANEL_LIST_LIMIT);
 
-    const sortedOverdue = sortUrgentFirst(overdue);
-    const sortedToday = sortUrgentFirst(today);
+    const sortedOverdue = applyMenuBarFocusOrder(sortUrgentFirst(overdue), now, manual.today);
+    const sortedToday = applyMenuBarFocusOrder(sortUrgentFirst(today), now, manual.today);
     return {
         overdue: sortedOverdue,
         today: sortedToday,

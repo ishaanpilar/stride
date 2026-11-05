@@ -12,39 +12,6 @@ import { holdSyncSave } from '../../test/hold-sync-save';
 import { formatTaskDateChipLabel } from '../Task/task-item-helpers';
 
 
-let capturedFocusDndProps: { onDragEnd?: (event: unknown) => void } = {};
-vi.mock('@dnd-kit/core', () => ({
-    DndContext: ({ children, onDragEnd }: { children: React.ReactNode; onDragEnd?: (event: unknown) => void }) => {
-        capturedFocusDndProps = { onDragEnd };
-        return <div>{children}</div>;
-    },
-    DragOverlay: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-    PointerSensor: class {},
-    KeyboardSensor: class {},
-    closestCenter: () => null,
-    useSensor: () => ({}),
-    useSensors: () => [],
-}));
-vi.mock('@dnd-kit/sortable', () => ({
-    SortableContext: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    verticalListSortingStrategy: {},
-    sortableKeyboardCoordinates: () => ({}),
-    arrayMove: <T,>(items: T[], from: number, to: number) => {
-        const next = items.slice();
-        const [moved] = next.splice(from, 1);
-        next.splice(to, 0, moved);
-        return next;
-    },
-    useSortable: () => ({
-        attributes: {},
-        listeners: {},
-        setNodeRef: () => {},
-        transform: null,
-        transition: undefined,
-        isDragging: false,
-    }),
-}));
-
 const nowIso = '2026-02-28T12:00:00.000Z';
 const focusViewStateStorageKey = 'stride:view:focus:v1';
 
@@ -2802,7 +2769,7 @@ describe('AgendaView', () => {
         expect(secondRender.getByText('Home task')).toBeInTheDocument();
     });
 
-    describe('Today\'s Focus drag reorder', () => {
+    describe('Focus view drag and drop', () => {
         const focusTask = (id: string, title: string, focusOrder?: number): Task => ({
             id,
             title,
@@ -2814,37 +2781,42 @@ describe('AgendaView', () => {
             createdAt: nowIso,
             updatedAt: nowIso,
         });
+        const dataTransfer = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: [] });
+        const rowOf = (container: HTMLElement, id: string) => container.querySelector<HTMLElement>(`[data-reorder-row="${id}"]`)!;
+        const cardOf = (container: HTMLElement, id: string) => container.querySelector<HTMLElement>(`[data-task-id="${id}"]`)!;
+        const dragOnto = (container: HTMLElement, from: string, onto: string) => {
+            const transfer = dataTransfer();
+            fireEvent.dragStart(cardOf(container, from), { dataTransfer: transfer });
+            fireEvent.dragOver(rowOf(container, onto), { dataTransfer: transfer, clientY: 10 });
+            fireEvent.drop(rowOf(container, onto), { dataTransfer: transfer, clientY: 10 });
+        };
 
         beforeEach(() => {
-            capturedFocusDndProps = {};
+            window.localStorage.removeItem('stride:view:manual-order:next:v1');
+            window.localStorage.removeItem('stride:view:manual-order:focus-today:v1');
+            useUiStore.setState({ toasts: [] });
         });
 
-        it('orders focused rows by focusOrder in the default sort', () => {
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
 
-            const taskA = focusTask('task-a', 'Focus A', 1);
-            const taskB = focusTask('task-b', 'Focus B', 0);
-            const tasks = [taskA, taskB];
-            useTaskStore.setState({
-                tasks,
-                _allTasks: tasks,
-                projects: [],
-                _allProjects: [],
-                areas: [],
-                _allAreas: [],
-                settings: {},
-                highlightTaskId: null,
-            });
+        it('orders focused rows by focusOrder and makes each one a native drag row', () => {
+            setAgendaTasks([focusTask('task-a', 'Focus A', 1), focusTask('task-b', 'Focus B', 0)]);
+            const { getByTestId } = renderAgenda();
+            const ids = Array.from(getByTestId('todays-focus-section').querySelectorAll('[data-reorder-row]'))
+                .map((row) => row.getAttribute('data-reorder-row'));
+            expect(ids).toEqual(['task-b', 'task-a']);
+            expect(cardOf(getByTestId('todays-focus-section'), 'task-a')).toHaveAttribute('draggable', 'true');
+        });
 
-            const { getByTestId, getAllByRole } = renderAgenda();
-
-            const section = getByTestId('todays-focus-section');
-            const titleA = section.querySelector('[data-task-id="task-a"]')!;
-            const titleB = section.querySelector('[data-task-id="task-b"]')!;
-            expect(titleB.compareDocumentPosition(titleA) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-
-            const handles = getAllByRole('button', { name: 'Reorder' });
-            expect(handles).toHaveLength(2);
+        it('commits a drop through reorderFocusedTasks with the new id order', () => {
+            setAgendaTasks([focusTask('task-a', 'Focus A', 0), focusTask('task-b', 'Focus B', 1)]);
+            const reorderSpy = vi.spyOn(useTaskStore.getState(), 'reorderFocusedTasks').mockResolvedValue({ success: true });
+            const { container } = renderAgenda();
+            dragOnto(container, 'task-a', 'task-b');
+            expect(reorderSpy).toHaveBeenCalledWith(['task-b', 'task-a']);
+            expect(useUiStore.getState().toasts).toHaveLength(0);
         });
 
         it('preserves hidden slots across statuses before any manual Focus order exists', async () => {
@@ -2858,127 +2830,101 @@ describe('AgendaView', () => {
             }));
             setAgendaTasks(tasks);
             useTaskStore.setState({ areas, _allAreas: areas, settings: { deviceId: 'test-device' } });
-            const { getByTestId } = renderAgenda();
+            const { getByTestId, container } = renderAgenda();
             const rowIds = () => Array.from(getByTestId('todays-focus-section').querySelectorAll('[data-task-id]'))
                 .map((row) => row.getAttribute('data-task-id'));
             expect(rowIds()).toEqual(['hidden', 'task-a', 'task-b']);
-
             act(() => {
                 useTaskStore.setState({ settings: { deviceId: 'test-device', filters: { areaIds: ['work'] } } });
             });
             expect(rowIds()).toEqual(['task-a', 'task-b']);
             await act(async () => {
-                capturedFocusDndProps.onDragEnd?.({ active: { id: 'task-a' }, over: { id: 'task-b' } });
+                dragOnto(container, 'task-a', 'task-b');
             });
             expect(rowIds()).toEqual(['task-b', 'task-a']);
             act(() => {
                 useTaskStore.setState({ settings: { deviceId: 'test-device', filters: {} } });
             });
             expect(rowIds()).toEqual(['hidden', 'task-b', 'task-a']);
-            expect(useTaskStore.getState().tasks.map(({ id, status, isFocusedToday }) => ({ id, status, isFocusedToday })))
-                .toEqual(tasks.map(({ id, status, isFocusedToday }) => ({ id, status, isFocusedToday })));
         });
 
-        it('commits a drop through reorderFocusedTasks with the new id order', () => {
-            const taskA = focusTask('task-a', 'Focus A', 0);
-            const taskB = focusTask('task-b', 'Focus B', 1);
-            const tasks = [taskA, taskB];
-            useTaskStore.setState({
-                tasks,
-                _allTasks: tasks,
-                projects: [],
-                _allProjects: [],
-                areas: [],
-                _allAreas: [],
-                settings: {},
-                highlightTaskId: null,
-            });
-            const reorderSpy = vi
-                .spyOn(useTaskStore.getState(), 'reorderFocusedTasks')
-                .mockResolvedValue({ success: true });
-
-            renderAgenda();
-
-            expect(capturedFocusDndProps.onDragEnd).toBeTypeOf('function');
-            act(() => {
-                capturedFocusDndProps.onDragEnd?.({ active: { id: 'task-a' }, over: { id: 'task-b' } });
-            });
-
-            expect(reorderSpy).toHaveBeenCalledWith(['task-b', 'task-a']);
-        });
-
-        it('renders no drag affordance under a non-default sort', () => {
-            const tasks = [focusTask('task-a', 'Focus A', 0), focusTask('task-b', 'Focus B', 1)];
-            useTaskStore.setState({
-                tasks,
-                _allTasks: tasks,
-                projects: [],
-                _allProjects: [],
-                areas: [],
-                _allAreas: [],
-                settings: {},
-                highlightTaskId: null,
-            });
-
-            const { getByRole, queryByRole, queryAllByRole } = renderAgenda();
-            expect(queryAllByRole('button', { name: 'Reorder' }).length).toBeGreaterThan(0);
-
+        it('switches a non-default sort to the manual Focus order on drop, with Undo', () => {
+            setAgendaTasks([focusTask('task-a', 'Focus A', 0), focusTask('task-b', 'Focus B', 1)]);
+            const reorderSpy = vi.spyOn(useTaskStore.getState(), 'reorderFocusedTasks').mockResolvedValue({ success: true });
+            const { getByRole, container } = renderAgenda();
             fireEvent.click(getByRole('button', { name: /^Filters$/i }));
             selectToolbarOption('Sort', 'Start date', { getByRole });
-
-            expect(queryByRole('button', { name: 'Reorder' })).toBeNull();
+            dragOnto(container, 'task-a', 'task-b');
+            expect(reorderSpy).toHaveBeenLastCalledWith(['task-b', 'task-a']);
+            const toast = useUiStore.getState().toasts.slice(-1)[0];
+            expect(toast?.message).toBe('Switched to manual order');
+            act(() => { toast?.action?.onClick(); });
+            expect(reorderSpy).toHaveBeenLastCalledWith(['task-a', 'task-b']);
         });
 
-        it('renders no drag affordance while a search query narrows the focus list', () => {
-
-
-            const tasks = [focusTask('task-a', 'Focus A', 0), focusTask('task-b', 'Focus B', 1)];
-            useTaskStore.setState({
-                tasks,
-                _allTasks: tasks,
-                projects: [],
-                _allProjects: [],
-                areas: [],
-                _allAreas: [],
-                settings: {},
-                highlightTaskId: null,
-            });
-
-            const { getByRole, getByPlaceholderText, getByText, queryByRole, queryAllByRole } = renderAgenda();
-            expect(queryAllByRole('button', { name: 'Reorder' }).length).toBeGreaterThan(0);
-
-            fireEvent.click(getByRole('button', { name: /^Filters$/i }));
-            fireEvent.change(getByPlaceholderText('Search task titles'), { target: { value: 'Focus A' } });
-
-
-            expect(getByText('Focus A')).toBeInTheDocument();
-            expect(queryByRole('button', { name: 'Reorder' })).toBeNull();
+        it('nudges a Focus row with Alt+ArrowDown and announces it', () => {
+            setAgendaTasks([focusTask('task-a', 'Focus A', 0), focusTask('task-b', 'Focus B', 1)]);
+            const reorderSpy = vi.spyOn(useTaskStore.getState(), 'reorderFocusedTasks').mockResolvedValue({ success: true });
+            const { container, getByTestId } = renderAgenda();
+            fireEvent.keyDown(cardOf(container, 'task-a'), { key: 'ArrowDown', altKey: true });
+            expect(reorderSpy).toHaveBeenCalledWith(['task-b', 'task-a']);
+            expect(getByTestId('agenda-reorder-announcement')).toHaveTextContent('Task moved (2/2)');
         });
 
-        it('renders no drag affordance while filter criteria narrow the focus list', () => {
-            const highEnergy: Task = { ...focusTask('task-a', 'Focus A', 0), energyLevel: 'high' };
-            const lowEnergy: Task = { ...focusTask('task-b', 'Focus B', 1), energyLevel: 'low' };
-            const tasks = [highEnergy, lowEnergy];
-            useTaskStore.setState({
-                tasks,
-                _allTasks: tasks,
-                projects: [],
-                _allProjects: [],
-                areas: [],
-                _allAreas: [],
-                settings: {},
-                highlightTaskId: null,
+        it('reorders Next Actions in the default sort by switching them to manual order', () => {
+            setAgendaTasks([
+                focusTask('f1', 'Focus one', 0),
+                makeAgendaTask('n1', 'Next one'),
+                makeAgendaTask('n2', 'Next two'),
+            ]);
+            const reorderBoardTasks = vi.fn().mockResolvedValue(undefined);
+            useTaskStore.setState({ reorderBoardTasks } as never);
+            const { container } = renderAgenda();
+            expect(rowOf(container, 'n1')).toHaveAttribute('data-reorder-group', 'next');
+            const shown = Array.from(container.querySelectorAll('[data-reorder-group="next"]')).map((row) => row.getAttribute('data-reorder-row'));
+            expect(shown).toEqual(['n1', 'n2']);
+            dragOnto(container, 'n1', 'n2');
+            expect(reorderBoardTasks).toHaveBeenCalledWith('next', ['n2', 'n1'], 'n1');
+            expect(window.localStorage.getItem('stride:view:manual-order:next:v1')).toBe('1');
+            expect(useUiStore.getState().toasts.slice(-1)[0]?.message).toBe('Switched to manual order');
+        });
+
+        it('keeps time-ordered sections fixed and shows why', () => {
+            setAgendaTasks([
+                focusTask('f1', 'Focus one', 0),
+                makeAgendaTask('r1', 'Review one', { reviewAt: '2026-01-01T09:00:00.000Z' }),
+                makeAgendaTask('r2', 'Review two', { reviewAt: '2026-01-02T09:00:00.000Z' }),
+            ]);
+            const reorderBoardTasks = vi.fn().mockResolvedValue(undefined);
+            useTaskStore.setState({ reorderBoardTasks } as never);
+            const { container } = renderAgenda();
+            const transfer = dataTransfer();
+            fireEvent.dragStart(cardOf(container, 'r2'), { dataTransfer: transfer });
+            const allowed = fireEvent.dragOver(rowOf(container, 'r1'), { dataTransfer: transfer, clientY: 10 });
+            expect(allowed).toBe(true);
+            expect(container.querySelector('[data-reorder-drop-line]')).toBeNull();
+            expect(rowOf(container, 'r1').querySelector('[data-reorder-blocked]')).toHaveTextContent('Sorted by time');
+            fireEvent.drop(rowOf(container, 'r1'), { dataTransfer: transfer, clientY: 10 });
+            expect(reorderBoardTasks).not.toHaveBeenCalled();
+            expect(cardOf(container, 'r2')).toHaveAttribute('draggable', 'true');
+        });
+
+        it('adds a Next Action dropped into Today\'s Focus at the drop position', async () => {
+            setAgendaTasks([
+                focusTask('f1', 'Focus one', 0),
+                focusTask('f2', 'Focus two', 1),
+                makeAgendaTask('n1', 'Next one'),
+            ]);
+            const updateTask = vi.fn().mockResolvedValue({ success: true });
+            const reorderFocusedTasks = vi.fn().mockResolvedValue({ success: true });
+            useTaskStore.setState({ updateTask, reorderFocusedTasks } as never);
+            const { container } = renderAgenda();
+            await act(async () => {
+                dragOnto(container, 'n1', 'f1');
             });
-
-            const { getByRole, getByText, queryByRole, queryAllByRole } = renderAgenda();
-            expect(queryAllByRole('button', { name: 'Reorder' }).length).toBeGreaterThan(0);
-
-            fireEvent.click(getByRole('button', { name: /^Filters$/i }));
-            fireEvent.click(getByRole('button', { name: 'Energy Level' }));
-            fireEvent.click(getByRole('button', { name: 'High energy' }));
-
-            expect(getByText('Focus A')).toBeInTheDocument();
-            expect(queryByRole('button', { name: 'Reorder' })).toBeNull();
+            expect(updateTask).toHaveBeenCalledWith('n1', { isFocusedToday: true });
+            await waitFor(() => expect(reorderFocusedTasks).toHaveBeenCalledWith(['f1', 'n1', 'f2']));
+            expect(useUiStore.getState().toasts.slice(-1)[0]?.message).toBe("Added to Today's Focus");
         });
     });
 

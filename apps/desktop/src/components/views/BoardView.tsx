@@ -3,8 +3,8 @@ import React from 'react';
 import {
     DndContext,
     DragOverlay,
-    useDroppable,
     DragEndEvent,
+    DragOverEvent,
     DragStartEvent,
     closestCorners,
     closestCenter,
@@ -17,22 +17,20 @@ import {
     useSensors,
     type CollisionDetection,
 } from '@dnd-kit/core';
-import {
-    SortableContext,
-    sortableKeyboardCoordinates,
-    useSortable,
-    verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { TaskItem } from '../TaskItem';
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { ViewHeader } from '../ui/ViewHeader';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { shallow, useTaskStore, sortTasksBy, sortTasksByBoardOrder, buildProjectOrderMap, compareTasksByProjectThenOrder, getSequentialFirstTaskIds, getTaskSequencing, hasTaskSequences, isSequentialChainStatus, isTaskSequenceBlocked, translateWithFallback, createTaskFilterPredicate, hasActiveFilterCriteria, getUsedTaskTokens, tFallback } from '@stride/core';
+import { executeCaptureTransaction, parseQuickAdd, buildQuickAddParseOptions, safeParseDate, resolveFeatureFlags, shallow, useTaskStore, sortTasksBy, sortTasksByBoardOrder, buildProjectOrderMap, compareTasksByProjectThenOrder, getSequentialFirstTaskIds, getTaskSequencing, hasTaskSequences, isSequentialChainStatus, isTaskSequenceBlocked, translateWithFallback, createTaskFilterPredicate, hasActiveFilterCriteria, getUsedTaskTokens, tFallback } from '@stride/core';
 import { buildActiveFilterChips, removeFilterChipFromCriteria } from './list/active-filter-chips';
-import { resolveBoardDragEnd } from './board-view-dnd';
+import { resolveBoardDragEnd, resolveBoardEdgeMove, resolveBoardKeyboardMove, type BoardDragEndAction, type BoardKeyboardDirection } from './board-view-dnd';
+import { BoardColumn, type BoardDropIndicator, type BoardComposerState, type BoardColumnLabels } from './board/BoardColumn';
+import { BoardMenu, type BoardMenuAnchor, type BoardMenuItem } from './board/BoardMenu';
+import { deleteTaskWithUndo } from '../Task/useTaskQuickActionMenuProps';
+import { showUndoToast } from '../../lib/undo-registry';
+import { BoardCardOverlay, type BoardCardProject } from './board/BoardCard';
 import type { Task, TaskStatus, FilterCriteria } from '@stride/core';
 import { useLanguage } from '../../contexts/language-context';
-import { Filter, GripVertical } from 'lucide-react';
+import { Columns3, Filter } from 'lucide-react';
 import { useUiStore } from '../../store/ui-store';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import { checkBudget } from '../../config/performanceBudgets';
@@ -40,32 +38,57 @@ import { isTaskVisibleInArea, projectMatchesAreaFilterSelection } from '@stride/
 import { useAreaVisibility } from '../../hooks/useVisibleTaskContext';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import { useTaskListScope } from './list/task-list-scope';
-import { LIST_END_GAP, ToolbarButton, VIEW_FILTER_INPUT } from './list/list-toolbar';
+import { ToolbarButton, VIEW_FILTER_INPUT } from './list/list-toolbar';
 import { resolveNonDoneTaskSortBy } from '@stride/core';
 import { BoardFiltersPanel } from './board/BoardFiltersPanel';
 import type { DesktopActiveFilterChip } from './list/FilterDisclosure';
 import { beginRendererActivity, recordRendererActivity } from '../../lib/renderer-navigation-diagnostics';
+import { MOTION_EASING, canAnimate } from '../../lib/motion';
+
+const BOARD_DROP_ANIMATION = { duration: 260, easing: MOTION_EASING.out };
 
 const BOARD_VIEW_STATE_STORAGE_KEY = 'stride:view:board:v1';
 
+const COLUMN_STATUSES: TaskStatus[] = ['inbox', 'next', 'waiting', 'someday', 'done'];
+const DONE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_PREVIOUS_STATUSES = 300;
+
 type BoardPersistedViewState = {
     filtersOpen: boolean;
+    collapsed: TaskStatus[];
+    hidden: TaskStatus[];
+    /** Last non-done status of tasks completed from the board, so Reopen can restore it. */
+    previousStatus: Record<string, TaskStatus>;
 };
 
 const DEFAULT_BOARD_VIEW_STATE: BoardPersistedViewState = {
     filtersOpen: false,
+    collapsed: [],
+    hidden: [],
+    previousStatus: {},
 };
+
+const sanitizeStatusList = (value: unknown): TaskStatus[] => (
+    Array.isArray(value) ? COLUMN_STATUSES.filter((status) => value.includes(status)) : []
+);
 
 function sanitizeBoardViewState(value: unknown, fallback: BoardPersistedViewState): BoardPersistedViewState {
     const parsed = value && typeof value === 'object' && !Array.isArray(value)
         ? value as Partial<BoardPersistedViewState>
         : {};
+    const previousStatus: Record<string, TaskStatus> = {};
+    if (parsed.previousStatus && typeof parsed.previousStatus === 'object') {
+        for (const [id, status] of Object.entries(parsed.previousStatus)) {
+            if (COLUMN_STATUSES.includes(status as TaskStatus) && status !== 'done') previousStatus[id] = status as TaskStatus;
+        }
+    }
     return {
         filtersOpen: typeof parsed.filtersOpen === 'boolean' ? parsed.filtersOpen : fallback.filtersOpen,
+        collapsed: sanitizeStatusList(parsed.collapsed),
+        hidden: sanitizeStatusList(parsed.hidden),
+        previousStatus,
     };
 }
-
-const COLUMN_STATUSES: TaskStatus[] = ['inbox', 'next', 'waiting', 'someday', 'done'];
 
 const getColumns = (t: (key: string) => string): { id: TaskStatus; label: string }[] => [
     { id: 'inbox', label: tFallback(t, 'list.inbox', 'Inbox') },
@@ -77,142 +100,6 @@ const getColumns = (t: (key: string) => string): { id: TaskStatus; label: string
 
 const DUE_DATE_PRESETS = ['today', 'this_week', 'this_month', 'overdue', 'no_date'] as const;
 type DueDatePreset = (typeof DUE_DATE_PRESETS)[number];
-
-const STATUS_BORDER: Record<TaskStatus, string> = {
-    inbox: 'bg-[hsl(var(--status-inbox))]',
-    next: 'bg-[hsl(var(--status-next))]',
-    waiting: 'bg-[hsl(var(--status-waiting))]',
-    someday: 'bg-[hsl(var(--status-someday))]',
-    reference: 'bg-[hsl(var(--status-reference))]',
-    done: 'bg-[hsl(var(--status-done))]',
-    archived: 'bg-[hsl(var(--status-archived))]',
-};
-
-function DroppableColumn({
-    id,
-    label,
-    tasks,
-    emptyState,
-    onQuickAdd,
-    dragLabel,
-    compact,
-}: {
-    id: TaskStatus;
-    label: string;
-    tasks: Task[];
-    emptyState: { title: string; body: string; action: string };
-    onQuickAdd: (status: TaskStatus) => void;
-    dragLabel: string;
-    compact?: boolean;
-}) {
-    const { setNodeRef } = useDroppable({ id });
-
-
-    const columnPadding = compact ? 'px-2 pt-2' : 'px-3 pt-3';
-    const headerMargin = compact ? 'mb-3' : 'mb-4';
-    const listSpacing = compact ? 'space-y-2' : 'space-y-3';
-    const columnMinWidth = compact ? 'min-w-[36ch]' : 'min-w-[40ch]';
-
-    return (
-        <div
-            ref={setNodeRef}
-            className={`flex flex-col h-full ${columnMinWidth} flex-1 bg-well rounded-card shadow-soft-inset ${columnPadding}`}
-        >
-            <h3 className={`font-semibold ${headerMargin} flex items-center justify-between text-[13px] text-muted-foreground`}>
-                <span className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${STATUS_BORDER[id]}`} aria-hidden="true" />
-                    {label}
-                </span>
-                <span className="text-xs font-medium bg-card shadow-soft-sm px-2 py-0.5 rounded-full text-muted-foreground tabular-nums">{tasks.length}</span>
-            </h3>
-            <div
-                className="flex-1 overflow-y-auto min-h-[100px] focus-ring rounded-control px-1"
-                tabIndex={0}
-                role="list"
-                aria-label={`${label} tasks list`}
-            >
-                <div data-list-end className={`${listSpacing} ${LIST_END_GAP}`}>
-                {tasks.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center text-center text-xs text-muted-foreground py-6 px-2 gap-2">
-                        <div className="text-sm font-medium text-foreground">{emptyState.title}</div>
-                        <div>{emptyState.body}</div>
-                        <button
-                            type="button"
-                            onClick={() => onQuickAdd(id)}
-                            className="btn-gradient mt-1 h-8 px-3 text-[13px] focus-ring"
-                        >
-                            {emptyState.action}
-                        </button>
-                    </div>
-                ) : (
-                    <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-                        {tasks.map((task) => (
-                            <DraggableTask key={task.id} task={task} dragLabel={dragLabel} />
-                        ))}
-                    </SortableContext>
-                )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function DraggableTask({ task, dragLabel }: { task: Task; dragLabel: string }) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-        id: task.id,
-        data: { task },
-    });
-
-    const style = transform || transition ? {
-        transform: CSS.Transform.toString(transform),
-        transition,
-    } : undefined;
-
-    if (isDragging) {
-        return (
-            <div ref={setNodeRef} style={style} className="opacity-50" role="listitem">
-                <TaskItem
-                    task={task}
-                    readOnly={task.status === 'done'}
-                    showStatusSelect={false}
-                    showProjectBadgeInActions={false}
-                    actionsOverlay
-                    showHoverHint={false}
-                    enableDoubleClickEdit
-                    editorPresentation="modal"
-                />
-            </div>
-        );
-    }
-
-    return (
-        <div ref={setNodeRef} style={style} className="touch-none" role="listitem">
-            <TaskItem
-                task={task}
-                readOnly={task.status === 'done'}
-                showStatusSelect={false}
-                showProjectBadgeInActions={false}
-                actionsOverlay
-                showHoverHint={false}
-                dragHandle={(
-                    <button
-                        type="button"
-                        {...listeners}
-                        {...attributes}
-                        onClick={(event) => event.stopPropagation()}
-                        className="text-muted-foreground/70 hover:text-foreground p-1 rounded-control hover:bg-muted/50 cursor-grab active:cursor-grabbing focus-ring"
-                        aria-label={dragLabel}
-                        title={dragLabel}
-                    >
-                        <GripVertical className="w-4 h-4" />
-                    </button>
-                )}
-                enableDoubleClickEdit
-                editorPresentation="modal"
-            />
-        </div>
-    );
-}
 
 export function BoardView() {
     const perf = usePerformanceMonitor('BoardView');
@@ -278,6 +165,8 @@ export function BoardView() {
         }),
         useSensor(KeyboardSensor, {
             coordinateGetter: sortableKeyboardCoordinates,
+            // Enter opens the task, so keyboard dragging starts and ends with Space only.
+            keyboardCodes: { start: ['Space'], cancel: ['Escape'], end: ['Space'] },
         })
     );
 
@@ -353,8 +242,39 @@ export function BoardView() {
         setSearchQuery('');
     };
 
+    const [dropIndicator, setDropIndicator] = React.useState<BoardDropIndicator>(null);
+    const [liveMessage, setLiveMessage] = React.useState('');
+    const [composer, setComposer] = React.useState<BoardComposerState>(null);
+    const [showOlderDone, setShowOlderDone] = React.useState(false);
+    const [focusedCardId, setFocusedCardId] = React.useState<string | null>(null);
+    const [dragWidth, setDragWidth] = React.useState<number | undefined>(undefined);
+    const [menu, setMenu] = React.useState<
+        | { kind: 'card'; task: Task; anchor: BoardMenuAnchor; trigger: HTMLElement }
+        | { kind: 'column'; status: TaskStatus; anchor: BoardMenuAnchor; trigger: HTMLElement }
+        | { kind: 'hidden'; anchor: BoardMenuAnchor; trigger: HTMLElement }
+        | null
+    >(null);
+    const setEditingTaskId = useUiStore((state) => state.setEditingTaskId);
+    const updateSettings = useTaskStore((state) => state.updateSettings);
+    const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+    const hiddenButtonRef = React.useRef<HTMLSpanElement | null>(null);
+    const [edges, setEdges] = React.useState({ left: false, right: false });
+    const hiddenColumns = persistedViewState.hidden;
+    const collapsedColumns = persistedViewState.collapsed;
+    const prioritiesEnabled = resolveFeatureFlags(settings).priorities;
+    const projectById = React.useMemo(() => {
+        const map = new Map<string, BoardCardProject>();
+        for (const project of projects) {
+            if (project.deletedAt) continue;
+            map.set(project.id, { title: project.title, color: getProjectAccentColor(project, areaById) });
+        }
+        return map;
+    }, [projects, areaById]);
+
     const handleDragStart = (event: DragStartEvent) => {
         setActiveTask(event.active.data.current?.task || null);
+        setDragWidth(event.active.rect.current.initial?.width);
+        setDropIndicator(null);
     };
 
 
@@ -418,16 +338,84 @@ export function BoardView() {
         return sortBy === 'default' ? sortTasksByBoardOrder(list) : list;
     }, [computeSequential, filteredTasks, sequencing, sequentialProjectFirstTasks, sortBy, sortByProjectOrder]);
 
+    const getDoneSplit = React.useCallback(() => {
+        const all = getColumnTasks('done');
+        const cutoff = Date.now() - DONE_WINDOW_MS;
+        const recent = all.filter((task) => {
+            const when = safeParseDate(task.completedAt ?? task.updatedAt);
+            return !when || when.getTime() >= cutoff;
+        });
+        return { all, recent, olderCount: all.length - recent.length };
+    }, [getColumnTasks]);
+    const getVisibleColumnTasks = React.useCallback((status: TaskStatus) => {
+        if (status !== 'done') return getColumnTasks(status);
+        const split = getDoneSplit();
+        return showOlderDone ? split.all : split.recent;
+    }, [getColumnTasks, getDoneSplit, showOlderDone]);
+
+    const handleDragOver = (event: DragOverEvent) => {
+        const { active, over } = event;
+        if (!over || String(over.id) === String(active.id)) {
+            setDropIndicator(null);
+            return;
+        }
+        const overId = String(over.id);
+        const activeId = String(active.id);
+        const activeStatus = tasks.find((task) => task.id === activeId)?.status;
+        if (columnIdSet.has(overId)) {
+            const status = overId as TaskStatus;
+            const ids = getColumnTasks(status).map((task) => task.id).filter((id) => id !== activeId);
+            if (status === activeStatus) {
+                // Dropping a card on its own column leaves it where it is.
+                setDropIndicator(null);
+                return;
+            }
+            setDropIndicator({ columnId: status, taskId: ids[ids.length - 1] ?? null, position: 'after' });
+            return;
+        }
+        const overStatus = tasks.find((task) => task.id === overId)?.status;
+        if (!overStatus) {
+            setDropIndicator(null);
+            return;
+        }
+        const columnIds = getColumnTasks(overStatus).map((task) => task.id);
+        if (overStatus === activeStatus) {
+            if (sortBy !== 'default') {
+                setDropIndicator(null);
+                return;
+            }
+            const position = columnIds.indexOf(activeId) < columnIds.indexOf(overId) ? 'after' : 'before';
+            setDropIndicator({ columnId: overStatus, taskId: overId, position });
+            return;
+        }
+        if (sortBy !== 'default') {
+            setDropIndicator({ columnId: overStatus, taskId: columnIds[columnIds.length - 1] ?? null, position: 'after' });
+            return;
+        }
+        setDropIndicator({ columnId: overStatus, taskId: overId, position: 'before' });
+    };
+
     const columnIdSet = React.useMemo(
         () => new Set<string>(getColumns(t).map((column) => column.id)),
         [t]
     );
 
 
-    const visibleTasks = React.useMemo(
-        () => COLUMN_STATUSES.flatMap((status) => getColumnTasks(status)),
-        [getColumnTasks],
+    const visibleColumnIds = React.useMemo(
+        () => COLUMN_STATUSES.filter((status) => !hiddenColumns.includes(status)),
+        [hiddenColumns],
     );
+    const visibleTasks = React.useMemo(
+        () => visibleColumnIds.flatMap((status) => (
+            collapsedColumns.includes(status) ? [] : getVisibleColumnTasks(status)
+        )),
+        [collapsedColumns, getVisibleColumnTasks, visibleColumnIds],
+    );
+    const tabbableId = React.useMemo(() => (
+        focusedCardId && visibleTasks.some((task) => task.id === focusedCardId)
+            ? focusedCardId
+            : visibleTasks[0]?.id ?? null
+    ), [focusedCardId, visibleTasks]);
     React.useEffect(() => {
         if (!computeSequential || sequentialPhase.current !== 'fired') return;
         sequentialPhase.current = 'committed';
@@ -446,6 +434,30 @@ export function BoardView() {
     });
 
 
+    React.useLayoutEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        scroller.scrollLeft = 0;
+        const frame = window.requestAnimationFrame(() => { scroller.scrollLeft = 0; });
+        return () => window.cancelAnimationFrame(frame);
+    }, []);
+    const updateEdges = React.useCallback(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        const left = scroller.scrollLeft > 4;
+        const right = scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 4;
+        setEdges((current) => (current.left === left && current.right === right ? current : { left, right }));
+    }, []);
+    React.useEffect(() => {
+        updateEdges();
+        const scroller = scrollerRef.current;
+        if (!scroller || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(updateEdges);
+        observer.observe(scroller);
+        if (scroller.firstElementChild) observer.observe(scroller.firstElementChild);
+        return () => observer.disconnect();
+    }, [updateEdges, hiddenColumns, collapsedColumns]);
+
     const collisionDetection = React.useCallback<CollisionDetection>((args) => {
         const pointerHits = pointerWithin(args);
         const intersections = pointerHits.length > 0 ? pointerHits : rectIntersection(args);
@@ -463,9 +475,153 @@ export function BoardView() {
         return [{ id: overId }];
     }, [columnIdSet, getColumnTasks]);
 
+    const rememberPreviousStatus = (taskId: string, status: TaskStatus) => {
+        if (status === 'done' || status === 'archived') return;
+        setPersistedViewState((current) => {
+            const entries = Object.entries({ ...current.previousStatus, [taskId]: status });
+            return { ...current, previousStatus: Object.fromEntries(entries.slice(-MAX_PREVIOUS_STATUSES)) };
+        });
+    };
+    const moveTaskTracked = (taskId: string, status: TaskStatus) => {
+        const current = tasks.find((candidate) => candidate.id === taskId);
+        if (current && status === 'done' && current.status !== 'done') rememberPreviousStatus(taskId, current.status);
+        return moveTask(taskId, status);
+    };
+
+    const applyBoardAction = (action: BoardDragEndAction) => {
+        if (action.type === 'move') {
+            void moveTaskTracked(action.taskId, action.status);
+        } else if (action.type === 'reorder') {
+            void reorderBoardTasks(action.status, action.orderedIds);
+        } else if (action.type === 'moveAndReorder') {
+            void (async () => {
+                await moveTaskTracked(action.taskId, action.status);
+                await reorderBoardTasks(action.status, action.orderedIds);
+            })();
+        }
+    };
+
+    const focusCard = (taskId: string) => {
+        setFocusedCardId(taskId);
+        window.setTimeout(() => {
+            document.querySelector<HTMLElement>(`[data-board-card-id="${CSS.escape(taskId)}"] [data-board-card]`)?.focus();
+        }, 0);
+    };
+
+    const handleKeyboardMove = (task: Task, direction: BoardKeyboardDirection, edge = false) => {
+        const columnTaskIds = getColumnTasks(task.status).map((candidate) => candidate.id);
+        const action = edge && (direction === 'up' || direction === 'down')
+            ? resolveBoardEdgeMove(task.id, task.status, direction === 'up' ? 'top' : 'bottom', columnTaskIds, sortBy === 'default')
+            : resolveBoardKeyboardMove({
+                taskId: task.id,
+                direction,
+                columnIds: visibleColumnIds,
+                status: task.status,
+                columnTaskIds,
+                canReorder: sortBy === 'default',
+            });
+        if (action.type === 'none') return;
+        applyBoardAction(action);
+        const targetStatus = action.type === 'move' ? action.status : task.status;
+        const targetLabel = COLUMNS.find((column) => column.id === targetStatus)?.label ?? '';
+        setLiveMessage(`${task.title}: ${targetLabel}`);
+        focusCard(task.id);
+    };
+
+    const handleNavigate = (task: Task, direction: BoardKeyboardDirection) => {
+        if (activeTask) return;
+        const columns = visibleColumnIds.filter((status) => !collapsedColumns.includes(status));
+        const columnIndex = columns.indexOf(task.status);
+        if (columnIndex < 0) return;
+        const list = getVisibleColumnTasks(task.status);
+        const index = list.findIndex((candidate) => candidate.id === task.id);
+        if (direction === 'up' || direction === 'down') {
+            const next = list[index + (direction === 'up' ? -1 : 1)];
+            if (next) focusCard(next.id);
+            return;
+        }
+        const step = direction === 'left' ? -1 : 1;
+        for (let i = columnIndex + step; i >= 0 && i < columns.length; i += step) {
+            const candidates = getVisibleColumnTasks(columns[i]);
+            if (candidates.length > 0) {
+                focusCard(candidates[Math.min(index, candidates.length - 1)].id);
+                return;
+            }
+        }
+    };
+
+    const resolvePreviousStatus = (task: Task): TaskStatus => {
+        const previous = persistedViewState.previousStatus[task.id];
+        return previous && previous !== 'done' && previous !== 'archived' ? previous : 'next';
+    };
+    const handleToggleDone = (task: Task) => {
+        if (task.status === 'done') {
+            void moveTask(task.id, resolvePreviousStatus(task));
+        } else {
+            void moveTaskTracked(task.id, 'done');
+        }
+    };
+
+    const reorderToEdge = (task: Task, edge: 'top' | 'bottom') => {
+        const action = resolveBoardEdgeMove(
+            task.id, task.status, edge, getColumnTasks(task.status).map((candidate) => candidate.id), sortBy === 'default',
+        );
+        applyBoardAction(action);
+    };
+
+    const toggleCollapsed = (status: TaskStatus) => {
+        setPersistedViewState((current) => ({
+            ...current,
+            collapsed: current.collapsed.includes(status)
+                ? current.collapsed.filter((item) => item !== status)
+                : [...current.collapsed, status],
+        }));
+        setComposer((current) => (current?.status === status ? null : current));
+    };
+    const hideColumn = (status: TaskStatus) => {
+        setPersistedViewState((current) => ({
+            ...current,
+            hidden: current.hidden.includes(status) ? current.hidden : [...current.hidden, status],
+        }));
+        setComposer((current) => (current?.status === status ? null : current));
+    };
+    const showColumn = (status: TaskStatus) => {
+        setPersistedViewState((current) => ({ ...current, hidden: current.hidden.filter((item) => item !== status) }));
+    };
+
+    const submitCard = async (status: TaskStatus, title: string, position: 'top' | 'bottom') => {
+        const state = useTaskStore.getState();
+        const parsed = parseQuickAdd(title, state.projects, new Date(), state.areas, buildQuickAddParseOptions(state.settings, state));
+        parsed.props = { ...parsed.props, status };
+        const existingIds = getColumnTasks(status).map((task) => task.id);
+        const result = await executeCaptureTransaction(
+            { parsed, rawInput: title, fallbackTitle: title, projects: state.projects },
+            { addProject: state.addProject, addTask: state.addTask },
+        );
+        if (!result.success) {
+            useUiStore.getState().showToast(tFallback(t, 'task.addFailed', 'Failed to add task'), 'error');
+            return;
+        }
+        if (position === 'top' && sortBy === 'default' && result.createdTaskId) {
+            await reorderBoardTasks(status, [result.createdTaskId, ...existingIds]);
+        }
+    };
+
+    const archiveDone = () => {
+        const ids = getColumnTasks('done').map((task) => task.id);
+        if (ids.length === 0) return;
+        void Promise.all(ids.map((id) => useTaskStore.getState().updateTask(id, { status: 'archived' })));
+        showUndoToast(
+            tFallback(t, 'board.doneArchived', 'Done tasks archived'),
+            () => { void Promise.all(ids.map((id) => useTaskStore.getState().updateTask(id, { status: 'done' }))); },
+            t,
+        );
+    };
+
     const handleDragEnd = (event: DragEndEvent) => {
         const { active, over } = event;
         setActiveTask(null);
+        setDropIndicator(null);
         if (!over) return;
 
         const currentTask = tasks.find((task) => task.id === active.id);
@@ -482,17 +638,7 @@ export function BoardView() {
             overColumnTaskIds: overTask ? getColumnTasks(overTask.status).map((task) => task.id) : undefined,
             canReorder: sortBy === 'default',
         });
-        if (action.type === 'move') {
-            moveTask(action.taskId, action.status);
-        } else if (action.type === 'reorder') {
-            void reorderBoardTasks(action.status, action.orderedIds);
-        } else if (action.type === 'moveAndReorder') {
-
-            void (async () => {
-                await moveTask(action.taskId, action.status);
-                await reorderBoardTasks(action.status, action.orderedIds);
-            })();
-        }
+        applyBoardAction(action);
     };
 
     const resolveText = React.useCallback((key: string, fallback: string) => {
@@ -521,52 +667,116 @@ export function BoardView() {
         });
     });
 
-    const openQuickAdd = (status: TaskStatus) => {
-        window.dispatchEvent(new CustomEvent('stride:quick-add', {
-            detail: { initialProps: { status } },
-        }));
-    };
-
     const getEmptyState = (status: TaskStatus) => {
         switch (status) {
             case 'inbox':
-                return {
-                    title: tFallback(t, 'list.inbox', 'Inbox'),
-                    body: resolveText('inbox.emptyAddHint', 'Inbox is clear. Capture something new.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
+                return { body: resolveText('board.emptyInbox', 'Inbox zero. Capture something.') };
             case 'next':
-                return {
-                    title: tFallback(t, 'list.next', 'Next Actions'),
-                    body: resolveText('list.noTasks', 'No next actions yet.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
+                return { body: resolveText('board.emptyNext', 'Nothing next. Pull from Inbox or Someday.') };
             case 'waiting':
-                return {
-                    title: resolveText('waiting.empty', tFallback(t, 'list.waiting', 'Waiting')),
-                    body: resolveText('waiting.emptyHint', 'Track delegated or pending items.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
+                return { body: resolveText('board.emptyWaiting', 'Nothing waiting on anyone.') };
             case 'someday':
-                return {
-                    title: resolveText('someday.empty', tFallback(t, 'list.someday', 'Someday')),
-                    body: resolveText('someday.emptyHint', 'Store ideas for later.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
-            case 'done':
-                return {
-                    title: tFallback(t, 'list.done', 'Done'),
-                    body: resolveText('list.noTasks', 'Completed tasks appear here.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
+                return { body: resolveText('board.emptySomeday', 'Park ideas here.') };
             default:
-                return {
-                    title: tFallback(t, 'list.inbox', 'Inbox'),
-                    body: resolveText('list.noTasks', 'No tasks yet.'),
-                    action: tFallback(t, 'common.add', 'Add'),
-                };
+                return { body: resolveText('board.emptyDone', 'Finished tasks land here.') };
         }
     };
+
+    const columnLabels = (olderCount: number): BoardColumnLabels => ({
+        addCard: tFallback(t, 'board.addCard', 'Add a card'),
+        addCardSubmit: tFallback(t, 'board.addCardSubmit', 'Add card'),
+        cardPlaceholder: tFallback(t, 'board.cardPlaceholder', 'Enter a title for this card'),
+        cancel: tFallback(t, 'common.cancel', 'Cancel'),
+        columnMenu: tFallback(t, 'board.columnMenu', 'Column options'),
+        cardMenu: tFallback(t, 'board.cardMenu', 'Card actions'),
+        expand: tFallback(t, 'board.expandColumn', 'Expand column'),
+        showOlder: tFallback(t, 'board.showOlder', 'Show older ({{count}})').replace(/\{\{\s*count\s*\}\}/g, String(olderCount)),
+        hideOlder: tFallback(t, 'board.hideOlder', 'Hide older'),
+        drag: tFallback(t, 'board.dragTask', 'Drag task'),
+    });
+
+    const closeMenu = () => {
+        const trigger = menu?.trigger;
+        setMenu(null);
+        trigger?.focus();
+    };
+
+    const buildMenuItems = (): BoardMenuItem[] => {
+        if (!menu) return [];
+        if (menu.kind === 'hidden') {
+            return COLUMNS.filter((column) => hiddenColumns.includes(column.id)).map((column) => ({
+                id: `show-${column.id}`,
+                label: `${tFallback(t, 'board.showColumn', 'Show column')}: ${column.label}`,
+                onSelect: () => showColumn(column.id),
+            }));
+        }
+        if (menu.kind === 'column') {
+            const status = menu.status;
+            const items: BoardMenuItem[] = [
+                { id: 'add-top', label: tFallback(t, 'board.addCardTop', 'Add a card at the top'), onSelect: () => setComposer({ status, position: 'top' }) },
+                { type: 'separator', id: 'sep-sort' },
+                { type: 'heading', id: 'sort-heading', label: tFallback(t, 'board.sortBy', 'Sort by') },
+                ...([
+                    ['default', tFallback(t, 'board.sortManual', 'Manual')],
+                    ['due', tFallback(t, 'board.sortDue', 'Due date')],
+                    ['priority', tFallback(t, 'board.sortPriority', 'Priority')],
+                    ['title', tFallback(t, 'board.sortTitle', 'Title')],
+                ] as const).map(([value, label]) => ({
+                    id: `sort-${value}`,
+                    label,
+                    checked: sortBy === value,
+                    onSelect: () => { void updateSettings({ taskSortBy: value }); },
+                })),
+                { type: 'separator', id: 'sep-view' },
+                { id: 'collapse', label: tFallback(t, 'board.collapseColumn', 'Collapse column'), shortcut: '\\', onSelect: () => toggleCollapsed(status) },
+                { id: 'hide', label: tFallback(t, 'board.hideColumn', 'Hide column'), onSelect: () => hideColumn(status) },
+            ];
+            if (status === 'done') {
+                items.push(
+                    { type: 'separator', id: 'sep-archive' },
+                    {
+                        id: 'archive-done',
+                        label: tFallback(t, 'board.archiveDone', 'Archive all done'),
+                        disabled: getColumnTasks('done').length === 0,
+                        onSelect: archiveDone,
+                    },
+                );
+            }
+            return items;
+        }
+        const task = menu.task;
+        const ids = getColumnTasks(task.status).map((candidate) => candidate.id);
+        const index = ids.indexOf(task.id);
+        const canReorder = sortBy === 'default';
+        return [
+            { id: 'open', label: tFallback(t, 'board.openCard', 'Open'), onSelect: () => setEditingTaskId(task.id) },
+            { type: 'heading', id: 'move-heading', label: tFallback(t, 'board.moveTo', 'Move to') },
+            ...COLUMNS.map((column) => ({
+                id: `move-${column.id}`,
+                label: column.label,
+                disabled: column.id === task.status,
+                onSelect: () => {
+                    void moveTaskTracked(task.id, column.id);
+                    setLiveMessage(`${task.title}: ${column.label}`);
+                },
+            })),
+            { type: 'separator', id: 'sep-order' },
+            { id: 'move-top', label: tFallback(t, 'board.moveToTop', 'Move to top'), disabled: !canReorder || index <= 0, onSelect: () => reorderToEdge(task, 'top') },
+            { id: 'move-bottom', label: tFallback(t, 'board.moveToBottom', 'Move to bottom'), disabled: !canReorder || index < 0 || index === ids.length - 1, onSelect: () => reorderToEdge(task, 'bottom') },
+            { type: 'separator', id: 'sep-done' },
+            {
+                id: 'toggle-done',
+                label: task.status === 'done' ? tFallback(t, 'status.reopen', 'Reopen') : tFallback(t, 'task.markDone', 'Mark done'),
+                onSelect: () => handleToggleDone(task),
+            },
+            { id: 'delete', label: tFallback(t, 'common.delete', 'Delete'), danger: true, onSelect: () => deleteTaskWithUndo(task.id, { t }) },
+        ];
+    };
+    const menuLabel = menu?.kind === 'card'
+        ? tFallback(t, 'board.cardMenu', 'Card actions')
+        : menu?.kind === 'hidden'
+            ? tFallback(t, 'board.hiddenColumns', 'Hidden columns')
+            : tFallback(t, 'board.columnMenu', 'Column options');
 
     return (
         <ErrorBoundary>
@@ -577,9 +787,24 @@ export function BoardView() {
                         count={`${filteredTasks.length} ${t('common.tasks')}`}
                         actions={
                         <div className="flex items-center gap-2">
+                            {hiddenColumns.length > 0 ? (
+                                <span ref={hiddenButtonRef} className="inline-flex">
+                                    <ToolbarButton
+                                        onClick={() => {
+                                            const trigger = hiddenButtonRef.current?.querySelector('button');
+                                            if (!trigger) return;
+                                            const rect = trigger.getBoundingClientRect();
+                                            setMenu({ kind: 'hidden', anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, trigger });
+                                        }}
+                                        icon={<Columns3 className="h-3.5 w-3.5" aria-hidden="true" />}
+                                    >
+                                        {`${tFallback(t, 'board.hiddenColumns', 'Hidden columns')} (${hiddenColumns.length})`}
+                                    </ToolbarButton>
+                                </span>
+                            ) : null}
                             <ToolbarButton
                                 active={showFiltersPanel || hasBoardFilters}
-                                onClick={() => setPersistedViewState((current) => ({ filtersOpen: !current.filtersOpen }))}
+                                onClick={() => setPersistedViewState((current) => ({ ...current, filtersOpen: !current.filtersOpen }))}
                                 aria-expanded={showFiltersPanel}
                                 aria-controls="board-filters-panel"
                                 icon={<Filter className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -638,43 +863,88 @@ export function BoardView() {
                     )}
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
-                    <div className="flex gap-4 h-full min-w-full pb-4 px-4">
+                <div className="relative min-h-0 flex-1">
+                <div
+                    ref={scrollerRef}
+                    data-board-scroller
+                    onScroll={updateEdges}
+                    className="h-full overflow-x-auto overflow-y-hidden overscroll-x-contain px-4 pb-4 [container-type:inline-size] [scroll-padding-inline:1rem] [scroll-snap-type:x_proximity] [scrollbar-width:thin]"
+                >
+                    <div data-board-columns className="flex h-full items-start gap-3">
                         <DndContext
                             onDragStart={handleDragStart}
+                            onDragOver={handleDragOver}
                             onDragEnd={handleDragEnd}
+                            onDragCancel={() => { setActiveTask(null); setDropIndicator(null); }}
                             collisionDetection={collisionDetection}
                             sensors={sensors}
+                            autoScroll={{ threshold: { x: 0.12, y: 0.15 }, acceleration: 12 }}
                         >
-                            {COLUMNS.map((col) => (
-                                <DroppableColumn
-                                    key={col.id}
-                                    id={col.id}
-                                    label={col.label}
-                                    tasks={getColumnTasks(col.id)}
-                                    emptyState={getEmptyState(col.id)}
-                                    onQuickAdd={openQuickAdd}
-                                    dragLabel={tFallback(t, 'board.dragTask', 'Drag task')}
-                                    compact={isDense}
-                                />
-                            ))}
+                            {COLUMNS.filter((col) => !hiddenColumns.includes(col.id)).map((col) => {
+                                const done = col.id === 'done';
+                                const split = done ? getDoneSplit() : null;
+                                const visible = getVisibleColumnTasks(col.id);
+                                return (
+                                    <BoardColumn
+                                        key={col.id}
+                                        id={col.id}
+                                        label={col.label}
+                                        tasks={visible}
+                                        totalCount={split ? split.all.length : visible.length}
+                                        olderCount={split?.olderCount ?? 0}
+                                        showOlder={showOlderDone}
+                                        onToggleOlder={() => setShowOlderDone((current) => !current)}
+                                        emptyState={getEmptyState(col.id)}
+                                        labels={columnLabels(split?.olderCount ?? 0)}
+                                        compact={isDense}
+                                        collapsed={collapsedColumns.includes(col.id)}
+                                        showPriority={prioritiesEnabled}
+                                        projectById={projectById}
+                                        dropIndicator={dropIndicator}
+                                        composer={composer}
+                                        tabbableId={tabbableId}
+                                        t={t}
+                                        onOpenComposer={(status, position) => setComposer({ status, position })}
+                                        onCloseComposer={() => setComposer(null)}
+                                        onSubmitCard={submitCard}
+                                        onOpenColumnMenu={(status, anchor, trigger) => setMenu({ kind: 'column', status, anchor, trigger })}
+                                        onExpand={toggleCollapsed}
+                                        onToggleDone={handleToggleDone}
+                                        onKeyboardMove={handleKeyboardMove}
+                                        onNavigate={handleNavigate}
+                                        onFocusCard={(task) => setFocusedCardId(task.id)}
+                                        onCardMenu={(task, anchor, trigger) => setMenu({ kind: 'card', task, anchor, trigger })}
+                                        onColumnShortcut={(task, key) => {
+                                            if (key === 'collapse') toggleCollapsed(task.status);
+                                            else setComposer({ status: task.status, position: 'bottom' });
+                                        }}
+                                    />
+                                );
+                            })}
+                            <div aria-hidden="true" className="w-1 shrink-0" />
 
-                            <DragOverlay>
+                            <DragOverlay dropAnimation={canAnimate() ? BOARD_DROP_ANIMATION : null}>
                                 {activeTask ? (
-                                    <div className="w-80 rotate-3 cursor-grabbing">
-                                        <TaskItem
-                                            task={activeTask}
-                                            showStatusSelect={false}
-                                            showProjectBadgeInActions={false}
-                                            actionsOverlay
-                                            showHoverHint={false}
-                                        />
-                                    </div>
+                                    <BoardCardOverlay
+                                        task={activeTask}
+                                        width={dragWidth}
+                                        project={activeTask.projectId ? projectById.get(activeTask.projectId) : undefined}
+                                        showPriority={prioritiesEnabled}
+                                        t={t}
+                                        compact={isDense}
+                                    />
                                 ) : null}
                             </DragOverlay>
                         </DndContext>
                     </div>
                 </div>
+                {edges.left ? <div aria-hidden="true" data-board-fade="left" className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background to-transparent" /> : null}
+                {edges.right ? <div aria-hidden="true" data-board-fade="right" className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background to-transparent" /> : null}
+                </div>
+                {menu ? (
+                    <BoardMenu label={menuLabel} anchor={menu.anchor} items={buildMenuItems()} onClose={closeMenu} />
+                ) : null}
+                <div role="status" aria-live="polite" className="sr-only">{liveMessage}</div>
             </div>
         </ErrorBoundary>
     );

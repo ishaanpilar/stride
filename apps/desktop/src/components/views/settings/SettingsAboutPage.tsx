@@ -167,20 +167,22 @@ export function SettingsAboutPage({
                     </button>
                 </div>
                 <div className="border-t border-border/50"></div>
-                <div data-settings-key="license" className="flex justify-between items-center">
-                    <span className="text-muted-foreground">{t.license}</span>
-                    <span className="font-medium">AGPL-3.0</span>
-                </div>
+                <div className="text-sm text-muted-foreground">Built by Ishaan Pilar</div>
                 <div className="border-t border-border/50"></div>
-                <div className="text-sm text-muted-foreground">
-                    Stride is based on{' '}
-                    <button
-                        onClick={() => onOpenLink('https://github.com/dongdongbh/Mindwtr')}
-                        className="text-accent-text hover:underline"
-                    >
-                        Mindwtr
-                    </button>{' '}
-                    (AGPL-3.0)
+                <div data-testid="about-tribute" className="space-y-1.5 text-sm text-muted-foreground">
+                    <p>
+                        Stride is built on the ideas of{' '}
+                        <button
+                            type="button"
+                            onClick={() => onOpenLink('https://gettingthingsdone.com')}
+                            className="text-accent-text hover:underline"
+                        >
+                            Getting Things Done
+                        </button>
+                        {' '}by David Allen, the method behind its capture, clarify, organise, review and engage flow.
+                    </p>
+                    <p className="italic">Mind like water.</p>
+                    <p className="text-xs text-tertiary">Stride is an independent app, not affiliated with or endorsed by David Allen.</p>
                 </div>
             </div>
         </>

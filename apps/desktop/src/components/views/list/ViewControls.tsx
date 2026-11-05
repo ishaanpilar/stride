@@ -9,6 +9,8 @@ type ViewControlsProps<Axis extends TaskGroupAxis, Sort extends SortField> = {
     defaultSortBy?: Sort;
     sortByOptions?: readonly Sort[];
     onChangeSortBy?: (value: Sort) => void;
+    /** Extra "Manual" sort entry (user-dragged order). Selecting any regular sort turns it off. */
+    manualSort?: { label: string; selected: boolean; onSelect: () => void };
     groupBy?: Axis;
     defaultGroupBy?: Axis;
     groupByOptions?: readonly Axis[];
@@ -23,6 +25,7 @@ export function ViewControls<Axis extends TaskGroupAxis, Sort extends SortField 
     defaultSortBy,
     sortByOptions,
     onChangeSortBy,
+    manualSort,
     groupBy,
     defaultGroupBy,
     groupByOptions,
@@ -38,6 +41,7 @@ export function ViewControls<Axis extends TaskGroupAxis, Sort extends SortField 
                     defaultValue={defaultSortBy}
                     options={sortByOptions}
                     onChange={onChangeSortBy}
+                    inheritOption={manualSort}
                     t={t}
                     className="min-w-0 max-w-full"
                 />

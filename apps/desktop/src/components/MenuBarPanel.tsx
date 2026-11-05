@@ -3,12 +3,20 @@ import {
     buildQuickAddParseOptions,
     executeCaptureTransaction,
     flushPendingSave,
+    formatI18nTemplate,
+    getMenuBarReorderIds,
+    isMenuBarTaskReorderable,
+    moveIdByOffset,
+    moveIdToTop,
     parseQuickAdd,
     resolveFeatureFlags,
+    retainCompletedInSections,
     selectMenuBarPanelTabs,
     translateWithFallback,
     undoTaskCompletion,
     useTaskStore,
+    type MenuBarReorderKind,
+    type SectionMembership,
     type Task,
     type TaskStatus,
 } from '@stride/core';
@@ -25,12 +33,28 @@ import {
 } from '../lib/menubar-panel-window';
 import { QUICK_ADD_SAVED_EVENT } from '../lib/quick-add-saved-event';
 import { reportError } from '../lib/report-error';
+import { useCompletionRetention } from '../lib/completion-retention';
+import {
+    commitBoardOrder,
+    MANUAL_ORDER_KEYS,
+    restoreBoardOrder,
+    snapshotBoardOrder,
+    statusesOf,
+    switchedToManualOrderMessage,
+    useManualOrderMode,
+    readManualOrder as readManualFlag,
+    writeManualOrder,
+    type BoardOrderSnapshot,
+} from '../lib/manual-order';
 import { isTauriRuntime } from '../lib/runtime';
 import { invokeNative } from '../lib/tauri-invoke';
 import { cn } from '../lib/utils';
 import { PanelCalendarStrip } from './menubar/PanelCalendarStrip';
 import { PanelPomodoro } from './menubar/PanelPomodoro';
-import { PanelTaskRow, type PanelRowTone } from './menubar/PanelTaskRow';
+import { PanelDragGhost } from './menubar/PanelDragGhost';
+import { PanelTaskRow, type PanelMoveAction, type PanelRowReorder, type PanelRowTone } from './menubar/PanelTaskRow';
+import { idsAreEqual } from './menubar/panel-reorder';
+import { usePanelReorder, type PanelReorderChange } from './menubar/usePanelReorder';
 
 const UNDO_VISIBLE_MS = 6000;
 const NOTICE_VISIBLE_MS = 2200;
@@ -41,6 +65,16 @@ type PanelTab = 'today' | 'upcoming' | 'inbox' | 'next';
 const TAB_ORDER: PanelTab[] = ['today', 'upcoming', 'inbox', 'next'];
 
 type UndoState = { taskId: string; title: string; previousStatus: TaskStatus; wasFocusedToday: boolean };
+type OrderUndoState = { viewKey: string; snapshot: BoardOrderSnapshot };
+type PanelReorderGroup = { key: string; kind: MenuBarReorderKind };
+
+const manualOrderKeyForGroup = (groupKey: string): string | null => {
+    if (groupKey.startsWith('today:')) return MANUAL_ORDER_KEYS.today;
+    if (groupKey.startsWith('upcoming:')) return MANUAL_ORDER_KEYS.upcoming;
+    if (groupKey === 'board:inbox') return MANUAL_ORDER_KEYS.inbox;
+    if (groupKey === 'board:next') return MANUAL_ORDER_KEYS.next;
+    return null;
+};
 
 function readStoredTab(): PanelTab {
     try {
@@ -116,11 +150,18 @@ export function MenuBarPanel() {
     const [lockEnabled, setLockEnabled] = useState(false);
     const [dayTick, setDayTick] = useState(0);
     const [undo, setUndo] = useState<UndoState | null>(null);
+    const [orderUndo, setOrderUndo] = useState<OrderUndoState | null>(null);
+    const orderUndoTimer = useRef<number | null>(null);
+    const [manualToday] = useManualOrderMode(MANUAL_ORDER_KEYS.today);
+    const [manualUpcoming] = useManualOrderMode(MANUAL_ORDER_KEYS.upcoming);
+    const [manualInbox] = useManualOrderMode(MANUAL_ORDER_KEYS.inbox);
+    const [manualNext] = useManualOrderMode(MANUAL_ORDER_KEYS.next);
     const [quickAdd, setQuickAdd] = useState('');
     const [ask, setAsk] = useState('');
     const [message, setMessage] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [tab, setTab] = useState<PanelTab>(readStoredTab);
+    const [reorderAnnouncement, setReorderAnnouncement] = useState('');
     const [completing, setCompleting] = useState<ReadonlySet<string>>(new Set());
     const undoTimer = useRef<number | null>(null);
     const noticeTimer = useRef<number | null>(null);
@@ -162,7 +203,10 @@ export function MenuBarPanel() {
                     void refreshAll();
                     focusCapture();
                 });
-                if (disposed) off(); else unlisten = off;
+                // Same event the panel sends the main window after a change: anything that writes tasks
+                // (a reorder in the main window included) asks every window to re-read the data file.
+                const offSaved = await listen(QUICK_ADD_SAVED_EVENT, () => { void refreshAll(); });
+                if (disposed) { off(); offSaved(); } else { unlisten = () => { off(); offSaved(); }; }
             });
         }
         return () => {
@@ -185,13 +229,42 @@ export function MenuBarPanel() {
     useEffect(() => () => {
         if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
         if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+        if (orderUndoTimer.current !== null) window.clearTimeout(orderUndoTimer.current);
     }, []);
 
     const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
-    const view = useMemo(() => {
+    const baseView = useMemo(() => {
         void dayTick;
-        return selectMenuBarPanelTabs(tasks, { projects, now: new Date() });
-    }, [tasks, projects, dayTick]);
+        return selectMenuBarPanelTabs(tasks, {
+            projects,
+            now: new Date(),
+            manualOrder: { today: manualToday, upcoming: manualUpcoming, inbox: manualInbox, next: manualNext },
+        });
+    }, [tasks, projects, dayTick, manualToday, manualUpcoming, manualInbox, manualNext]);
+    // Completion rule: a task ticked done here stays in its list, struck through, and drops to the bottom of
+    // that list after the settle delay (see core task-completion-order.ts). Counts stay open-task counts.
+    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+    const sectionMembershipRef = useRef<SectionMembership>(new Map());
+    const view = useMemo(() => {
+        if (sessionCompletions.size === 0 && sectionMembershipRef.current.size === 0) return baseView;
+        const lists: Record<string, Task[]> = {
+            overdue: baseView.overdue,
+            today: baseView.today,
+            inbox: baseView.inbox,
+            next: baseView.next,
+        };
+        baseView.upcoming.forEach((day) => { lists[`upcoming:${day.key}`] = day.tasks; });
+        const merged = retainCompletedInSections(lists, sectionMembershipRef.current, sessionCompletions, settledCompletionIds, (id) => tasksById.get(id));
+        return {
+            ...baseView,
+            overdue: merged.overdue,
+            today: merged.today,
+            inbox: merged.inbox,
+            next: merged.next,
+            upcoming: baseView.upcoming.map((day) => ({ ...day, tasks: merged[`upcoming:${day.key}`] ?? day.tasks })),
+        };
+    }, [baseView, sessionCompletions, settledCompletionIds, tasksById]);
     const briefing = useMemo(() => {
         void dayTick;
         return readCachedDailyBriefing()?.briefing ?? null;
@@ -251,11 +324,19 @@ export function MenuBarPanel() {
     }, []);
 
     const completeTask = useCallback((task: Task) => {
+        if (task.status === 'done') {
+            // Ticked again: restore it to where it came from.
+            const previousStatus = sessionCompletions.get(task.id)?.previousStatus ?? 'next';
+            void undoTaskCompletion(task.id, previousStatus, false)
+                .then(() => syncMainWindow())
+                .catch((error) => reportError('Failed to restore task from menu bar panel', error));
+            return;
+        }
         if (completing.has(task.id)) return;
         setCompleting((current) => new Set(current).add(task.id));
         // Let the check animation play before the row leaves the list.
         window.setTimeout(() => { void finishComplete(task); }, prefersReducedMotion() ? 0 : COMPLETE_ANIMATION_MS);
-    }, [completing, finishComplete]);
+    }, [completing, finishComplete, sessionCompletions]);
 
     const undoComplete = useCallback(async () => {
         if (!undo) return;
@@ -331,15 +412,115 @@ export function MenuBarPanel() {
         return true;
     }, []);
 
+    const announce = useCallback((text: string) => {
+        // Clear first so repeating the same message is announced again.
+        setReorderAnnouncement('');
+        window.setTimeout(() => setReorderAnnouncement(text), 30);
+    }, []);
+
+    const switchPanelToManual = useCallback((groupKey: string, ids: readonly string[]) => {
+        const viewKey = manualOrderKeyForGroup(groupKey);
+        if (!viewKey || readManualFlag(viewKey)) return;
+        const snapshot = snapshotBoardOrder(statusesOf(ids));
+        writeManualOrder(viewKey, true);
+        setOrderUndo({ viewKey, snapshot });
+        if (orderUndoTimer.current !== null) window.clearTimeout(orderUndoTimer.current);
+        orderUndoTimer.current = window.setTimeout(() => setOrderUndo(null), UNDO_VISIBLE_MS);
+    }, []);
+
+    const undoManualSwitch = useCallback(async () => {
+        if (!orderUndo) return;
+        const current = orderUndo;
+        setOrderUndo(null);
+        writeManualOrder(current.viewKey, false);
+        try {
+            await restoreBoardOrder(current.snapshot);
+            await syncMainWindow();
+        } catch (error) {
+            reportError('Failed to undo the switch to manual order', error);
+        }
+    }, [orderUndo]);
+
+    const commitReorder = useCallback(async (change: PanelReorderChange, how: 'up' | 'down' | 'top' | 'drag') => {
+        const kind = change.groupKey.split(':')[0];
+        const store = useTaskStore.getState();
+        try {
+            if (kind === 'focus') {
+                const result = await store.reorderFocusedTasks(change.nextIds);
+                if (result && result.success === false) throw new Error(result.error || 'Failed to reorder tasks');
+            } else {
+                switchPanelToManual(change.groupKey, change.siblingIds);
+                await commitBoardOrder(change.nextIds, change.movedId);
+            }
+            await syncMainWindow();
+            const position = change.nextIds.indexOf(change.movedId) + 1;
+            const key = how === 'up' ? 'menubar.reorder.movedUp'
+                : how === 'down' ? 'menubar.reorder.movedDown'
+                    : how === 'top' ? 'menubar.reorder.movedTop'
+                        : 'menubar.reorder.moved';
+            const fallback = how === 'up' ? 'Moved up, position {{position}} of {{count}}'
+                : how === 'down' ? 'Moved down, position {{position}} of {{count}}'
+                    : how === 'top' ? 'Moved to top, position {{position}} of {{count}}'
+                        : 'Moved, position {{position}} of {{count}}';
+            announce(formatI18nTemplate(tr(key, fallback), { position, count: change.nextIds.length }));
+        } catch (error) {
+            setMessage(tr('menubar.reorder.failed', 'Could not save the new order.'));
+            reportError('Failed to reorder tasks from menu bar panel', error);
+        }
+    }, [announce, switchPanelToManual, tr]);
+
+    const {
+        state: dragState, ghost: dragGhost, ghostRef: dragGhostRef, beginPress: beginReorderPress, consumeSuppressedClick,
+    } = usePanelReorder({
+        listRef,
+        onReorder: (change) => { void commitReorder(change, 'drag'); },
+    });
+
+    /** Movable rows of the group a row belongs to, in display order, read from the rendered list. */
+    const readSiblings = useCallback((taskId: string): { groupKey: string; ids: string[] } | null => {
+        const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-reorder-id]') ?? []);
+        const row = rows.find((element) => element.getAttribute('data-reorder-id') === taskId);
+        const groupKey = row?.getAttribute('data-reorder-group');
+        if (!groupKey) return null;
+        const ids = rows
+            .filter((element) => element.getAttribute('data-reorder-group') === groupKey)
+            .map((element) => element.getAttribute('data-reorder-id') as string);
+        return { groupKey, ids };
+    }, []);
+
+    const focusRowMain = useCallback((taskId: string) => {
+        window.requestAnimationFrame(() => {
+            const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-row-main]') ?? []);
+            const target = rows.find((element) => element.getAttribute('data-task-id') === taskId);
+            target?.focus();
+            target?.scrollIntoView?.({ block: 'nearest' });
+        });
+    }, []);
+
+    const moveRow = useCallback((task: Task, action: PanelMoveAction) => {
+        const group = readSiblings(task.id);
+        if (!group) return;
+        const nextIds = action === 'top'
+            ? moveIdToTop(group.ids, task.id)
+            : moveIdByOffset(group.ids, task.id, action === 'up' ? -1 : 1);
+        if (idsAreEqual(nextIds, group.ids)) return;
+        void commitReorder({ groupKey: group.groupKey, siblingIds: group.ids, nextIds, movedId: task.id }, action);
+        focusRowMain(task.id);
+    }, [commitReorder, focusRowMain, readSiblings]);
+
     const onRowKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>, task: Task) => {
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey
+            && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault();
+            moveRow(task, event.key === 'ArrowUp' ? 'up' : 'down');
+        } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
             moveRowFocus(event.currentTarget, event.key === 'ArrowDown' ? 1 : -1);
         } else if (event.key === ' ') {
             event.preventDefault();
             completeTask(task);
         }
-    }, [completeTask, moveRowFocus]);
+    }, [completeTask, moveRow, moveRowFocus]);
 
     const onCaptureKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
         if (event.key === 'ArrowDown') {
@@ -410,21 +591,47 @@ export function MenuBarPanel() {
         next: { label: tr('nav.next', 'Next'), icon: <ListChecks className="h-3 w-3" aria-hidden />, count: view.counts.next },
     };
 
-    const renderRows = (list: Task[], tone: PanelRowTone) => list.map((task) => (
-        <PanelTaskRow
-            key={task.id}
-            task={task}
-            tone={tone}
-            project={task.projectId ? projectById.get(task.projectId) : undefined}
-            completing={completing.has(task.id)}
-            completeLabel={completeLabel}
-            todayLabel={todayLabel}
-            priorityLabel={task.priority ? tr(`priority.${task.priority}`, task.priority) : undefined}
-            onComplete={completeTask}
-            onOpen={openTask}
-            onRowKeyDown={onRowKeyDown}
-        />
-    ));
+    const reorderLabels = {
+        drag: tr('list.reorder.drag', 'Drag to reorder'),
+        moveToTop: tr('list.reorder.moveToTop', 'Move to top'),
+        moveUp: tr('projects.moveUp', 'Move up'),
+        moveDown: tr('projects.moveDown', 'Move down'),
+        moreActions: tr('menubar.reorder.moreActions', 'More actions'),
+    };
+
+    const renderRows = (list: Task[], tone: PanelRowTone, groups: PanelReorderGroup[] = []) => {
+        const siblingsByGroup = new Map(groups.map((group) => [group.key, getMenuBarReorderIds(list, group.kind)]));
+        return list.map((task) => {
+            const group = groups.find((candidate) => isMenuBarTaskReorderable(task, candidate.kind));
+            const siblingIds = group ? siblingsByGroup.get(group.key) ?? [] : [];
+            const index = siblingIds.indexOf(task.id);
+            const reorder: PanelRowReorder | null = group && index !== -1
+                ? { groupKey: group.key, siblingIds, position: index + 1, count: siblingIds.length }
+                : null;
+            return (
+                <PanelTaskRow
+                    key={task.id}
+                    task={task}
+                    tone={tone}
+                    project={task.projectId ? projectById.get(task.projectId) : undefined}
+                    completing={completing.has(task.id) || task.status === 'done'}
+                    completeLabel={task.status === 'done' ? tr('menubar.markNotDone', 'Mark not done') : completeLabel}
+                    todayLabel={todayLabel}
+                    priorityLabel={task.priority ? tr(`priority.${task.priority}`, task.priority) : undefined}
+                    onComplete={completeTask}
+                    onOpen={openTask}
+                    onRowKeyDown={onRowKeyDown}
+                    reorder={reorder}
+                    reorderLabels={reorder ? reorderLabels : undefined}
+                    dragging={dragState.dragId === task.id}
+                    dropPlacement={reorder && dragState.targetId === task.id ? dragState.placement : null}
+                    onReorderPointerDown={(event, row, info) => beginReorderPress(event, row.id, info.groupKey, info.siblingIds, row.title)}
+                    consumeSuppressedClick={consumeSuppressedClick}
+                    onMove={moveRow}
+                />
+            );
+        });
+    };
 
     const empty = (key: string, fallback: string, hint?: string) => (
         <div className="flex flex-col items-center gap-1 px-6 py-10 text-center" data-testid="menubar-panel-empty">
@@ -450,13 +657,13 @@ export function MenuBarPanel() {
                             {view.overdue.length > 0 && (
                                 <section>
                                     <SectionHeader title={tr('menubar.overdue', 'Overdue')} count={view.overdue.length} />
-                                    <ul>{renderRows(view.overdue, 'overdue')}</ul>
+                                    <ul>{renderRows(view.overdue, 'overdue', [{ key: 'focus:overdue', kind: 'focus' }, { key: 'today:overdue', kind: 'today' }])}</ul>
                                 </section>
                             )}
                             {view.today.length > 0 && (
                                 <section>
                                     <SectionHeader title={todayLabel} count={view.today.length} />
-                                    <ul>{renderRows(view.today, 'today')}</ul>
+                                    <ul>{renderRows(view.today, 'today', [{ key: 'focus:today', kind: 'focus' }, { key: 'today:today', kind: 'today' }])}</ul>
                                 </section>
                             )}
                         </>
@@ -469,22 +676,23 @@ export function MenuBarPanel() {
             : view.upcoming.map((day) => (
                 <section key={day.key}>
                     <SectionHeader title={dayHeading(day.date)} count={day.tasks.length} />
-                    <ul>{renderRows(day.tasks, 'default')}</ul>
+                    <ul>{renderRows(day.tasks, 'default', [{ key: `upcoming:${day.key}`, kind: 'board' }])}</ul>
                 </section>
             ));
     } else if (tab === 'inbox') {
         body = view.inbox.length === 0
             ? empty('menubar.emptyInbox', 'Inbox zero.', tr('menubar.emptyInboxHint', 'Everything is sorted.'))
-            : <ul className="pt-1.5">{renderRows(view.inbox, 'default')}</ul>;
+            : <ul className="pt-1.5">{renderRows(view.inbox, 'default', [{ key: 'board:inbox', kind: 'board' }])}</ul>;
     } else {
         body = view.next.length === 0
             ? empty('menubar.emptyNext', 'No next actions yet.')
-            : <ul className="pt-1.5">{renderRows(view.next, 'default')}</ul>;
+            : <ul className="pt-1.5">{renderRows(view.next, 'default', [{ key: 'board:next', kind: 'board' }])}</ul>;
     }
 
     return (
         <div className="flex h-full flex-col font-sans" data-testid="menubar-panel">
             {header}
+            <span className="sr-only" aria-live="polite" data-testid="menubar-reorder-announcement">{reorderAnnouncement}</span>
 
             <div className="px-3 pb-2 pt-2">
                 <div className="flex items-center gap-2">
@@ -556,6 +764,14 @@ export function MenuBarPanel() {
                 {body}
             </div>
 
+            {orderUndo && (
+                <div className="mx-3 mb-2 flex items-center gap-2 rounded-card bg-foreground px-3 py-2 text-xs text-background shadow-soft" role="status" data-testid="menubar-manual-order-undo">
+                    <span className="min-w-0 flex-1 truncate">{switchedToManualOrderMessage(t)}</span>
+                    <button type="button" onClick={() => void undoManualSwitch()} className="font-semibold underline-offset-2 hover:underline">
+                        {tr('common.undo', 'Undo')}
+                    </button>
+                </div>
+            )}
             {undo && (
                 <div className="mx-3 mb-2 flex items-center gap-2 rounded-card bg-foreground px-3 py-2 text-xs text-background shadow-soft" role="status">
                     <span className="min-w-0 flex-1 truncate">{tr('menubar.completed', 'Completed')}: {undo.title}</span>
@@ -586,6 +802,7 @@ export function MenuBarPanel() {
                     </button>
                 </form>
             </div>
+            {dragGhost && <PanelDragGhost ghost={dragGhost} ghostRef={dragGhostRef} />}
         </div>
     );
 }

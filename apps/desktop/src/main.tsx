@@ -37,6 +37,7 @@ import {
     resolveSystemThemeCommandPreference,
 } from './lib/theme';
 import { TEXT_SIZE_STORAGE_KEY, applyDesktopTextSize, coerceDesktopTextSize } from './lib/text-size';
+import { installMotionPreference } from './lib/motion';
 import { FONT_FAMILY_STORAGE_KEY, applyDesktopFontFamily, coerceDesktopFontFamily } from './lib/font-family';
 import { loadStoredFullscreen } from './lib/window-state';
 import { restoreStoredWebviewZoom } from './lib/webview-zoom';
@@ -45,6 +46,8 @@ import { isMenuBarPanelLocation } from './lib/menubar-panel-window';
 import { consumeDesktopSandboxBootRequest } from './lib/sandbox-session';
 import { installAppLockKeyboardGuard, loadAppLockState } from './lib/app-lock';
 import { AppLockGate } from './components/AppLockGate';
+
+installMotionPreference();
 
 let coreLoggerBridgeInstalled = false;
 

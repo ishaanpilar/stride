@@ -122,6 +122,7 @@ export * from './pending-captures';
 export * from './context-automation';
 export * from './diceware';
 export * from './task-utils';
+export * from './task-completion-order';
 export * from './task-similarity';
 export * from './task-list-sort-options';
 export * from './view-sections';
@@ -251,6 +252,8 @@ export * from './ai/ai-service';
 export * from './ai/utils';
 export * from './ai/daily-briefing';
 export * from './ai/mind-sweep-ai';
+export * from './ai/focus-encouragement-ai';
+export * from './ai/focus-coach-ai';
 export * from './ai/types';
 export * from './ai/catalog';
 export * from './ai/model-list';
@@ -428,3 +431,4 @@ export { getSavedTaxonomyTokens, normalizeTaxonomyToken, isTaxonomyCatalog, merg
 export { CONTEXTS_FILTER_STATUSES, buildContextsFilterModel, getContextsSaveCriteria, selectContextsFilterTasks } from './contexts-filter';
 
 export * from './ai/assistant';
+export * from './calendar-sync-status';

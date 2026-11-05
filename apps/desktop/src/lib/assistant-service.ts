@@ -30,6 +30,11 @@ export function createStoreAssistantPort(): AssistantStorePort {
         addProject: (title, color, props) => st().addProject(title, color, props),
         deleteProject: (id) => st().deleteProject(id),
         restoreProject: (id) => st().restoreProject(id),
+        updateProject: (id, updates) => st().updateProject(id, updates),
+        addArea: (name, props) => st().addArea(name, props),
+        updateArea: (id, updates) => st().updateArea(id, updates),
+        deleteArea: (id) => st().deleteArea(id),
+        restoreArea: (id) => st().restoreArea(id),
     };
 }
 

@@ -4,6 +4,10 @@ import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import type { Project, Task } from '@stride/core';
 import { cn } from '../../../lib/utils';
 import type { TaskGroup } from './next-grouping';
+import { FlipList } from '../../ui/FlipList';
+import { Collapse } from '../../ui/Collapse';
+
+const taskSignature = (tasks: readonly Task[]): string => tasks.map((task) => task.id).join('|');
 
 type GroupedTaskSectionsProps = {
     groups: TaskGroup[];
@@ -300,9 +304,9 @@ export function GroupedTaskList({
     }
 
     return (
-        <div className="flex flex-col gap-2.5">
+        <FlipList signature={taskSignature(tasks)} className="flex flex-col gap-2.5">
             {tasks.map((task) => renderTask(task))}
-        </div>
+        </FlipList>
     );
 }
 
@@ -333,12 +337,12 @@ export function GroupedTaskSections({
                             onAddTaskToGroup={onAddTaskToGroup}
                             addTaskLabel={addTaskLabel}
                         />
-                        {!collapsed && (
-                            <div id={controlsId} className="flex flex-col gap-2.5">
+                        <Collapse open={!collapsed} unmountWhenClosed>
+                            <FlipList id={controlsId} signature={taskSignature(group.tasks)} className="flex flex-col gap-2.5">
                                 <GroupProjects group={group} renderProject={renderProject} />
                                 {group.tasks.map((task) => renderTask(task, group))}
-                            </div>
-                        )}
+                            </FlipList>
+                        </Collapse>
                     </div>
                 );
             })}
