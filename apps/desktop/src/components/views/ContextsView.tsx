@@ -203,11 +203,14 @@ export function ContextsView() {
     const { projectById: projectMap, visibleTasks: visibleOpenTasks } = useVisibleTaskContext();
     // Completion rule: tasks ticked done this session stay listed (struck through, at the bottom of their
     // list or group after the settle delay). They are filtered as if still open, then restored.
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     const { activeTasks, completionOriginals } = useMemo(() => {
         const originals = new Map<string, Task>();
-        if (sessionCompletions.size === 0) return { activeTasks: visibleOpenTasks, completionOriginals: originals };
-        const present = new Set(visibleOpenTasks.map((task) => task.id));
+        const shownTasks = heldOccurrenceIds.size === 0
+            ? visibleOpenTasks
+            : visibleOpenTasks.filter((task) => !heldOccurrenceIds.has(task.id));
+        if (sessionCompletions.size === 0) return { activeTasks: shownTasks, completionOriginals: originals };
+        const present = new Set(shownTasks.map((task) => task.id));
         const extra: Task[] = [];
         for (const [id, entry] of sessionCompletions) {
             const task = tasksById.get(id);
@@ -216,8 +219,8 @@ export function ContextsView() {
             originals.set(id, task);
             extra.push({ ...task, status: entry.previousStatus });
         }
-        return { activeTasks: extra.length ? [...visibleOpenTasks, ...extra] : visibleOpenTasks, completionOriginals: originals };
-    }, [projectMap, sessionCompletions, tasksById, visibleOpenTasks]);
+        return { activeTasks: extra.length ? [...shownTasks, ...extra] : shownTasks, completionOriginals: originals };
+    }, [heldOccurrenceIds, projectMap, sessionCompletions, tasksById, visibleOpenTasks]);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [saveFilterOpen, setSaveFilterOpen] = useState(false);
     const features = resolveFeatureFlags(settings);

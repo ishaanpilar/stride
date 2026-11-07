@@ -92,4 +92,17 @@ describe('ToastHost', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
         expect(screen.queryByText('Dismiss me')).not.toBeInTheDocument();
     });
+
+    it('offers a second action under the message, and either one closes the toast', () => {
+        const first = vi.fn();
+        const second = vi.fn();
+        showToast('Done. Repeats next on Sat 14 Nov', 'info', 0, { label: 'Undo', onClick: first }, { label: 'Stop repeating', onClick: second });
+        render(<ToastHost />);
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Stop repeating' }));
+        expect(second).toHaveBeenCalledOnce();
+        expect(first).not.toHaveBeenCalled();
+        expect(screen.queryByText('Done. Repeats next on Sat 14 Nov')).toBeNull();
+    });
 });

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, type RefObject } from 'react';
 
-import { COMPLETION_LEAVE_MS, type CompletionPhase } from './completion-sequence';
+import { COMPLETION_LEAVE_MS, completionLeavesView, type CompletionPhase } from './completion-sequence';
 import { MOTION_EASING, canAnimate } from './motion';
 
 /**
@@ -84,7 +84,7 @@ const SETTLE_IN: Keyframe[] = [
  * Drives the leaving collapse and the settle-in for one row. `phase` comes from useCompletionPhase.
  * Also tags the row so an exit ghost is not played for a row that already collapsed.
  */
-export function useCompletionRowMotion(ref: RefObject<HTMLElement | null>, phase: CompletionPhase | undefined): void {
+export function useCompletionRowMotion(ref: RefObject<HTMLElement | null>, phase: CompletionPhase | undefined, taskId?: string): void {
     const collapseRef = useRef<Collapse | null>(null);
     useLayoutEffect(() => {
         const row = ref.current;
@@ -98,6 +98,8 @@ export function useCompletionRowMotion(ref: RefObject<HTMLElement | null>, phase
             }
             return;
         }
+        // A repeating task's done copy is on its way out of the view: nothing to settle into.
+        if (phase === 'gone' && taskId && completionLeavesView(taskId)) return;
         const collapse = collapseRef.current;
         collapseRef.current = null;
         if (phase !== 'gone') row.removeAttribute('data-exit-ghost-skip');
@@ -105,7 +107,7 @@ export function useCompletionRowMotion(ref: RefObject<HTMLElement | null>, phase
         collapse.restore();
         // Gone and still rendered: it moved to the done-at-bottom place. Undo/cancel: just come back.
         if (canAnimate()) row.animate(SETTLE_IN, { duration: 280, easing: MOTION_EASING.out });
-    }, [phase, ref]);
+    }, [phase, ref, taskId]);
     useLayoutEffect(() => () => {
         collapseRef.current?.restore();
         collapseRef.current = null;

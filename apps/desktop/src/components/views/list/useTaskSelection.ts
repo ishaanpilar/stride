@@ -15,6 +15,7 @@ import {
 } from '@stride/core';
 import { reportError } from '../../../lib/report-error';
 import { registerUndoableAction } from '../../../lib/undo-registry';
+import { askRepeatTickInToast, splitRepeatTickGuarded } from '../../../lib/repeating-completion';
 import { useSelectedTasksCsvExport } from './useSelectedTasksCsvExport';
 
 type TaskUpdate = { id: string; updates: Partial<Task> };
@@ -214,10 +215,22 @@ export function useTaskSelection(
         if (!batchMoveTasks) return Promise.resolve(false);
         return runSelectedTaskAction(
             'move',
-            (taskIds) => batchMoveTasks(taskIds, newStatus),
+            (taskIds) => {
+                if (newStatus !== 'done') return batchMoveTasks(taskIds, newStatus);
+                // Occurrences of a series just completed wait for a yes; the rest of the selection does not.
+                const { clear, guarded } = splitRepeatTickGuarded(taskIds);
+                if (guarded.length > 0) {
+                    askRepeatTickInToast(guarded, () => {
+                        void Promise.resolve(batchMoveTasks(guarded, newStatus))
+                            .then(assertTaskActionSucceeded)
+                            .catch((error) => reportError('Failed to complete repeating tasks', error));
+                    }, t);
+                }
+                return clear.length > 0 ? batchMoveTasks(clear, newStatus) : undefined;
+            },
             options,
         );
-    }, [batchMoveTasks, runSelectedTaskAction]);
+    }, [batchMoveTasks, runSelectedTaskAction, t]);
 
     const deleteSelectedTasks = useCallback((options?: RunActionOptions) => {
         if (!batchDeleteTasks) return Promise.resolve(false);

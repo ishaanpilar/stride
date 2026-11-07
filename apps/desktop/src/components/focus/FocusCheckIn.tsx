@@ -10,8 +10,16 @@ import {
 import { ArrowLeft, Check, Coffee, Play } from 'lucide-react';
 import { isImeComposing } from '../../lib/ime';
 import type { FocusUndo } from '../../lib/focus-coach-store';
+import { guardRepeatTick, stopRepeatingOccurrence, type RepeatingCompletion } from '../../lib/repeating-completion';
+import { reportError } from '../../lib/report-error';
+import { RepeatTickConfirm } from '../Task/RepeatTickConfirm';
 import { OfferChip, focusActionLabel, formatFocusWhen } from './FocusCoachCard';
 import type { FocusSummary } from './FocusFinish';
+
+/** "Done" went through. A repeating task also says when it comes back. */
+export interface FocusDone extends FocusUndo {
+    repeating?: RepeatingCompletion | null;
+}
 
 type Stage = 'ask' | 'done' | 'almost' | 'plan' | 'left' | 'blocked' | 'waiting' | 'needInfo' | 'notNow';
 
@@ -22,7 +30,8 @@ interface FocusCheckInProps {
     sentence: string;
     focusMinutes: number;
     tr: (key: string, fallback: string) => string;
-    onDone: () => Promise<FocusUndo | null>;
+    onDone: () => Promise<FocusDone | null>;
+    describeRepeating: () => RepeatingCompletion | null;
     onApply: (action: FocusCoachAction) => Promise<FocusUndo | null>;
     onAskCoach: (text: string) => Promise<FocusCoachReply>;
     onStartAnother: () => void;
@@ -40,6 +49,9 @@ export function FocusCheckIn(props: FocusCheckInProps) {
     // Ticked done during the session (e.g. in overtime): the check-in opens on "Done".
     const [stage, setStage] = useState<Stage>(task.status === 'done' ? 'done' : 'ask');
     const [doneUndo, setDoneUndo] = useState<FocusUndo | null>(null);
+    const [repeating, setRepeating] = useState<RepeatingCompletion | null>(() => (task.status === 'done' ? props.describeRepeating() : null));
+    /** Set after "Stop repeating": puts the next occurrence back. */
+    const [stopped, setStopped] = useState<(() => Promise<void>) | null>(null);
     const [left, setLeft] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
     const [person, setPerson] = useState(task.assignedTo ?? '');
@@ -52,18 +64,40 @@ export function FocusCheckIn(props: FocusCheckInProps) {
     const stats = [tr('focus.checkin.minutes', '{{count}} min focused').replace('{{count}}', String(summary.minutes))];
     if (summary.sessionsToday > 0) stats.push(tr('focus.checkin.sessions', '{{count}} sessions today').replace('{{count}}', String(summary.sessionsToday)));
 
-    const markDone = async () => {
+    const completeTask = async () => {
         setBusy(true);
-        const undo = await props.onDone();
+        const done = await props.onDone();
         setBusy(false);
-        if (!undo) return;
-        setDoneUndo(undo);
+        if (!done) return;
+        setDoneUndo(done);
+        setRepeating(done.repeating ?? null);
         setStage('done');
     };
+    // The app's toasts sit under the stage, so the question and the result are both shown here.
+    const markDone = () => guardRepeatTick(task.id, () => { void completeTask(); });
     const undoDone = async () => {
         if (doneUndo && await doneUndo.undo()) {
             setDoneUndo(null);
+            setRepeating(null);
             setStage('ask');
+        }
+    };
+    const stopRepeating = async () => {
+        if (!repeating) return;
+        try {
+            const restore = await stopRepeatingOccurrence(repeating.occurrenceId);
+            setStopped(() => restore);
+        } catch (error) {
+            reportError('Failed to stop repeating', error);
+        }
+    };
+    const undoStop = async () => {
+        if (!stopped) return;
+        try {
+            await stopped();
+            setStopped(null);
+        } catch (error) {
+            reportError('Failed to undo stop repeating', error);
         }
     };
     const askCoach = async () => {
@@ -103,10 +137,15 @@ export function FocusCheckIn(props: FocusCheckInProps) {
                 </div>
                 <h2 id="fx-finish-heading">{tr('focus.checkin.doneTitle', 'Done. Nicely handled.')}</h2>
                 <p className="fx-finish-line">{props.sentence}</p>
-                <p className="fx-done-line mx-auto mt-3 w-fit" role="status">
+                <p className="fx-done-line mx-auto mt-3 w-fit flex-wrap justify-center" role="status" data-testid="focus-checkin-done-line">
                     <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />
-                    {tr('focus.checkin.markedDone', 'Marked done')}
-                    {doneUndo && <button type="button" className="fx-link focus-ring" onClick={() => { void undoDone(); }}>{tr('common.undo', 'Undo')}</button>}
+                    {stopped ? tr('task.repeatStopped', 'Stopped repeating') : repeating?.message ?? tr('focus.checkin.markedDone', 'Marked done')}
+                    {stopped
+                        ? <button type="button" className="fx-link focus-ring" onClick={() => { void undoStop(); }}>{tr('common.undo', 'Undo')}</button>
+                        : doneUndo && <button type="button" className="fx-link focus-ring" onClick={() => { void undoDone(); }}>{tr('common.undo', 'Undo')}</button>}
+                    {repeating && !stopped && (
+                        <button type="button" className="fx-link fx-link--muted focus-ring" onClick={() => { void stopRepeating(); }}>{tr('task.stopRepeating', 'Stop repeating')}</button>
+                    )}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                     <button type="button" data-autofocus onClick={() => props.onTakeBreak(true)} className={primaryClass}>
@@ -211,6 +250,17 @@ export function FocusCheckIn(props: FocusCheckInProps) {
                     <div className="mt-3" data-testid="focus-checkin-reply">
                         <p className="fx-finish-line">{coachReply.reply}</p>
                         <div className="fx-chips fx-chips--center mt-2">
+                            {coachReply.timerMinutes && coachReply.timerMinutes <= 60 && (
+                                // The coach thinks it needs a bit longer: keep going on this same session.
+                                <button
+                                    type="button"
+                                    className="fx-chip fx-chip--accent focus-ring"
+                                    data-testid="focus-checkin-keep-coach"
+                                    onClick={() => props.onExtend(coachReply.timerMinutes!)}
+                                >
+                                    {tr('focus.checkin.keepGoingFor', 'Keep going for {{time}}').replace('{{time}}', formatFocusCoachMinutes(coachReply.timerMinutes, tr))}
+                                </button>
+                            )}
                             {coachReply.actions.map((action, index) => (
                                 <OfferChip key={`${action.type}-${index}`} label={focusActionLabel(action, tr)} tr={tr} onApply={() => props.onApply(action)} />
                             ))}
@@ -276,12 +326,13 @@ export function FocusCheckIn(props: FocusCheckInProps) {
             <>
                 <h2 id="fx-finish-heading">{tr('focus.checkin.title', 'Is it done?')}</h2>
                 <div className="fx-chips fx-chips--center mt-4" role="group" aria-label={tr('focus.checkin.title', 'Is it done?')}>
-                    <button type="button" data-autofocus disabled={busy} className="fx-chip fx-chip--lg fx-chip--accent focus-ring" onClick={() => { void markDone(); }}>
+                    <button type="button" data-autofocus disabled={busy} className="fx-chip fx-chip--lg fx-chip--accent focus-ring" onClick={markDone}>
                         <Check className="h-4 w-4" aria-hidden />{tr('focus.checkin.done', 'Done')}
                     </button>
                     <button type="button" className="fx-chip fx-chip--lg focus-ring" onClick={() => setStage('almost')}>{tr('focus.checkin.almost', 'Almost')}</button>
                     <button type="button" className="fx-chip fx-chip--lg focus-ring" onClick={() => setStage('blocked')}>{tr('focus.checkin.notYet', 'Not yet')}</button>
                 </div>
+                <RepeatTickConfirm taskId={task.id} className="mx-auto mt-3 max-w-sm" />
             </>
         );
     }

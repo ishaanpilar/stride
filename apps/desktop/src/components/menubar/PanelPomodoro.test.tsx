@@ -129,4 +129,35 @@ describe('PanelPomodoro', () => {
         expect(usePomodoroStore.getState().snapshot.lastEvent).toBe('focus-finished');
         expect(usePomodoroStore.getState().snapshot.timerState.phase).toBe('break');
     });
+
+    it('− / + beside the time: idle they set the upcoming session ("30 min"); running they change it, for every window', () => {
+        render(<PanelPomodoro candidates={[task]} tr={tr} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }));
+        expect(screen.getByTestId('panel-pomodoro-clock').textContent).toBe('30:00');
+        expect(screen.getByTestId('panel-pomodoro-preset-label')).toHaveTextContent('30 min');
+        // Still idle: no Reset, still Start.
+        expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: true, remainingSeconds: 1800 });
+        fireEvent.click(screen.getByRole('button', { name: 'Remove 5 minutes' }));
+        expect(usePomodoroStore.getState().snapshot.timerState.phaseTotalSeconds).toBeUndefined();
+        // Saved for the main window and the float (they re-read the shared snapshot).
+        const stored = JSON.parse(window.localStorage.getItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY)!);
+        expect(stored.timerState.remainingSeconds).toBeLessThanOrEqual(1500);
+        expect(screen.getByTestId('panel-pomodoro-adjust-flash')).toHaveTextContent('−5 min');
+    });
+
+    it('in overtime "+" is 5 more planned minutes and "−" is disabled', () => {
+        window.localStorage.setItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY, JSON.stringify({
+            durations: { focusMinutes: 25, breakMinutes: 5 },
+            timerState: { phase: 'focus', remainingSeconds: 0, overtimeSeconds: 60, keepGoing: true, isRunning: true, completedFocusSessions: 0 },
+            selectedTaskId: 't1',
+            updatedAtMs: Date.now(),
+            sessionHistory: { totalCompletedFocusSessions: 0, completedFocusSessionsByTaskId: {} },
+        }));
+        render(<PanelPomodoro candidates={[task]} tr={tr} />);
+        expect(screen.getByRole('button', { name: 'Remove 5 minutes' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }));
+        expect(screen.getByTestId('panel-pomodoro-clock').textContent).toBe('05:00');
+    });
 });

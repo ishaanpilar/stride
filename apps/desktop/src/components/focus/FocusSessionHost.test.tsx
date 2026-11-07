@@ -442,7 +442,7 @@ describe('FocusSessionHost', () => {
         expect(usePomodoroStore.getState().snapshot.timerState.phase).toBe('focus');
     });
 
-    it('never generates steps: with no checklist only a quiet "Add a step" link; AI off shows the local coach', async () => {
+    it('AI off: no steps are made up, only a quiet "Add a step" link and the local coach line', async () => {
         const task = makeTask(undefined);
         useTaskStore.setState({ tasks: [task], _allTasks: [task] });
         renderHost();
@@ -470,7 +470,7 @@ describe('FocusSessionHost', () => {
         renderHost();
         act(() => setSnapshot({}));
         const buttons = within(stage()).getAllByRole('button').filter((b) => !b.closest('ol') && !b.closest('label') && !b.closest('[data-testid="focus-coach"]') && !b.closest('[data-testid="focus-checklist"]'));
-        expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Enter full screen', 'Minimise', 'Hide, keep timer running', 'End session', 'Pause']);
+        expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Enter full screen', 'Minimise', 'Hide, keep timer running', 'Remove 5 minutes', 'Add 5 minutes', 'End session', 'Pause']);
         expect(stage()).toHaveTextContent('Launch');
         expect(screen.queryByRole('button', { name: 'Switch to Break' })).toBeNull();
         expect(screen.getByRole('timer')).toHaveAccessibleName('25:00 remaining');
@@ -492,6 +492,69 @@ describe('FocusSessionHost', () => {
         } finally {
             dock.remove();
         }
+    });
+
+    describe('− / + beside the time', () => {
+        const timer = () => usePomodoroStore.getState().snapshot.timerState;
+
+        it('the stage: ±5 min on the running focus, with a brief note; keyboard = / − and Up / Down on the clock', () => {
+            renderHost();
+            act(() => setSnapshot({ updatedAtMs: Date.now() }));
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Add 5 minutes' }));
+            expect(timer().phaseTotalSeconds).toBe(30 * 60);
+            expect(screen.getByRole('timer')).toHaveAccessibleName('30:00 remaining');
+            expect(screen.getByTestId('focus-adjust-flash')).toHaveTextContent('+5 min');
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Remove 5 minutes' }));
+            expect(timer().phaseTotalSeconds).toBeUndefined();
+            expect(screen.getByTestId('focus-adjust-flash')).toHaveTextContent('−5 min');
+            fireEvent.keyDown(stage(), { key: '=' });
+            expect(timer().remainingSeconds).toBe(30 * 60);
+            fireEvent.keyDown(stage(), { key: '-' });
+            expect(timer().remainingSeconds).toBe(25 * 60);
+            const clock = screen.getByRole('timer');
+            clock.focus();
+            fireEvent.keyDown(clock, { key: 'ArrowUp' });
+            expect(timer().remainingSeconds).toBe(30 * 60);
+            fireEvent.keyDown(clock, { key: 'ArrowDown' });
+            expect(timer().remainingSeconds).toBe(25 * 60);
+            // Typing in a field is not a shortcut.
+            fireEvent.click(screen.getByRole('button', { name: 'Add a step' }));
+            fireEvent.keyDown(screen.getByRole('textbox', { name: 'Add a step' }), { key: '-' });
+            expect(timer().remainingSeconds).toBe(25 * 60);
+        });
+
+        it('"−" keeps at least a minute and is disabled at one minute; the break works too', () => {
+            renderHost();
+            act(() => setSnapshot({ updatedAtMs: Date.now(), timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS), remainingSeconds: 150, isRunning: true } }));
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Remove 5 minutes' }));
+            expect(timer().remainingSeconds).toBe(60);
+            expect(within(stage()).getByRole('button', { name: 'Remove 5 minutes' })).toBeDisabled();
+            act(() => setSnapshot({ updatedAtMs: Date.now(), timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS, 'break'), remainingSeconds: 120, isRunning: true } }));
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Add 5 minutes' }));
+            expect(timer()).toMatchObject({ phase: 'break', remainingSeconds: 420, phaseTotalSeconds: 600 });
+        });
+
+        it('overtime: "+" turns the count-up into 5 more planned minutes; "−" is disabled', () => {
+            renderHost();
+            act(() => setSnapshot({ updatedAtMs: Date.now(), timerState: { ...createPomodoroState(DEFAULT_POMODORO_DURATIONS), remainingSeconds: 0, overtimeSeconds: 90, keepGoing: true, isRunning: true } }));
+            expect(within(stage()).getByRole('button', { name: 'Remove 5 minutes' })).toBeDisabled();
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Add 5 minutes' }));
+            expect(timer().overtimeSeconds).toBeUndefined();
+            expect(timer().remainingSeconds).toBe(300);
+            expect(screen.getByRole('timer')).toHaveAccessibleName('05:00 remaining');
+        });
+
+        it('the minimised card has them too', () => {
+            renderHost();
+            act(() => setSnapshot({ updatedAtMs: Date.now() }));
+            fireEvent.click(screen.getByRole('button', { name: 'Minimise' }));
+            const mini = screen.getByTestId('focus-mini');
+            fireEvent.click(within(mini).getByRole('button', { name: 'Add 5 minutes' }));
+            expect(within(mini).getByRole('timer')).toHaveTextContent('30:00');
+            fireEvent.click(within(mini).getByRole('button', { name: 'Remove 5 minutes' }));
+            fireEvent.click(within(mini).getByRole('button', { name: 'Remove 5 minutes' }));
+            expect(within(mini).getByRole('timer')).toHaveTextContent('20:00');
+        });
     });
 
     describe('coach', () => {
@@ -533,18 +596,19 @@ describe('FocusSessionHost', () => {
 
         it('a chip answer sends one follow-up turn; suggested actions apply only on click, with Undo', async () => {
             useWashing();
-            ai.reply = JSON.stringify({ reply: 'Then book a visit for tomorrow morning and enjoy the evening.', actions: [{ type: 'set_time_estimate', minutes: 15 }, { type: 'delete_everything' }] });
+            ai.reply = JSON.stringify({ reply: 'Then book a visit for tomorrow morning and enjoy the evening.', actions: [{ type: 'set_time_estimate', minutes: 15 }, { type: 'add_followup_task', title: 'Book a repair visit' }, { type: 'delete_everything' }] });
             const coach = await startCoach();
             await act(async () => { fireEvent.click(within(coach).getByRole('button', { name: 'Need to find one' })); });
             expect(screen.getByTestId('focus-coach-reply')).toHaveTextContent('Then book a visit for tomorrow morning and enjoy the evening.');
             expect(within(coach).queryByRole('button', { name: 'Yes, calling now' })).toBeNull();
             const actions = screen.getAllByTestId('focus-coach-action');
-            expect(actions.map((a) => a.textContent)).toEqual(['Set estimate to 15 min']);
-            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBeUndefined();
+            // The chat never offers a time estimate: next to a running timer it reads like a timer change.
+            expect(actions.map((a) => a.textContent)).toEqual(['Add task: Book a repair visit']);
+            const before = useTaskStore.getState()._allTasks.filter((t) => !t.deletedAt).length;
             await act(async () => { fireEvent.click(actions[0]!); });
-            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBe('15min');
+            expect(useTaskStore.getState()._allTasks.filter((t) => !t.deletedAt).some((t) => t.title === 'Book a repair visit')).toBe(true);
             await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-action-done')).getByRole('button', { name: 'Undo' })); });
-            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBeUndefined();
+            expect(useTaskStore.getState()._allTasks.filter((t) => !t.deletedAt).length).toBe(before);
         });
 
         it('stays light: at most three exchanges', async () => {
@@ -600,9 +664,120 @@ describe('FocusSessionHost', () => {
             expect(useTaskStore.getState()._allTasks[0]!.checklist!.map((c) => c.title)).toEqual(['Confirm the KYC papers']);
             await act(async () => { fireEvent.click(within(block).getByRole('button', { name: 'Undo' })); });
             expect(useTaskStore.getState()._allTasks[0]!.checklist).toEqual([]);
-            fireEvent.click(within(screen.getByTestId('focus-coach-steps-feedback')).getByRole('button', { name: 'Not useful' }));
+            fireEvent.click(within(screen.getByTestId('focus-coach-feedback')).getByRole('button', { name: 'Not useful' }));
             expect(screen.queryByTestId('focus-coach-steps')).toBeNull();
             expect(coach).toBeInTheDocument();
+        });
+
+        const editing = JSON.stringify({
+            estimateMinutes: 40,
+            estimateNote: 'two cuts and an export',
+            approach: 'do',
+            suggestion: 'Make the two cuts Rhea asked for, then export',
+            motivation: 'Forty focused minutes and it is off your desk.',
+            question: { text: 'Is Rhea\'s feedback final?', options: ['Yes, final', 'Still waiting'] },
+            steps: [{ title: 'Review Rhea\'s notes' }, { title: 'Open your laptop' }, { title: 'Decide on the two cuts' }, { title: 'Send the export to Rhea' }],
+        });
+        const useEditing = (checklist?: Task['checklist']) => {
+            const task = { ...makeTask(checklist), title: 'Edit the launch video for Rhea' };
+            useTaskStore.setState({ tasks: [task], _allTasks: [task] });
+            ai.coach = editing;
+        };
+        const checklistTitles = () => (useTaskStore.getState()._allTasks[0]!.checklist ?? []).map((c) => c.title);
+        const timer = () => usePomodoroStore.getState().snapshot.timerState;
+
+        it('offers its estimate as "Set timer to 40 min": the running focus becomes 40 min and the estimate is saved; Undo restores both', async () => {
+            useEditing(steps(2));
+            renderHost();
+            await act(async () => { setSnapshot({ updatedAtMs: Date.now() }); });
+            expect(screen.getByTestId('focus-coach-estimate')).toHaveTextContent('About 40 min· two cuts and an export');
+            const offer = screen.getByTestId('focus-coach-timer-offer');
+            expect(within(offer).getByRole('button', { name: 'Keep 25' })).toBeInTheDocument();
+            await act(async () => { fireEvent.click(within(offer).getByRole('button', { name: 'Set timer to 40 min' })); });
+            expect(timer().phaseTotalSeconds).toBe(40 * 60);
+            expect(timer().isRunning).toBe(true);
+            expect(screen.getByRole('timer')).toHaveAccessibleName('40:00 remaining');
+            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBe('custom:40');
+            expect(screen.getByTestId('focus-coach-set-timer-done')).toHaveTextContent('Timer set to 40 min');
+            await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-set-timer-done')).getByRole('button', { name: 'Undo' })); });
+            expect(timer().phaseTotalSeconds).toBeUndefined();
+            expect(screen.getByRole('timer')).toHaveAccessibleName('25:00 remaining');
+            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBeUndefined();
+            // "Keep 25" just puts the offer away.
+            fireEvent.click(within(screen.getByTestId('focus-coach-timer-offer')).getByRole('button', { name: 'Keep 25' }));
+            expect(screen.queryByTestId('focus-coach-timer-offer')).toBeNull();
+            expect(timer().phaseTotalSeconds).toBeUndefined();
+        });
+
+        it('Set timer before the session really starts (paused at the top) sets this session\'s length', async () => {
+            useEditing(steps(2));
+            renderHost();
+            await act(async () => { setSnapshot({ updatedAtMs: Date.now() }); });
+            fireEvent.click(within(stage()).getByRole('button', { name: 'Pause' }));
+            await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Set timer to 40 min' })); });
+            expect(timer()).toMatchObject({ isRunning: false, remainingSeconds: 2400, phaseTotalSeconds: 2400 });
+        });
+
+        it('with no checklist, writes 3–5 real next steps in by itself (trivial ones dropped), with Undo', async () => {
+            useEditing(undefined);
+            renderHost();
+            await act(async () => { setSnapshot({}); });
+            expect(checklistTitles()).toEqual(['Review Rhea\'s notes', 'Decide on the two cuts', 'Send the export to Rhea']);
+            expect(screen.getByTestId('focus-coach-steps-note')).toHaveTextContent('Added 3 steps');
+            expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+            await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-steps-note')).getByRole('button', { name: 'Undo' })); });
+            expect(checklistTitles()).toEqual([]);
+            expect(screen.queryByTestId('focus-coach-steps')).toBeNull();
+        });
+
+        it('"Not useful" on the steps it added takes them off again (undoable) and records it', async () => {
+            useEditing(undefined);
+            renderHost();
+            await act(async () => { setSnapshot({}); });
+            await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-feedback')).getByRole('button', { name: 'Not useful' })); });
+            expect(checklistTitles()).toEqual([]);
+            expect(screen.getByTestId('focus-coach-steps-note')).toHaveTextContent('Removed the steps');
+            expect(JSON.parse(localStorage.getItem('stride:focus:coach-feedback:v1')!)[0]).toMatchObject({ kind: 'steps', verdict: 'not_useful' });
+            await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-steps-note')).getByRole('button', { name: 'Undo' })); });
+            expect(checklistTitles()).toEqual(['Review Rhea\'s notes', 'Decide on the two cuts', 'Send the export to Rhea']);
+        });
+
+        it('a task that already has steps is left alone; "Suggest more steps" shows the extras to add', async () => {
+            useEditing([{ id: 'own', title: 'Review Rhea\'s notes', isCompleted: false }]);
+            renderHost();
+            await act(async () => { setSnapshot({}); });
+            expect(checklistTitles()).toEqual(['Review Rhea\'s notes']);
+            const block = screen.getByTestId('focus-coach-steps');
+            expect(block).not.toHaveTextContent('Decide on the two cuts');
+            fireEvent.click(within(block).getByRole('button', { name: 'Suggest more steps' }));
+            const shown = screen.getByTestId('focus-coach-steps');
+            expect(shown).toHaveTextContent('Decide on the two cuts');
+            expect(shown).not.toHaveTextContent('Open your laptop');
+            await act(async () => { fireEvent.click(within(shown).getByRole('button', { name: 'Add to checklist' })); });
+            expect(checklistTitles()).toEqual(['Review Rhea\'s notes', 'Decide on the two cuts', 'Send the export to Rhea']);
+        });
+
+        it('an answer can refine the steps ("Update steps") and the timer ("Set timer to 30 min")', async () => {
+            useEditing(undefined);
+            ai.reply = JSON.stringify({
+                reply: 'Then skip the review and go straight to the cuts.',
+                actions: [{ type: 'update_steps', steps: ['Make the two cuts', 'Unplug the machine', 'Export at 1080p', 'Send it to Rhea'] }, { type: 'set_timer', minutes: 30 }],
+            });
+            renderHost();
+            await act(async () => { setSnapshot({ updatedAtMs: Date.now() }); });
+            // The coach asks about the task itself, never about time.
+            expect(screen.getByText('Is Rhea\'s feedback final?')).toBeInTheDocument();
+            await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Yes, final' })); });
+            expect(screen.getByTestId('focus-coach-new-steps')).toHaveTextContent('Make the two cuts');
+            expect(screen.getByTestId('focus-coach-new-steps')).not.toHaveTextContent('Unplug');
+            await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update steps' })); });
+            expect(checklistTitles()).toEqual(['Make the two cuts', 'Export at 1080p', 'Send it to Rhea']);
+            await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Set timer to 30 min' })); });
+            expect(timer().phaseTotalSeconds).toBe(30 * 60);
+            expect(useTaskStore.getState()._allTasks[0]!.timeEstimate).toBe('30min');
+            expect(screen.getByText('Timer set to 30 min')).toBeInTheDocument();
+            await act(async () => { fireEvent.click(within(screen.getByTestId('focus-coach-update-steps-done')).getByRole('button', { name: 'Undo' })); });
+            expect(checklistTitles()).toEqual(['Review Rhea\'s notes', 'Decide on the two cuts', 'Send the export to Rhea']);
         });
 
         it('feeds recent negative feedback into the next coach prompt', async () => {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTaskStore, type Task } from '@stride/core';
 import { holdSyncSave } from '../../../test/hold-sync-save';
 
+import { useUiStore } from '../../../store/ui-store';
 import { useTaskSelection } from './useTaskSelection';
 
 describe('useTaskSelection', () => {
@@ -96,6 +97,55 @@ describe('useTaskSelection', () => {
         expect(batchMoveTasks).toHaveBeenLastCalledWith(['a'], 'done');
         expect(selection.selectionMode).toBe(false);
         expect(selection.selectedIdsArray).toEqual([]);
+    });
+
+    describe('completing occurrences of a series just completed', () => {
+        const initialTaskState = useTaskStore.getState();
+        afterEach(() => {
+            useTaskStore.setState(initialTaskState, true);
+            useUiStore.setState({ toasts: [] });
+        });
+        const at = new Date().toISOString();
+        const seed = () => {
+            const tasks = [
+                { id: 'previous', title: 'Weekly', status: 'done', completedAt: at, recurrence: { rule: 'weekly' }, tags: [], contexts: [], createdAt: at, updatedAt: at },
+                { id: 'current', title: 'Weekly', status: 'next', recurrence: { rule: 'weekly', seriesId: 'previous' }, tags: [], contexts: [], createdAt: at, updatedAt: at },
+                { id: 'plain', title: 'Plain', status: 'next', tags: [], contexts: [], createdAt: at, updatedAt: at },
+            ] as Task[];
+            useTaskStore.setState({ tasks, _allTasks: tasks, _tasksById: new Map(tasks.map((task) => [task.id, task])) });
+        };
+        const moveBoth = async () => {
+            let selection!: ReturnType<typeof useTaskSelection>;
+            const batchMoveTasks = vi.fn().mockResolvedValue({ success: true });
+            function Probe() {
+                selection = useTaskSelection(['current', 'plain'], { batchMoveTasks, t: (key) => key });
+                return null;
+            }
+            act(() => { renderer.create(<Probe />); });
+            act(() => { selection.toggleMultiSelect('current'); selection.toggleMultiSelect('plain'); });
+            await act(async () => { await selection.moveSelectedTasks('done'); });
+            return batchMoveTasks;
+        };
+
+        it('completes the rest and asks about those, in one toast', async () => {
+            seed();
+            const batchMoveTasks = await moveBoth();
+            expect(batchMoveTasks).toHaveBeenCalledTimes(1);
+            expect(batchMoveTasks).toHaveBeenCalledWith(['plain'], 'done');
+
+            const toast = useUiStore.getState().toasts.slice(-1)[0];
+            expect(toast?.message).toBe("This repeats. Mark next week's as done too?");
+            expect(toast?.secondaryAction?.label).toBe('Cancel');
+            await act(async () => { toast?.action?.onClick(); });
+            expect(batchMoveTasks).toHaveBeenLastCalledWith(['current'], 'done');
+        });
+
+        it('leaves them open on Cancel', async () => {
+            seed();
+            const batchMoveTasks = await moveBoth();
+            useUiStore.getState().toasts.slice(-1)[0]?.secondaryAction?.onClick();
+            expect(batchMoveTasks).toHaveBeenCalledTimes(1);
+        });
     });
 
     describe('token writes behind a sync save', () => {

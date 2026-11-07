@@ -2,8 +2,8 @@ import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { SORTABLE_TRANSITION } from '../../../lib/motion';
 import { CSS } from '@dnd-kit/utilities';
-import { Check, Circle, MoreHorizontal } from 'lucide-react';
-import { isTaskCompleted, safeFormatDate, safeParseDate, tFallback } from '@stride/core';
+import { Check, Circle, MoreHorizontal, Repeat } from 'lucide-react';
+import { formatRecurrenceLabel, isTaskCompleted, safeFormatDate, safeParseDate, tFallback } from '@stride/core';
 import type { Task } from '@stride/core';
 import { TaskItem } from '../../TaskItem';
 import { FocusStarIcon } from '../../FocusStarIcon';
@@ -12,6 +12,8 @@ import { cn } from '../../../lib/utils';
 import { useUiStore } from '../../../store/ui-store';
 import type { BoardKeyboardDirection } from '../board-view-dnd';
 import { isActivePhase, useCompletionPhase } from '../../../lib/completion-sequence';
+import { useOccurrenceArrived } from '../../../lib/completion-retention';
+import { RepeatTickConfirm } from '../../Task/RepeatTickConfirm';
 
 export type BoardCardProject = { title: string; color?: string };
 
@@ -49,9 +51,15 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
     const markDone = tFallback(t, 'task.markDone', 'Mark done');
     const reopen = tFallback(t, 'status.reopen', 'Reopen');
     const showFocusStar = task.isFocusedToday === true && task.status === 'next';
+    const repeatLabel = formatRecurrenceLabel({ recurrence: task.recurrence, t });
+    const occurrenceArrived = useOccurrenceArrived(task.id);
 
     return (
-        <div className={cn('flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')} data-completing={completingNow ? '' : undefined}>
+        <div
+            className={cn('flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}
+            data-completing={completingNow ? '' : undefined}
+            data-occurrence-arrived={occurrenceArrived ? '' : undefined}
+        >
             <div className="flex min-w-0 items-start gap-2">
                 {onToggleDone ? (
                     <button
@@ -109,7 +117,7 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
                     </button>
                 ) : null}
             </div>
-            {(showPriority && task.priority) || project || due || shownTokens.length > 0 ? (
+            {(showPriority && task.priority) || project || due || repeatLabel || shownTokens.length > 0 ? (
                 <div data-board-card-chips className="flex min-w-0 flex-wrap items-center gap-1.5">
                     {showPriority && task.priority ? (
                         <Pill data-board-priority tone={priorityTone(task.priority)} className={CHIP}>
@@ -119,6 +127,11 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
                     {due ? (
                         <Pill tone={overdue ? 'danger' : 'neutral'} className={CHIP}>
                             {safeFormatDate(task.dueDate, 'MMM d')}
+                        </Pill>
+                    ) : null}
+                    {repeatLabel ? (
+                        <Pill className={CHIP} title={repeatLabel} data-board-repeat>
+                            <Repeat className="h-3 w-3" aria-label={repeatLabel} />
                         </Pill>
                     ) : null}
                     {project ? (
@@ -134,6 +147,7 @@ export function BoardCardBody({ task, project, showPriority, t, compact, onToggl
                     {extraTokens > 0 ? <Pill className={CHIP}>{`+${extraTokens}`}</Pill> : null}
                 </div>
             ) : null}
+            {onToggleDone ? <RepeatTickConfirm taskId={task.id} /> : null}
         </div>
     );
 }

@@ -1,10 +1,11 @@
-import { act } from '@testing-library/react';
-import { useTaskStore, type Task } from '@stride/core';
+import { act, renderHook } from '@testing-library/react';
+import { COMPLETION_SETTLE_DELAY_MS, useTaskStore, type Task } from '@stride/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     COMPLETION_GONE_LINGER_MS,
     COMPLETION_TIMELINE,
+    afterCompletionSequence,
     beginCompletion,
     cancelCompletion,
     getCompletionPhase,
@@ -12,7 +13,13 @@ import {
     isWithinDoubleClickGuard,
     resetCompletionSequenceForTests,
 } from './completion-sequence';
-import { resetCompletionRetentionForTests } from './completion-retention';
+import {
+    OCCURRENCE_ARRIVAL_MS,
+    resetCompletionRetentionForTests,
+    useCompletionRetention,
+    useHeldOccurrenceIds,
+    useOccurrenceArrived,
+} from './completion-retention';
 import { resetCompletionSoundForTests, setCompletionSoundEnabled } from './completion-sound';
 import { MOTION_STORAGE_KEY, resetMotionPreferenceForTests } from './motion';
 
@@ -169,5 +176,121 @@ describe('completion sequence and the task store', () => {
         });
         expect(getCompletionPhase('a')).toBeUndefined();
         expect(getCompletionPhase('b')).toBeUndefined();
+    });
+});
+
+describe('repeating completions', () => {
+    const repeating = { rule: 'weekly' as const, strategy: 'fluid' as const };
+    const weekly = (id: string) => makeTask(id, { recurrence: repeating });
+    const completedCopy = (task: Task, completedAt: string): Task => ({ ...task, status: 'done', completedAt });
+    const nextOf = (task: Task, completedAt: string): Task => makeTask(`${task.id}-next`, {
+        createdAt: completedAt, updatedAt: completedAt, recurrence: { ...repeating, seriesId: task.id },
+    });
+    const setStoreTasks = (tasks: Task[]) => act(() => { useTaskStore.setState({ tasks, _allTasks: tasks }); });
+    const held = () => renderHook(() => useHeldOccurrenceIds()).result.current;
+    const retainedIds = () => [...renderHook(() => useCompletionRetention()).result.current.retained.keys()];
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        window.localStorage.clear();
+        resetMotionPreferenceForTests();
+        resetCompletionSequenceForTests();
+        resetCompletionRetentionForTests();
+        setStoreTasks([]);
+    });
+    afterEach(() => {
+        resetCompletionSequenceForTests();
+        resetCompletionRetentionForTests();
+        setStoreTasks([]);
+        vi.useRealTimers();
+    });
+
+    it('holds what the tick generated until the sequence ends, then forgets the done copy', () => {
+        const task = weekly('a');
+        setStoreTasks([task]);
+        beginCompletion('a');
+        const completedAt = new Date().toISOString();
+        setStoreTasks([completedCopy(task, completedAt), nextOf(task, completedAt)]);
+        expect([...held()]).toEqual(['a-next']);
+        expect(retainedIds()).toEqual(['a']);
+
+        act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone); });
+        expect([...held()]).toEqual([]);
+        expect(retainedIds()).toEqual([]);
+    });
+
+    it('does not hold an open occurrence that was already there', () => {
+        const task = weekly('a');
+        const existing = makeTask('existing', { recurrence: { ...repeating, seriesId: 'a' } });
+        setStoreTasks([task, existing]);
+        beginCompletion('a');
+        setStoreTasks([completedCopy(task, new Date().toISOString()), existing]);
+        expect([...held()]).toEqual([]);
+    });
+
+    it('treats a bulk completion, which has no sequence, like a plain task settling', () => {
+        const [a, b] = [weekly('a'), weekly('b')];
+        setStoreTasks([a, b]);
+        const completedAt = new Date().toISOString();
+        setStoreTasks([completedCopy(a, completedAt), completedCopy(b, completedAt), nextOf(a, completedAt), nextOf(b, completedAt)]);
+        expect([...held()].sort()).toEqual(['a-next', 'b-next']);
+        act(() => { vi.advanceTimersByTime(COMPLETION_SETTLE_DELAY_MS + 10); });
+        expect([...held()]).toEqual([]);
+        expect(retainedIds()).toEqual([]);
+    });
+
+    it('releases the hold when the task is reopened, without a highlight', () => {
+        const task = weekly('a');
+        setStoreTasks([task]);
+        beginCompletion('a');
+        const completedAt = new Date().toISOString();
+        const next = nextOf(task, completedAt);
+        setStoreTasks([completedCopy(task, completedAt), next]);
+        setStoreTasks([task, { ...next, deletedAt: completedAt }]);
+        expect([...held()]).toEqual([]);
+        expect(renderHook(() => useOccurrenceArrived('a-next')).result.current).toBe(false);
+    });
+
+    it('flags the new occurrence as arrived for a moment', () => {
+        const task = weekly('a');
+        setStoreTasks([task]);
+        beginCompletion('a');
+        const completedAt = new Date().toISOString();
+        setStoreTasks([completedCopy(task, completedAt), nextOf(task, completedAt)]);
+        const arrived = renderHook(() => useOccurrenceArrived('a-next'));
+        expect(arrived.result.current).toBe(false);
+        act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone); });
+        expect(arrived.result.current).toBe(true);
+        act(() => { vi.advanceTimersByTime(OCCURRENCE_ARRIVAL_MS + 1); });
+        expect(arrived.result.current).toBe(false);
+    });
+
+    it('leaves plain tasks retained', () => {
+        const task = makeTask('plain');
+        setStoreTasks([task]);
+        beginCompletion('plain');
+        setStoreTasks([completedCopy(task, new Date().toISOString())]);
+        act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone + COMPLETION_GONE_LINGER_MS + 1); });
+        expect(retainedIds()).toEqual(['plain']);
+    });
+
+    it('runs what waits for the sequence at its end, and never after a cancel', () => {
+        const ended = vi.fn();
+        beginCompletion('a');
+        afterCompletionSequence('a', ended);
+        expect(ended).not.toHaveBeenCalled();
+        act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone); });
+        expect(ended).toHaveBeenCalledOnce();
+
+        const cancelled = vi.fn();
+        beginCompletion('b');
+        afterCompletionSequence('b', cancelled);
+        cancelCompletion('b');
+        act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone); });
+        expect(cancelled).not.toHaveBeenCalled();
+
+        const immediate = vi.fn();
+        afterCompletionSequence('c', immediate);
+        expect(immediate).toHaveBeenCalledOnce();
     });
 });

@@ -517,8 +517,9 @@ describe('pomodoro store', () => {
             }));
             usePomodoroStore.getState().hydratePomodoro({});
             const { timerState } = usePomodoroStore.getState().snapshot;
-            expect(timerState.phaseTotalSeconds).toBe(25 * 60 + 120 * 60);
-            expect(timerState.remainingSeconds).toBe(25 * 60 + 120 * 60);
+            // Bounded by the longest phase (180 min, or the configured length plus the most added time).
+            expect(timerState.phaseTotalSeconds).toBe(Math.max(180, 25 + 120) * 60);
+            expect(timerState.remainingSeconds).toBe(Math.max(180, 25 + 120) * 60);
         });
 
         it('credits the added minutes when an extended focus finishes', () => {
@@ -547,6 +548,55 @@ describe('pomodoro store', () => {
             expect(snapshot.selectedTaskId).toBe('task-1');
             expect(snapshot.lastEvent).toBeNull();
             expect(snapshot.timerState).toMatchObject({ phase: 'focus', isRunning: true, remainingSeconds: 300, phaseTotalSeconds: 300 });
+        });
+    });
+
+    describe('− / + and Set timer', () => {
+        const stored = () => JSON.parse(window.localStorage.getItem(DESKTOP_POMODORO_SESSION_STORAGE_KEY) ?? '{}');
+        const reread = () => {
+            usePomodoroStore.setState({ hasHydrated: false });
+            usePomodoroStore.getState().hydratePomodoro({});
+            return usePomodoroStore.getState().snapshot.timerState;
+        };
+
+        it('idle: ±5 plans the upcoming session; starting a task keeps it', () => {
+            usePomodoroStore.getState().hydratePomodoro({});
+            expect(usePomodoroStore.getState().adjustPomodoro(5, {})).toBe(300);
+            expect(usePomodoroStore.getState().adjustPomodoro(5, {})).toBe(300);
+            expect(usePomodoroStore.getState().adjustPomodoro(-5, {})).toBe(-300);
+            expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: false, remainingSeconds: 1800, phaseTotalSeconds: 1800 });
+            usePomodoroStore.getState().startPomodoroFocusForTask('task-1', {});
+            expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: true, remainingSeconds: 1800, phaseTotalSeconds: 1800 });
+        });
+
+        it('running: shortens and lengthens the current phase, saved for every window', () => {
+            seedRunningSession({ selectedTaskId: 'task-1', remainingSeconds: 600, updatedAtMs: Date.now() });
+            usePomodoroStore.getState().hydratePomodoro({});
+            expect(usePomodoroStore.getState().adjustPomodoro(-5, {})).toBe(-300);
+            expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: true, phaseTotalSeconds: 1200 });
+            expect(stored().timerState.phaseTotalSeconds).toBe(1200);
+            // Shorter than configured survives a re-read in another window (menu bar panel, float owner).
+            expect(reread()).toMatchObject({ phaseTotalSeconds: 1200 });
+            expect(reread().remainingSeconds).toBeLessThanOrEqual(300);
+            // At one minute left "−" stops.
+            usePomodoroStore.getState().adjustPomodoro(-5, {});
+            expect(usePomodoroStore.getState().snapshot.timerState.remainingSeconds).toBeGreaterThanOrEqual(59);
+            expect(usePomodoroStore.getState().adjustPomodoro(-5, {})).toBe(0);
+        });
+
+        it('Set timer: running focus becomes N minutes in all; Undo puts the old length back', () => {
+            seedRunningSession({ selectedTaskId: 'task-1', remainingSeconds: 900, updatedAtMs: Date.now() });
+            usePomodoroStore.getState().hydratePomodoro({});
+            const previous = usePomodoroStore.getState().setPomodoroPhaseLength(40 * 60, {});
+            expect(previous).toBe(1500);
+            expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: true, phaseTotalSeconds: 2400 });
+            expect(usePomodoroStore.getState().snapshot.timerState.remainingSeconds).toBeGreaterThanOrEqual(1799);
+            expect(reread().phaseTotalSeconds).toBe(2400);
+            usePomodoroStore.getState().setPomodoroPhaseLength(previous!, {});
+            expect(usePomodoroStore.getState().snapshot.timerState.phaseTotalSeconds).toBeUndefined();
+            expect(usePomodoroStore.getState().snapshot.timerState.remainingSeconds).toBeLessThanOrEqual(900);
+            // Same length: nothing to undo.
+            expect(usePomodoroStore.getState().setPomodoroPhaseLength(25 * 60, {})).toBeNull();
         });
     });
 

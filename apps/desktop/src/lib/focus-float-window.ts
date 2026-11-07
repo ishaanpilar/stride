@@ -48,7 +48,7 @@ export type FocusFloatState = {
     nextStep: string | null;
 };
 
-export type FocusFloatAction = 'toggle' | 'open' | 'close' | 'start-next' | 'sync' | 'tick';
+export type FocusFloatAction = 'toggle' | 'open' | 'close' | 'start-next' | 'sync' | 'tick' | 'add-time' | 'remove-time';
 
 export type FocusFloatDisplay = {
     view: FocusFloatView;
@@ -68,12 +68,21 @@ export function isFocusFloatLocation(location: Pick<Location, 'search'> = window
     return value === '1' || value?.toLowerCase() === 'true';
 }
 
-/** The timer as of `nowMs`, derived from the last state the main window sent. */
-export function deriveFocusFloatDisplay(state: FocusFloatState, nowMs: number): FocusFloatDisplay {
+function advanceFocusFloatTimer(state: FocusFloatState, nowMs: number) {
     const elapsed = Math.floor((nowMs - state.updatedAtMs) / 1000);
-    const advanced = state.timer.isRunning && elapsed > 0
+    return state.timer.isRunning && elapsed > 0
         ? advancePomodoroState(state.timer, state.durations, elapsed, state.autoStart)
         : { state: state.timer, lastEvent: null };
+}
+
+/** The raw timer state as of `nowMs` (for optimistic changes made in the float). */
+export function deriveFocusFloatTimer(state: FocusFloatState, nowMs: number): PomodoroState {
+    return advanceFocusFloatTimer(state, nowMs).state;
+}
+
+/** The timer as of `nowMs`, derived from the last state the main window sent. */
+export function deriveFocusFloatDisplay(state: FocusFloatState, nowMs: number): FocusFloatDisplay {
+    const advanced = advanceFocusFloatTimer(state, nowMs);
     const timer = advanced.state;
     const crossed = advanced.lastEvent;
     let view = state.view;

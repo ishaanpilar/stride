@@ -27,6 +27,7 @@ import { resolveNativeDateInputLocale } from '../../lib/native-date-input-locale
 import { reportError } from '../../lib/report-error';
 import { registerUndoableAction } from '../../lib/undo-registry';
 import { undoTaskCompletion } from '../../lib/undo-task-completion';
+import { guardRepeatTick, showRepeatingDoneToast } from '../../lib/repeating-completion';
 import { useUiStore } from '../../store/ui-store';
 import { runAfterTaskEditExit } from './task-edit-session';
 import { formatTaskMarkedDoneMessage, formatTaskMovedMessage } from '@stride/core';
@@ -325,34 +326,39 @@ export function useTaskQuickActionMenuProps(
         if (task.status === nextStatus) return;
         const previousStatus = task.status;
         const wasFocusedToday = task.isFocusedToday === true;
-        void useTaskStore.getState().moveTask(task.id, nextStatus)
-            .then((result) => {
-                if (!result.success) {
-                    throw new Error(result.error || 'Failed to change task status');
-                }
-                const undo = registerUndoableAction(() => {
-                    if (nextStatus === 'done') {
-                        void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
-                            .catch((error) => reportError('Failed to undo task status change', error));
-                        return;
+        const move = () => {
+            void useTaskStore.getState().moveTask(task.id, nextStatus)
+                .then((result) => {
+                    if (!result.success) {
+                        throw new Error(result.error || 'Failed to change task status');
                     }
-                    void useTaskStore.getState().moveTask(task.id, previousStatus)
-                        .catch((error) => reportError('Failed to undo task status change', error));
-                });
-                if (useTaskStore.getState().settings?.undoNotificationsEnabled === false) return;
-                useUiStore.getState().showToast(
-                    nextStatus === 'done'
-                        ? formatTaskMarkedDoneMessage(t, task.title)
-                        : formatTaskMovedMessage(t, task.title, nextStatus),
-                    'info',
-                    5000,
-                    {
-                        label: tFallback(t, 'common.undo', 'Undo'),
-                        onClick: undo,
-                    },
-                );
-            })
-            .catch((error) => reportError('Failed to change task status', error));
+                    const undo = registerUndoableAction(() => {
+                        if (nextStatus === 'done') {
+                            void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
+                                .catch((error) => reportError('Failed to undo task status change', error));
+                            return;
+                        }
+                        void useTaskStore.getState().moveTask(task.id, previousStatus)
+                            .catch((error) => reportError('Failed to undo task status change', error));
+                    });
+                    if (nextStatus === 'done' && showRepeatingDoneToast(task.id, { undo, t })) return;
+                    if (useTaskStore.getState().settings?.undoNotificationsEnabled === false) return;
+                    useUiStore.getState().showToast(
+                        nextStatus === 'done'
+                            ? formatTaskMarkedDoneMessage(t, task.title)
+                            : formatTaskMovedMessage(t, task.title, nextStatus),
+                        'info',
+                        5000,
+                        {
+                            label: tFallback(t, 'common.undo', 'Undo'),
+                            onClick: undo,
+                        },
+                    );
+                })
+                .catch((error) => reportError('Failed to change task status', error));
+        };
+        if (nextStatus === 'done') guardRepeatTick(task.id, move);
+        else move();
     }, [t, task.id, task.isFocusedToday, task.status, task.title]);
 
     return {

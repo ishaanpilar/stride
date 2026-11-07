@@ -3,6 +3,7 @@ import {
     filterMenuBarAllGroups,
     flushPendingSave,
     formatI18nTemplate,
+    formatRecurrenceLabel,
     getMenuBarReorderIds,
     isMenuBarTaskReorderable,
     isTaskFocusedNow,
@@ -38,7 +39,13 @@ import {
 import { QUICK_ADD_SAVED_EVENT } from '../lib/quick-add-saved-event';
 import { reportError } from '../lib/report-error';
 import { useCompletionRetention } from '../lib/completion-retention';
-import { beginCompletion, cancelCompletion, isWithinDoubleClickGuard } from '../lib/completion-sequence';
+import { afterCompletionSequence, beginCompletion, cancelCompletion, isWithinDoubleClickGuard } from '../lib/completion-sequence';
+import {
+    describeRepeatingCompletion,
+    guardRepeatTick,
+    stopRepeatingOccurrence,
+    type RepeatingCompletion,
+} from '../lib/repeating-completion';
 import {
     commitBoardOrder,
     MANUAL_ORDER_KEYS,
@@ -73,7 +80,9 @@ const TAB_STORAGE_KEY = 'stride-menubar-tab';
 type PanelTab = 'now' | 'all';
 const TAB_ORDER: PanelTab[] = ['now', 'all'];
 
-type UndoState = { taskId: string; title: string; previousStatus: TaskStatus; wasFocusedToday: boolean };
+type UndoState =
+    | { kind: 'completed'; taskId: string; title: string; previousStatus: TaskStatus; wasFocusedToday: boolean; repeating: RepeatingCompletion | null }
+    | { kind: 'stopped-repeating'; restore: () => Promise<void> };
 type OrderUndoState = { viewKey: string; snapshot: BoardOrderSnapshot };
 type PanelReorderGroup = { key: string; kind: MenuBarReorderKind };
 
@@ -248,20 +257,20 @@ export function MenuBarPanel() {
     }, [tasks, projects, dayTick, manualToday]);
     // Completion rule: a task ticked done here stays in its list, struck through, and drops to the bottom of
     // that list after the settle delay (see core task-completion-order.ts). Counts stay open-task counts.
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
     const sectionMembershipRef = useRef<SectionMembership>(new Map());
     const view = useMemo(() => {
         // Always run: it records each open task's list, which the very first tick needs to keep the row.
         const lists: Record<string, Task[]> = { now: baseView.now };
         baseView.all.forEach((group) => { lists[`all:${group.key}`] = group.tasks; });
-        const merged = retainCompletedInSections(lists, sectionMembershipRef.current, sessionCompletions, settledCompletionIds, (id) => tasksById.get(id));
+        const merged = retainCompletedInSections(lists, sectionMembershipRef.current, sessionCompletions, settledCompletionIds, (id) => tasksById.get(id), { hiddenIds: heldOccurrenceIds });
         return {
             ...baseView,
             now: merged.now ?? baseView.now,
             all: baseView.all.map((group) => ({ ...group, tasks: merged[`all:${group.key}`] ?? group.tasks })),
         };
-    }, [baseView, sessionCompletions, settledCompletionIds, tasksById]);
+    }, [baseView, heldOccurrenceIds, sessionCompletions, settledCompletionIds, tasksById]);
     const allGroups = useMemo(
         () => filterMenuBarAllGroups(view.all, query, { projects, areas }),
         [areas, projects, query, view.all],
@@ -291,6 +300,12 @@ export function MenuBarPanel() {
         noticeTimer.current = window.setTimeout(() => setNotice(null), NOTICE_VISIBLE_MS);
     }, []);
 
+    const showUndo = useCallback((next: UndoState) => {
+        setUndo(next);
+        if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
+        undoTimer.current = window.setTimeout(() => setUndo(null), UNDO_VISIBLE_MS);
+    }, []);
+
     const completeTask = useCallback((task: Task) => {
         if (task.status === 'done') {
             // A second click straight after the tick is a double click, not "untick".
@@ -302,38 +317,54 @@ export function MenuBarPanel() {
                 .catch((error) => reportError('Failed to restore task from menu bar panel', error));
             return;
         }
-        // The completion sequence keeps the row on screen (pop, strike, hold, collapse) while the store
-        // already has it done; a second click while it plays does nothing.
-        if (!beginCompletion(task.id, { sound: true })) return;
-        const previousStatus = task.status;
-        const wasFocusedToday = task.isFocusedToday === true;
-        void (async () => {
-            try {
-                const result = await useTaskStore.getState().moveTask(task.id, 'done');
-                if (result && result.success === false) throw new Error(result.error || 'Failed to complete task');
-                setUndo({ taskId: task.id, title: task.title, previousStatus, wasFocusedToday });
-                if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
-                undoTimer.current = window.setTimeout(() => setUndo(null), UNDO_VISIBLE_MS);
-                await syncMainWindow();
-            } catch (error) {
-                cancelCompletion(task.id);
-                setMessage(error instanceof Error ? error.message : 'Failed to complete task');
-                reportError('Failed to complete task from menu bar panel', error);
-            }
-        })();
-    }, [sessionCompletions]);
+        guardRepeatTick(task.id, () => {
+            // The completion sequence keeps the row on screen (pop, strike, hold, collapse) while the store
+            // already has it done; a second click while it plays does nothing.
+            if (!beginCompletion(task.id, { sound: true })) return;
+            const previousStatus = task.status;
+            const wasFocusedToday = task.isFocusedToday === true;
+            void (async () => {
+                try {
+                    const result = await useTaskStore.getState().moveTask(task.id, 'done');
+                    if (result && result.success === false) throw new Error(result.error || 'Failed to complete task');
+                    const repeating = describeRepeatingCompletion(task.id, t);
+                    const completed: UndoState = { kind: 'completed', taskId: task.id, title: task.title, previousStatus, wasFocusedToday, repeating };
+                    if (repeating) afterCompletionSequence(task.id, () => showUndo(completed));
+                    else showUndo(completed);
+                    await syncMainWindow();
+                } catch (error) {
+                    cancelCompletion(task.id);
+                    setMessage(error instanceof Error ? error.message : 'Failed to complete task');
+                    reportError('Failed to complete task from menu bar panel', error);
+                }
+            })();
+        });
+    }, [sessionCompletions, showUndo, t]);
 
     const undoComplete = useCallback(async () => {
         if (!undo) return;
         const current = undo;
         setUndo(null);
         try {
-            await undoTaskCompletion(current.taskId, current.previousStatus, current.wasFocusedToday);
+            if (current.kind === 'stopped-repeating') await current.restore();
+            else await undoTaskCompletion(current.taskId, current.previousStatus, current.wasFocusedToday);
             await syncMainWindow();
         } catch (error) {
             reportError('Failed to undo task completion', error);
         }
     }, [undo]);
+
+    const stopRepeating = useCallback(async () => {
+        if (undo?.kind !== 'completed' || !undo.repeating) return;
+        const { occurrenceId } = undo.repeating;
+        setUndo(null);
+        try {
+            showUndo({ kind: 'stopped-repeating', restore: await stopRepeatingOccurrence(occurrenceId) });
+            await syncMainWindow();
+        } catch (error) {
+            reportError('Failed to stop repeating from menu bar panel', error);
+        }
+    }, [showUndo, undo]);
 
     const openTask = useCallback((task: Task) => {
         void openMainFromMenuBarPanel({ taskId: task.id })
@@ -620,6 +651,7 @@ export function MenuBarPanel() {
             area={!task.projectId && task.areaId ? areaById.get(task.areaId) : undefined}
             done={task.status === 'done'}
             labels={rowLabels}
+            repeatLabel={formatRecurrenceLabel({ recurrence: task.recurrence, t })}
             dateFormat="EEE d MMM"
             priorityLabel={task.priority ? tr(`priority.${task.priority}`, task.priority) : undefined}
             onComplete={completeTask}
@@ -823,11 +855,20 @@ export function MenuBarPanel() {
                     </div>
                 )}
                 {undo && (
-                    <div className="flex items-center gap-2 rounded-card bg-foreground px-3 py-2 text-xs text-background shadow-soft" role="status">
-                        <span className="min-w-0 flex-1 truncate">{tr('menubar.completed', 'Completed')}: {undo.title}</span>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-card bg-foreground px-3 py-2 text-xs text-background shadow-soft" role="status" data-testid="menubar-completion-undo">
+                        {undo.kind === 'stopped-repeating'
+                            ? <span className="min-w-0 flex-1">{tr('task.repeatStopped', 'Stopped repeating')}</span>
+                            : undo.repeating
+                                ? <span className="min-w-0 flex-1 basis-full">{undo.repeating.message}</span>
+                                : <span className="min-w-0 flex-1 truncate">{tr('menubar.completed', 'Completed')}: {undo.title}</span>}
                         <button type="button" onClick={() => void undoComplete()} className="font-semibold underline-offset-2 hover:underline">
                             {tr('common.undo', 'Undo')}
                         </button>
+                        {undo.kind === 'completed' && undo.repeating && (
+                            <button type="button" onClick={() => void stopRepeating()} className="font-semibold underline-offset-2 hover:underline">
+                                {tr('task.stopRepeating', 'Stop repeating')}
+                            </button>
+                        )}
                     </div>
                 )}
                 {message && <p className="text-xs text-danger-text" role="alert">{message}</p>}

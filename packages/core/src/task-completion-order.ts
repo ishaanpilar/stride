@@ -7,6 +7,7 @@ import type { Task, TaskStatus } from './types';
  * stays in the view it was ticked in, struck through, and (after a short settle delay so the tick reads)
  * it moves to the bottom of its list or section. Unticking puts it back in its place. Tasks completed in
  * earlier sessions follow the existing rules: hidden unless the view is the Done view or shows completed.
+ * A repeating task is the exception: its done copy leaves when the sequence ends (recurring-completion.ts).
  *
  * This module holds the pure parts: tracking which tasks were completed this session, deciding which
  * status a retained task still "belongs" to for view filtering, and the stable done-last partition.
@@ -198,7 +199,8 @@ export type SectionMembership = Map<string, { key: string; index: number }>;
  * For multi-section views (Today/Focus) whose membership is not a plain status: remembers which section
  * (and position) each open task was in, and when a task ticked this session drops out of the derived
  * lists, puts it back where it was (still settling) or at the bottom of that section (settled), struck
- * through by the row. `memory` is mutated; keep one per view instance.
+ * through by the row. `memory` is mutated; keep one per view instance. `hiddenIds` are left out of every
+ * list (a repeating task's next occurrence, while the previous one is still completing).
  */
 export function retainCompletedInSections<K extends string, T extends Pick<Task, 'id' | 'status'>>(
     lists: Record<K, T[]>,
@@ -206,11 +208,16 @@ export function retainCompletedInSections<K extends string, T extends Pick<Task,
     retained: RetainedCompletions,
     settledIds: ReadonlySet<string>,
     getTask: (id: string) => T | undefined,
+    options: { hiddenIds?: ReadonlySet<string> } = {},
 ): Record<K, T[]> {
     const keys = Object.keys(lists) as K[];
+    const { hiddenIds } = options;
+    const shown = (hiddenIds?.size
+        ? Object.fromEntries(keys.map((key) => [key, lists[key].filter((task) => !hiddenIds.has(task.id))]))
+        : lists) as Record<K, T[]>;
     const present = new Set<string>();
     for (const key of keys) {
-        lists[key].forEach((task, index) => {
+        shown[key].forEach((task, index) => {
             present.add(task.id);
             if (task.status !== 'done') memory.set(task.id, { key, index });
         });
@@ -228,10 +235,10 @@ export function retainCompletedInSections<K extends string, T extends Pick<Task,
         bucket.push({ index: entry.index, task });
         additions.set(entry.key as K, bucket);
     }
-    const result = { ...lists } as Record<K, T[]>;
+    const result = { ...shown } as Record<K, T[]>;
     for (const key of keys) {
         const bucket = additions.get(key);
-        let next = lists[key];
+        let next = shown[key];
         if (bucket?.length) {
             next = [...next];
             bucket.sort((a, b) => a.index - b.index);

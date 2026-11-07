@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, MoreHorizontal, Play, Plus } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, MoreHorizontal, Play, Plus, Repeat } from 'lucide-react';
 import { hasTimeComponent, safeFormatDate, type Area, type DropPlacement, type Project, type Task } from '@stride/core';
 import { cn } from '../../lib/utils';
 import { Pill } from '../ui/Pill';
@@ -7,6 +7,9 @@ import { FocusStarIcon } from '../FocusStarIcon';
 import { REORDER_IGNORE_ATTR } from './usePanelReorder';
 import { isActivePhase, useCompletionPhase } from '../../lib/completion-sequence';
 import { useCompletionRowMotion } from '../../lib/completion-motion';
+import { useOccurrenceArrived } from '../../lib/completion-retention';
+import { useRepeatTickPending } from '../../lib/repeating-completion';
+import { RepeatTickConfirm } from '../Task/RepeatTickConfirm';
 
 export type PanelMoveAction = 'top' | 'up' | 'down';
 
@@ -52,6 +55,8 @@ interface PanelTaskRowProps {
     /** The task is done (ticked this session and kept in the list, struck through). */
     done: boolean;
     labels: PanelRowLabels;
+    /** How the task repeats ("Weekly · after completion"); empty when it does not. */
+    repeatLabel?: string;
     /** Translated priority name; shown only for high and urgent tasks (as text, never colour alone). */
     priorityLabel?: string;
     /** Date format for the date pill on non-today rows (All tasks). */
@@ -162,7 +167,7 @@ function RowMenu({
 }
 
 export function PanelTaskRow({
-    task, project, area, tone, focused = false, done, labels, priorityLabel, dateFormat, onComplete, onOpen, onRowKeyDown,
+    task, project, area, tone, focused = false, done, labels, repeatLabel, priorityLabel, dateFormat, onComplete, onOpen, onRowKeyDown,
     onStart, onAddToNow, reorder, reorderLabels, dragging, dropPlacement, onReorderPointerDown, consumeSuppressedClick, onMove,
 }: PanelTaskRowProps) {
     const canReorder = Boolean(reorder && reorderLabels && onMove) && task.status !== 'done';
@@ -172,7 +177,9 @@ export function PanelTaskRow({
     const phase = useCompletionPhase(task.id);
     const completingNow = isActivePhase(phase);
     const completing = done || completingNow;
-    useCompletionRowMotion(rowRef, phase);
+    useCompletionRowMotion(rowRef, phase, task.id);
+    const occurrenceArrived = useOccurrenceArrived(task.id);
+    const askingRepeatTick = useRepeatTickPending(task.id);
     const moreRef = useRef<HTMLButtonElement>(null);
     const closeMenu = (restoreFocus: boolean) => {
         setMenu(null);
@@ -200,7 +207,7 @@ export function PanelTaskRow({
     const showPriority = Boolean(priorityLabel) && (task.priority === 'high' || task.priority === 'urgent');
     // A task with no date, project or area still says something useful: its first context.
     const context = !meta && !place ? task.contexts?.[0] : undefined;
-    const hasMeta = Boolean(meta || place || showPriority || focused || context);
+    const hasMeta = Boolean(meta || repeatLabel || place || showPriority || focused || context);
     const open = !completing;
     const actionClass = 'motion-press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control transition-[color,background-color,scale] duration-200 ease-out motion-reduce:transition-none focus-ring';
     return (
@@ -214,6 +221,7 @@ export function PanelTaskRow({
             data-completion={phase}
             data-completing={completingNow ? '' : undefined}
             data-done={completing ? '' : undefined}
+            data-occurrence-arrived={occurrenceArrived ? '' : undefined}
             onPointerDown={canReorder && reorder && onReorderPointerDown ? (event) => onReorderPointerDown(event, task, reorder) : undefined}
             onClickCapture={(event) => {
                 if (consumeSuppressedClick?.()) { event.preventDefault(); event.stopPropagation(); }
@@ -221,6 +229,7 @@ export function PanelTaskRow({
             onContextMenu={onContextMenu}
             className={cn(
                 'menubar-row group relative flex select-none items-center gap-2.5 rounded-card bg-card py-2.5 pl-3 pr-2 shadow-soft-sm',
+                askingRepeatTick && 'flex-wrap',
                 'transition-[background-color,opacity,box-shadow] duration-200 hover:bg-accent focus-within:bg-accent motion-reduce:transition-none',
                 'motion-safe:animate-[menubar-row-in_160ms_ease-out]',
                 canReorder && 'cursor-grab',
@@ -304,6 +313,11 @@ export function PanelTaskRow({
                                 {tone === 'overdue' ? `${labels.overdue} · ${meta}` : meta}
                             </Pill>
                         )}
+                        {repeatLabel && (
+                            <Pill tone="neutral" className={cn(pillClass, 'max-w-[210px]')} icon={<Repeat className="h-3 w-3" aria-hidden />} title={repeatLabel} data-testid="menubar-row-repeat">
+                                <span className="truncate">{repeatLabel}</span>
+                            </Pill>
+                        )}
                         {focused && (
                             <Pill tone="neutral" className={cn(pillClass, 'text-foreground')} icon={<FocusStarIcon filled />} data-testid="menubar-row-focus">
                                 {labels.focus}
@@ -366,6 +380,7 @@ export function PanelTaskRow({
                     </button>
                 )}
             </div>
+            <RepeatTickConfirm taskId={task.id} className="basis-full" />
             {canReorder && reorder && reorderLabels && onMove && menu && (
                 <RowMenu task={task} reorder={reorder} labels={reorderLabels} anchor={menu} onClose={closeMenu} onMove={onMove} />
             )}

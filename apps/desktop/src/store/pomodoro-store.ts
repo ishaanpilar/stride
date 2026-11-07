@@ -2,6 +2,7 @@ import { createWithEqualityFn } from 'zustand/traditional';
 import { armPomodoroCompletionSound } from '../lib/pomodoro-alert';
 import {
     addTimeSpentMinutes,
+    adjustPomodoroPhase,
     advancePomodoroState,
     createPomodoroState,
     DEFAULT_POMODORO_DURATIONS,
@@ -10,9 +11,12 @@ import {
     flushPendingSave,
     getPomodoroFocusCreditMinutes,
     getPomodoroPhaseSeconds,
+    getPomodoroPhaseTotalSeconds,
     isPomodoroInOvertime,
+    isPomodoroPhaseIdle,
     isTaskActionable,
     POMODORO_MAX_EXTENSION_MINUTES,
+    POMODORO_MAX_PHASE_MINUTES,
     POMODORO_OVERTIME_CAP_MINUTES,
     logInfo,
     logWarn,
@@ -21,6 +25,7 @@ import {
     resumePomodoroFocus as resumeFocusState,
     runStoreCommand,
     sanitizePomodoroDurations,
+    setPomodoroPhaseTotal,
     sanitizePomodoroSessionHistory,
     useTaskStore,
     type PomodoroAutoStartOptions,
@@ -117,14 +122,15 @@ const sanitizeStoredPomodoroState = (
         phase,
         typeof record.completedFocusSessions === 'number' ? record.completedFocusSessions : 0
     );
-    // Time added with "+5"/"+10" (or a resumed focus) changes this phase's length; keep it, bounded.
+    // "− / +", "Set timer", added time or a resumed focus change this phase's length; keep it, bounded.
     const configured = getPomodoroPhaseSeconds(phase, durations);
     const maxExtension = POMODORO_MAX_EXTENSION_MINUTES * 60;
     const extendedSeconds = typeof record.extendedSeconds === 'number' && Number.isFinite(record.extendedSeconds)
         ? Math.max(0, Math.min(maxExtension, Math.floor(record.extendedSeconds)))
         : 0;
-    const phaseTotalSeconds = extendedSeconds > 0 && typeof record.phaseTotalSeconds === 'number' && Number.isFinite(record.phaseTotalSeconds)
-        ? Math.max(1, Math.min(configured + extendedSeconds, Math.floor(record.phaseTotalSeconds)))
+    const maxTotal = Math.max(POMODORO_MAX_PHASE_MINUTES * 60, configured + extendedSeconds);
+    const phaseTotalSeconds = typeof record.phaseTotalSeconds === 'number' && Number.isFinite(record.phaseTotalSeconds) && record.phaseTotalSeconds >= 1
+        ? Math.min(maxTotal, Math.floor(record.phaseTotalSeconds))
         : undefined;
     const limit = phaseTotalSeconds ?? baseState.remainingSeconds;
     const remainingSeconds = typeof record.remainingSeconds === 'number' && Number.isFinite(record.remainingSeconds)
@@ -143,7 +149,8 @@ const sanitizeStoredPomodoroState = (
         ...baseState,
         remainingSeconds: overtimeSeconds !== undefined ? 0 : remainingSeconds,
         isRunning: record.isRunning === true,
-        ...(phaseTotalSeconds !== undefined ? { phaseTotalSeconds, extendedSeconds } : {}),
+        ...(phaseTotalSeconds !== undefined ? { phaseTotalSeconds } : {}),
+        ...(phaseTotalSeconds !== undefined && extendedSeconds > 0 ? { extendedSeconds } : {}),
         ...(keepGoing ? { keepGoing } : {}),
         ...(overtimeSeconds !== undefined ? { overtimeSeconds } : {}),
         ...(lastFocusSeconds !== undefined ? { lastFocusSeconds } : {}),
@@ -420,6 +427,15 @@ type PomodoroStoreState = {
 
     /** "Need more time?" after a check-in: keep going on the same task for a few minutes. */
     resumePomodoroFocus: (minutes: number, autoStartOptions: PomodoroAutoStartOptions) => number;
+
+    /** The "−" / "+" buttons: change the current phase by that many minutes. Returns the seconds changed. */
+    adjustPomodoro: (deltaMinutes: number, autoStartOptions: PomodoroAutoStartOptions) => number;
+
+    /**
+     * "Set timer to N min": the current focus phase lasts `totalSeconds` in all (idle: the upcoming
+     * focus). Returns the length it had before (for Undo), or null when nothing changed.
+     */
+    setPomodoroPhaseLength: (totalSeconds: number, autoStartOptions: PomodoroAutoStartOptions) => number | null;
 };
 
 export const usePomodoroStore = createWithEqualityFn<PomodoroStoreState>((set, get) => ({
@@ -468,11 +484,17 @@ export const usePomodoroStore = createWithEqualityFn<PomodoroStoreState>((set, g
         get().setPomodoroCollapsed(false);
         get().commitPomodoro((prev) => {
             const reconciled = reconcilePomodoroSnapshot(prev, Date.now(), autoStartOptions);
+            const timer = reconciled.timerState;
+            // A focus length planned while idle ("− / +" on the Today card) is kept for this start.
+            const planned = timer.phase === 'focus' && isPomodoroPhaseIdle(timer, reconciled.durations) && timer.phaseTotalSeconds
+                ? { remainingSeconds: timer.phaseTotalSeconds, phaseTotalSeconds: timer.phaseTotalSeconds }
+                : {};
             return {
                 ...reconciled,
                 selectedTaskId: taskId,
                 timerState: {
                     ...resetPomodoroState(reconciled.timerState, reconciled.durations, 'focus'),
+                    ...planned,
                     isRunning: true,
                 },
                 lastEvent: null,
@@ -490,6 +512,29 @@ export const usePomodoroStore = createWithEqualityFn<PomodoroStoreState>((set, g
             return { ...reconciled, timerState: result.state, updatedAtMs: Date.now() };
         });
         return added;
+    },
+    adjustPomodoro: (deltaMinutes, autoStartOptions) => {
+        let changed = 0;
+        get().commitPomodoro((prev) => {
+            const reconciled = reconcilePomodoroSnapshot(prev, Date.now(), autoStartOptions);
+            const result = adjustPomodoroPhase(reconciled.timerState, reconciled.durations, deltaMinutes);
+            changed = result.changedSeconds;
+            if (changed === 0) return prev;
+            return { ...reconciled, timerState: result.state, updatedAtMs: Date.now() };
+        });
+        return changed;
+    },
+    setPomodoroPhaseLength: (totalSeconds, autoStartOptions) => {
+        let previous: number | null = null;
+        get().commitPomodoro((prev) => {
+            const reconciled = reconcilePomodoroSnapshot(prev, Date.now(), autoStartOptions);
+            const before = getPomodoroPhaseTotalSeconds(reconciled.timerState, reconciled.durations);
+            const result = setPomodoroPhaseTotal(reconciled.timerState, reconciled.durations, totalSeconds);
+            if (result.changedSeconds === 0 && result.state === reconciled.timerState) return prev;
+            previous = before;
+            return { ...reconciled, timerState: result.state, lastEvent: null, updatedAtMs: Date.now() };
+        });
+        return previous;
     },
     resumePomodoroFocus: (minutes, autoStartOptions) => {
         let added = 0;

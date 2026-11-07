@@ -626,13 +626,13 @@ export function ProjectWorkspace({
     // Completion rule: tasks ticked done this session stay in the open list, struck through, and drop to
     // the bottom of their section after the settle delay. They do not go to the collapsed Completed group
     // until the app restarts; earlier completions follow the "Show completed" setting.
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     const projectTasks = useMemo(
-        () => projectAllTasks.filter((task) => (
+        () => projectAllTasks.filter((task) => !heldOccurrenceIds.has(task.id) && (
             (task.status === 'done' && sessionCompletions.has(task.id))
             || shouldShowProjectWorkspaceTask(task, selectedProject, showCompletedTasks)
         )),
-        [projectAllTasks, selectedProject, sessionCompletions, showCompletedTasks],
+        [heldOccurrenceIds, projectAllTasks, selectedProject, sessionCompletions, showCompletedTasks],
     );
 
     const handleProjectTaskSortByChange = useCallback((next: TaskSortBy) => {

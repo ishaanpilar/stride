@@ -135,7 +135,7 @@ export function ReviewView() {
         return () => window.clearTimeout(timer);
     }, [perf.enabled]);
 
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     const { tasksById, statusCounts, filteredTasks } = useMemo(() => {
         perf.trackUseMemo();
         return perf.measure('reviewData', () => {
@@ -150,6 +150,7 @@ export function ReviewView() {
             const completionOriginals = new Map<string, Task>();
             const nextVisibleTasks: Task[] = [];
             tasks.forEach((rawTask) => {
+                if (heldOccurrenceIds.has(rawTask.id)) return;
                 const kept = sessionCompletions.get(rawTask.id);
                 const task = kept && rawTask.status === 'done' ? { ...rawTask, status: kept.previousStatus } : rawTask;
                 if (task !== rawTask) completionOriginals.set(rawTask.id, rawTask);
@@ -187,7 +188,7 @@ export function ReviewView() {
                     ),
             };
         });
-    }, [filterStatus, normalizedSearchQuery, nowTick, scope, sessionCompletions, settledCompletionIds, sortBy, tasks, visibility]);
+    }, [filterStatus, heldOccurrenceIds, normalizedSearchQuery, nowTick, scope, sessionCompletions, settledCompletionIds, sortBy, tasks, visibility]);
     const revealedHighlightRef = useRef<{ id: string; at: number | null } | null>(null);
     useEffect(() => {
         if (!highlightTaskId) {

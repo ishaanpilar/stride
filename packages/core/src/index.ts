@@ -153,6 +153,7 @@ export * from './i18n/i18n-storage';
 export * from './i18n/i18n-loader';
 export * from './i18n/i18n-constants';
 export * from './recurrence';
+export * from './recurring-completion';
 export * from './recurrence-constants';
 export * from './review-utils';
 export * from './review-views-model';

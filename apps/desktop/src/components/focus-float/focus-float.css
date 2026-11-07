@@ -39,8 +39,10 @@ html.opaque-native-window .ff-root {
 /* Overtime ("Keep going"): a calmer counter and a faint second lap. */
 .ff-root[data-overtime='true'] .ff-clock { color: hsl(var(--muted-foreground)); }
 .ff-root[data-overtime='true'] .ff-progress > i { opacity: 0.45; }
+.ff-adjust { margin-left: -4px; }
 .ff-status { font-size: 13px; font-weight: 500; color: hsl(var(--muted-foreground)); }
 .ff-status--break { color: hsl(var(--success-text)); }
+.ff-status--inline { white-space: nowrap; }
 .ff-done { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 600; }
 .ff-root[data-view='finish'] .ff-done { color: hsl(var(--success-text)); }
 .ff-btn {

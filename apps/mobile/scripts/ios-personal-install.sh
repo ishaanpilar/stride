@@ -81,14 +81,14 @@ if [[ -z "${TEAM_ID:-}" ]]; then
   # An "Apple Development" certificate's OU field is the team id.
   TEAM_ID="$(security find-certificate -c "Apple Development" -p 2>/dev/null \
     | openssl x509 -noout -subject 2>/dev/null \
-    | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -1)"
+    | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -1 || true)"
 fi
 if [[ -z "${TEAM_ID:-}" ]]; then
   # No certificate yet (fresh account): read the team Xcode knows about.
   # xcodebuild -allowProvisioningUpdates then creates the certificate.
   TEAM_ID="$( { defaults read com.apple.dt.Xcode IDEProvisioningTeamByIdentifier 2>/dev/null
                 defaults read com.apple.dt.Xcode IDEProvisioningTeams 2>/dev/null; } \
-    | sed -n 's/.*teamID = \"*\([A-Z0-9]\{10\}\)\"*;.*/\1/p' | head -1)"
+    | sed -n 's/.*teamID = \"*\([A-Z0-9]\{10\}\)\"*;.*/\1/p' | head -1 || true)"
 fi
 if [[ -z "${TEAM_ID:-}" ]]; then
   echo "No team found. Add your Apple ID in Xcode > Settings > Accounts, then pass TEAM_ID=<10 chars>" >&2
@@ -99,7 +99,13 @@ fi
 if [[ -z "${DEVICE_ID:-}" ]]; then
   DEVICE_ID="$(xcrun xctrace list devices 2>/dev/null \
     | awk '/^== Devices ==/{d=1;next} /^==/{d=0} d && /iPhone/ && !/Simulator/' \
-    | sed -n 's/.*(\([0-9A-F-]\{20,\}\))$/\1/p' | head -1)"
+    | sed -n 's/.*(\([0-9A-F-]\{20,\}\))$/\1/p' | head -1 || true)"
+fi
+if [[ -z "${DEVICE_ID:-}" ]]; then
+  # Wirelessly paired iPhones show up in devicectl but not always in xctrace.
+  DEVICE_ID="$(xcrun devicectl list devices 2>/dev/null \
+    | awk '/iPhone/ && /available/ && /physical/' \
+    | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' | head -1 || true)"
 fi
 if [[ -z "${DEVICE_ID:-}" ]]; then
   echo "No iPhone found. Connect it by cable, unlock it, tap Trust, enable Developer Mode." >&2

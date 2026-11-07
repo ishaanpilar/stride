@@ -48,13 +48,15 @@ interface ClockProps {
     label: string;
     /** Counting up past 0:00 ("Keep going"): a calmer, dimmer tone. */
     overtime?: boolean;
+    /** Up / Down change the time by 5 minutes while the clock has keyboard focus. */
+    onStep?: (direction: 1 | -1) => void;
 }
 
 /**
  * Large thin clock. Each character is its own span keyed by its value, so a changing digit
  * re-mounts and plays a short rise (CSS, off when animations are off).
  */
-export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusClock({ value, intro = false, label, overtime = false }, ref) {
+export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusClock({ value, intro = false, label, overtime = false, onStep }, ref) {
     const innerRef = useRef<HTMLDivElement>(null);
     const first = useRef(true);
     useEffect(() => {
@@ -69,7 +71,21 @@ export const FocusClock = forwardRef<HTMLDivElement, ClockProps>(function FocusC
     }, [intro]);
     useEffect(() => { first.current = false; }, []);
     return (
-        <div ref={ref} role="timer" aria-label={label} aria-live="off" className="fx-clock" data-overtime={overtime ? 'true' : undefined}>
+        <div
+            ref={ref}
+            role="timer"
+            aria-label={label}
+            aria-live="off"
+            className={onStep ? 'fx-clock rounded-card focus-ring' : 'fx-clock'}
+            data-overtime={overtime ? 'true' : undefined}
+            tabIndex={onStep ? 0 : undefined}
+            aria-keyshortcuts={onStep ? 'ArrowUp ArrowDown' : undefined}
+            onKeyDown={onStep ? (event) => {
+                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                event.preventDefault();
+                onStep(event.key === 'ArrowUp' ? 1 : -1);
+            } : undefined}
+        >
             <div ref={innerRef} className="flex" aria-hidden>
                 {Array.from(value).map((char, index) => (
                     <span

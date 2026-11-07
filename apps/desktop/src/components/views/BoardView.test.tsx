@@ -632,6 +632,38 @@ describe('BoardView', () => {
         expect(getByText('Finished thing').className).toContain('completion-strike');
     });
 
+    it('marks a repeating card and asks before ticking the occurrence after a completion moments ago', async () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        const at = new Date().toISOString();
+        const tasks = [
+            {
+                id: 'prev', title: 'Weekly', status: 'done' as const, completedAt: at, tags: [], contexts: [],
+                recurrence: { rule: 'weekly' as const }, createdAt: at, updatedAt: at,
+            },
+            {
+                id: 'cur', title: 'Weekly', status: 'next' as const, tags: [], contexts: [],
+                recurrence: { rule: 'weekly' as const, seriesId: 'prev' }, createdAt: at, updatedAt: at,
+            },
+        ];
+        setBoardStoreState({ tasks });
+        useTaskStore.setState({ moveTask, _allTasks: tasks, _tasksById: new Map(tasks.map((task) => [task.id, task])) } as never);
+        const { container, getByRole, getByTestId, queryByTestId } = renderWithProviders();
+        const card = container.querySelector('[data-board-card-id="cur"]') as HTMLElement;
+        expect(card.querySelector('[data-board-repeat]')).not.toBeNull();
+
+        fireEvent.click(within(card).getByRole('button', { name: /mark done/i }));
+        expect(getByTestId('repeat-tick-confirm')).toBeInTheDocument();
+        expect(moveTask).not.toHaveBeenCalled();
+
+        fireEvent.click(getByRole('button', { name: 'Cancel' }));
+        expect(queryByTestId('repeat-tick-confirm')).toBeNull();
+        expect(moveTask).not.toHaveBeenCalled();
+
+        fireEvent.click(within(card).getByRole('button', { name: /mark done/i }));
+        await act(async () => { fireEvent.click(getByRole('button', { name: 'Yes' })); });
+        expect(moveTask).toHaveBeenCalledWith('cur', 'done');
+    });
+
     it('moves a card across columns with Alt+Arrow and reorders it with Alt+Up/Down', () => {
         const moveTask = vi.fn().mockResolvedValue(undefined);
         const reorderBoardTasks = vi.fn().mockResolvedValue(undefined);

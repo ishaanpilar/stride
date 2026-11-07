@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { translateWithFallback } from '@stride/core';
+import { adjustPomodoroPhase, canAdjustPomodoroPhase, POMODORO_ADJUST_STEP_MINUTES, translateWithFallback } from '@stride/core';
 import { FocusFloatView } from './components/focus-float/FocusFloatView';
 import './components/focus-float/focus-float.css';
 import { useLanguage } from './contexts/language-context';
@@ -8,6 +8,7 @@ import {
     FOCUS_FLOAT_SHOWN_EVENT,
     FOCUS_FLOAT_STATE_EVENT,
     deriveFocusFloatDisplay,
+    deriveFocusFloatTimer,
     hideFocusFloat,
     openMainFromFocusFloat,
     sendFocusFloatAction,
@@ -109,6 +110,16 @@ export function FocusFloatApp() {
         });
         send('toggle');
     };
+    // "−" / "+": optimistic here, the main window (which owns the timer) applies the same change.
+    const timerNow = deriveFocusFloatTimer(state, nowMs);
+    const adjust = (deltaMinutes: number) => {
+        const now = Date.now();
+        const result = adjustPomodoroPhase(deriveFocusFloatTimer(state, now), state.durations, deltaMinutes);
+        if (result.changedSeconds === 0) return 0;
+        setState({ ...state, timer: result.state, updatedAtMs: now });
+        send(deltaMinutes > 0 ? 'add-time' : 'remove-time');
+        return result.changedSeconds;
+    };
     const toggleExpanded = () => {
         const next = !expanded;
         setExpanded(next);
@@ -140,6 +151,11 @@ export function FocusFloatApp() {
             onClose={close}
             onStartNext={() => send('start-next')}
             onDragStart={startDrag}
+            adjust={{
+                canDecrease: canAdjustPomodoroPhase(timerNow, state.durations, -POMODORO_ADJUST_STEP_MINUTES),
+                canIncrease: canAdjustPomodoroPhase(timerNow, state.durations, POMODORO_ADJUST_STEP_MINUTES),
+                onAdjust: adjust,
+            }}
         />
     );
 }

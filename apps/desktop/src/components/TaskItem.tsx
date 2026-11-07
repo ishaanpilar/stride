@@ -81,6 +81,9 @@ import { setCalendarTaskDragData } from '../lib/calendar-task-drag';
 import { useRetainedPreviousStatus } from '../lib/completion-retention';
 import { beginCompletion, cancelCompletion, isActivePhase, isWithinDoubleClickGuard, useCompletionPhase } from '../lib/completion-sequence';
 import { useCompletionRowMotion } from '../lib/completion-motion';
+import { isRepeatingCompletionPending, useOccurrenceArrived } from '../lib/completion-retention';
+import { guardRepeatTick, showRepeatingDoneToast } from '../lib/repeating-completion';
+import { RepeatTickConfirm } from './Task/RepeatTickConfirm';
 import { useTaskItemStoreState, useTaskItemUiState } from './Task/useTaskItemStoreState';
 import type { TaskInputAcceptedSuggestion } from './Task/TaskInput';
 import { TASK_ROW_ACTION_EVENT, type TaskRowAction } from '../lib/task-row-actions';
@@ -315,7 +318,8 @@ export const TaskItem = memo(function TaskItem({
     const isStagnant = (task.pushCount ?? 0) > 3;
     const retainedPreviousStatus = useRetainedPreviousStatus(task.id);
     const completionPhase = useCompletionPhase(task.id);
-    useCompletionRowMotion(taskRootRef, completionPhase);
+    useCompletionRowMotion(taskRootRef, completionPhase, task.id);
+    const occurrenceArrived = useOccurrenceArrived(task.id);
     const effectiveReadOnly = interactionDisabled || readOnly || task.status === 'done';
     const mutationOwnerRef = useRef({
         taskId: task.id,
@@ -1264,6 +1268,10 @@ export const TaskItem = memo(function TaskItem({
             void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
                 .catch((error) => reportError('Failed to undo task completion', error));
         });
+        if (showRepeatingDoneToast(task.id, { undo, t })) {
+            openProjectNextActionPromptIfNeeded(task.id);
+            return;
+        }
         if (undoNotificationsEnabled) {
             showToast(
                 formatTaskMarkedDoneMessage(t, task.title),
@@ -1346,7 +1354,7 @@ export const TaskItem = memo(function TaskItem({
             })
             .catch((error) => reportError('Failed to update completion time', error));
     }, [completedAtPrompt, getLiveMutableTask, handleSubmit, handleTaskCompleted, task.id, task.isFocusedToday, task.status, timeSpentEnabled, updateTask]);
-    const handleStatusChange = useCallback((nextStatus: TaskStatus) => {
+    const handleStatusChange = useCallback((nextStatus: TaskStatus, repeatTickConfirmed = false) => {
         if (nextStatus === 'waiting' && task.status !== 'waiting') {
             setShowWaitingAssignmentPrompt(true);
             return;
@@ -1354,10 +1362,20 @@ export const TaskItem = memo(function TaskItem({
         const previousStatus = task.status;
         const wasFocusedToday = task.isFocusedToday === true;
         const completing = nextStatus === 'done' && previousStatus !== 'done';
+        if (completing && !repeatTickConfirmed) {
+            guardRepeatTick(task.id, () => handleStatusChangeRef.current(nextStatus, true));
+            return;
+        }
         if (completing) {
             // A second click while the first one is still playing is a double click, not a second completion.
             if (!beginCompletion(task.id, { sound: true })) return;
         } else if (previousStatus === 'done' && isWithinDoubleClickGuard(task.id)) {
+            return;
+        }
+        // Unticked before it left: the generated occurrence goes too, or the series would have two open.
+        if (previousStatus === 'done' && isRepeatingCompletionPending(task.id)) {
+            void undoTaskCompletion(task.id, nextStatus, false)
+                .catch((error) => reportError('Failed to undo task completion', error));
             return;
         }
         void moveTask(task.id, nextStatus)
@@ -1401,6 +1419,8 @@ export const TaskItem = memo(function TaskItem({
         undoLabel,
         undoNotificationsEnabled,
     ]);
+    const handleStatusChangeRef = useRef(handleStatusChange);
+    handleStatusChangeRef.current = handleStatusChange;
     const handleEditorMarkDone = useCallback(() => {
         if (!isTaskActionable(task)) return;
         const previousStatus = task.status;
@@ -1799,6 +1819,7 @@ export const TaskItem = memo(function TaskItem({
                 data-completion={completionPhase}
                 data-completing={isActivePhase(completionPhase) ? '' : undefined}
                 data-done={task.status === 'done' || isActivePhase(completionPhase) ? '' : undefined}
+                data-occurrence-arrived={occurrenceArrived ? '' : undefined}
                 draggable={canCalendarDrag}
                 tabIndex={-1}
                 onPointerDownCapture={canCalendarDrag ? handleDragPressStart : undefined}
@@ -1904,6 +1925,7 @@ export const TaskItem = memo(function TaskItem({
                         renderEditor={renderEditor}
                     />
                 </div>
+                <RepeatTickConfirm taskId={task.id} className="mt-2" />
             </div>
             {quickActionMenu && (
                 <TaskQuickActionMenuHost

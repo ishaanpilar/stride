@@ -6,6 +6,7 @@ import { useAssistantDockStore } from '../../store/assistant-dock-store';
 import { clampMiniPosition, type FocusMiniPosition } from '../../store/focus-session-store';
 import { PomodoroRing } from '../views/PomodoroRing';
 import { FocusTint } from './FocusVisuals';
+import { PomodoroAdjust } from '../views/PomodoroAdjust';
 import { focusAnchors, rectOf } from './focus-anchors';
 
 const GAP = 16;
@@ -54,6 +55,8 @@ interface FocusMiniProps {
     onMove: (position: FocusMiniPosition) => void;
     /** Pop the timer out into the floating window (over every app). Absent where unsupported. */
     onFloat?: () => void;
+    /** "−" / "+" beside the time. */
+    adjust: { canDecrease: boolean; canIncrease: boolean; onAdjust: (deltaMinutes: number) => number };
 }
 
 /** Minimised focus: a small floating card over the normal app. Drag it anywhere; it remembers. */
@@ -148,6 +151,14 @@ export function FocusMini(props: FocusMiniProps) {
                     >
                         {clock}
                     </span>
+                    <PomodoroAdjust
+                        size="sm"
+                        tr={tr}
+                        canDecrease={props.adjust.canDecrease}
+                        canIncrease={props.adjust.canIncrease}
+                        onAdjust={props.adjust.onAdjust}
+                        testId="focus-mini-adjust"
+                    />
                     {(isBreak || !isRunning || inOvertime) && (
                         <span className={cn('text-[13px] font-medium', isBreak ? 'text-success-text' : 'text-muted-foreground')}>
                             {isBreak ? tr('pomodoro.phaseBreakShort', 'Break') : inOvertime ? tr('focus.overtimeShort', 'Over time') : tr('pomodoro.paused', 'Paused')}

@@ -91,6 +91,11 @@ Dark is its own palette, not an inversion. Shadows become a subtle top highlight
   row holds, done, for a beat (Undo is in the toast); then it collapses and the rows below rise, and
   views that keep done tasks show it at the bottom as a flat, receded card. Animations off or reduced
   motion: instant. Optional quiet tick (Settings > Sounds > Completion sound).
+- **Completing a repeating task** (`lib/completion-retention.ts`, `lib/repeating-completion.ts`): the same
+  sequence, but the done copy leaves the view instead of waiting at the bottom. The next occurrence stays
+  hidden until the sequence ends, then appears at its date with a soft accent wash (~1.6s, a static tint
+  with motion off). The toast then says "Done. Repeats next on Sat 14 Nov", with Undo and Stop repeating.
+  A tick on that occurrence within 60 seconds asks first, inline in the row.
 - **Increase contrast** (`prefers-contrast: more`): borders become solid `#9AA5B8` (light) /
   `#5B6475` (dark), shadows drop, muted text uses foreground.
 - **Reduce transparency**: the sidebar uses its opaque token instead of material.

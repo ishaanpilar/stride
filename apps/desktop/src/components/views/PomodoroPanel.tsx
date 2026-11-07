@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    canAdjustPomodoroPhase,
     formatPomodoroClock,
     formatPomodoroOvertime,
     getPomodoroOvertimeProgress,
@@ -7,11 +8,14 @@ import {
     getPomodoroFocusSessionsCompletedToday,
     getPomodoroPhaseTotalSeconds,
     getPomodoroPresetOptions,
+    isRepeatingTask,
     isTaskActionable,
     PomodoroAutoStartOptions,
+    POMODORO_ADJUST_STEP_MINUTES,
     resetPomodoroState,
     Task,
     translateWithFallback,
+    undoTaskCompletion,
     useTaskStore,
 } from '@stride/core';
 import { Play, Pause, RotateCcw, Check, ChevronDown, ChevronUp, Flame, Maximize2, PictureInPicture2 } from 'lucide-react';
@@ -27,8 +31,12 @@ import { getFocusStreak } from '../../lib/focus-streak';
 import { Reveal } from '../ui/Reveal';
 import { PomodoroRing } from './PomodoroRing';
 import { PomodoroPresetPopover } from './PomodoroPresetPopover';
+import { PomodoroAdjust } from './PomodoroAdjust';
 import { PomodoroTaskPicker } from './PomodoroTaskPicker';
 import { beginCompletion, cancelCompletion } from '../../lib/completion-sequence';
+import { askRepeatTickInToast, needsRepeatTickConfirm, showRepeatingDoneToast } from '../../lib/repeating-completion';
+import { reportError } from '../../lib/report-error';
+import { registerUndoableAction } from '../../lib/undo-registry';
 
 export { DESKTOP_POMODORO_SESSION_STORAGE_KEY } from '../../store/pomodoro-store';
 
@@ -66,11 +74,15 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
         hydratePomodoro(autoStartOptions);
     }, []);
 
+    const sessionOpen = useFocusSessionStore((state) => state.open);
+
     useEffect(() => {
         if (!snapshot.selectedTaskId) return;
         if (actionableTasksById.has(snapshot.selectedTaskId)) return;
+        // An open session still shows this task (the check-in after "Done"); it unlinks it on leaving.
+        if (sessionOpen) return;
         commitSnapshot((prev) => ({ ...prev, selectedTaskId: undefined }));
-    }, [commitSnapshot, snapshot.selectedTaskId, actionableTasksById]);
+    }, [commitSnapshot, snapshot.selectedTaskId, actionableTasksById, sessionOpen]);
 
 
     const durations = snapshot.durations;
@@ -126,7 +138,6 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
     };
 
     const sectionRef = useRef<HTMLElement>(null);
-    const sessionOpen = useFocusSessionStore((state) => state.open);
     const sessionPresentation = useFocusSessionStore((state) => state.presentation);
     const expandSession = useFocusSessionStore((state) => state.expand);
     const floatVisible = useFocusFloatStore((state) => state.visible);
@@ -168,16 +179,32 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
         });
     };
 
-    const handleMarkTaskDone = async () => {
-        if (!selectedTask) return;
-        if (selectedTask.status !== 'done' && !beginCompletion(selectedTask.id, { sound: true })) return;
-        const result = await updateTask(selectedTask.id, { status: 'done', isFocusedToday: false });
+    const completeTask = async (task: Task) => {
+        const previousStatus = task.status;
+        const wasFocusedToday = task.isFocusedToday === true;
+        if (task.status !== 'done' && !beginCompletion(task.id, { sound: true })) return;
+        const result = await updateTask(task.id, { status: 'done', isFocusedToday: false });
         if (result?.success === false) {
-            cancelCompletion(selectedTask.id);
+            cancelCompletion(task.id);
             useUiStore.getState().showToast(result.error || t('task.updateFailed'), 'error');
             return;
         }
         commitSnapshot((prev) => ({ ...prev, lastEvent: null }));
+        if (!isRepeatingTask(task)) return;
+        const undo = registerUndoableAction(() => {
+            void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
+                .catch((error) => reportError('Failed to undo task completion', error));
+        });
+        showRepeatingDoneToast(task.id, { undo, t });
+    };
+
+    // No row of its own to ask in: a second tick on a series asks in a toast, like a drag does.
+    const handleMarkTaskDone = () => {
+        if (!selectedTask) return;
+        const task = selectedTask;
+        const complete = () => { void completeTask(task); };
+        if (needsRepeatTickConfirm(task.id)) askRepeatTickInToast([task.id], complete, t);
+        else complete();
     };
 
     const isFocus = timerState.phase === 'focus';
@@ -212,7 +239,15 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
         presetTriggerRef.current = trigger;
         setPresetsOpen((open) => !open);
     };
-    const phaseMinutes = timerState.phase === 'focus' ? durations.focusMinutes : durations.breakMinutes;
+    // Idle: the length of the session about to start ("− / +" may have changed it from the preset).
+    const phaseMinutes = Math.round(totalSeconds / 60);
+    // Idle "− / +" plan the upcoming session; running or paused they change the current phase.
+    const adjustProps = {
+        tr: resolveText,
+        canDecrease: canAdjustPomodoroPhase(timerState, durations, -POMODORO_ADJUST_STEP_MINUTES),
+        canIncrease: canAdjustPomodoroPhase(timerState, durations, POMODORO_ADJUST_STEP_MINUTES),
+        onAdjust: (deltaMinutes: number) => usePomodoroStore.getState().adjustPomodoro(deltaMinutes, autoStartOptions),
+    };
     const presetHint = resolveText('pomodoro.presetHint', 'Focus minutes / break minutes');
     useEffect(() => { if (isRunning) setPresetsOpen(false); }, [isRunning]);
 
@@ -238,6 +273,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                     <div className="flex min-w-0 items-center gap-3">
                         <PomodoroRing progress={progress} phase={timerState.phase} size={32} stroke={3.5} well={false} running={isRunning} overtime={overtimeLap} />
                         <p className={cn('fx-display text-xl font-light leading-none tracking-tight tabular-nums', inOvertime && 'text-muted-foreground')}>{clock}</p>
+                        <PomodoroAdjust {...adjustProps} size="sm" testId="pomodoro-collapsed-adjust" />
                         <span className={cn('text-[13px] font-medium', phaseTextClass)}>{phaseLabel}</span>
                     </div>
                     <button
@@ -278,6 +314,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
             )}
 
             <div className="flex flex-col items-center gap-4 [@container_(min-width:30rem)]:flex-row [@container_(min-width:30rem)]:gap-8 [@container_(min-width:30rem)]:pl-2">
+                <PomodoroAdjust {...adjustProps} size="sm" className="shrink-0" testId="pomodoro-adjust">
                 <div ref={presetAnchorRef} className="relative shrink-0">
                     <PomodoroRing progress={progress} phase={timerState.phase} size={148} stroke={5} well={false} running={isRunning} burstKey={burstKey} overtime={overtimeLap}>
                         {isRunning ? (
@@ -353,6 +390,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                         className="left-1/2 top-[66%] -translate-x-1/2"
                     />
                 </div>
+                </PomodoroAdjust>
 
                 <div className="flex w-full min-w-0 flex-1 flex-col items-center [@container_(min-width:30rem)]:items-start">
                 <Reveal open={!isRunning} className="w-full">
@@ -397,9 +435,7 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
                             {selectedTask && (
                                 <button
                                     type="button"
-                                    onClick={() => {
-                                        void handleMarkTaskDone();
-                                    }}
+                                    onClick={handleMarkTaskDone}
                                     title={markDoneLabel}
                                     aria-label={markDoneLabel}
                                     className={cn(

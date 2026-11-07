@@ -1503,6 +1503,7 @@ html.opaque-native-window.menubar-panel-window #root {
 .fx-coach-steps ol { margin-top: 4px; list-style: decimal; padding-left: 20px; font-size: 14px; line-height: 20px; }
 .fx-coach-steps li { margin-top: 2px; }
 .fx-coach-source { display: block; font-size: 12px; line-height: 16px; color: hsl(var(--muted-foreground)); }
+.fx-coach-newsteps { margin-top: 4px; list-style: decimal; padding-left: 20px; font-size: 13px; line-height: 19px; color: hsl(var(--foreground)); }
 .fx-coach-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; }
 .fx-coach-row--tight { margin-top: 6px; align-items: flex-start; }
 .fx-coach-row .fx-chips { flex: 1; min-width: 0; margin-top: 0; }
@@ -1609,6 +1610,45 @@ html.opaque-native-window.menubar-panel-window #root {
 
 /* Quiet fade+scale for controls that appear on hover or by state. */
 .pomo-fade { transition: opacity 200ms ease-out, transform 200ms ease-out; }
+
+/* "−" / "+" beside the time on every timer surface: small round ghost buttons, muted until hover. */
+.pomo-adjust { position: relative; display: inline-flex; align-items: center; }
+.pomo-adjust-btn {
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9999px;
+  color: hsl(var(--muted-foreground)); opacity: 0.55;
+  transition: opacity 200ms ease-out, background-color 200ms ease-out, color 200ms ease-out;
+}
+.pomo-adjust:hover .pomo-adjust-btn:not(:disabled), .pomo-adjust-btn:focus-visible { opacity: 0.85; }
+.pomo-adjust-btn:not(:disabled):hover { opacity: 1; color: hsl(var(--foreground)); background: hsl(var(--foreground) / 0.07); }
+.pomo-adjust-btn:not(:disabled):active { background: hsl(var(--foreground) / 0.12); }
+.pomo-adjust-btn:disabled { opacity: 0.22; cursor: default; }
+.pomo-adjust[data-size='md'] .pomo-adjust-btn { opacity: 0.6; color: hsl(var(--foreground)); }
+.pomo-adjust[data-size='md'] .pomo-adjust-btn:not(:disabled):hover { background: hsl(var(--card) / 0.7); }
+/* The brief "+5 min" note, above the controls. */
+.pomo-flash {
+  position: absolute; left: 50%; bottom: calc(100% + 2px); transform: translateX(-50%); pointer-events: none;
+  white-space: nowrap; border-radius: 9999px; padding: 1px 8px; font-size: 12px; line-height: 16px; font-weight: 600;
+  font-variant-numeric: tabular-nums; color: hsl(var(--accent-text)); background: var(--accent-soft);
+}
+.pomo-adjust[data-size='md'] .pomo-flash { bottom: auto; top: calc(100% + 4px); font-size: 13px; padding: 2px 10px; }
+/* The floating timer has no room above the time: the note shows just below it. */
+.pomo-adjust[data-size='xs'] .pomo-flash { bottom: auto; top: calc(100% + 1px); }
+.pomo-flash[data-animate='true'] { animation: pomo-flash 1100ms ease-out both; }
+@keyframes pomo-flash {
+  0% { opacity: 0; transform: translate(-50%, 3px); }
+  15%, 70% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pomo-adjust-btn { transition: none; }
+  .pomo-flash[data-animate='true'] { animation: none; }
+}
+html[data-motion='off'] .pomo-adjust-btn { transition: none; }
+html[data-motion='off'] .pomo-flash { animation: none !important; }
+@media (prefers-contrast: more) {
+  .pomo-adjust-btn { opacity: 1; color: hsl(var(--foreground)); }
+  .pomo-adjust-btn:disabled { opacity: 0.4; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ui-reveal, .ui-reveal[data-open='false'] { transition: none; transform: none; }

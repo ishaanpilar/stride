@@ -10,6 +10,12 @@ import {
     POMODORO_OVERTIME_CAP_MINUTES,
     togglePomodoroRunning,
     extendPomodoroPhase,
+    adjustPomodoroPhase,
+    canAdjustPomodoroPhase,
+    isPomodoroPhaseIdle,
+    setPomodoroPhaseTotal,
+    POMODORO_ADJUST_STEP_MINUTES,
+    POMODORO_MAX_PHASE_MINUTES,
     getPomodoroExtensionRoomSeconds,
     getPomodoroFocusCreditMinutes,
     getPomodoroPhaseTotalSeconds,
@@ -447,5 +453,73 @@ describe('keep going (overtime)', () => {
         const result = extendPomodoroPhase(over, durations, 10);
         expect(isPomodoroInOvertime(result.state)).toBe(false);
         expect(result.state).toMatchObject({ remainingSeconds: 600, phaseTotalSeconds: 1500 + 120 + 600, keepGoing: true });
+    });
+});
+
+describe('set and adjust the current phase (Set timer, − / +)', () => {
+    const d = DEFAULT_POMODORO_DURATIONS;
+    const idle = createPomodoroState(d);
+    const running = (remaining: number, patch: Partial<ReturnType<typeof createPomodoroState>> = {}) => ({ ...idle, isRunning: true, remainingSeconds: remaining, ...patch });
+
+    it('idle: the upcoming focus gets exactly that length', () => {
+        expect(isPomodoroPhaseIdle(idle, d)).toBe(true);
+        const set = setPomodoroPhaseTotal(idle, d, 40 * 60);
+        expect(set.state).toMatchObject({ remainingSeconds: 2400, phaseTotalSeconds: 2400, isRunning: false });
+        expect(set.changedSeconds).toBe(15 * 60);
+        expect(isPomodoroPhaseIdle(set.state, d)).toBe(true);
+        // Back to the configured length drops the override.
+        expect(setPomodoroPhaseTotal(set.state, d, 25 * 60).state.phaseTotalSeconds).toBeUndefined();
+    });
+
+    it('running or paused: worked time stays, the rest becomes the new remainder (at least a minute)', () => {
+        // 10 min worked of 25.
+        const longer = setPomodoroPhaseTotal(running(900), d, 40 * 60);
+        expect(longer.state).toMatchObject({ remainingSeconds: 1800, phaseTotalSeconds: 2400, isRunning: true });
+        const shorter = setPomodoroPhaseTotal({ ...running(900), isRunning: false }, d, 15 * 60);
+        expect(shorter.state).toMatchObject({ remainingSeconds: 300, phaseTotalSeconds: 900, isRunning: false });
+        expect(shorter.changedSeconds).toBe(-600);
+        // Shorter than what is already worked: one minute is left.
+        const floor = setPomodoroPhaseTotal(running(900), d, 5 * 60);
+        expect(floor.state).toMatchObject({ remainingSeconds: 60, phaseTotalSeconds: 660 });
+        // Bounded to 180 min; junk is ignored.
+        expect(setPomodoroPhaseTotal(idle, d, 999 * 60).state.remainingSeconds).toBe(POMODORO_MAX_PHASE_MINUTES * 60);
+        expect(setPomodoroPhaseTotal(idle, d, Number.NaN)).toEqual({ state: idle, changedSeconds: 0 });
+    });
+
+    it('overtime turns back into a countdown', () => {
+        const over = running(0, { overtimeSeconds: 120, keepGoing: true });
+        const set = setPomodoroPhaseTotal(over, d, 40 * 60);
+        expect(isPomodoroInOvertime(set.state)).toBe(false);
+        expect(set.state).toMatchObject({ remainingSeconds: 40 * 60 - (25 * 60 + 120), phaseTotalSeconds: 2400 });
+    });
+
+    it('± 5 min: bounds, both phases, overtime', () => {
+        const step = POMODORO_ADJUST_STEP_MINUTES;
+        expect(adjustPomodoroPhase(idle, d, step).state).toMatchObject({ remainingSeconds: 1800, phaseTotalSeconds: 1800 });
+        expect(adjustPomodoroPhase(idle, d, -step).state).toMatchObject({ remainingSeconds: 1200, phaseTotalSeconds: 1200 });
+        // Running, 3 min left: − leaves one minute, then is disabled.
+        const low = adjustPomodoroPhase(running(180), d, -step);
+        expect(low.state.remainingSeconds).toBe(60);
+        expect(low.changedSeconds).toBe(-120);
+        expect(canAdjustPomodoroPhase(low.state, d, -step)).toBe(false);
+        expect(adjustPomodoroPhase(low.state, d, -step).changedSeconds).toBe(0);
+        // + stops at 180 min in all.
+        const near = { ...idle, remainingSeconds: 178 * 60, phaseTotalSeconds: 178 * 60 };
+        expect(adjustPomodoroPhase(near, d, step).state.phaseTotalSeconds).toBe(180 * 60);
+        const max = { ...idle, remainingSeconds: 180 * 60, phaseTotalSeconds: 180 * 60 };
+        expect(canAdjustPomodoroPhase(max, d, step)).toBe(false);
+        expect(adjustPomodoroPhase(max, d, step).changedSeconds).toBe(0);
+        // Break phase works too.
+        const brk = { ...createPomodoroState(d, 'break'), isRunning: true, remainingSeconds: 200 };
+        expect(adjustPomodoroPhase(brk, d, step).state).toMatchObject({ phase: 'break', remainingSeconds: 500, phaseTotalSeconds: 600 });
+        // Overtime: + becomes 5 more planned minutes, − is disabled.
+        const over = running(0, { overtimeSeconds: 90, keepGoing: true });
+        expect(canAdjustPomodoroPhase(over, d, -step)).toBe(false);
+        const plus = adjustPomodoroPhase(over, d, step);
+        expect(isPomodoroInOvertime(plus.state)).toBe(false);
+        expect(plus.state).toMatchObject({ remainingSeconds: 300, phaseTotalSeconds: 25 * 60 + 90 + 300, isRunning: true });
+        expect(plus.changedSeconds).toBe(300);
+        // The new length survives ticking to the end of the phase.
+        expect(tickPomodoroState({ ...plus.state, remainingSeconds: 1 }, d).state.phase).toBe('focus');
     });
 });

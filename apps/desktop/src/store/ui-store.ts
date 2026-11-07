@@ -197,12 +197,14 @@ interface UiState {
         message: string;
         tone: 'success' | 'error' | 'info';
         action?: { label: string; onClick: () => void };
+        secondaryAction?: { label: string; onClick: () => void };
     }>;
     showToast: (
         message: string,
         tone?: 'success' | 'error' | 'info',
         durationMs?: number,
-        action?: { label: string; onClick: () => void }
+        action?: { label: string; onClick: () => void },
+        secondaryAction?: { label: string; onClick: () => void },
     ) => void;
     dismissToast: (id: string) => void;
     pauseToast: (id: string, reason: ToastPauseReason) => void;
@@ -240,9 +242,9 @@ export const useUiStore = createWithEqualityFn<UiState>()((set) => ({
     setFocusMode: (value) => set({ isFocusMode: value }),
     toggleFocusMode: () => set((state) => ({ isFocusMode: !state.isFocusMode })),
     toasts: [],
-    showToast: (message, tone = 'info', durationMs = 3000, action) => {
+    showToast: (message, tone = 'info', durationMs = 3000, action, secondaryAction) => {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        set((state) => ({ toasts: [...state.toasts, { id, message, tone, action }] }));
+        set((state) => ({ toasts: [...state.toasts, { id, message, tone, action, secondaryAction }] }));
         const timer: ToastTimer = {
             timeoutId: null,
             remainingMs: durationMs,

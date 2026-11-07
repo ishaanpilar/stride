@@ -37,6 +37,19 @@ export function ToastHost() {
 
     if (toasts.length === 0) return null;
 
+    const renderAction = (toastId: string, action: { label: string; onClick: () => void }) => (
+        <button
+            type="button"
+            onClick={() => {
+                action.onClick();
+                dismissToast(toastId);
+            }}
+            className="rounded-sm text-xs font-semibold text-accent-text hover:underline cursor-pointer focus-ring whitespace-nowrap"
+        >
+            {action.label}
+        </button>
+    );
+
     return (
         <div
             ref={hostRef}
@@ -72,19 +85,16 @@ export function ToastHost() {
                     <ExitGhost preset="toast" />
                     {toast.tone === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success-text" aria-hidden="true" />}
                     {toast.tone === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger-text" aria-hidden="true" />}
-                    <span className="flex-1">{toast.message}</span>
-                    {toast.action && (
-                        <button
-                            type="button"
-                            onClick={() => {
-                                toast.action?.onClick();
-                                dismissToast(toast.id);
-                            }}
-                            className="rounded-sm text-xs font-semibold text-accent-text hover:underline cursor-pointer focus-ring"
-                        >
-                            {toast.action.label}
-                        </button>
-                    )}
+                    <div className="min-w-0 flex-1">
+                        <span>{toast.message}</span>
+                        {toast.action && toast.secondaryAction && (
+                            <div className="mt-1.5 flex items-center gap-4">
+                                {renderAction(toast.id, toast.action)}
+                                {renderAction(toast.id, toast.secondaryAction)}
+                            </div>
+                        )}
+                    </div>
+                    {toast.action && !toast.secondaryAction && renderAction(toast.id, toast.action)}
                     <button
                         type="button"
                         onClick={() => dismissToast(toast.id)}

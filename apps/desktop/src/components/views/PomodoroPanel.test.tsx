@@ -405,4 +405,16 @@ describe('PomodoroPanel desktop persistence', () => {
         expect(screen.queryByTestId('pomodoro-back-to-focus')).toBeNull();
         resetFocusSessionStore();
     });
+
+    it('small − / + beside the time: idle they change the upcoming session; running, the current one', () => {
+        renderPanel();
+        fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }));
+        expect(screen.getByTestId('pomodoro-clock')).toHaveTextContent('30:00');
+        expect(screen.getByTestId('pomodoro-preset-label')).toHaveTextContent('30 min');
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        expect(usePomodoroStore.getState().snapshot.timerState).toMatchObject({ isRunning: true, remainingSeconds: 1800 });
+        fireEvent.click(screen.getByRole('button', { name: 'Remove 5 minutes' }));
+        expect(screen.getByTestId('pomodoro-clock').textContent).toMatch(/^2[45]:/);
+        expect(usePomodoroStore.getState().snapshot.timerState.phaseTotalSeconds).toBeUndefined();
+    });
 });

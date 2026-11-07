@@ -32,7 +32,8 @@ import { useEnterOnChange } from '../hooks/useEnterOnChange';
 import { isSandboxMode, shallow, useTaskStore, resolveFeatureFlags, safeFormatDate, tFallback, formatTaskMovedMessage, isSyncFileLockUnavailableError } from '@stride/core';
 import type { StoreActionResult, TaskStatus } from '@stride/core';
 import { openCapture } from '../lib/inline-capture';
-import { showUndoToast } from '../lib/undo-registry';
+import { registerUndoableAction, showUndoToast } from '../lib/undo-registry';
+import { askRepeatTickInToast, needsRepeatTickConfirm, showRepeatingDoneToast } from '../lib/repeating-completion';
 import { addTaskToFocusFromDrop } from '../lib/focus-drop';
 import { undoTaskCompletion } from '../lib/undo-task-completion';
 import { useLanguage } from '../contexts/language-context';
@@ -617,25 +618,29 @@ export function Layout({
         const previousStatus = task.status;
         const wasFocusedToday = task.isFocusedToday === true;
         const title = task.title;
-        void Promise.resolve(useTaskStore.getState().moveTask(taskId, nextStatus))
-            .then((result) => {
-                const outcome = result as StoreActionResult | undefined;
-                if (outcome && outcome.success === false) {
-                    throw new Error(outcome.error || 'Failed to change task status');
-                }
-                showUndoToast(formatTaskMovedMessage(t, title, nextStatus), () => {
-
-
-                    if (nextStatus === 'done') {
-                        void undoTaskCompletion(taskId, previousStatus, wasFocusedToday)
-                            .catch((error) => reportError('Failed to undo task status change', error));
-                        return;
+        const move = () => {
+            void Promise.resolve(useTaskStore.getState().moveTask(taskId, nextStatus))
+                .then((result) => {
+                    const outcome = result as StoreActionResult | undefined;
+                    if (outcome && outcome.success === false) {
+                        throw new Error(outcome.error || 'Failed to change task status');
                     }
-                    void Promise.resolve(useTaskStore.getState().moveTask(taskId, previousStatus))
-                        .catch((error) => reportError('Failed to undo task status change', error));
-                }, t);
-            })
-            .catch((error) => reportError('Failed to change task status', error));
+                    const undoMove = () => {
+                        if (nextStatus === 'done') {
+                            void undoTaskCompletion(taskId, previousStatus, wasFocusedToday)
+                                .catch((error) => reportError('Failed to undo task status change', error));
+                            return;
+                        }
+                        void Promise.resolve(useTaskStore.getState().moveTask(taskId, previousStatus))
+                            .catch((error) => reportError('Failed to undo task status change', error));
+                    };
+                    if (nextStatus === 'done' && showRepeatingDoneToast(taskId, { undo: registerUndoableAction(undoMove), t })) return;
+                    showUndoToast(formatTaskMovedMessage(t, title, nextStatus), undoMove, t);
+                })
+                .catch((error) => reportError('Failed to change task status', error));
+        };
+        if (nextStatus === 'done' && needsRepeatTickConfirm(taskId)) askRepeatTickInToast([taskId], move, t);
+        else move();
     }, [clearCalendarDragNavTimeout, currentView, onViewChange, t]);
 
     const triggerSearch = () => {

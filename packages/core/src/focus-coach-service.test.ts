@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createFocusAiService, createFocusCoachStore, type FocusKeyValueStorage } from './focus-coach-service';
+import { createFocusAiService, createFocusCoachStore, markFocusTaskDone, type FocusKeyValueStorage } from './focus-coach-service';
 import { computeFocusStreak, createFocusStreakStore } from './focus-streak';
+import { useTaskStore } from './store';
+import type { Task } from './types';
 
 const input = { title: 'Write the report', context: {} };
 
@@ -56,6 +58,23 @@ describe('createFocusCoachStore', () => {
         const store = createFocusCoachStore(() => shared);
         store.recordFocusCoachFeedback({ taskId: 'a', taskTitle: 'A', kind: 'coach', verdict: 'useful', at: new Date().toISOString(), digital: false });
         expect(store.readFocusCoachFeedback()).toHaveLength(1);
+    });
+});
+
+describe('markFocusTaskDone', () => {
+    it('Undo on a repeating task also takes back the occurrence the completion created', async () => {
+        const task: Task = {
+            id: 'r1', title: 'Call Brian', status: 'next', tags: [], contexts: [], isFocusedToday: true, dueDate: '2030-01-07',
+            recurrence: { rule: 'weekly', strategy: 'fluid' }, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+        useTaskStore.setState({ tasks: [task], _allTasks: [task], projects: [], _allProjects: [], areas: [], _allAreas: [], settings: { deviceId: 'd' } });
+        const open = () => useTaskStore.getState()._allTasks.filter((t) => t.status !== 'done' && !t.deletedAt);
+        const undo = await markFocusTaskDone('r1');
+        expect(open().map((t) => t.id)).not.toContain('r1');
+        expect(open()).toHaveLength(1);
+        expect(await undo!.undo()).toBe(true);
+        expect(open().map((t) => t.id)).toEqual(['r1']);
+        expect(useTaskStore.getState()._allTasks.find((t) => t.id === 'r1')?.isFocusedToday).toBe(true);
     });
 });
 

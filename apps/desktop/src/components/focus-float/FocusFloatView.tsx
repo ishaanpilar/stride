@@ -4,6 +4,7 @@ import { Check, ChevronDown, ChevronUp, Maximize2, Pause, Play, X } from 'lucide
 import type { FocusFloatDisplay, FocusFloatState } from '../../lib/focus-float-window';
 import { cn } from '../../lib/utils';
 import { FocusTint } from '../focus/FocusVisuals';
+import { PomodoroAdjust } from '../views/PomodoroAdjust';
 
 export interface FocusFloatViewProps {
     state: FocusFloatState;
@@ -17,6 +18,8 @@ export interface FocusFloatViewProps {
     onStartNext: () => void;
     /** Mouse down on the surface (not a button): start moving the window. */
     onDragStart?: () => void;
+    /** "−" / "+" beside the time (absent: no controls). */
+    adjust?: { canDecrease: boolean; canIncrease: boolean; onAdjust: (deltaMinutes: number) => number };
 }
 
 /**
@@ -96,7 +99,18 @@ export function FocusFloatView(props: FocusFloatViewProps) {
                             >
                                 {clock}
                             </span>
-                            {status && (
+                            {props.adjust && (
+                                <PomodoroAdjust
+                                    size="xs"
+                                    tr={tr}
+                                    canDecrease={props.adjust.canDecrease}
+                                    canIncrease={props.adjust.canIncrease}
+                                    onAdjust={props.adjust.onAdjust}
+                                    className="ff-adjust"
+                                    testId="focus-float-adjust"
+                                />
+                            )}
+                            {status && !props.adjust && (
                                 <span className={cn('ff-status', isBreak && 'ff-status--break')} data-testid="focus-float-status">{status}</span>
                             )}
                         </>
@@ -142,7 +156,16 @@ export function FocusFloatView(props: FocusFloatViewProps) {
                         <span className="ff-muted">{tr('focus.panelStep', 'Now')}:</span> {state.currentStep}
                     </p>
                 ) : (
-                    <p className={cn('ff-line', !state.taskTitle && 'ff-muted')} title={title} data-testid="focus-float-line">{title}</p>
+                    <p className={cn('ff-line', !state.taskTitle && 'ff-muted')} title={title} data-testid="focus-float-line">
+                        {/* With "− / +" in the top row there is no room for the status there: it leads this line. */}
+                        {status && props.adjust && (
+                            <>
+                                <span className={cn('ff-status ff-status--inline', isBreak && 'ff-status--break')} data-testid="focus-float-status">{status}</span>
+                                <span className="ff-status" aria-hidden> · </span>
+                            </>
+                        )}
+                        {title}
+                    </p>
                 )}
 
                 {expanded && !isDone && (isBreak ? (

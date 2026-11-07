@@ -32,7 +32,13 @@ export const COMPLETION_GONE_LINGER_MS = 600;
 /** Re-ticking (untick) is ignored this long after a tick, so a fast double click never undoes it. */
 export const COMPLETION_DOUBLE_CLICK_GUARD_MS = 450;
 
-type Entry = { phase: CompletionPhase; startedAt: number; timers: ReturnType<typeof setTimeout>[] };
+type Entry = {
+    phase: CompletionPhase;
+    startedAt: number;
+    timers: ReturnType<typeof setTimeout>[];
+    /** The row leaves the view when the sequence ends, rather than settling at the bottom (repeating tasks). */
+    leavesView?: boolean;
+};
 
 const entries = new Map<string, Entry>();
 
@@ -129,9 +135,35 @@ export function getCompletionPhase(taskId: string): CompletionPhase | undefined 
     return entries.get(taskId)?.phase;
 }
 
+/** The row goes away when this sequence ends: it stays collapsed at 'gone' instead of settling in. */
+export function markCompletionLeavesView(taskId: string): void {
+    const entry = entries.get(taskId);
+    if (entry) entry.leavesView = true;
+}
+
+export function completionLeavesView(taskId: string): boolean {
+    return entries.get(taskId)?.leavesView === true;
+}
+
 /** True while the row should stay where it is (popping .. leaving). */
 export function isCompletionActive(taskId: string): boolean {
     return activeIds.has(taskId);
+}
+
+/**
+ * Runs `run` when the task's sequence has finished, right away if none is running. A sequence that is
+ * cancelled (undo, a failed save) never runs it.
+ */
+export function afterCompletionSequence(taskId: string, run: () => void): void {
+    if (!activeIds.has(taskId)) {
+        run();
+        return;
+    }
+    const unsubscribe = subscribeCompletionSequence(() => {
+        if (activeIds.has(taskId)) return;
+        unsubscribe();
+        if (entries.get(taskId)?.phase === 'gone') run();
+    });
 }
 
 /** True for the first moments of a sequence, when a second click is almost surely a double click. */

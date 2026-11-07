@@ -859,7 +859,7 @@ export function AgendaView() {
     ]);
     // Completion rule: tasks ticked done this session stay in the section they were in, struck through,
     // and drop to the bottom of that section after the settle delay (core task-completion-order.ts).
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     const sectionMembershipRef = useRef<SectionMembership>(new Map());
     const sections = useMemo(() => {
         // Always run it, even before anything was ticked: it records which section each open task is in,
@@ -876,9 +876,10 @@ export function AgendaView() {
             sessionCompletions,
             settledCompletionIds,
             (id) => tasksById.get(id),
+            { hiddenIds: heldOccurrenceIds },
         );
         return { ...baseSections, ...lists };
-    }, [baseSections, sessionCompletions, settledCompletionIds, tasksById]);
+    }, [baseSections, heldOccurrenceIds, sessionCompletions, settledCompletionIds, tasksById]);
     const focusedTasks = sections.focusedTasks;
     const focusedOpenTasks = useMemo(() => focusedTasks.filter((task) => task.status !== 'done'), [focusedTasks]);
     const nextActionGroups = useMemo(() => (

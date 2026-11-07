@@ -279,7 +279,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
     // Completion rule: a task ticked done this session keeps showing in the view it was ticked in, struck
     // through, and drops to the bottom of its list/section after a short settle delay (see core
     // task-completion-order.ts). Earlier days' completions follow the normal rules (Done view only).
-    const { retained: sessionCompletions, settledIds: settledCompletionIds } = useCompletionRetention();
+    const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
     // The Done and Archived views list by their real status; retention only applies to open-status views.
     const retainedCompletions = statusFilter === 'done' || statusFilter === 'archived' ? NO_RETAINED_COMPLETIONS : sessionCompletions;
     const reorderableStatus = statusFilter === 'inbox' || statusFilter === 'next'
@@ -574,6 +574,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         includeArchivedReferenceProjects,
         retainedCompletions,
         settledCompletionIds,
+        heldOccurrenceIds,
         manualActive,
     }), [
         baseTasks,
@@ -591,6 +592,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         includeArchivedReferenceProjects,
         retainedCompletions,
         settledCompletionIds,
+        heldOccurrenceIds,
         manualActive,
     ]);
     const deferredFilterInputs = useDeferredValue(filterInputs);
@@ -614,6 +616,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
             const filtered = deferredFilterInputs.baseTasks.filter(t => {
 
                 if (t.deletedAt) return false;
+                if (deferredFilterInputs.heldOccurrenceIds.has(t.id)) return false;
 
                 if (deferredFilterInputs.statusFilter !== 'all'
                     && effectiveViewStatus(t, deferredFilterInputs.retainedCompletions) !== deferredFilterInputs.statusFilter) return false;

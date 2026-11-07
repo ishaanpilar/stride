@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    canAdjustPomodoroPhase,
     formatPomodoroClock,
     formatPomodoroOvertime,
     getPomodoroOvertimeProgress,
     isPomodoroInOvertime,
     getPomodoroPhaseTotalSeconds,
     getPomodoroPresetOptions,
+    POMODORO_ADJUST_STEP_MINUTES,
     resetPomodoroState,
     useTaskStore,
     type PomodoroAutoStartOptions,
@@ -28,6 +30,7 @@ import { readStoredPresentation } from '../../store/focus-session-store';
 import { readFocusNow } from '../../lib/focus-coach-store';
 import { PomodoroPresetPopover } from '../views/PomodoroPresetPopover';
 import { PomodoroRing } from '../views/PomodoroRing';
+import { PomodoroAdjust } from '../views/PomodoroAdjust';
 
 interface PanelPomodoroProps {
     candidates: Task[];
@@ -203,7 +206,14 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
         custom: tr('pomodoro.presetCustom', 'Custom'),
     };
     const clock = inOvertime ? formatPomodoroOvertime(display.overtimeSeconds ?? 0) : formatPomodoroClock(display.remainingSeconds);
-    const phaseMinutes = isFocus ? snapshot.durations.focusMinutes : snapshot.durations.breakMinutes;
+    const phaseMinutes = Math.round(totalSeconds / 60);
+    // "− / +": idle they plan the upcoming session, otherwise they change the current phase. The
+    // main window (ticking, float) re-reads the shared snapshot.
+    const adjust = (deltaMinutes: number) => {
+        const changed = usePomodoroStore.getState().adjustPomodoro(deltaMinutes, autoStart);
+        if (changed) notifyPomodoroChanged();
+        return changed;
+    };
     const clockClass = 'fx-display text-[20px] font-light leading-none tracking-tight tabular-nums';
     // Focus mode in the main window is minimised or hidden: offer the way back from here.
     const presentation = readStoredPresentation();
@@ -247,7 +257,8 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
 
                 {inSession ? (
                     <span className={cn(clockClass, inOvertime && 'text-muted-foreground')} data-testid="panel-pomodoro-clock" data-overtime={inOvertime ? 'true' : undefined}>{clock}</span>
-                ) : (
+                ) : null}
+                {!inSession && (
                     <div ref={presetAnchorRef} className="flex flex-col items-start">
                         <button
                             type="button"
@@ -275,6 +286,15 @@ export function PanelPomodoro({ candidates, tr }: PanelPomodoroProps) {
                         </button>
                     </div>
                 )}
+                <PomodoroAdjust
+                    size="sm"
+                    tr={tr}
+                    canDecrease={canAdjustPomodoroPhase(display, snapshot.durations, -POMODORO_ADJUST_STEP_MINUTES)}
+                    canIncrease={canAdjustPomodoroPhase(display, snapshot.durations, POMODORO_ADJUST_STEP_MINUTES)}
+                    onAdjust={adjust}
+                    className="-ml-1"
+                    testId="panel-pomodoro-adjust"
+                />
 
                 <div className="min-w-0 flex-1">
                     {inSession ? (

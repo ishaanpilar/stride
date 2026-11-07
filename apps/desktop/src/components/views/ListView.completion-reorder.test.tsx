@@ -70,6 +70,30 @@ describe('ListView completion and manual order', () => {
     expect(titles(view)).toEqual(['a', 'b', 'c']);
   });
 
+  it('holds a repeating task\'s next occurrence back, then lets the done copy leave and shows the new one', async () => {
+    const repeating = { rule: 'weekly' as const, strategy: 'fluid' as const };
+    const a = makeTask('a', { createdAt: '2026-01-01T00:00:00.000Z' });
+    const weekly = makeTask('weekly', { createdAt: '2026-01-02T00:00:00.000Z', recurrence: repeating });
+    setTasks([a, weekly]);
+    const view = renderNext();
+    expect(titles(view)).toEqual(['a', 'weekly']);
+
+    vi.useFakeTimers();
+    const completedAt = new Date().toISOString();
+    const next = makeTask('next-one', {
+      createdAt: completedAt, updatedAt: completedAt, recurrence: { ...repeating, seriesId: 'weekly' },
+    });
+    setTasks([a, { ...weekly, status: 'done', completedAt }, next]);
+    expect(titles(view)).toEqual(['a', 'weekly']);
+
+    act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.leaving + 50); });
+    expect(titles(view)).toEqual(['a', 'weekly']);
+    act(() => { vi.advanceTimersByTime(COMPLETION_TIMELINE.gone - COMPLETION_TIMELINE.leaving); });
+    vi.useRealTimers();
+    expect(titles(view)).toEqual(['a', 'next-one']);
+    expect(view.container.querySelector('[data-task-id="next-one"]')).toHaveAttribute('data-occurrence-arrived');
+  });
+
   it('does not show tasks completed before this session', () => {
     setTasks([makeTask('a'), makeTask('old', { status: 'done', completedAt: now })]);
     const view = renderNext();

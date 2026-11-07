@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as panelWindow from '../lib/menubar-panel-window';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useTaskStore, type InboxProcessSuggestion, type Task } from '@stride/core';
@@ -6,6 +6,7 @@ import { LanguageProvider } from '../contexts/language-context';
 import { MenuBarPanel, readStoredTab } from './MenuBarPanel';
 import { resetCompletionRetentionForTests } from '../lib/completion-retention';
 import { COMPLETION_TIMELINE, resetCompletionSequenceForTests } from '../lib/completion-sequence';
+import { resetRepeatTickGuardForTests } from '../lib/repeating-completion';
 import { usePomodoroStore } from '../store/pomodoro-store';
 
 const sortService = vi.hoisted(() => ({
@@ -37,6 +38,9 @@ const rowTitles = () => screen.getAllByTestId('menubar-row').map((row) => row.qu
 const suggestion = (taskId: string, extra: Partial<InboxProcessSuggestion> = {}): InboxProcessSuggestion => ({
     taskId, originalTitle: taskId, kind: 'next', title: taskId, needsYou: false, ...extra,
 });
+
+// Other tests swap store actions for mocks; the repeating tests need the real follow-up.
+const { moveTask: realMoveTask, updateTask: realUpdateTask, deleteTask: realDeleteTask, restoreTask: realRestoreTask } = useTaskStore.getState();
 
 describe('MenuBarPanel', () => {
     beforeEach(() => {
@@ -258,6 +262,145 @@ describe('MenuBarPanel', () => {
         });
         await waitFor(() => expect(moveTask).toHaveBeenCalledWith('late', 'done'));
         await waitFor(() => expect(screen.getAllByRole('status').some((node) => node.textContent?.includes('Pay invoice'))).toBe(true));
+    });
+
+    describe('repeating tasks', () => {
+        const repeating = { rule: 'weekly' as const, strategy: 'fluid' as const };
+        const weekly = () => makeTask('weekly', { title: 'Water plants', dueDate: at(2), recurrence: repeating });
+        const seed = (tasks: Task[]) => useTaskStore.setState({
+            tasks, _allTasks: tasks, _tasksById: new Map(tasks.map((task) => [task.id, task])),
+            moveTask: realMoveTask, updateTask: realUpdateTask, deleteTask: realDeleteTask, restoreTask: realRestoreTask,
+        } as never);
+        const stored = () => useTaskStore.getState()._allTasks;
+        const occurrence = () => stored().find((task) => task.id !== 'weekly' && task.recurrence && !task.deletedAt);
+        const rowIds = () => screen.queryAllByTestId('menubar-row').map((row) => row.getAttribute('data-task-id'));
+        const advance = (ms: number) => act(async () => { vi.advanceTimersByTime(ms); });
+        const tick = (name: string | RegExp) => act(async () => {
+            fireEvent.click(screen.getByRole('button', { name }));
+            await Promise.resolve();
+        });
+
+        beforeEach(() => {
+            resetCompletionRetentionForTests();
+            resetCompletionSequenceForTests();
+            resetRepeatTickGuardForTests();
+            window.localStorage.setItem('stride-menubar-tab', 'all');
+        });
+        afterEach(() => {
+            resetCompletionSequenceForTests();
+            resetCompletionRetentionForTests();
+            resetRepeatTickGuardForTests();
+            vi.useRealTimers();
+        });
+
+        it('shows how a task repeats in the row', () => {
+            seed([weekly(), makeTask('plain')]);
+            renderPanel();
+            expect(within(screen.getAllByTestId('menubar-row').find((row) => row.getAttribute('data-task-id') === 'weekly')!)
+                .getByTestId('menubar-row-repeat')).toHaveTextContent('Weekly · after completion');
+            expect(within(screen.getAllByTestId('menubar-row').find((row) => row.getAttribute('data-task-id') === 'plain')!)
+                .queryByTestId('menubar-row-repeat')).toBeNull();
+        });
+
+        it('holds the next occurrence back, drops the done row after the sequence and says when it repeats', async () => {
+            seed([weekly()]);
+            renderPanel();
+            vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            await tick(/Mark done: Water plants/);
+            expect(occurrence()).toBeDefined();
+            expect(rowIds()).toEqual(['weekly']);
+            expect(screen.queryByTestId('menubar-completion-undo')).toBeNull();
+
+            await advance(COMPLETION_TIMELINE.gone + 1);
+            expect(rowIds()).toEqual([occurrence()?.id]);
+            expect(screen.getByTestId('menubar-row')).toHaveAttribute('data-occurrence-arrived');
+            expect(screen.getByTestId('menubar-completion-undo')).toHaveTextContent(/Done\. Repeats next on \w{3} \d{1,2} \w{3}/);
+            expect(stored().find((task) => task.id === 'weekly')?.status).toBe('done');
+        });
+
+        it('Undo brings the task back and removes the occurrence', async () => {
+            seed([weekly()]);
+            renderPanel();
+            vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            await tick(/Mark done: Water plants/);
+            await advance(COMPLETION_TIMELINE.gone + 1);
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+                await advance(1);
+            });
+            await advance(1);
+            expect(stored().find((task) => task.id === 'weekly')?.status).toBe('next');
+            expect(occurrence()).toBeUndefined();
+            expect(rowIds()).toEqual(['weekly']);
+        });
+
+        it('Stop repeating ends the series, and Undo puts the occurrence back', async () => {
+            seed([weekly()]);
+            renderPanel();
+            vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            await tick(/Mark done: Water plants/);
+            await advance(COMPLETION_TIMELINE.gone + 1);
+            const id = occurrence()?.id as string;
+
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Stop repeating' }));
+                await advance(1);
+            });
+            await advance(1);
+            expect(rowIds()).toEqual([]);
+            expect(stored().find((task) => task.id === id)?.recurrence).toBeUndefined();
+            expect(screen.getByTestId('menubar-completion-undo')).toHaveTextContent('Stopped repeating');
+
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+                await advance(1);
+            });
+            await advance(1);
+            expect(rowIds()).toEqual([id]);
+            expect(stored().find((task) => task.id === id)?.recurrence).toMatchObject({ rule: 'weekly' });
+        });
+
+        describe('when the main window completed the previous occurrence moments ago', () => {
+            const seedCompletedElsewhere = () => {
+                const completedAt = new Date().toISOString();
+                seed([
+                    makeTask('previous', { title: 'Water plants', status: 'done', completedAt, recurrence: repeating }),
+                    makeTask('current', {
+                        title: 'Water plants', dueDate: at(2), createdAt: completedAt, updatedAt: completedAt,
+                        recurrence: { ...repeating, seriesId: 'previous' },
+                    }),
+                ]);
+            };
+            const status = () => stored().find((task) => task.id === 'current')?.status;
+
+            it('asks in the row, and Cancel leaves it open', async () => {
+                seedCompletedElsewhere();
+                renderPanel();
+                await tick(/Mark done: Water plants/);
+                expect(screen.getByTestId('repeat-tick-confirm')).toHaveTextContent("This repeats. Mark next week's as done too?");
+                expect(status()).toBe('next');
+                await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+                expect(screen.queryByTestId('repeat-tick-confirm')).toBeNull();
+                expect(status()).toBe('next');
+            });
+
+            it('completes it on Yes', async () => {
+                seedCompletedElsewhere();
+                renderPanel();
+                await tick(/Mark done: Water plants/);
+                await tick('Yes');
+                expect(status()).toBe('done');
+            });
+
+            it('uses the same check from the keyboard', async () => {
+                seedCompletedElsewhere();
+                renderPanel();
+                const row = screen.getAllByTestId('menubar-row')[0]!.querySelector('[data-row-main]') as HTMLElement;
+                await act(async () => { fireEvent.keyDown(row, { key: ' ' }); });
+                expect(screen.getByTestId('repeat-tick-confirm')).toBeInTheDocument();
+                expect(status()).toBe('next');
+            });
+        });
     });
 
     it('completes from All tasks too', async () => {

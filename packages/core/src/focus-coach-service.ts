@@ -18,6 +18,7 @@ import { minutesToTimeEstimate } from './calendar-scheduling';
 import type { Language } from './i18n';
 import { useTaskStore } from './store';
 import type { Task } from './types';
+import { undoTaskCompletion } from './undo-task-completion';
 import { generateUUID } from './uuid';
 
 export const FOCUS_COACH_FEEDBACK_STORAGE_KEY = 'stride:focus:coach-feedback:v1';
@@ -181,9 +182,25 @@ export async function applyFocusCoachAction(taskId: string, action: FocusCoachAc
     return { undo: async () => (await useTaskStore.getState().deleteTask(id))?.success !== false };
 }
 
-export const markFocusTaskDone = (taskId: string) => patchWithUndo(taskId, { status: 'done', isFocusedToday: false });
+/** Undo goes through undoTaskCompletion: a repeating task must not keep the occurrence this created. */
+export async function markFocusTaskDone(taskId: string): Promise<FocusUndo | null> {
+    const before = readFocusTask(taskId);
+    if (!before) return null;
+    const previousStatus = before.status;
+    const wasFocusedToday = before.isFocusedToday === true;
+    const result = await useTaskStore.getState().updateTask(taskId, { status: 'done', isFocusedToday: false });
+    if (result?.success === false) return null;
+    return {
+        undo: () => undoTaskCompletion(taskId, previousStatus, wasFocusedToday).then(() => true, () => false),
+    };
+}
 
-export async function addFocusChecklistItems(taskId: string, titles: readonly string[]): Promise<FocusUndo | null> {
+export interface FocusChecklistAdd extends FocusUndo {
+    /** Ids of the checklist items that were added. */
+    ids: string[];
+}
+
+export async function addFocusChecklistItems(taskId: string, titles: readonly string[]): Promise<FocusChecklistAdd | null> {
     const task = readFocusTask(taskId);
     if (!task || titles.length === 0) return null;
     const items = titles.map((title) => ({ id: generateUUID(), title: title.slice(0, 200), isCompleted: false }));
@@ -191,11 +208,40 @@ export async function addFocusChecklistItems(taskId: string, titles: readonly st
     const result = await useTaskStore.getState().updateTask(taskId, { checklist: [...(task.checklist ?? []), ...items] });
     if (result?.success === false) return null;
     return {
+        ids: items.map((i) => i.id),
         undo: async () => {
             const live = readFocusTask(taskId);
             if (!live) return false;
             const res = await useTaskStore.getState().updateTask(taskId, { checklist: (live.checklist ?? []).filter((i) => !ids.has(i.id)) });
             return res?.success !== false;
         },
+    };
+}
+
+/**
+ * "Update steps" from the coach: the open steps it added earlier (`replaceIds`) give way to the new
+ * ones; steps the user ticked or wrote stay. New titles already on the checklist are skipped. Undo
+ * puts the checklist back exactly as it was.
+ */
+export async function replaceFocusChecklistItems(
+    taskId: string,
+    titles: readonly string[],
+    replaceIds: readonly string[] = [],
+): Promise<FocusChecklistAdd | null> {
+    const task = readFocusTask(taskId);
+    if (!task || titles.length === 0) return null;
+    const previous = task.checklist ?? [];
+    const drop = new Set(replaceIds);
+    const kept = previous.filter((item) => item.isCompleted || !drop.has(item.id));
+    const have = new Set(kept.map((item) => item.title.trim().toLowerCase()));
+    const items = titles
+        .filter((title) => !have.has(title.trim().toLowerCase()))
+        .map((title) => ({ id: generateUUID(), title: title.slice(0, 200), isCompleted: false }));
+    if (items.length === 0 && kept.length === previous.length) return null;
+    const result = await useTaskStore.getState().updateTask(taskId, { checklist: [...kept, ...items] });
+    if (result?.success === false) return null;
+    return {
+        ids: items.map((i) => i.id),
+        undo: async () => (await useTaskStore.getState().updateTask(taskId, { checklist: previous }))?.success !== false,
     };
 }

@@ -118,3 +118,25 @@ describe('splitOrderedIdsByStatus', () => {
         ]);
     });
 });
+
+describe('retainCompletedInSections hiddenIds', () => {
+    const open = (id: string) => ({ id, status: 'next' as const });
+    const noRetained = new Map();
+
+    it('leaves hidden tasks out of every list and keeps the others in place', () => {
+        const memory = new Map();
+        const lists = { upcoming: [open('a'), open('held'), open('b')], next: [open('held')] };
+        const result = retainCompletedInSections(lists, memory, noRetained, new Set(), () => undefined, { hiddenIds: new Set(['held']) });
+        expect(result.upcoming.map((task) => task.id)).toEqual(['a', 'b']);
+        expect(result.next).toEqual([]);
+        expect(memory.has('held')).toBe(false);
+    });
+
+    it('shows the task once it is no longer hidden', () => {
+        const lists = { upcoming: [open('a'), open('held')] };
+        const memory = new Map();
+        retainCompletedInSections(lists, memory, noRetained, new Set(), () => undefined, { hiddenIds: new Set(['held']) });
+        const result = retainCompletedInSections(lists, memory, noRetained, new Set(), () => undefined);
+        expect(result.upcoming.map((task) => task.id)).toEqual(['a', 'held']);
+    });
+});

@@ -231,6 +231,87 @@ export function resumePomodoroFocus(
     };
 }
 
+/** The step of the small "−" / "+" buttons beside the time on every timer surface. */
+export const POMODORO_ADJUST_STEP_MINUTES = 5;
+/** Longest a single phase can be planned with "+" or "Set timer". */
+export const POMODORO_MAX_PHASE_MINUTES = MAX_MINUTES;
+/** "−" and "Set timer" never leave less than this much time to go. */
+export const POMODORO_MIN_REMAINING_SECONDS = 60;
+
+export interface PomodoroAdjustResult {
+    state: PomodoroState;
+    /** Change of the phase length in seconds (0 = nothing changed). */
+    changedSeconds: number;
+}
+
+/** Not started: paused at the very beginning of the phase (the next session's length can change). */
+export function isPomodoroPhaseIdle(state: PomodoroState, durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS): boolean {
+    return !state.isRunning && !isPomodoroInOvertime(state) && state.remainingSeconds >= getPomodoroPhaseTotalSeconds(state, durations);
+}
+
+/** Seconds already worked in the current phase (overtime included). */
+export function getPomodoroElapsedSeconds(state: PomodoroState, durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS): number {
+    if (isPomodoroPhaseIdle(state, durations)) return 0;
+    const total = getPomodoroPhaseTotalSeconds(state, durations);
+    return Math.max(0, total - Math.max(0, state.remainingSeconds)) + getPomodoroOvertimeSeconds(state);
+}
+
+/**
+ * Plan the CURRENT phase to last `totalSeconds` in all (bounded 1–180 min): idle, the phase simply
+ * gets that length; started (running or paused), what is already worked stays and the remaining
+ * time becomes the rest, never less than a minute. Overtime turns back into a countdown. Running or
+ * paused stays as it was. Used by "Set timer to N min" (and its Undo) and the "−" / "+" buttons.
+ */
+export function setPomodoroPhaseTotal(
+    state: PomodoroState,
+    durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS,
+    totalSeconds: number,
+): PomodoroAdjustResult {
+    if (typeof totalSeconds !== 'number' || !Number.isFinite(totalSeconds)) return { state, changedSeconds: 0 };
+    const target = Math.min(POMODORO_MAX_PHASE_MINUTES * 60, Math.max(POMODORO_MIN_REMAINING_SECONDS, Math.round(totalSeconds)));
+    const before = getPomodoroPhaseTotalSeconds(state, durations) + getPomodoroOvertimeSeconds(state);
+    const elapsed = getPomodoroElapsedSeconds(state, durations);
+    const remainingSeconds = Math.max(POMODORO_MIN_REMAINING_SECONDS, target - elapsed);
+    const phaseTotalSeconds = elapsed + remainingSeconds;
+    const { overtimeSeconds: _overtime, phaseTotalSeconds: _total, ...rest } = state;
+    const configured = getPomodoroPhaseSeconds(state.phase, durations);
+    const next: PomodoroState = {
+        ...rest,
+        remainingSeconds,
+        ...(phaseTotalSeconds === configured ? {} : { phaseTotalSeconds }),
+    };
+    const changedSeconds = phaseTotalSeconds - before;
+    if (changedSeconds === 0 && !isPomodoroInOvertime(state)) return { state, changedSeconds: 0 };
+    return { state: next, changedSeconds };
+}
+
+/** Can the "+" (delta > 0) or "−" (delta < 0) button change the current phase right now? */
+export function canAdjustPomodoroPhase(state: PomodoroState, durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS, delta: number): boolean {
+    if (delta > 0) {
+        if (isPomodoroInOvertime(state)) return getPomodoroElapsedSeconds(state, durations) + POMODORO_MIN_REMAINING_SECONDS <= POMODORO_MAX_PHASE_MINUTES * 60;
+        return getPomodoroPhaseTotalSeconds(state, durations) < POMODORO_MAX_PHASE_MINUTES * 60;
+    }
+    if (delta < 0) return !isPomodoroInOvertime(state) && state.remainingSeconds > POMODORO_MIN_REMAINING_SECONDS;
+    return false;
+}
+
+/**
+ * The "−" / "+" buttons: change the current phase (focus or break, idle, running or paused) by
+ * `deltaMinutes`. At most 180 min in all; "−" keeps at least a minute to go. In overtime "+" turns
+ * the count-up into that many more planned minutes; "−" does nothing there.
+ */
+export function adjustPomodoroPhase(
+    state: PomodoroState,
+    durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS,
+    deltaMinutes: number,
+): PomodoroAdjustResult {
+    if (typeof deltaMinutes !== 'number' || !Number.isFinite(deltaMinutes) || deltaMinutes === 0) return { state, changedSeconds: 0 };
+    if (!canAdjustPomodoroPhase(state, durations, deltaMinutes)) return { state, changedSeconds: 0 };
+    const delta = Math.round(deltaMinutes * 60);
+    if (isPomodoroInOvertime(state)) return setPomodoroPhaseTotal(state, durations, getPomodoroElapsedSeconds(state, durations) + delta);
+    return setPomodoroPhaseTotal(state, durations, getPomodoroPhaseTotalSeconds(state, durations) + delta);
+}
+
 /** Whole minutes of focus a finished phase is worth (configured length, added time and overtime). */
 export function getPomodoroFocusCreditMinutes(state: Pick<PomodoroState, 'phase' | 'phaseTotalSeconds' | 'overtimeSeconds'>, durations: PomodoroDurations = DEFAULT_POMODORO_DURATIONS): number {
     if (state.phase !== 'focus') return sanitizePomodoroDurations(durations).focusMinutes;

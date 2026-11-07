@@ -191,6 +191,17 @@ html.sidebar-resizing, html.sidebar-resizing * { cursor: col-resize !important; 
 .motion-dock[data-state='entering'],
 .motion-dock[data-state='closing'] { opacity: 0; }
 
+/*
+ * A repeating task's new occurrence, when it appears after the previous one's sequence (lib/completion-
+ * retention.ts; the attribute lasts OCCURRENCE_ARRIVAL_MS). A soft accent wash that fades out, nothing
+ * that moves. With motion off the tint simply stays for that moment.
+ */
+@keyframes occurrence-arrive {
+  0%, 40% { background-color: var(--occurrence-arrive-bg); }
+}
+:root { --occurrence-arrive-bg: color-mix(in srgb, hsl(var(--accent)) 14%, hsl(var(--card))); }
+[data-occurrence-arrived] { animation: occurrence-arrive 1600ms var(--ease-out-quart); }
+
 @media (prefers-reduced-motion: reduce) {
   .motion-overlay, .motion-dialog, .motion-popover, .motion-sheet-right, .motion-toast, .motion-view,
   .motion-row-in, .motion-expand-in, .motion-strike, .motion-check-pop, .motion-skeleton,
@@ -200,6 +211,7 @@ html.sidebar-resizing, html.sidebar-resizing * { cursor: col-resize !important; 
   .task-row[data-completing], .menubar-row[data-completing], .task-row[data-completing] .metadata-badge, [data-completing] .completion-check,
   [data-completing] .completion-check-mark path, [data-completing] .completion-check-mark polyline,
   [data-completing] .completion-strike { animation: none; }
+  [data-occurrence-arrived] { animation: none; background-color: var(--occurrence-arrive-bg); }
   .task-row[data-done] .task-item-display__title { transition: none; }
 }
 
@@ -222,6 +234,7 @@ html[data-motion='off'] :is(.task-row[data-completing], .menubar-row[data-comple
 html[data-motion='off'] [data-completing] :is(.completion-check, .completion-strike, .completion-check-mark path, .completion-check-mark polyline) {
   animation: none !important;
 }
+html[data-motion='off'] [data-occurrence-arrived] { background-color: var(--occurrence-arrive-bg); }
 html[data-motion='off'] .motion-skeleton { animation: none !important; }
 html[data-motion='off'] :is(
   .motion-overlay, .motion-dialog, .motion-popover, .motion-sheet-right, .motion-toast, .motion-view,

@@ -872,12 +872,6 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                             )}
                         >
                             {looksCompleted ? <span className="completion-strike" data-task-title-struck>{task.title}</span> : task.title}
-                            {!isViewOpen && !showCompactMeta && !isReference && recurrenceLabel && (
-                                <span title={recurrenceLabel} className="ms-1 inline-block align-[-2px]">
-                                    <Repeat aria-hidden="true" className="h-3.5 w-3.5" />
-                                </span>
-                            )}
-                            {                                                                         }
                             {!isViewOpen && !showCompactMeta && !isReference && descriptionPreview && (
                                 <span title={tFallback(t, 'taskEdit.descriptionLabel', 'Description')} className="ms-1 inline-block align-[-2px]">
                                     <AlignLeft aria-hidden="true" className="h-3.5 w-3.5" />
@@ -914,13 +908,24 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
                         dense ? "mt-1" : "mt-2",
                         (overlayDragHandle || overlayQuickDone) && "pl-12"
                     ))}
-                    {!isReference && !showCompactMeta && !isViewOpen && (completionLabel || projectDeadlineLabel || appearsAtLabel || hasTimedStart || waitingAssignee) && (
+                    {!isReference && !showCompactMeta && !isViewOpen && (completionLabel || projectDeadlineLabel || appearsAtLabel || hasTimedStart || waitingAssignee || recurrenceLabel) && (
                         <div className={cn(
                             "flex flex-wrap items-center gap-2 text-xs text-muted-foreground",
                             dense ? "mt-0.5" : "mt-1",
                             (overlayDragHandle || overlayQuickDone) && "pl-12"
                         )}>
                             {renderCompletionMetadataBadge()}
+                            {recurrenceLabel && (
+                                <MetadataBadge variant="info" icon={Repeat} label={recurrenceLabel} title={recurrencePreviewLabel} />
+                            )}
+                            {recurrenceLabel && task.dueDate && !appearsAtLabel && !looksCompleted && (
+                                <MetadataBadge
+                                    variant="info"
+                                    icon={CalendarIcon}
+                                    label={formatTaskDateChipLabel(task.dueDate, t)}
+                                    title={safeFormatDate(task.dueDate, hasTimeComponent(task.dueDate) ? 'Pp' : 'P')}
+                                />
+                            )}
                             {
                                                                                                }
                             {renderAppearsAtMetadataBadge()}

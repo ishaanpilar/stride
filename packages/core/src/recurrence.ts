@@ -555,6 +555,15 @@ function getRecurrenceInterval(value: Task['recurrence']): number {
     return 1;
 }
 
+/**
+ * Rule and step of a recurrence ("every 2 weeks" is weekly, 2), or null when it does not repeat.
+ * `perPeriod` is how many occurrences fall in one step ("Mon and Wed" is 2).
+ */
+export function getRecurrenceCadence(value: Task['recurrence']): { rule: RecurrenceRule; interval: number; perPeriod: number } | null {
+    const rule = getRecurrenceRule(value);
+    return rule ? { rule, interval: getRecurrenceInterval(value), perPeriod: Math.max(1, getRecurrenceByDay(value)?.length ?? 1) } : null;
+}
+
 function getRecurrenceWeekStart(value: Task['recurrence']): RecurrenceWeekday | undefined {
     if (!value || typeof value === 'string') return undefined;
     const recurrence = value as Recurrence;

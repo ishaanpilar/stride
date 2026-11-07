@@ -26,7 +26,9 @@ import { resolveBoardDragEnd, resolveBoardEdgeMove, resolveBoardKeyboardMove, ty
 import { BoardColumn, type BoardDropIndicator, type BoardComposerState, type BoardColumnLabels } from './board/BoardColumn';
 import { BoardMenu, type BoardMenuAnchor, type BoardMenuItem } from './board/BoardMenu';
 import { deleteTaskWithUndo } from '../Task/useTaskQuickActionMenuProps';
-import { showUndoToast } from '../../lib/undo-registry';
+import { registerUndoableAction, showUndoToast } from '../../lib/undo-registry';
+import { undoTaskCompletion } from '../../lib/undo-task-completion';
+import { reportError } from '../../lib/report-error';
 import { BoardCardOverlay, type BoardCardProject } from './board/BoardCard';
 import type { Task, TaskStatus, FilterCriteria } from '@stride/core';
 import { useLanguage } from '../../contexts/language-context';
@@ -45,6 +47,8 @@ import type { DesktopActiveFilterChip } from './list/FilterDisclosure';
 import { beginRendererActivity, recordRendererActivity } from '../../lib/renderer-navigation-diagnostics';
 import { MOTION_EASING, canAnimate } from '../../lib/motion';
 import { beginCompletion, isWithinDoubleClickGuard } from '../../lib/completion-sequence';
+import { isRepeatingCompletionPending, useHeldOccurrenceIds } from '../../lib/completion-retention';
+import { askRepeatTickInToast, guardRepeatTick, needsRepeatTickConfirm, showRepeatingDoneToast } from '../../lib/repeating-completion';
 
 const BOARD_DROP_ANIMATION = { duration: 260, easing: MOTION_EASING.out };
 
@@ -326,8 +330,9 @@ export function BoardView() {
         [projectOrderMap],
     );
 
+    const heldOccurrenceIds = useHeldOccurrenceIds();
     const getColumnTasks = React.useCallback((status: TaskStatus) => {
-        let list = filteredTasks.filter((task) => task.status === status);
+        let list = filteredTasks.filter((task) => task.status === status && !heldOccurrenceIds.has(task.id));
         if (status === 'next') {
             list = list.filter((task) => (
                 !computeSequential || !isTaskSequenceBlocked(task, sequencing, sequentialProjectFirstTasks)
@@ -337,7 +342,7 @@ export function BoardView() {
             }
         }
         return sortBy === 'default' ? sortTasksByBoardOrder(list) : list;
-    }, [computeSequential, filteredTasks, sequencing, sequentialProjectFirstTasks, sortBy, sortByProjectOrder]);
+    }, [computeSequential, filteredTasks, heldOccurrenceIds, sequencing, sequentialProjectFirstTasks, sortBy, sortByProjectOrder]);
 
     const getDoneSplit = React.useCallback(() => {
         const all = getColumnTasks('done');
@@ -483,10 +488,25 @@ export function BoardView() {
             return { ...current, previousStatus: Object.fromEntries(entries.slice(-MAX_PREVIOUS_STATUSES)) };
         });
     };
-    const moveTaskTracked = (taskId: string, status: TaskStatus) => {
+    const moveTaskTracked = async (taskId: string, status: TaskStatus, repeatTickConfirmed = false): Promise<void> => {
         const current = tasks.find((candidate) => candidate.id === taskId);
-        if (current && status === 'done' && current.status !== 'done') rememberPreviousStatus(taskId, current.status);
-        return moveTask(taskId, status);
+        const completing = current !== undefined && status === 'done' && current.status !== 'done';
+        if (completing && !repeatTickConfirmed && needsRepeatTickConfirm(taskId)) {
+            askRepeatTickInToast([taskId], () => { void moveTaskTracked(taskId, status, true); }, t);
+            return;
+        }
+        if (completing) rememberPreviousStatus(taskId, current.status);
+        const result = await moveTask(taskId, status);
+        if (!completing || !current.recurrence || result?.success === false) return;
+        const previousStatus = current.status;
+        const wasFocusedToday = current.isFocusedToday === true;
+        showRepeatingDoneToast(taskId, {
+            undo: registerUndoableAction(() => {
+                void undoTaskCompletion(taskId, previousStatus, wasFocusedToday)
+                    .catch((error) => reportError('Failed to undo task completion', error));
+            }),
+            t,
+        });
     };
 
     const applyBoardAction = (action: BoardDragEndAction) => {
@@ -558,10 +578,18 @@ export function BoardView() {
     const handleToggleDone = (task: Task) => {
         if (task.status === 'done') {
             if (isWithinDoubleClickGuard(task.id)) return;
+            // Unticked before it left: the generated occurrence goes too, or the series would have two open.
+            if (isRepeatingCompletionPending(task.id)) {
+                void undoTaskCompletion(task.id, resolvePreviousStatus(task), false)
+                    .catch((error) => reportError('Failed to undo task completion', error));
+                return;
+            }
             void moveTask(task.id, resolvePreviousStatus(task));
         } else {
-            if (!beginCompletion(task.id, { sound: true })) return;
-            void moveTaskTracked(task.id, 'done');
+            guardRepeatTick(task.id, () => {
+                if (!beginCompletion(task.id, { sound: true })) return;
+                void moveTaskTracked(task.id, 'done', true);
+            });
         }
     };
 

@@ -9,7 +9,9 @@ import {
     isPomodoroInOvertime,
     getPomodoroPhaseTotalSeconds,
     buildFocusCoachInput,
+    canAdjustPomodoroPhase,
     isTaskActionable,
+    POMODORO_ADJUST_STEP_MINUTES,
     resetPomodoroState,
     translateWithFallback,
     useTaskStore,
@@ -29,6 +31,8 @@ import { reconcilePomodoroSnapshot, togglePomodoroSnapshot, usePomodoroStore } f
 import { useFocusSessionStore } from '../../store/focus-session-store';
 import { useFocusFloatStore } from '../../store/focus-float-store';
 import type { FocusFloatState } from '../../lib/focus-float-window';
+import { describeRepeatingCompletion } from '../../lib/repeating-completion';
+import type { FocusDone } from './FocusCheckIn';
 import { FocusStage, type FocusView, type StageEnter } from './FocusStage';
 import { FocusMini, FocusPill } from './FocusMini';
 import { useFocusCoach } from './useFocusCoach';
@@ -171,6 +175,9 @@ export function FocusSessionHost() {
         commit((prev) => fn(reconcilePomodoroSnapshot(prev, Date.now(), autoStart)));
     }, [autoStart, commit]);
 
+    /** The "−" / "+" buttons (stage, mini card, floating timer): ±5 min on the current phase. */
+    const adjustTimer = useCallback((deltaMinutes: number) => usePomodoroStore.getState().adjustPomodoro(deltaMinutes, autoStart), [autoStart]);
+
     const setPhase = useCallback((phase: 'focus' | 'break', running: boolean) => {
         updateSnapshot((p) => ({
             ...p,
@@ -265,6 +272,7 @@ export function FocusSessionHost() {
             open: () => { if (session.open && session.presentation !== 'full') expand(); },
             startNext: () => { setNote(null); setBreakSkipped(false); setPhase('focus', true); },
             tick: () => updateSnapshot((p) => p),
+            adjust: (deltaMinutes) => { adjustTimer(deltaMinutes); },
         },
     });
     const floatVisible = useFocusFloatStore((s) => s.visible);
@@ -285,7 +293,7 @@ export function FocusSessionHost() {
     const finishedMinutes = timerState.lastFocusSeconds ? Math.max(1, Math.round(timerState.lastFocusSeconds / 60)) : durations.focusMinutes;
     const elapsedMinutes = Math.max(1, Math.round((totalSeconds - timerState.remainingSeconds) / 60));
 
-    const markDone = async (): Promise<FocusUndo | null> => {
+    const markDone = async (): Promise<FocusDone | null> => {
         if (!task) return null;
         // The task's row in the list behind plays the completion sequence; this click owns the sound.
         if (task.status !== 'done') beginCompletion(task.id, { sound: true });
@@ -297,9 +305,30 @@ export function FocusSessionHost() {
             return null;
         }
         updateSnapshot((p) => ({ ...p, timerState: { ...p.timerState, isRunning: false }, updatedAtMs: Date.now() }));
-        return undo;
+        return { ...undo, repeating: describeRepeatingCompletion(task.id, t) };
     };
     const applyAction = async (action: FocusCoachAction): Promise<FocusUndo | null> => (task ? applyFocusCoachAction(task.id, action) : null);
+    const adjust = {
+        canDecrease: canAdjustPomodoroPhase(timerState, durations, -POMODORO_ADJUST_STEP_MINUTES),
+        canIncrease: canAdjustPomodoroPhase(timerState, durations, POMODORO_ADJUST_STEP_MINUTES),
+        onAdjust: adjustTimer,
+    };
+    /**
+     * "Set timer to N min" (coach card or chat): the running focus (or the next one, when idle) lasts
+     * N minutes in all, on every window, and N is saved as the task's estimate. Undo restores both.
+     */
+    const setTimer = async (minutes: number): Promise<FocusUndo | null> => {
+        if (!task || usePomodoroStore.getState().snapshot.timerState.phase !== 'focus') return null;
+        const previous = usePomodoroStore.getState().setPomodoroPhaseLength(minutes * 60, autoStart);
+        const estimate = await applyFocusCoachAction(task.id, { type: 'set_time_estimate', minutes });
+        if (previous === null && !estimate) return null;
+        return {
+            undo: async () => {
+                if (previous !== null) usePomodoroStore.getState().setPomodoroPhaseLength(previous, autoStart);
+                return estimate ? estimate.undo() : true;
+            },
+        };
+    };
     const askCoach = async (text: string): Promise<FocusCoachReply> => {
         const live = task ? useTaskStore.getState()._allTasks.find((x) => x.id === task.id) ?? task : undefined;
         const { _allTasks, projects: allProjects, areas: allAreas } = useTaskStore.getState();
@@ -393,6 +422,7 @@ export function FocusSessionHost() {
             onRemoveStep={stepsApi.remove}
             onAddStep={stepsApi.add}
             onMarkDone={markDone}
+            describeRepeating={() => (task ? describeRepeatingCompletion(task.id, t) : null)}
             onApplyAction={applyAction}
             onAskCoach={askCoach}
             onCheckInBreak={checkInBreak}
@@ -402,6 +432,8 @@ export function FocusSessionHost() {
             onPickTask={pickTask}
             fullscreen={fullscreen}
             onToggleFullscreen={() => { void toggleFullscreen(); }}
+            adjust={adjust}
+            onSetTimer={setTimer}
             onTakeBreak={() => { setCelebrationAck(true); setPhase('break', true); }}
             onKeepGoing={() => {
                 setCelebrationAck(true);
@@ -432,6 +464,7 @@ export function FocusSessionHost() {
                     onHide={session.hide}
                     onToggleStep={stepsApi.toggle}
                     onMove={session.setMiniPosition}
+                    adjust={adjust}
                     onFloat={isFocusFloatSupported() ? () => useFocusFloatStore.getState().request() : undefined}
                 />
             )}

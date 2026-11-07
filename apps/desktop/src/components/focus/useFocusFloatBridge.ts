@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { isSandboxMode } from '@stride/core';
+import { isSandboxMode, POMODORO_ADJUST_STEP_MINUTES } from '@stride/core';
 import {
     FOCUS_FLOAT_ACTION_EVENT,
     FOCUS_FLOAT_OPEN_EVENT,
@@ -29,6 +29,8 @@ export type FocusFloatHandlers = {
     startNext: () => void;
     /** Catch up with a phase that ended while this window may have been throttled. */
     tick: () => void;
+    /** The float's "−" / "+": change the current phase by that many minutes. */
+    adjust: (deltaMinutes: number) => void;
 };
 
 const isMainActive = () => (
@@ -144,6 +146,8 @@ export function useFocusFloatBridge({
                 if (action === 'toggle') run.toggle();
                 else if (action === 'start-next') run.startNext();
                 else if (action === 'tick') run.tick();
+                else if (action === 'add-time') run.adjust(POMODORO_ADJUST_STEP_MINUTES);
+                else if (action === 'remove-time') run.adjust(-POMODORO_ADJUST_STEP_MINUTES);
                 else if (action === 'sync') send(stateRef.current, true);
                 else if (action === 'close') {
                     useFocusFloatStore.getState().closeByUser();

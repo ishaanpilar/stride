@@ -129,6 +129,22 @@ describe('float window (receives state, sends actions)', () => {
         expect(deriveFocusFloatDisplay(after, after.updatedAtMs).totalSeconds).toBe(1800);
     });
 
+    it('− / + change the time here at once and ask the main window to do the same; − is off in overtime', async () => {
+        renderApp();
+        await listening(FOCUS_FLOAT_STATE_EVENT);
+        fire(FOCUS_FLOAT_STATE_EVENT, makeState());
+        fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }));
+        expect(screen.getByRole('timer')).toHaveTextContent('15:00');
+        await waitFor(() => expect(actionsSent()).toContain('add-time'));
+        fireEvent.click(screen.getByRole('button', { name: 'Remove 5 minutes' }));
+        expect(screen.getByRole('timer')).toHaveTextContent('10:00');
+        await waitFor(() => expect(actionsSent()).toContain('remove-time'));
+        fire(FOCUS_FLOAT_STATE_EVENT, makeState({ timer: { phase: 'focus', remainingSeconds: 0, overtimeSeconds: 30, keepGoing: true, isRunning: true, completedFocusSessions: 0 } }));
+        expect(screen.getByRole('button', { name: 'Remove 5 minutes' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }));
+        expect(screen.getByRole('timer')).toHaveTextContent('05:00');
+    });
+
     it('expand resizes the native window', async () => {
         renderApp();
         await listening(FOCUS_FLOAT_STATE_EVENT);
@@ -154,7 +170,7 @@ describe('main window bridge (decides visibility, pushes state, runs actions)', 
         useFocusFloatBridge({ state: props.state, live: props.live, presentation: props.presentation ?? 'full', handlers: props.handlers });
         return null;
     }
-    const handlers = () => ({ toggle: vi.fn(), open: vi.fn(), startNext: vi.fn(), tick: vi.fn() });
+    const handlers = () => ({ toggle: vi.fn(), open: vi.fn(), startNext: vi.fn(), tick: vi.fn(), adjust: vi.fn() });
 
     it('auto-shows the float when Stride is not in front, and sends it the state first', async () => {
         vi.spyOn(document, 'hasFocus').mockReturnValue(false);
@@ -192,7 +208,10 @@ describe('main window bridge (decides visibility, pushes state, runs actions)', 
         fire(FOCUS_FLOAT_ACTION_EVENT, { action: 'toggle' });
         fire(FOCUS_FLOAT_ACTION_EVENT, { action: 'start-next' });
         fire(FOCUS_FLOAT_ACTION_EVENT, { action: 'tick' });
+        fire(FOCUS_FLOAT_ACTION_EVENT, { action: 'add-time' });
+        fire(FOCUS_FLOAT_ACTION_EVENT, { action: 'remove-time' });
         fire(FOCUS_FLOAT_OPEN_EVENT);
+        expect(run.adjust.mock.calls).toEqual([[5], [-5]]);
         expect(run.toggle).toHaveBeenCalledTimes(1);
         expect(run.startNext).toHaveBeenCalledTimes(1);
         expect(run.tick).toHaveBeenCalledTimes(1);

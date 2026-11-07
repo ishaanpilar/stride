@@ -4,7 +4,9 @@ import type { StoreActionResult, Task, TaskStatus } from '@stride/core';
 
 import { useOptionalKeybindings, type TaskListScope } from '../../../contexts/keybinding-context';
 import { reportError } from '../../../lib/report-error';
-import { showUndoToast } from '../../../lib/undo-registry';
+import { registerUndoableAction, showUndoToast } from '../../../lib/undo-registry';
+import { guardRepeatTick, showRepeatingDoneToast } from '../../../lib/repeating-completion';
+import { getRetainedPreviousStatus, isRepeatingCompletionPending } from '../../../lib/completion-retention';
 import { undoTaskCompletion } from '../../../lib/undo-task-completion';
 import { requestTaskRowAction, type TaskRowAction } from '../../../lib/task-row-actions';
 import { copyTaskTitles } from '../../../lib/task-clipboard';
@@ -176,21 +178,33 @@ export function createTaskListScope(deps: TaskListScopeDeps): TaskListScope {
             const nextStatus: TaskStatus = previousStatus === 'done' ? 'inbox' : 'done';
             const wasFocusedToday = task.isFocusedToday === true;
             const completing = nextStatus === 'done';
-            // Same completion sequence (and sound) as clicking the checkbox; a repeat key press while it
-            // plays is ignored rather than unticking.
-            if (completing && !beginCompletion(task.id, { sound: true })) return;
-            if (!completing && isWithinDoubleClickGuard(task.id)) return;
-            void Promise.resolve(useTaskStore.getState().moveTask(task.id, nextStatus))
-                .then((result) => {
-                    if (completing && result && (result as { success?: boolean }).success === false) cancelCompletion(task.id);
-                    assertStoreActionSucceeded(result, 'Failed to change task status');
-                    if (nextStatus !== 'done' || previousStatus === 'done') return;
-                    showUndoToast(formatTaskMarkedDoneMessage(deps.t, task.title), () => {
-                        void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
-                            .catch((error) => reportError('Failed to undo task completion', error));
-                    }, deps.t);
-                })
-                .catch((error) => reportError('Failed to change task status', error));
+            const toggle = () => {
+                // Same completion sequence (and sound) as clicking the checkbox; a repeat key press while it
+                // plays is ignored rather than unticking.
+                if (completing && !beginCompletion(task.id, { sound: true })) return;
+                if (!completing && isWithinDoubleClickGuard(task.id)) return;
+                // Unticked before it left: the generated occurrence goes too, or the series would have two open.
+                if (!completing && isRepeatingCompletionPending(task.id)) {
+                    void undoTaskCompletion(task.id, getRetainedPreviousStatus(task.id) ?? nextStatus, false)
+                        .catch((error) => reportError('Failed to undo task completion', error));
+                    return;
+                }
+                void Promise.resolve(useTaskStore.getState().moveTask(task.id, nextStatus))
+                    .then((result) => {
+                        if (completing && result && (result as { success?: boolean }).success === false) cancelCompletion(task.id);
+                        assertStoreActionSucceeded(result, 'Failed to change task status');
+                        if (nextStatus !== 'done' || previousStatus === 'done') return;
+                        const undoCompletion = () => {
+                            void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
+                                .catch((error) => reportError('Failed to undo task completion', error));
+                        };
+                        if (showRepeatingDoneToast(task.id, { undo: registerUndoableAction(undoCompletion), t: deps.t })) return;
+                        showUndoToast(formatTaskMarkedDoneMessage(deps.t, task.title), undoCompletion, deps.t);
+                    })
+                    .catch((error) => reportError('Failed to change task status', error));
+            };
+            if (completing) guardRepeatTick(task.id, toggle);
+            else toggle();
         },
         toggleSelectSelected: () => {
             const task = selectedTask();
@@ -236,16 +250,11 @@ export function createTaskListScope(deps: TaskListScopeDeps): TaskListScope {
             if (!task || task.status === status) return;
             const previousStatus = task.status;
             const wasFocusedToday = task.isFocusedToday === true;
-            void Promise.resolve(useTaskStore.getState().moveTask(task.id, status))
-                .then((result) => {
-                    assertStoreActionSucceeded(result, 'Failed to change task status');
-                    showUndoToast(
-                        status === 'done'
-                            ? formatTaskMarkedDoneMessage(deps.t, task.title)
-                            : formatTaskMovedMessage(deps.t, task.title, status),
-                        () => {
-
-
+            const move = () => {
+                void Promise.resolve(useTaskStore.getState().moveTask(task.id, status))
+                    .then((result) => {
+                        assertStoreActionSucceeded(result, 'Failed to change task status');
+                        const undoMove = () => {
                             if (status === 'done') {
                                 void undoTaskCompletion(task.id, previousStatus, wasFocusedToday)
                                     .catch((error) => reportError('Failed to undo task status change', error));
@@ -253,11 +262,20 @@ export function createTaskListScope(deps: TaskListScopeDeps): TaskListScope {
                             }
                             void useTaskStore.getState().moveTask(task.id, previousStatus)
                                 .catch((error) => reportError('Failed to undo task status change', error));
-                        },
-                        deps.t,
-                    );
-                })
-                .catch((error) => reportError('Failed to change task status', error));
+                        };
+                        if (status === 'done' && showRepeatingDoneToast(task.id, { undo: registerUndoableAction(undoMove), t: deps.t })) return;
+                        showUndoToast(
+                            status === 'done'
+                                ? formatTaskMarkedDoneMessage(deps.t, task.title)
+                                : formatTaskMovedMessage(deps.t, task.title, status),
+                            undoMove,
+                            deps.t,
+                        );
+                    })
+                    .catch((error) => reportError('Failed to change task status', error));
+            };
+            if (status === 'done') guardRepeatTick(task.id, move);
+            else move();
         },
         focusAddInput: () => {
             const input = deps.addInputRef?.current;

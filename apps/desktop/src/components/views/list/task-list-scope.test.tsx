@@ -4,6 +4,7 @@ import type { Task } from '@stride/core';
 
 import { useUiStore } from '../../../store/ui-store';
 import { takeUndoableAction, clearUndoableAction } from '../../../lib/undo-registry';
+import { answerRepeatTick, resetRepeatTickGuardForTests } from '../../../lib/repeating-completion';
 import { createTaskListScope, type TaskListScopeDeps } from './task-list-scope';
 
 type ShowToast = ReturnType<typeof useUiStore.getState>['showToast'];
@@ -408,5 +409,46 @@ describe.each(SCOPE_CASES)('createTaskListScope — $name', ({ extraDeps }) => {
 
         expect(scope.focusSelected?.()).toBe(true);
         expect(document.activeElement).toBe(rowControl('1', '[data-task-view-toggle]'));
+    });
+
+    describe('repeating tasks', () => {
+        const justNow = () => new Date().toISOString();
+        const seed = (tasks: Task[]) => useTaskStore.setState({
+            tasks, _allTasks: tasks, _tasksById: new Map(tasks.map((task) => [task.id, task])),
+            moveTask: vi.fn().mockResolvedValue({ success: true }),
+        } as never);
+        const moveTask = () => useTaskStore.getState().moveTask as ReturnType<typeof vi.fn>;
+        const scopeFor = (task: Task) => {
+            mountRows([task]);
+            return createTaskListScope({ getTasks: () => [task], getSelectedIndex: () => 0, setSelectedIndex: () => undefined, t: (key) => key });
+        };
+        const previous = (): Task => makeTask('previous', { status: 'done', completedAt: justNow(), recurrence: { rule: 'weekly' } });
+        const current = makeTask('current', { recurrence: { rule: 'weekly', seriesId: 'previous' }, dueDate: '2030-01-01' });
+
+        afterEach(() => { resetRepeatTickGuardForTests(); });
+
+        it('asks before the keyboard advances a series completed moments ago', async () => {
+            seed([previous(), current]);
+            const scope = scopeFor(current);
+            scope.toggleDoneSelected();
+            expect(moveTask()).not.toHaveBeenCalled();
+
+            answerRepeatTick('current', true);
+            expect(moveTask()).toHaveBeenCalledWith('current', 'done');
+        });
+
+        it('does nothing on Cancel, and uses the same guard for the status shortcut', () => {
+            seed([previous(), current]);
+            const scope = scopeFor(current);
+            scope.setStatusSelected?.('done');
+            answerRepeatTick('current', false);
+            expect(moveTask()).not.toHaveBeenCalled();
+        });
+
+        it('completes straight away when the last tick was a while ago', () => {
+            seed([{ ...previous(), completedAt: '2020-01-01T00:00:00.000Z' }, current]);
+            scopeFor(current).toggleDoneSelected();
+            expect(moveTask()).toHaveBeenCalledWith('current', 'done');
+        });
     });
 });

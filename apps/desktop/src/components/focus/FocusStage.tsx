@@ -6,11 +6,13 @@ import { canAnimate } from '../../lib/motion';
 import type { FocusOrigin } from '../../store/focus-session-store';
 import { PomodoroTaskPicker } from '../views/PomodoroTaskPicker';
 import type { FocusUndo } from '../../lib/focus-coach-store';
-import { FocusCheckIn } from './FocusCheckIn';
+import type { RepeatingCompletion } from '../../lib/repeating-completion';
+import { FocusCheckIn, type FocusDone } from './FocusCheckIn';
 import { FocusCoachCard } from './FocusCoachCard';
 import { FocusFinish, type FinishKind, type FocusSummary } from './FocusFinish';
 import { FocusSteps } from './FocusSteps';
 import { FocusAmbient, FocusClock } from './FocusVisuals';
+import { PomodoroAdjust, type PomodoroAdjustHandle } from '../views/PomodoroAdjust';
 import { focusAnchors, rectOf, transformBetween } from './focus-anchors';
 import type { FocusCoachApi } from './useFocusCoach';
 
@@ -59,7 +61,9 @@ export interface FocusStageProps {
     onRenameStep: (id: string, title: string) => void;
     onRemoveStep: (id: string) => void;
     onAddStep: (title: string) => void;
-    onMarkDone: () => Promise<FocusUndo | null>;
+    onMarkDone: () => Promise<FocusDone | null>;
+    /** The next occurrence, for a repeating task that was already ticked done when the check-in opened. */
+    describeRepeating: () => RepeatingCompletion | null;
     onApplyAction: (action: FocusCoachAction) => Promise<FocusUndo | null>;
     onAskCoach: (text: string) => Promise<FocusCoachReply>;
     onCheckInBreak: (afterDone: boolean) => void;
@@ -73,6 +77,10 @@ export interface FocusStageProps {
     /** The window is in true (macOS) full screen. */
     fullscreen: boolean;
     onToggleFullscreen: () => void;
+    /** "−" / "+" beside the time: change the current phase; returns the seconds changed. */
+    adjust: { canDecrease: boolean; canIncrease: boolean; onAdjust: (deltaMinutes: number) => number };
+    /** "Set timer to N min" from the coach (and its Undo). */
+    onSetTimer: (minutes: number) => Promise<FocusUndo | null>;
 }
 
 const EASE = 'cubic-bezier(0.16, 1, 0.3, 1)';
@@ -84,6 +92,7 @@ export function FocusStage(props: FocusStageProps) {
     const { view, phase, task, project, tr, steps, isRunning, exiting } = props;
     const rootRef = useRef<HTMLDivElement>(null);
     const columnRef = useRef<HTMLDivElement>(null);
+    const adjustRef = useRef<PomodoroAdjustHandle>(null);
     const cardRef = useRef<HTMLDivElement>(null);
     const bloomRef = useRef<HTMLDivElement>(null);
     const [lit, setLit] = useState(false);
@@ -191,6 +200,13 @@ export function FocusStage(props: FocusStageProps) {
         if (event.key === ' ' && (target === rootRef.current || target.classList.contains('fx-center')) && (view === 'focus' || view === 'break')) {
             event.preventDefault();
             props.onToggleRun();
+            return;
+        }
+        // = / + and − add or remove 5 minutes (not while typing).
+        const typing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+        if (!typing && view !== 'finish' && !event.metaKey && !event.ctrlKey && !event.altKey && ['=', '+', '-', '−'].includes(event.key)) {
+            event.preventDefault();
+            adjustRef.current?.adjust(event.key === '=' || event.key === '+' ? 1 : -1);
             return;
         }
         if (event.key !== 'Tab') return;
@@ -326,14 +342,26 @@ export function FocusStage(props: FocusStageProps) {
                 <div ref={columnRef} className="fx-column">
                     {view !== 'finish' && (
                         <div className="fx-top-area">
-                            <FocusClock
-                                value={clock}
-                                overtime={inOvertime}
-                                intro={props.enter === 'origin' || props.enter === 'none'}
-                                label={inOvertime
-                                    ? tr('focus.overtimeLabel', '{{time}} over time').replace('{{time}}', clock.slice(1))
-                                    : tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)}
-                            />
+                            <PomodoroAdjust
+                                ref={adjustRef}
+                                size="md"
+                                tr={tr}
+                                canDecrease={props.adjust.canDecrease}
+                                canIncrease={props.adjust.canIncrease}
+                                onAdjust={props.adjust.onAdjust}
+                                buttonClassName="fx-fade"
+                                testId="focus-adjust"
+                            >
+                                <FocusClock
+                                    value={clock}
+                                    overtime={inOvertime}
+                                    intro={props.enter === 'origin' || props.enter === 'none'}
+                                    label={inOvertime
+                                        ? tr('focus.overtimeLabel', '{{time}} over time').replace('{{time}}', clock.slice(1))
+                                        : tr('focus.timeLeft', '{{time}} remaining').replace('{{time}}', clock)}
+                                    onStep={(direction) => adjustRef.current?.adjust(direction)}
+                                />
+                            </PomodoroAdjust>
                             <p className="fx-sub" data-show={sub ? 'true' : 'false'} data-testid="focus-sub">{sub}</p>
                         </div>
                     )}
@@ -347,6 +375,7 @@ export function FocusStage(props: FocusStageProps) {
                             focusMinutes={props.focusMinutes}
                             tr={tr}
                             onDone={props.onMarkDone}
+                            describeRepeating={props.describeRepeating}
                             onApply={props.onApplyAction}
                             onAskCoach={props.onAskCoach}
                             onStartAnother={props.onKeepGoing}
@@ -408,7 +437,11 @@ export function FocusStage(props: FocusStageProps) {
                                 <p className="fx-break-idea">{props.breakIdea}</p>
                             ) : (
                                 <>
-                                    <FocusCoachCard api={props.coach} tr={tr} />
+                                    <FocusCoachCard
+                                        api={props.coach}
+                                        tr={tr}
+                                        timer={phase === 'focus' && view === 'focus' ? { minutes: Math.max(1, Math.round(props.totalSeconds / 60)), onSet: props.onSetTimer } : undefined}
+                                    />
                                     <FocusSteps
                                         steps={steps} tr={tr}
                                         onToggle={props.onToggleStep} onRename={props.onRenameStep} onRemove={props.onRemoveStep}
