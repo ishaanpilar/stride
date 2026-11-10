@@ -3,6 +3,7 @@ import { normalizeTaskReminderPolicy, shouldSendTaskReminders } from './task-rem
 import type { ProjectTaskSummary } from './project-row-meta';
 import { buildNextRecurringTask, canonicalRecurringFollowUp, createNextRecurringTask, normalizeRecurrenceForLoad, type RecurrenceProjection } from './recurrence';
 import { getTaskDateCoherenceIssues } from './task-date-coherence';
+import { createTaskLookup, getBlockersForNextOccurrence, hasTaskBlockers, normalizeBlockedByTaskIds } from './task-dependencies';
 import {
     createTaskTokenUsageAccumulator,
     getTaskTokenUsageTimestamp,
@@ -263,11 +264,15 @@ export const stampNewRecurringFollowUp = (
     deviceId: string,
     sourceOrder: number | undefined,
     reserveProjectOrder: ProjectOrderReserver,
+    allTasks: readonly Task[] = [],
 ): Task | null => {
     if (!task) return null;
     const order = sourceOrder ?? reserveProjectOrder(task.projectId);
+    const { blockedByTaskIds: _inherited, ...followUp } = canonicalRecurringFollowUp(task);
+    const openBlockers = hasTaskBlockers(task) ? getBlockersForNextOccurrence(task, createTaskLookup(allTasks)) : undefined;
     return {
-        ...canonicalRecurringFollowUp(task),
+        ...(followUp as Task),
+        ...(openBlockers ? { blockedByTaskIds: openBlockers } : {}),
         rev: nextRevision(undefined),
         revBy: deviceId,
         ...(order !== undefined ? { order, orderNum: order } : {}),
@@ -284,6 +289,11 @@ export const normalizeTaskUpdate = (
         futureDates?: import('./task-utils').FocusDateLookup },
 ): Partial<Task> => {
     let adjustedUpdates = updates;
+    if (hasOwnField(updates, 'blockedByTaskIds')) {
+        const blockedByTaskIds = normalizeBlockedByTaskIds(updates.blockedByTaskIds, task.id);
+        adjustedUpdates = { ...adjustedUpdates, blockedByTaskIds };
+        if (blockedByTaskIds === undefined && !hasTaskBlockers(task)) delete adjustedUpdates.blockedByTaskIds;
+    }
     if (hasOwnField(updates, 'dueReminderLeadMinutes')) {
         adjustedUpdates = { ...adjustedUpdates, dueReminderLeadMinutes: updates.dueReminderLeadMinutes === undefined
             && task.dueReminderLeadMinutes === undefined ? undefined

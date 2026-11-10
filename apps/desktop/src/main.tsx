@@ -47,8 +47,10 @@ import { isFocusFloatLocation } from './lib/focus-float-window';
 import { consumeDesktopSandboxBootRequest } from './lib/sandbox-session';
 import { installAppLockKeyboardGuard, loadAppLockState } from './lib/app-lock';
 import { AppLockGate } from './components/AppLockGate';
+import { installNewProjectDefaults } from './lib/new-project-defaults';
 
 installMotionPreference();
+installNewProjectDefaults();
 
 let coreLoggerBridgeInstalled = false;
 

@@ -6,6 +6,7 @@ import { normalizeDueReminderLeadMinutes, normalizeStartReminderLeadMinutes } fr
 import type { Task } from './types';
 import { normalizeTaskStatus } from './task-status';
 import { normalizeTaskReminderPolicy } from './task-reminder-policy';
+import { normalizeBlockedByTaskIds } from './task-dependencies';
 import {
     fromBool,
     fromJson,
@@ -154,6 +155,7 @@ const taskColumnValues = (task: Task): Record<string, unknown> => {
         sectionId: task.sectionId ?? null,
         viewSectionIds: toJson(task.viewSectionIds),
         areaId: task.areaId ?? null,
+        blockedByTaskIds: toJson(normalizeBlockedByTaskIds(task.blockedByTaskIds, task.id)),
 
 
         orderNum: Number.isFinite(taskOrder) ? taskOrder : null,
@@ -186,6 +188,7 @@ export const taskToSqliteRow = (task: Task): unknown[] =>
 
 export const taskFromSqliteRow = (row: Record<string, unknown>): Task => {
     const recurrence = fromJson<unknown>(row.recurrence, null) as Task['recurrence'];
+    const blockedByTaskIds = normalizeBlockedByTaskIds(fromJson<unknown>(row.blockedByTaskIds, undefined), String(row.id));
     const orderNumRaw = row.orderNum;
     const order = orderNumRaw === null || orderNumRaw === undefined ? undefined : Number(orderNumRaw);
     return {
@@ -219,6 +222,7 @@ export const taskFromSqliteRow = (row: Record<string, unknown>): Task => {
         sectionId: fromOptional(row.sectionId as string | null),
         viewSectionIds: fromJson<unknown>(row.viewSectionIds, undefined) as Task['viewSectionIds'],
         areaId: fromOptional(row.areaId as string | null),
+        ...(blockedByTaskIds ? { blockedByTaskIds } : {}),
         order,
         orderNum: order,
         boardOrder: row.boardOrder === null || row.boardOrder === undefined ? undefined : Number(row.boardOrder),

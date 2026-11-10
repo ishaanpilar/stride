@@ -3,9 +3,18 @@ import { endOfDay, startOfDay } from 'date-fns';
 import { safeParseDate, safeParseDueDate } from './date';
 import { isTaskInActiveProject } from './project-utils';
 import { sortTasksByManualOrder } from './task-completion-order';
+import { getBlockedTaskIds } from './task-dependencies';
 import { isTaskActionable } from './task-status';
-import { isTaskFocusedNow, shouldShowTaskForStart, sortFocusNextActions } from './task-utils';
-import type { Project, Task } from './types';
+import {
+    getFocusSequentialFirstTaskIds,
+    getTaskSequencing,
+    hasTaskSequences,
+    isTaskFocusedNow,
+    isTaskSequenceBlocked,
+    shouldShowTaskForStart,
+    sortFocusNextActions,
+} from './task-utils';
+import type { Project, Section, Task } from './types';
 
 /**
  * Pure selection logic for the macOS menu bar panel (and the tray count badge).
@@ -24,6 +33,8 @@ export interface MenuBarPanelSections {
 
 export interface MenuBarPanelOptions {
     projects?: Project[];
+    /** Project sections, so per-section "Next action only" projects block the same tasks Focus does. */
+    sections?: Section[];
     now?: Date;
     nextLimit?: number;
     manualOrder?: MenuBarManualOrder;
@@ -80,6 +91,29 @@ export function getMenuBarReorderIds(list: readonly Task[], kind: MenuBarReorder
     return list.filter((task) => isMenuBarTaskReorderable(task, kind, now)).map((task) => task.id);
 }
 
+/**
+ * Tasks a "Next action only" project is holding back, decided the way Focus decides them. A task with a
+ * focus star always stays: the star is an explicit choice. Status other than next is never "blocked".
+ */
+function createMenuBarSequenceBlockedCheck(
+    tasks: readonly Task[],
+    projects: readonly Project[],
+    sections: readonly Section[] | undefined,
+    now: Date,
+): (task: Task) => boolean {
+    const sequencing = getTaskSequencing(projects, sections);
+    if (!hasTaskSequences(sequencing)) return () => false;
+    const candidates = tasks.filter((task) => !task.deletedAt);
+    const firstTaskIds = getFocusSequentialFirstTaskIds(candidates, sequencing.sequentialProjectIds, {
+        now,
+        sectionScopedProjectIds: sequencing.sectionScopedProjectIds,
+        sequentialSectionKeys: sequencing.sequentialSectionKeys,
+        sections,
+    });
+    return (task) => task.status === 'next' && !isTaskFocusedNow(task, now)
+        && isTaskSequenceBlocked(task, sequencing, firstTaskIds);
+}
+
 export function selectMenuBarPanelSections(tasks: Task[], options: MenuBarPanelOptions = {}): MenuBarPanelSections {
     const now = options.now ?? new Date();
     const projects = options.projects ?? [];
@@ -91,11 +125,15 @@ export function selectMenuBarPanelSections(tasks: Task[], options: MenuBarPanelO
     const overdue: Task[] = [];
     const today: Task[] = [];
     const nextCandidates: Task[] = [];
+    const isSequenceBlocked = createMenuBarSequenceBlockedCheck(tasks, projects, options.sections, now);
+    const dependencyBlockedIds = getBlockedTaskIds(tasks);
 
     for (const task of tasks) {
         if (task.deletedAt || !isTaskActionable(task)) continue;
         if (task.status === 'someday') continue;
         if (!isTaskInActiveProject(task, projectMap)) continue;
+        if (isSequenceBlocked(task)) continue;
+        if (dependencyBlockedIds.has(task.id) && !isTaskFocusedNow(task, now)) continue;
 
         const due = safeParseDueDate(task.dueDate)?.getTime();
         const start = safeParseDate(task.startTime)?.getTime();
@@ -173,14 +211,16 @@ export function selectMenuBarPanelView(tasks: Task[], options: MenuBarPanelOptio
     const tomorrowEnd = endOfDay(new Date(tomorrowStart)).getTime();
     const weekEnd = endOfDay(new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + MENUBAR_PANEL_WEEK_DAYS)).getTime();
 
+    const isSequenceBlocked = createMenuBarSequenceBlockedCheck(tasks, projects, options.sections, now);
     const buckets: Record<MenuBarAllGroupKey, Task[]> = { tomorrow: [], week: [], later: [], none: [] };
     let inboxCount = 0;
+    const dependencyBlockedIds = getBlockedTaskIds(tasks);
     for (const task of tasks) {
         if (task.deletedAt || !isTaskActionable(task)) continue;
         if (!isTaskInActiveProject(task, projectMap)) continue;
         if (task.status === 'inbox') { inboxCount += 1; continue; }
         if (task.status !== 'next' && task.status !== 'someday') continue;
-        if (nowIds.has(task.id)) continue;
+        if (nowIds.has(task.id) || isSequenceBlocked(task) || dependencyBlockedIds.has(task.id)) continue;
         const when = safeParseDueDate(task.dueDate) ?? safeParseDate(task.startTime);
         const ms = when?.getTime();
         if (ms === undefined || !Number.isFinite(ms)) buckets.none.push(task);

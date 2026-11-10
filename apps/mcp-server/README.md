@@ -480,9 +480,9 @@ Any MCP-compatible client can work as long as it can launch a **stdio** server w
 - `stride_get_task`
   - Input: `{ id, includeDeleted? }`
 - `stride_add_task` **(requires `--write`)**
-  - Input: `{ title? | quickAdd?, status?, projectId?, sectionId?, viewSectionIds?, areaId?, dueDate?, startTime?, cancelledAt?, reviewAt?, recurrence?, contexts?, tags?, description?, priority?, energyLevel?, assignedTo?, timeEstimate?, taskMode?, relativeStartOffset?, showFutureRecurrence?, pushCount?, checklist?, textDirection?, location?, isFocusedToday?, timeSpentMinutes?, suppressStrideReminders?, reminderPolicy?, repeatReminderMinutes?, dueReminderLeadMinutes?, startReminderLeadMinutes?, attachments? }`
+  - Input: `{ title? | quickAdd?, status?, projectId?, sectionId?, viewSectionIds?, areaId?, blockedByTaskIds?, dueDate?, startTime?, cancelledAt?, reviewAt?, recurrence?, contexts?, tags?, description?, priority?, energyLevel?, assignedTo?, timeEstimate?, taskMode?, relativeStartOffset?, showFutureRecurrence?, pushCount?, checklist?, textDirection?, location?, isFocusedToday?, timeSpentMinutes?, suppressStrideReminders?, reminderPolicy?, repeatReminderMinutes?, dueReminderLeadMinutes?, startReminderLeadMinutes?, attachments? }`
 - `stride_update_task` **(requires `--write`)**
-  - Input: `{ id, title?, status?, projectId?, sectionId?, viewSectionIds?, areaId?, dueDate?, startTime?, cancelledAt?, reviewAt?, recurrence?, contexts?, tags?, description?, priority?, energyLevel?, assignedTo?, timeEstimate?, taskMode?, relativeStartOffset?, showFutureRecurrence?, pushCount?, checklist?, textDirection?, location?, isFocusedToday?, timeSpentMinutes?, suppressStrideReminders?, reminderPolicy?, repeatReminderMinutes?, dueReminderLeadMinutes?, startReminderLeadMinutes?, order?, boardOrder?, focusOrder?, attachments? }`
+  - Input: `{ id, title?, status?, projectId?, sectionId?, viewSectionIds?, areaId?, blockedByTaskIds?, dueDate?, startTime?, cancelledAt?, reviewAt?, recurrence?, contexts?, tags?, description?, priority?, energyLevel?, assignedTo?, timeEstimate?, taskMode?, relativeStartOffset?, showFutureRecurrence?, pushCount?, checklist?, textDirection?, location?, isFocusedToday?, timeSpentMinutes?, suppressStrideReminders?, reminderPolicy?, repeatReminderMinutes?, dueReminderLeadMinutes?, startReminderLeadMinutes?, order?, boardOrder?, focusOrder?, attachments? }`
   - `startReminderLeadMinutes`: `0` (Off), `5`, `15`, `30`, or `60` minutes before an explicit start time. Omitted legacy values remain off; date-only starts do not schedule an alert.
   - `reminderPolicy` accepts `inherit`, `send`, or `skip` for start/due reminders. Use `inherit` to follow the library default; `null` is not accepted. Existing tasks retain their legacy reminder choice until explicitly changed.
   - `recurrence` accepts a recurrence object or an RFC 5545 RRULE string. Pass `null` to clear it.
@@ -619,6 +619,8 @@ In SQLite and Cloud mode, call `stride_list_view_sections` (optionally with
 `{"viewSections":[{"view":"someday","id":"books","title":"Books","order":0}]}`.
 These are view headings, separate from project sections returned by
 `stride_list_sections`. Create or rename view headings in the Stride app.
+
+Task create/update tools accept `blockedByTaskIds`: IDs of tasks that must finish before this one can start (omit it for no dependencies, `null` clears it).
 
 Task and project create/update tools accept `viewSectionIds`, for example
 `{"someday":"books","waiting":"people"}`. Assigning a heading does not change

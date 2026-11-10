@@ -1241,6 +1241,44 @@ describe('task-utils', () => {
             { id: 'final', projectId: 'p1', title: 'Final steps', order: 1 },
         ];
 
+        describe('in a project nobody has ordered', () => {
+            const at = '2026-11-05T13:46:00.000Z';
+
+            it('starts with the nearest date, not the oldest task', () => {
+                const firstTaskIds = getSequentialFirstTaskIds([
+                    { id: 'launch', projectId: 'p1', dueDate: '2026-11-16', createdAt: at },
+                    { id: 'review', projectId: 'p1', dueDate: '2026-11-10', createdAt: '2026-11-05T13:46:30.000Z' },
+                    { id: 'toggle', projectId: 'p1', dueDate: '2026-11-17', createdAt: at },
+                ], new Set(['p1']));
+                expect([...firstTaskIds]).toEqual(['review']);
+            });
+
+            it('puts a dated task before an undated one', () => {
+                const firstTaskIds = getSequentialFirstTaskIds([
+                    { id: 'undated', projectId: 'p1', createdAt: '2026-01-01T00:00:00.000Z' },
+                    { id: 'dated', projectId: 'p1', dueDate: '2026-12-01', createdAt: at },
+                ], new Set(['p1']));
+                expect([...firstTaskIds]).toEqual(['dated']);
+            });
+
+            it('keeps a set order, whatever the dates say', () => {
+                const firstTaskIds = getSequentialFirstTaskIds([
+                    { id: 'later-date', projectId: 'p1', order: 0, orderNum: 0, dueDate: '2026-11-16', createdAt: at },
+                    { id: 'sooner-date', projectId: 'p1', order: 1, orderNum: 1, dueDate: '2026-11-10', createdAt: at },
+                ], new Set(['p1']));
+                expect([...firstTaskIds]).toEqual(['later-date']);
+            });
+
+            it('lists tasks in the same order it unlocks them', () => {
+                const rows = [
+                    { id: 'launch', dueDate: '2026-11-16', createdAt: at },
+                    { id: 'review', dueDate: '2026-11-10', createdAt: at },
+                    { id: 'undated', createdAt: at },
+                ];
+                expect([...rows].sort(compareTasksByProjectOrder).map((row) => row.id)).toEqual(['review', 'launch', 'undated']);
+            });
+        });
+
         it('follows section order before task order for project-scoped sequences', () => {
             const firstTaskIds = getSequentialFirstTaskIds([
                 { id: 'set-up-template', projectId: 'p1', sectionId: 'final', order: 0, orderNum: 0, createdAt: '2026-04-01T00:00:00.000Z' },

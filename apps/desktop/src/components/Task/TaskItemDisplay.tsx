@@ -1,4 +1,4 @@
-import { AlertTriangle, AlignLeft, ChevronRight, Folder, Calendar as CalendarIcon, Tag, Trash2, ArrowRight, Repeat, Check, Clock, Timer, Link2, ListChecks, Paperclip, RotateCcw, Copy, MapPin, History, Hourglass, Play, Zap, MoreHorizontal, XCircle } from 'lucide-react';
+import { AlertTriangle, AlignLeft, ChevronRight, Folder, Calendar as CalendarIcon, Tag, Trash2, ArrowRight, Repeat, Check, Clock, Timer, Link2, ListChecks, Lock, Paperclip, RotateCcw, Copy, MapPin, History, Hourglass, Play, Zap, MoreHorizontal, XCircle } from 'lucide-react';
 import type { Area, Attachment, Project, RangeSelectionOptions, Section, Task, TaskStatus, RecurrenceRule, RecurrenceStrategy, Language } from '@stride/core';
 import { DEFAULT_AREA_COLOR, formatRecurrenceLabel, formatTimeEstimateLabel, formatTimeSpentLabel, getChecklistProgress, getContextColor, getInlineMarkdownPreview, getRecurringTaskPreviewDate, getTaskAgeLabel, getTaskDateCoherenceIssues, getTaskStaleness, getTaskUrgency, hasTimeComponent, isTaskActionable, isTaskCancelled, isTaskCompleted, isTaskFinished, safeFormatDate, safeParseDate, resolveTaskTextDirection, tFallback } from '@stride/core';
 import { cn } from '../../lib/utils';
@@ -21,6 +21,7 @@ import { copyTaskReference } from '../../lib/task-clipboard';
 import { formatTaskDateChipLabel } from './task-item-helpers';
 import type { PillTone } from '../ui/Pill';
 import { isActivePhase, useCompletionPhase } from '../../lib/completion-sequence';
+import { useTaskWaitsForLabel } from '../../lib/task-dependency-ui';
 
 interface TaskItemDisplayActions {
     onToggleSelect?: (options?: RangeSelectionOptions) => void;
@@ -226,10 +227,12 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
 
 
     const hasTimedStart = Boolean(task.startTime && hasTimeComponent(task.startTime));
+    const waitsForLabel = useTaskWaitsForLabel(task, t);
     const hasMetadata = isReference
         ? Boolean((showProjectBadgeInMetadata && project) || area || assignedTo || task.tags.length > 0)
         : Boolean(
-            (showProjectBadgeInMetadata && project)
+            waitsForLabel
+            || (showProjectBadgeInMetadata && project)
             || area
             || projectDeadlineLabel
             || appearsAtLabel
@@ -251,7 +254,8 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
     const hasCollapsedMetadata = isReference
         ? Boolean((showProjectBadgeInMetadata && project) || area)
         : Boolean(
-            (showProjectBadgeInMetadata && project)
+            waitsForLabel
+            || (showProjectBadgeInMetadata && project)
             || area
             || projectDeadlineLabel
             || appearsAtLabel
@@ -542,6 +546,9 @@ export const TaskItemDisplay = memo(function TaskItemDisplay({
         : task.priority === 'medium' ? 'warning' : 'neutral';
     const renderMetadataRow = (className?: string, expanded = false) => (
         <div className={cn("flex flex-wrap items-center text-xs", className)}>
+            {waitsForLabel && !isReference && (
+                <MetadataBadge variant="info" icon={Lock} label={waitsForLabel} className="max-w-full [&>span]:truncate" />
+            )}
             {showProjectBadgeInMetadata && renderProjectBadge()}
             {!isReference && !appearsAtDuplicatesStart && renderAppearsAtMetadataBadge()}
             {!isReference && renderProjectDeadlineMetadataBadge()}

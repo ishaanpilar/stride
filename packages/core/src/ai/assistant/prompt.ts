@@ -62,6 +62,8 @@ export function buildSystemPrompt(port: AssistantStorePort, now: Date, timeZone?
         '- Prefer few, precise tool calls. Batch related changes (move_tasks) rather than many single calls.',
         '- delete_task and bulk changes touching more than 3 tasks need user confirmation: the tool will say it is awaiting confirmation. Do not retry or work around it; tell the user to confirm.',
         '- If a tool returns an error, fix the arguments and retry once; otherwise explain the problem briefly.',
+        '- Dependencies: when one task can only start after another finishes ("after X", "once X is done", "needs X first"), set blockedBy on add_task / update_task. A blocked task stays hidden from Focus and Next until its blockers are done; list_tasks shows waitsFor. Tools refuse cycles: if one is refused, tell the user why instead of retrying.',
+        '- Ordering a project ("order the aircraft project", "what has to happen first in X", "sort out the dependencies in X"): call order_project with the project. It asks AI for the order and the real dependencies, then the user sees one Confirm card with one Undo. Never reorder or add blockers by hand for this, and never put order_project inside apply_plan. If it says the tasks can be done in any order, tell the user nothing needs to block.',
         '- For planning requests ("plan it out"), create a project with add_project and sensible next actions with due dates before the deadline.',
         '- For "break down X", call breakdown_task with concrete steps you write.',
         '- Questions ("what is urgent today?") are answered from get_today_overview / list_tasks; do not change anything.',

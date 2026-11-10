@@ -1,11 +1,15 @@
 import {
     findJustCompletedOccurrence,
     findNextOccurrence,
+    formatBlockedTickPrompt,
+    formatBulkBlockedTickPrompt,
     formatBulkRepeatTickPrompt,
     formatRepeatingDoneMessage,
     formatRepeatTickPrompt,
+    getOpenBlockers,
     getTranslator,
     isRepeatingTask,
+    isTaskBlocked,
     isTaskFinished,
     translateWithFallback,
     useTaskStore,
@@ -24,6 +28,9 @@ import { registerUndoableAction } from './undo-registry';
  * What the user sees around a repeating task's tick: the "Done. Repeats next on ..." message with its
  * Stop repeating action, and the check before a second tick advances the series (the rules are in core
  * recurring-completion.ts). Hiding and highlighting the new occurrence is in completion-retention.ts.
+ *
+ * The same tick guard also asks before completing a task that is still waiting for other tasks. It asks
+ * and never refuses: plans change, and the user may have done the work another way.
  */
 
 const REPEATING_TOAST_MS = 7000;
@@ -108,8 +115,10 @@ export function showRepeatingDoneToast(taskId: string, options: { undo: () => vo
     return true;
 }
 
+export type TickQuestion = 'blocked' | 'repeat';
+
 /** The tick guard's open question: one row at a time, answered inline in that row. */
-let pending: { taskId: string; proceed: () => void; timer: ReturnType<typeof setTimeout> } | null = null;
+let pending: { taskId: string; question: TickQuestion; proceed: () => void; timer: ReturnType<typeof setTimeout> } | null = null;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 const subscribe = (listener: () => void) => {
@@ -119,20 +128,28 @@ const subscribe = (listener: () => void) => {
 
 const liveTask = (taskId: string): Task | undefined => useTaskStore.getState()._tasksById.get(taskId);
 
-/** True when ticking this task would advance a series the user completed moments ago. */
-export function needsRepeatTickConfirm(taskId: string, now: number = Date.now()): boolean {
+function tickQuestion(taskId: string, now: number = Date.now()): TickQuestion | null {
     const task = liveTask(taskId);
-    return Boolean(task && findJustCompletedOccurrence(useTaskStore.getState()._allTasks, task, now));
+    if (!task) return null;
+    const state = useTaskStore.getState();
+    if (isTaskBlocked(task, state._tasksById)) return 'blocked';
+    return findJustCompletedOccurrence(state._allTasks, task, now) ? 'repeat' : null;
 }
 
-/** Runs `proceed` now, or asks in the task's row first when the tick may be an accidental repeat. */
+/** True when the tick should be confirmed: the task is still waiting, or it would advance a series just completed. */
+export function needsRepeatTickConfirm(taskId: string, now: number = Date.now()): boolean {
+    return tickQuestion(taskId, now) !== null;
+}
+
+/** Runs `proceed` now, or asks in the task's row first when the tick needs confirming. */
 export function guardRepeatTick(taskId: string, proceed: () => void): void {
-    if (!needsRepeatTickConfirm(taskId)) {
+    const question = tickQuestion(taskId);
+    if (!question) {
         proceed();
         return;
     }
     if (pending) clearTimeout(pending.timer);
-    pending = { taskId, proceed, timer: setTimeout(() => answerRepeatTick(taskId, false), REPEAT_TICK_ASK_MS) };
+    pending = { taskId, question, proceed, timer: setTimeout(() => answerRepeatTick(taskId, false), REPEAT_TICK_ASK_MS) };
     emit();
 }
 
@@ -149,6 +166,10 @@ export function useRepeatTickPending(taskId: string): boolean {
     return useSyncExternalStore(subscribe, () => pending?.taskId === taskId, () => false);
 }
 
+export function useRepeatTickQuestion(taskId: string): TickQuestion | null {
+    return useSyncExternalStore(subscribe, () => (pending?.taskId === taskId ? pending.question : null), () => null);
+}
+
 export function splitRepeatTickGuarded(taskIds: readonly string[]): { clear: string[]; guarded: string[] } {
     const now = Date.now();
     const guarded = taskIds.filter((id) => needsRepeatTickConfirm(id, now));
@@ -158,12 +179,21 @@ export function splitRepeatTickGuarded(taskIds: readonly string[]): { clear: str
 /** No single row to ask in (bulk, a drag onto the sidebar): the same question, as a toast. */
 export function askRepeatTickInToast(taskIds: readonly string[], onConfirm: () => void, t?: TranslateFn): void {
     const translate = t ?? getTranslator(useTaskStore.getState().settings?.language || getCurrentUiLanguage());
+    const lookup = useTaskStore.getState()._tasksById;
     const single = taskIds.length === 1 ? liveTask(taskIds[0]) : undefined;
+    const blockedCount = taskIds.filter((id) => tickQuestion(id) === 'blocked').length;
+    let prompt: string;
+    if (single && blockedCount === 1) prompt = formatBlockedTickPrompt(getOpenBlockers(single, lookup), translate);
+    else if (blockedCount > 0) prompt = formatBulkBlockedTickPrompt(blockedCount, translate);
+    else prompt = single ? formatRepeatTickPrompt(translate, single) : formatBulkRepeatTickPrompt(translate, taskIds.length);
+    const yes = blockedCount > 0
+        ? translateWithFallback(translate, 'dependencies.doneAnyway', 'Done anyway')
+        : translateWithFallback(translate, 'task.repeatTick.yes', 'Yes');
     useUiStore.getState().showToast(
-        single ? formatRepeatTickPrompt(translate, single) : formatBulkRepeatTickPrompt(translate, taskIds.length),
+        prompt,
         'info',
         BULK_CONFIRM_TOAST_MS,
-        { label: translateWithFallback(translate, 'task.repeatTick.yes', 'Yes'), onClick: onConfirm },
+        { label: yes, onClick: onConfirm },
         { label: translateWithFallback(translate, 'common.cancel', 'Cancel'), onClick: () => undefined },
     );
 }

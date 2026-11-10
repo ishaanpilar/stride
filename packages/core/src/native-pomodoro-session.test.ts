@@ -244,14 +244,14 @@ describe('native Pomodoro explicit actions', () => {
     });
     it('keeps original initialize/reconcile receipt bytes and accepts their unchanged plans', () => {
 
-        expect(TASK_SQLITE_COLUMNS).toEqual([...SCHEMA4_TASK_COLUMNS, 'reminderPolicy', 'dueReminderLeadMinutes', 'startReminderLeadMinutes']);
+        expect(TASK_SQLITE_COLUMNS).toEqual([...SCHEMA4_TASK_COLUMNS, 'reminderPolicy', 'dueReminderLeadMinutes', 'startReminderLeadMinutes', 'blockedByTaskIds']);
         for (const [plan, digest] of [[initialize(), '9001a8d3126988bfdab00114e606ff7c2d8f88c8ae6585a790262db10a0a22f1'],
             [legacyReconcile(), '765d1dc0af0b8743c48884a4563c2975928b6849008e01140e7c4618fa2760b6']] as const) {
             expect(createHash('sha256').update(nativePomodoroReceiptPayload(plan)).digest('hex')).toBe(digest);
             expect(validatePreparedNativePomodoroTransition(JSON.parse(JSON.stringify(plan)))).toEqual(plan);
         }
         const current = reconcile()!;
-        expect(current.target!.row).toEqual([...legacyReconcile().target!.row!, null, null, null]);
+        expect(current.target!.row).toEqual([...legacyReconcile().target!.row!, null, null, null, null]);
         const schema5 = structuredClone(current); schema5.target!.row = schema5.target!.row!.slice(0, SCHEMA4_TASK_COLUMNS.length + 1);
         expect(validatePreparedNativePomodoroTransition(schema5)).toEqual(schema5);
         expect(createHash('sha256').update(nativePomodoroReceiptPayload(schema5)).digest('hex'))

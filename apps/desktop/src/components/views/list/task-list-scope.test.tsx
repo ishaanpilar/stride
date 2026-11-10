@@ -437,6 +437,25 @@ describe.each(SCOPE_CASES)('createTaskListScope — $name', ({ extraDeps }) => {
             expect(moveTask()).toHaveBeenCalledWith('current', 'done');
         });
 
+        it('asks before completing a task that is still waiting for another', () => {
+            const blocker = makeTask('blocker', { title: 'Visit vendors' });
+            const waiting = makeTask('waiting', { blockedByTaskIds: ['blocker'] });
+            seed([blocker, waiting]);
+            scopeFor(waiting).toggleDoneSelected();
+            expect(moveTask()).not.toHaveBeenCalled();
+
+            answerRepeatTick('waiting', true);
+            expect(moveTask()).toHaveBeenCalledWith('waiting', 'done');
+        });
+
+        it('completes straight away once the blocker is finished', () => {
+            const blocker = makeTask('blocker', { status: 'done', completedAt: '2026-01-01T00:00:00.000Z' });
+            const waiting = makeTask('waiting', { blockedByTaskIds: ['blocker'] });
+            seed([blocker, waiting]);
+            scopeFor(waiting).toggleDoneSelected();
+            expect(moveTask()).toHaveBeenCalledWith('waiting', 'done');
+        });
+
         it('does nothing on Cancel, and uses the same guard for the status shortcut', () => {
             seed([previous(), current]);
             const scope = scopeFor(current);

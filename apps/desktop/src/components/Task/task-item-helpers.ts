@@ -120,4 +120,5 @@ export const TASK_EDITOR_FIELD_LABEL_KEYS: Record<TaskEditorFieldId, string> = {
     textDirection: 'taskEdit.textDirectionLabel',
     attachments: 'attachments.title',
     checklist: 'taskEdit.checklist',
+    blockedBy: 'dependencies.blockedBy',
 };

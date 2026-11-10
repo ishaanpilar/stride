@@ -2139,6 +2139,7 @@ export function buildNextRecurringTask(
         projectId: task.projectId,
         sectionId: task.sectionId,
         areaId: task.areaId,
+        ...(task.blockedByTaskIds?.length ? { blockedByTaskIds: [...task.blockedByTaskIds] } : {}),
         isFocusedToday: false,
         completedAt: undefined,
         cancelledAt: undefined,

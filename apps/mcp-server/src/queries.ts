@@ -64,6 +64,7 @@ export type ListTasksInput = {
 
 export type TaskGeneratedCreateFields = Pick<CoreTask,
   | 'viewSectionIds'
+  | 'blockedByTaskIds'
   | 'taskMode'
   | 'relativeStartOffset'
   | 'showFutureRecurrence'

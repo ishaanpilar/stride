@@ -115,6 +115,7 @@ export const normalizeTaskForContentComparison = (task: Task): Record<string, un
         sectionId: task.sectionId,
         viewSectionIds: canonicalizeStringMapForComparison(task.viewSectionIds),
         areaId: task.areaId,
+        blockedByTaskIds: normalizeOptionalArrayForComparison(task.blockedByTaskIds),
         isFocusedToday: task.isFocusedToday ? true : undefined,
         timeEstimate: task.timeEstimate,
         timeSpentMinutes: task.timeSpentMinutes ? task.timeSpentMinutes : undefined,

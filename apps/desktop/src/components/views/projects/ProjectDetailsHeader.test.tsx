@@ -52,6 +52,21 @@ function buildProject(overrides: Partial<Project> = {}): Project {
 const openMenu = () => fireEvent.click(screen.getByRole('button', { name: /^More options: / }));
 
 describe('ProjectDetailsHeader', () => {
+    it('toggles Next action only from the header switch', () => {
+        const onNextActionOnlyChange = vi.fn();
+        render(<ProjectDetailsHeader
+            project={buildProject()} projectColor="#2563eb" isSequential={false}
+            editTitle="Launch site" onEditTitleChange={vi.fn()} onCommitTitle={vi.fn()} onResetTitle={vi.fn()}
+            detailsExpanded={false} onToggleDetails={vi.fn()} onDuplicate={vi.fn()}
+            onArchive={vi.fn()} onReactivate={vi.fn()} onDelete={vi.fn()} t={t}
+            onNextActionOnlyChange={onNextActionOnlyChange}
+        />);
+        const toggle = screen.getByRole('switch', { name: 'Next action only' });
+        expect(toggle).toHaveAttribute('aria-checked', 'false');
+        fireEvent.click(toggle);
+        expect(onNextActionOnlyChange).toHaveBeenCalledWith(true);
+    });
+
     it('grows a wrapped title when its available width changes and releases the observer', () => {
         let resize: (() => void) | undefined;
         const disconnect = vi.fn();

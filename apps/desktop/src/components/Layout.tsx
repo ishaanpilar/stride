@@ -13,7 +13,6 @@ import {
     Folder,
     Settings,
     Target,
-    Bot,
     PanelRightOpen,
     Search,
     ChevronsLeft,
@@ -89,7 +88,8 @@ type NavItem = {
 
 type NavSection = {
     key: string;
-    label: string;
+    /** Omitted for the always-visible top group: no header, so it cannot fold. */
+    label?: string;
     items: NavItem[];
 };
 
@@ -106,11 +106,17 @@ const NAV_DROP_STATUSES: Record<string, TaskStatus> = {
     history: 'done',
 };
 const FOCUS_NAV_DROP_ID = 'agenda';
+const isNavDropTarget = (navId: string) => (
+    navId === 'calendar' || navId === FOCUS_NAV_DROP_ID || NAV_DROP_STATUSES[navId] !== undefined
+);
 const SECTION_COLLAPSE_STORAGE_KEY = 'stride:sidebar:collapsedSections';
-const DEFAULT_COLLAPSED_SECTION_KEYS = ['secondary'];
+/** The foldable groups. Both start folded for a new user. */
+const COLLAPSIBLE_SECTION_KEYS: readonly string[] = ['lists', 'secondary'];
+/** Saved keys of groups that were renamed. Other old keys (focus, organize) no longer fold anything. */
+const LEGACY_SECTION_KEY_ALIASES: Record<string, string> = { archive: 'secondary' };
 
 function createDefaultCollapsedSections(): Set<string> {
-    return new Set(DEFAULT_COLLAPSED_SECTION_KEYS);
+    return new Set(COLLAPSIBLE_SECTION_KEYS);
 }
 
 function loadCollapsedSections(): Set<string> {
@@ -120,10 +126,12 @@ function loadCollapsedSections(): Set<string> {
         if (!raw) return createDefaultCollapsedSections();
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return createDefaultCollapsedSections();
-        const stored = new Set(parsed.filter((v): v is string => typeof v === 'string'));
-
-
-        if (stored.has('archive')) stored.add('secondary');
+        const stored = new Set<string>();
+        for (const value of parsed) {
+            if (typeof value !== 'string') continue;
+            const key = LEGACY_SECTION_KEY_ALIASES[value] ?? value;
+            if (COLLAPSIBLE_SECTION_KEYS.includes(key)) stored.add(key);
+        }
         return stored;
     } catch {
         return createDefaultCollapsedSections();
@@ -212,7 +220,7 @@ export function Layout({
     }, [isCollapsed, isFocusMode]);
     const hiddenSidebarViews = useUiStore((state) => state.hiddenSidebarViews);
     const showToast = useUiStore((state) => state.showToast);
-    const isObsidianEnabled = useObsidianStore((state) => state.config.enabled);
+    const isObsidianConfigured = useObsidianStore((state) => state.config.enabled && Boolean(state.config.vaultPath));
 
     const isTimelineEnabled = resolveFeatureFlags(settings).timeline;
     const [syncStatus, setSyncStatus] = useState(() => SyncService.getSyncStatus());
@@ -414,31 +422,22 @@ export function Layout({
 
     const navSections = useMemo<NavSection[]>(() => ([
         {
-            key: 'focus',
-            label: tFallback(t, 'nav.sectionFocus', 'Focus'),
+            key: 'primary',
             items: [
                 { id: 'agenda', labelKey: 'nav.agenda', icon: Target, tone: 'primary' },
-                { id: 'assistant', labelKey: 'nav.assistant', fallbackLabel: 'Assistant', icon: Bot },
                 { id: 'inbox', labelKey: 'nav.inbox', icon: TASK_STATUS_ICONS.inbox, count: inboxCount, tone: 'primary' },
+                { id: 'projects', labelKey: 'nav.projects', icon: Folder, tone: 'primary' },
+                { id: 'calendar', labelKey: 'nav.calendar', icon: Calendar },
+                { id: 'review', labelKey: 'nav.review', icon: CheckCircle2 },
             ],
         },
         {
             key: 'lists',
             label: tFallback(t, 'nav.sectionLists', 'Lists'),
             items: [
-                { id: 'projects', labelKey: 'nav.projects', icon: Folder, tone: 'primary' },
                 { id: 'next', labelKey: 'nav.next', fallbackLabel: 'Next Actions', icon: TASK_STATUS_ICONS.next },
-                { id: 'someday', labelKey: 'nav.someday', icon: TASK_STATUS_ICONS.someday },
                 { id: 'waiting', labelKey: 'nav.waiting', icon: TASK_STATUS_ICONS.waiting },
-            ],
-        },
-        {
-            key: 'organize',
-            label: tFallback(t, 'nav.sectionOrganize', 'Organize'),
-            items: [
-                { id: 'calendar', labelKey: 'nav.calendar', icon: Calendar },
-                { id: 'review', labelKey: 'nav.review', icon: CheckCircle2 },
-                { id: 'contexts', labelKey: 'nav.contexts', icon: Tag },
+                { id: 'someday', labelKey: 'nav.someday', icon: TASK_STATUS_ICONS.someday },
             ],
         },
         {
@@ -446,13 +445,14 @@ export function Layout({
             label: tFallback(t, 'common.more', 'More'),
             items: [
                 { id: 'reference', labelKey: 'nav.reference', icon: TASK_STATUS_ICONS.reference },
-                ...(isObsidianEnabled
+                ...(isObsidianConfigured
                     ? [{ id: 'obsidian', labelKey: 'nav.obsidian', fallbackLabel: 'Obsidian', icon: BookOpen }]
                     : []),
                 { id: 'board', labelKey: 'nav.board', icon: Kanban },
                 ...(isTimelineEnabled
                     ? [{ id: 'timeline', labelKey: 'nav.timeline', fallbackLabel: 'Timeline', icon: GanttChartSquare }]
                     : []),
+                { id: 'contexts', labelKey: 'nav.contexts', icon: Tag },
                 {
                     id: 'history',
                     labelKey: 'nav.history',
@@ -474,7 +474,7 @@ export function Layout({
                 return !hiddenSidebarViews.includes(item.id as (typeof hiddenSidebarViews)[number]);
             }),
         }))
-        .filter((section) => section.items.length > 0), [hiddenSidebarViews, inboxCount, isObsidianEnabled, isTimelineEnabled, t]);
+        .filter((section) => section.items.length > 0), [hiddenSidebarViews, inboxCount, isObsidianConfigured, isTimelineEnabled, t]);
 
     const viewContentRef = useRef<HTMLDivElement>(null);
     useEnterOnChange(viewContentRef, currentView);
@@ -485,18 +485,19 @@ export function Layout({
     }, [collapsedSections]);
 
 
+    const activeSectionKey = navSections.find((section) => section.items.some(
+        (item) => item.id === currentView || item.activeIds?.includes(currentView),
+    ))?.key;
+    // Unfold only on navigation: a group the user folds stays folded while counts change.
     useEffect(() => {
-        const activeSection = navSections.find((section) => section.items.some(
-            (item) => item.id === currentView || item.activeIds?.includes(currentView),
-        ));
-        if (!activeSection) return;
+        if (!activeSectionKey) return;
         setCollapsedSections((prev) => {
-            if (!prev.has(activeSection.key)) return prev;
+            if (!prev.has(activeSectionKey)) return prev;
             const next = new Set(prev);
-            next.delete(activeSection.key);
+            next.delete(activeSectionKey);
             return next;
         });
-    }, [currentView, navSections]);
+    }, [currentView, activeSectionKey]);
 
     const toggleSection = useCallback((key: string) => {
         setCollapsedSections((prev) => {
@@ -519,7 +520,7 @@ export function Layout({
     const [dragOverNavId, setDragOverNavId] = useState<string | null>(null);
 
 
-    const [dragOpenedSectionKey, setDragOpenedSectionKey] = useState<string | null>(null);
+    const [dragOpenedSectionKeys, setDragOpenedSectionKeys] = useState<ReadonlySet<string>>(() => new Set());
 
     useEffect(() => {
 
@@ -532,7 +533,7 @@ export function Layout({
             }
             setTaskDragActive(false);
             setDragOverNavId(null);
-            setDragOpenedSectionKey(null);
+            setDragOpenedSectionKeys((prev) => (prev.size > 0 ? new Set() : prev));
         };
         const keepAlive = () => {
             if (idleTimer !== null) window.clearTimeout(idleTimer);
@@ -980,24 +981,26 @@ export function Layout({
 
                     <nav className="space-y-4 pb-2" data-sidebar-nav>
                         {navSections.map((section) => {
-                            const isSectionCollapsed = !isCollapsed && collapsedSections.has(section.key) && dragOpenedSectionKey !== section.key;
+                            const isSectionCollapsed = !isCollapsed && collapsedSections.has(section.key) && !dragOpenedSectionKeys.has(section.key);
                             const sectionId = `sidebar-section-${section.key}`;
+                            const sectionAcceptsDrop = section.items.some((item) => isNavDropTarget(item.id));
                             return (
                             <div key={section.key} className="space-y-1" data-sidebar-section>
-                                {!isCollapsed && (
+                                {!isCollapsed && section.label !== undefined && (
                                     <button
                                         type="button"
                                         onClick={() => toggleSection(section.key)}
                                         onDragEnter={(event) => {
-                                            if (!hasCalendarTaskDragData(event.dataTransfer)) return;
-                                            if (section.items.some((item) => item.id === 'calendar' || item.id === FOCUS_NAV_DROP_ID || NAV_DROP_STATUSES[item.id] !== undefined)) {
-                                                setDragOpenedSectionKey(section.key);
-                                            }
+                                            if (!sectionAcceptsDrop || !hasCalendarTaskDragData(event.dataTransfer)) return;
+                                            setDragOpenedSectionKeys((prev) => (prev.has(section.key) ? prev : new Set(prev).add(section.key)));
                                         }}
                                         aria-expanded={!isSectionCollapsed}
                                         aria-controls={sectionId}
                                         data-sidebar-section-toggle
-                                        className="focus-ring-inset group w-full flex h-7 items-center gap-1 rounded-control px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
+                                        className={cn(
+                                            "focus-ring-inset group w-full flex h-7 items-center gap-1 rounded-control px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground cursor-pointer",
+                                            sectionAcceptsDrop && isSectionCollapsed && taskDragActive && "outline-dashed outline-2 -outline-offset-2 outline-primary/50 bg-primary/10 text-primary",
+                                        )}
                                     >
                                         <ChevronDown
                                             className={cn(
@@ -1011,16 +1014,15 @@ export function Layout({
                                 <Collapse open={!isSectionCollapsed} id={sectionId} innerClassName="space-y-1">
                                 {section.items.map((item) => {
                                     const itemLabel = item.labelKey ? tFallback(t, item.labelKey, item.fallbackLabel ?? item.id) : (item.fallbackLabel ?? item.id);
-                                    const isAssistantItem = item.id === 'assistant';
-                                    const isActiveItem = isAssistantItem ? assistantOpen : (currentView === item.id || item.activeIds?.includes(currentView) === true);
-                                    const isDropTarget = item.id === 'calendar' || item.id === FOCUS_NAV_DROP_ID || NAV_DROP_STATUSES[item.id] !== undefined;
+                                    const isActiveItem = currentView === item.id || item.activeIds?.includes(currentView) === true;
+                                    const isDropTarget = isNavDropTarget(item.id);
                                     const inactiveItemClass = 'text-foreground hover:bg-accent';
                                     const inactiveIconClass = 'text-muted-foreground';
                                     const itemWeightClass = isActiveItem ? 'font-semibold' : 'font-normal';
                                     return (
                                     <button
                                         key={item.id}
-                                        onClick={() => (item.id === 'assistant' ? openAssistant() : onViewChange(item.id))}
+                                        onClick={() => onViewChange(item.id)}
                                         onDragEnter={isDropTarget ? (event) => handleNavDragEnter(event, item.id) : undefined}
                                         onDragOver={isDropTarget ? (event) => handleNavDragOver(event, item.id) : undefined}
                                         onDragLeave={isDropTarget ? handleNavDragLeave : undefined}
@@ -1038,8 +1040,7 @@ export function Layout({
                                             isDropTarget && taskDragActive && "outline-dashed outline-2 -outline-offset-2 outline-primary/50 bg-primary/10 text-primary",
                                             isDropTarget && dragOverNavId === item.id && "outline outline-2 -outline-offset-2 outline-primary bg-primary/25 text-primary"
                                         )}
-                                        aria-current={isActiveItem && !isAssistantItem ? 'page' : undefined}
-                                        aria-pressed={isAssistantItem ? isActiveItem : undefined}
+                                        aria-current={isActiveItem ? 'page' : undefined}
                                         title={itemLabel}
                                     >
                                         <div className={cn("flex min-w-0 items-center gap-2.5", isCollapsed && "gap-0")}>

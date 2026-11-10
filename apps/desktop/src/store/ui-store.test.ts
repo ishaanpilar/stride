@@ -47,6 +47,7 @@ describe('useUiStore list options', () => {
 
         expect(useUiStore.getState().listOptions).toEqual({
             showDetails: true,
+            focusLayout: 'projects',
 
 
             focusGroupBy: 'project',
@@ -81,6 +82,7 @@ describe('useUiStore list options', () => {
 
         expect(JSON.parse(window.localStorage.getItem(LIST_OPTIONS_STORAGE_KEY) || '{}')).toEqual({
             showDetails: true,
+            focusLayout: 'projects',
             focusGroupBy: 'energy',
             inboxGroupBy: 'context',
             nextGroupBy: 'project',

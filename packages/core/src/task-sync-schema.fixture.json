@@ -1,5 +1,5 @@
 {
-    "schemaVersion": 7,
+    "schemaVersion": 8,
     "sinceVersionPolicy": "Contract versions start at 1 for every field present when this table was introduced; they are independent of SQLite migration versions.",
     "fields": [
         { "name": "id", "sync": "identity", "nullability": "required", "sinceVersion": 1, "signature": "content", "sqliteColumn": "id", "cloudKit": null, "cloudWrite": "managed", "sqliteOrder": 0, "sqliteType": null },
@@ -26,6 +26,7 @@
         { "name": "sectionId", "sync": "content", "nullability": "optional", "sinceVersion": 1, "signature": "content", "sqliteColumn": "sectionId", "cloudKit": { "key": "sectionId", "kind": "string" }, "cloudWrite": "create-patch", "sqliteOrder": 22, "sqliteType": "TEXT" },
         { "name": "viewSectionIds", "sync": "content", "nullability": "optional", "sinceVersion": 2, "signature": "content", "sqliteColumn": "viewSectionIds", "cloudKit": { "key": "viewSectionIds", "kind": "json-string" }, "cloudWrite": "create-patch", "sqliteOrder": 43, "sqliteType": "TEXT" },
         { "name": "areaId", "sync": "content", "nullability": "optional", "sinceVersion": 1, "signature": "content", "sqliteColumn": "areaId", "cloudKit": { "key": "areaId", "kind": "string" }, "cloudWrite": "create-patch", "sqliteOrder": 23, "sqliteType": "TEXT" },
+        { "name": "blockedByTaskIds", "sync": "content", "nullability": "optional", "sinceVersion": 8, "signature": "content", "sqliteColumn": "blockedByTaskIds", "cloudKit": { "key": "blockedByTaskIds", "kind": "string-array" }, "cloudWrite": "create-patch", "sqliteOrder": 49, "sqliteType": "TEXT" },
         { "name": "isFocusedToday", "sync": "content", "nullability": "optional", "sinceVersion": 1, "signature": "content", "sqliteColumn": "isFocusedToday", "cloudKit": { "key": "isFocusedToday", "kind": "boolean" }, "cloudWrite": "create-patch", "sqliteOrder": 27, "sqliteType": "INTEGER" },
         { "name": "timeEstimate", "sync": "content", "nullability": "optional", "sinceVersion": 1, "signature": "content", "sqliteColumn": "timeEstimate", "cloudKit": { "key": "timeEstimate", "kind": "string" }, "cloudWrite": "create-patch", "sqliteOrder": 28, "sqliteType": "TEXT" },
         { "name": "timeSpentMinutes", "sync": "content", "nullability": "optional", "sinceVersion": 1, "signature": "content", "sqliteColumn": "timeSpentMinutes", "cloudKit": { "key": "timeSpentMinutes", "kind": "integer" }, "cloudWrite": "create-patch", "sqliteOrder": 29, "sqliteType": "INTEGER" },
@@ -85,6 +86,7 @@
         "sectionId": "section-schema",
         "viewSectionIds": { "someday": "view-section-schema" },
         "areaId": "area-schema",
+        "blockedByTaskIds": ["task-schema-blocker"],
         "isFocusedToday": true,
         "timeEstimate": "30min",
         "timeSpentMinutes": 45,

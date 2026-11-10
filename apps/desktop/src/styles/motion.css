@@ -98,6 +98,10 @@
 [dir='rtl'] .completion-strike, .completion-strike:dir(rtl) { background-position: 100% 58%; }
 
 .task-row[data-done] .metadata-badge { opacity: 0.65; }
+.task-row--blocked .task-item-display__title { opacity: 0.7; }
+@media (prefers-contrast: more) {
+  .task-row--blocked .task-item-display__title { opacity: 1; }
+}
 .task-row[data-done] .task-item-display__title { transition: color 320ms var(--ease-out-quart) 120ms; }
 
 .task-row[data-completing] {

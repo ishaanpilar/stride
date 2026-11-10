@@ -75,6 +75,7 @@ import { reportError } from '../lib/report-error';
 import { logInfo } from '../lib/app-log';
 import { registerUndoableAction } from '../lib/undo-registry';
 import { undoTaskCompletion } from '../lib/undo-task-completion';
+import { useTaskWaitsForLabel } from '../lib/task-dependency-ui';
 import { createSomedaySection } from '../lib/someday-section-actions';
 import { resolveNativeDateInputLocale } from '../lib/native-date-input-locale';
 import { setCalendarTaskDragData } from '../lib/calendar-task-drag';
@@ -82,7 +83,7 @@ import { useRetainedPreviousStatus } from '../lib/completion-retention';
 import { beginCompletion, cancelCompletion, isActivePhase, isWithinDoubleClickGuard, useCompletionPhase } from '../lib/completion-sequence';
 import { useCompletionRowMotion } from '../lib/completion-motion';
 import { isRepeatingCompletionPending, useOccurrenceArrived } from '../lib/completion-retention';
-import { guardRepeatTick, showRepeatingDoneToast } from '../lib/repeating-completion';
+import { askRepeatTickInToast, guardRepeatTick, needsRepeatTickConfirm, showRepeatingDoneToast } from '../lib/repeating-completion';
 import { RepeatTickConfirm } from './Task/RepeatTickConfirm';
 import { useTaskItemStoreState, useTaskItemUiState } from './Task/useTaskItemStoreState';
 import type { TaskInputAcceptedSuggestion } from './Task/TaskInput';
@@ -319,6 +320,7 @@ export const TaskItem = memo(function TaskItem({
     const retainedPreviousStatus = useRetainedPreviousStatus(task.id);
     const completionPhase = useCompletionPhase(task.id);
     useCompletionRowMotion(taskRootRef, completionPhase, task.id);
+    const isDependencyBlockedRow = useTaskWaitsForLabel(task, t) !== null && task.isFocusedToday !== true;
     const occurrenceArrived = useOccurrenceArrived(task.id);
     const effectiveReadOnly = interactionDisabled || readOnly || task.status === 'done';
     const mutationOwnerRef = useRef({
@@ -1425,13 +1427,17 @@ export const TaskItem = memo(function TaskItem({
         if (!isTaskActionable(task)) return;
         const previousStatus = task.status;
         const wasFocusedToday = task.isFocusedToday === true;
-        void handleSubmit(undefined, { statusOverride: 'done' })
-            .then((result) => {
-                if (!result?.success) return;
-                handleTaskCompleted(previousStatus, wasFocusedToday);
-            })
-            .catch((error) => reportError('Failed to mark task done from editor', error));
-    }, [handleSubmit, handleTaskCompleted, task.isFocusedToday, task.status]);
+        const complete = () => {
+            void handleSubmit(undefined, { statusOverride: 'done' })
+                .then((result) => {
+                    if (!result?.success) return;
+                    handleTaskCompleted(previousStatus, wasFocusedToday);
+                })
+                .catch((error) => reportError('Failed to mark task done from editor', error));
+        };
+        if (needsRepeatTickConfirm(task.id)) askRepeatTickInToast([task.id], complete, t);
+        else complete();
+    }, [handleSubmit, handleTaskCompleted, t, task.id, task.isFocusedToday, task.status]);
 
 
     const hasPendingEdits = useCallback(
@@ -1852,6 +1858,7 @@ export const TaskItem = memo(function TaskItem({
                     task.status === 'done' || isActivePhase(completionPhase) ? "bg-[var(--completion-done-bg)] shadow-none hover:shadow-soft-sm" : "bg-card",
                     isCondensed ? "px-3 py-2" : isCompact ? "p-3" : "p-4",
                     "focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:bg-primary/5",
+                    isDependencyBlockedRow && "task-row--blocked",
                     canCalendarDrag && "cursor-grab active:cursor-grabbing",
                     isSelected && "ring-1 ring-inset ring-accent-fill bg-accent-soft",
                     isHighlighted && "ring-2 ring-inset ring-primary/70 bg-primary/5",

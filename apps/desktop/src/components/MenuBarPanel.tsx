@@ -160,6 +160,7 @@ export function MenuBarPanel() {
     const tr = useCallback((key: string, fallback: string) => translateWithFallback(t, key, fallback), [t]);
     const tasks = useTaskStore((state) => state.tasks);
     const projects = useTaskStore((state) => state.projects);
+    const projectSections = useTaskStore((state) => state.sections);
     const areas = useTaskStore((state) => state.areas);
     const pomodoroEnabled = useTaskStore((state) => resolveFeatureFlags(state.settings).pomodoro);
     const aiEnabled = useTaskStore((state) => state.settings?.ai?.enabled === true);
@@ -253,8 +254,8 @@ export function MenuBarPanel() {
     const areaById = useMemo(() => new Map(areas.map((area) => [area.id, area])), [areas]);
     const baseView = useMemo(() => {
         void dayTick;
-        return selectMenuBarPanelView(tasks, { projects, now: new Date(), manualOrder: { today: manualToday } });
-    }, [tasks, projects, dayTick, manualToday]);
+        return selectMenuBarPanelView(tasks, { projects, sections: projectSections, now: new Date(), manualOrder: { today: manualToday } });
+    }, [tasks, projects, projectSections, dayTick, manualToday]);
     // Completion rule: a task ticked done here stays in its list, struck through, and drops to the bottom of
     // that list after the settle delay (see core task-completion-order.ts). Counts stay open-task counts.
     const { retained: sessionCompletions, settledIds: settledCompletionIds, heldIds: heldOccurrenceIds } = useCompletionRetention();
@@ -625,6 +626,7 @@ export function MenuBarPanel() {
         moreActions: tr('menubar.reorder.moreActions', 'More actions'),
     };
     const rowLabels: PanelRowLabels = {
+        waitsForT: t,
         complete: tr('task.markDone', 'Mark done'),
         markNotDone: tr('menubar.markNotDone', 'Mark not done'),
         today: tr('menubar.today', 'Today'),

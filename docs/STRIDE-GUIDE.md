@@ -9,7 +9,7 @@ Stride is your personal organiser for macOS: a local-first GTD app with an AI la
 | Part | What it does | Where you find it |
 | --- | --- | --- |
 | Tasks, projects, contexts | The GTD system: capture everything, decide the next action, review weekly | Sidebar |
-| Assistant chat | Type or dictate a request and the AI adds, moves, plans, breaks down and completes tasks | Sidebar → Assistant, or Cmd+Shift+J |
+| Assistant chat | Type or dictate a request and the AI adds, moves, plans, breaks down and completes tasks | The panel button at the right of the toolbar, or Cmd+Shift+J |
 | AI morning briefing | A daily plan: headline, top 5 tasks with reasons, today's schedule, what to Pomodoro first | Card at the top of Focus, plus a morning notification |
 | AI Quick Capture | Dump everything you have on your mind; the AI proposes projects and tasks, you review, then add | Cmd/Ctrl+Shift+K, or AI Capture in the menu bar panel |
 | Menu bar panel | Today, Upcoming, Inbox and Next at a glance, with capture, Pomodoro and the Assistant | Click the Stride icon in the menu bar |
@@ -58,10 +58,11 @@ Stride follows Getting Things Done (GTD). Every task has one **status**, and eac
 
 The sidebar groups the views like this:
 
-- **Focus**: Focus (today's plan, briefing card, Pomodoro), Assistant, Inbox, Next Actions.
-- **Lists**: Waiting For, Someday/Maybe, Reference, Calendar.
-- **Organize**: Projects, Contexts, Board (kanban), Timeline (start-to-due bars, optional), Review (weekly review wizard).
-- **Archive**: Done, Archived, Trash (deleted tasks can be restored until they're purged).
+- **At the top, always shown**: Focus (today's plan, briefing card, Pomodoro), Inbox, Projects, Calendar, Review (weekly review wizard).
+- **Lists** (click to fold or unfold): Next Actions, Waiting For, Someday/Maybe.
+- **More** (click to fold or unfold): Reference, Obsidian (once a vault is connected), Board (kanban), Timeline (start-to-due bars, optional), Contexts, History (Done and Archived), Trash (deleted tasks can be restored until they're purged).
+
+To drop a task on a list in a folded group, drag it over the group's name first and the group opens.
 
 ## Your daily workflow
 
@@ -76,7 +77,7 @@ The sidebar groups the views like this:
 
 ### Assistant chat
 
-Open it with **Cmd+Shift+J** or from the sidebar. Type, or dictate with Wispr Flow: the text box accepts any dictation. Enter sends and Shift+Enter adds a new line.
+Open it with **Cmd+Shift+J** or the panel button at the right of the toolbar. Type, or dictate with Wispr Flow: the text box accepts any dictation. Enter sends and Shift+Enter adds a new line.
 
 Things you can ask:
 

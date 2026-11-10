@@ -9,7 +9,7 @@ type AgendaCollapsibleSectionProps = {
     children: ReactNode;
     color: string;
     controlsId: string;
-    count: number;
+    count: ReactNode;
     expanded: boolean;
     icon: LucideIcon;
     onToggle: () => void;

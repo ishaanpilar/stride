@@ -15,6 +15,7 @@ import { Attachment,
     isTaskFinished,
     isTaskCompleted,
     type BulkOrganizeTaskUpdateInput,
+    type Language,
     type Project,
     type ProjectSequenceTaskCue,
     type Section,
@@ -50,11 +51,13 @@ import { TaskBulkOrganizeModal } from '../list/TaskBulkOrganizeModal';
 import { cn } from '../../../lib/utils';
 import { reportError } from '../../../lib/report-error';
 import { showUndoToast } from '../../../lib/undo-registry';
+import { setProjectNextActionOnly } from '../../../lib/project-next-action-only';
 import { useMiddleMousePan } from './use-column-pan';
 import { appendProjectAttachments, useProjectAttachmentActions } from './useProjectAttachmentActions';
 import { useProjectSectionActions } from './useProjectSectionActions';
 import { useProjectWorkspaceStore } from './useProjectWorkspaceStore';
 import { ProjectDetailsHeader } from './ProjectDetailsHeader';
+import { ProjectOrderSheet } from '../../ai-organise/ProjectOrderSheet';
 import { useProjectTitleShortener } from './ShortenProjectTitleDialog';
 import { ProjectDetailsFields } from './ProjectDetailsFields';
 import { ProjectNotesSection } from './ProjectNotesSection';
@@ -1599,6 +1602,7 @@ export function ProjectWorkspace({
         setEditProjectTitle(selectedProject.title);
     };
 
+    const [orderingProject, setOrderingProject] = useState<Project | null>(null);
     const titleShortener = useProjectTitleShortener({
         project: isArchivedProject ? null : selectedProject,
         t,
@@ -1851,6 +1855,7 @@ export function ProjectWorkspace({
                                 projectColor={getProjectColor(selectedProject, areaById, DEFAULT_AREA_COLOR)}
                                 areaLabel={selectedProjectAreaLabel}
                                 isSequential={selectedProject.isSequential === true}
+                                onNextActionOnlyChange={(enabled) => { void setProjectNextActionOnly(selectedProject, enabled, t); }}
                                 dueDate={selectedProject.dueDate}
                                 reviewAt={selectedProject.reviewAt}
                                 editTitle={editProjectTitle}
@@ -1879,10 +1884,14 @@ export function ProjectWorkspace({
                                 readOnlyHint={archivedReadOnlyHint}
                                 projectProgress={selectedProject.cancelledAt ? null : projectProgress}
                                 onShortenTitle={isArchivedProject ? undefined : titleShortener.open}
+                                onOrderProject={!isArchivedProject && titleShortener.aiEnabled ? () => setOrderingProject(selectedProject) : undefined}
                                 shortenWithAi={titleShortener.aiEnabled}
                                 t={t}
                             />
                             {titleShortener.dialog}
+                            {orderingProject && (
+                                <ProjectOrderSheet project={orderingProject} language={language as Language} t={t} onClose={() => setOrderingProject(null)} />
+                            )}
                             {isGettingStartedProject(selectedProject, allTasks) && <GettingStartedActions t={t} />}
 
                             {projectDetailsExpanded && (

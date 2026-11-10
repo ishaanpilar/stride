@@ -205,6 +205,7 @@ static const MWFieldSpec kTaskFields[] = {
     {"repeatReminderMinutes", "repeatReminderMinutes", MWFieldKindInt},
     {"dueReminderLeadMinutes", "dueReminderLeadMinutes", MWFieldKindInt},
     {"startReminderLeadMinutes", "startReminderLeadMinutes", MWFieldKindInt},
+    {"blockedByTaskIds", "blockedByTaskIds", MWFieldKindStringArray},
     {"reviewAt",       "reviewAt",        MWFieldKindDate},
     {"completedAt",    "completedAt",     MWFieldKindDate},
     {"cancelledAt",    "cancelledAt",     MWFieldKindDate},

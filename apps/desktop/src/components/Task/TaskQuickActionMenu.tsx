@@ -10,7 +10,7 @@ import {
     type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Calendar, CalendarClock, Check, ChevronRight, Copy, Flag, Folder, ListChecks, Pencil, Play, Tag, Trash2 } from 'lucide-react';
+import { Calendar, CalendarClock, Check, ChevronRight, Copy, Flag, Folder, ListChecks, Lock, Pencil, Play, Tag, Trash2 } from 'lucide-react';
 import {
     buildTaskMovePatch,
     getAdvancedReviewDate,
@@ -40,6 +40,7 @@ import { DestinationSelector } from '../ui/DestinationSelector';
 import { SectionSelector } from '../ui/SectionSelector';
 import { normalizeDateInputValue } from './task-item-helpers';
 import { ContextsField } from './fields/TaskMetadataFields';
+import { BlockedByField } from './BlockedByField';
 import { PriorityFlag } from './PriorityFlag';
 import { DateField } from '../ui/DateField';
 import { TimeInput } from '../ui/TimeInput';
@@ -50,7 +51,7 @@ const PANEL_GAP_PX = 8;
 const MENU_WIDTH_PX = 224;
 const HOVER_OPEN_DELAY_MS = 250;
 
-type QuickPanelId = 'dates' | 'startTime' | 'dueDate' | 'reviewAt' | 'destination' | 'contexts' | 'priority' | 'checklist' | null;
+type QuickPanelId = 'dates' | 'startTime' | 'dueDate' | 'reviewAt' | 'destination' | 'contexts' | 'priority' | 'checklist' | 'blockedBy' | null;
 
 const isDateEditorPanel = (panel: QuickPanelId) => panel === 'startTime' || panel === 'dueDate' || panel === 'reviewAt';
 
@@ -218,6 +219,7 @@ export function TaskQuickActionMenu({
     const contextsButtonRef = useRef<HTMLButtonElement | null>(null);
     const priorityButtonRef = useRef<HTMLButtonElement | null>(null);
     const checklistButtonRef = useRef<HTMLButtonElement | null>(null);
+    const blockedByButtonRef = useRef<HTMLButtonElement | null>(null);
     const [checklistQuery, setChecklistQuery] = useState('');
     const startItemRef = useRef<HTMLButtonElement | null>(null);
     const dueItemRef = useRef<HTMLButtonElement | null>(null);
@@ -283,6 +285,7 @@ export function TaskQuickActionMenu({
     const createSectionLabel = tFallback(t, 'projects.addSection', 'Add section');
     const noMatchesLabel = tFallback(t, 'common.noMatches', 'No matches');
     const addToChecklistLabel = tFallback(t, 'task.addToChecklist', 'Add to checklist…');
+    const blockedByLabel = tFallback(t, 'dependencies.blockedByMenu', 'Blocked by…');
     const checklistTargets = activePanel === 'checklist' && checklistMove
         ? getChecklistMoveTargets(checklistMove.tasks, task.id, checklistQuery)
         : [];
@@ -400,7 +403,9 @@ export function TaskQuickActionMenu({
                         ? priorityButtonRef.current
                         : panelId === 'checklist'
                             ? checklistButtonRef.current
-                            : contextsButtonRef.current
+                            : panelId === 'blockedBy'
+                                ? blockedByButtonRef.current
+                                : contextsButtonRef.current
         );
         const closeActivePanel = () => {
             if (!activePanel) return;
@@ -545,7 +550,9 @@ export function TaskQuickActionMenu({
                         ? destinationButtonRef.current
                         : activePanel === 'priority'
                             ? priorityButtonRef.current
-                            : contextsButtonRef.current;
+                            : activePanel === 'blockedBy'
+                                ? blockedByButtonRef.current
+                                : contextsButtonRef.current;
         const position = getPanelPosition(anchor, panelRef.current);
         if (position) setPanelPosition(position);
     }, [activePanel, datesMenuPosition, menuPosition.left, menuPosition.top]);
@@ -784,6 +791,8 @@ export function TaskQuickActionMenu({
             else onClose();
         } else if (activePanel === 'checklist') {
             if (checklistTargets[0]) chooseChecklistTarget(checklistTargets[0].id);
+        } else if (activePanel === 'blockedBy') {
+            return;
         } else if (contextsDraftChanged) {
             void handleContextsSave();
         } else {
@@ -945,6 +954,15 @@ export function TaskQuickActionMenu({
                     hoverPanel: 'checklist',
                     showChevron: true,
                 })}
+                {!readOnly && renderMenuAction({
+                    ref: blockedByButtonRef,
+                    icon: <Lock className="h-4 w-4" />,
+                    label: blockedByLabel,
+                    active: activePanel === 'blockedBy',
+                    onClick: () => openPanel('blockedBy'),
+                    hoverPanel: 'blockedBy',
+                    showChevron: true,
+                })}
                 {!readOnly ? <div className="my-1 h-px bg-border/70" role="separator" /> : null}
                 {renderMenuAction({
                     icon: <Copy className="h-4 w-4" />,
@@ -1079,7 +1097,9 @@ export function TaskQuickActionMenu({
                                                 ? priorityLabel
                                                 : activePanel === 'checklist'
                                                     ? addToChecklistLabel
-                                                    : contextsLabel
+                                                    : activePanel === 'blockedBy'
+                                                        ? blockedByLabel
+                                                        : contextsLabel
                     }
                     className="fixed z-50 w-[min(30rem,calc(100vw-1rem))] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-xl"
                     style={{
@@ -1330,6 +1350,8 @@ export function TaskQuickActionMenu({
                                 </Button>
                             </div>
                         </div>
+                    ) : activePanel === 'blockedBy' ? (
+                        <BlockedByField task={task} t={t} autoFocus hideLabel />
                     ) : activePanel === 'checklist' ? (
                         <div
                             className="space-y-2"

@@ -61,7 +61,7 @@ describe('native Apple Reminders pure item preparation', () => {
         const previous = { ...prepared, target: { id, row: [...row, 15] } };
         expect(validatePreparedNativeAppleReminderImportItem({ request, prepared: previous })).toEqual(previous);
         expect(JSON.stringify(previous.target.row)).toBe(JSON.stringify([...row, 15]));
-        for (const length of [0, 1, 46, 50]) {
+        for (const length of [0, 1, 46, 51]) {
             const malformed = { ...prepared, target: { id, row: [...row.slice(0, length), ...new Array(Math.max(0, length - row.length)).fill(null)] } };
             expect(() => validatePreparedNativeAppleReminderImportItem({ request, prepared: malformed })).toThrow();
         }

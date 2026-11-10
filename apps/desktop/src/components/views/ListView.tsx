@@ -19,6 +19,7 @@ import { buildProjectOrderMap,
     hasActiveFilterCriteria,
     isTaskInActiveProject,
     isTaskSequenceBlocked,
+    getBlockedTaskIds,
     isReferenceInVisibleProject,
     parseQuickAdd,
     getDefaultTaskAreaMode,
@@ -596,6 +597,11 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
         manualActive,
     ]);
     const deferredFilterInputs = useDeferredValue(filterInputs);
+    const allTasksForBlocking = useTaskStore((state) => (statusFilter === 'next' ? state._allTasks : null));
+    const dependencyBlockedIds = useMemo(
+        () => (allTasksForBlocking ? getBlockedTaskIds(allTasksForBlocking) : new Set<string>()),
+        [allTasksForBlocking],
+    );
     const nextVisibilityEnabled = statusFilter === 'next';
     const nextVisibilityDayKey = useLocalDayKey(nextVisibilityEnabled);
     const nextVisibilityTick = useFutureStartRevealTick(baseTasks, nextVisibilityEnabled);
@@ -639,7 +645,8 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
 
 
                 if (deferredFilterInputs.statusFilter === 'next'
-                    && isTaskSequenceBlocked(t, deferredFilterInputs.sequencing, deferredFilterInputs.sequentialProjectFirstTasks)) {
+                    && (isTaskSequenceBlocked(t, deferredFilterInputs.sequencing, deferredFilterInputs.sequentialProjectFirstTasks)
+                        || dependencyBlockedIds.has(t.id))) {
                     return false;
                 }
 
@@ -696,7 +703,7 @@ export const ListView = memo(function ListView({ title, statusFilter }: ListView
                 holdInPlace: (task) => !deferredFilterInputs.settledCompletionIds.has(task.id),
             });
         });
-    }, [deferredFilterInputs, nextVisibilityDayKey, nextVisibilityTick, normalizedSearchQuery, referenceSearchPredicate, showViewFilterInput]);
+    }, [deferredFilterInputs, dependencyBlockedIds, nextVisibilityDayKey, nextVisibilityTick, normalizedSearchQuery, referenceSearchPredicate, showViewFilterInput]);
     const activeNextGroupBy: NextGroupBy = statusFilter !== 'reference' && statusFilter !== 'done' && statusFilter !== 'someday'
         ? nextGroupBy as NextGroupBy
         : 'none';

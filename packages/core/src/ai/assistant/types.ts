@@ -1,5 +1,6 @@
 import type { Area, Person, Project, Task } from '../../types';
 import type { RoutingCorrection } from '../routing-corrections';
+import type { ProjectOrderProposal } from '../project-order-ai';
 
 /** OpenAI-style chat message (the harness's internal wire format). */
 export interface AssistantToolCall {
@@ -95,6 +96,10 @@ export interface AssistantStorePort {
     deletePerson?(id: string): Promise<StoreResult>;
     /** Optional: the local routing-correction log (unsynced), summarized into the routing context. */
     getRoutingCorrections?(): RoutingCorrection[];
+    /** Moves the project's tasks into this order (ids it does not know are ignored). */
+    reorderProjectTasks(projectId: string, orderedIds: string[]): Promise<void>;
+    /** Optional: one AI call proposing an order for a project (null when AI is off, limited or failed). */
+    generateProjectOrder?(projectId: string): Promise<ProjectOrderProposal | null>;
 }
 
 export type UndoOp =
@@ -177,6 +182,11 @@ export interface AssistantTool {
     mutating: boolean;
     /** Semantic validation after schema validation; returns an error string for the model. */
     validate?: (args: Record<string, any>, ctx: ToolContext) => string | null;
+    /**
+     * Runs before the confirmation gate (never when the user has already confirmed): swaps in enriched
+     * arguments the confirmation card and execution will use, or ends the call with `outcome`.
+     */
+    prepare?: (args: Record<string, any>, ctx: ToolContext) => Promise<{ args: Record<string, any> } | { outcome: ToolOutcome }>;
     /** Return a request to gate execution behind explicit user confirmation. */
     confirmation?: (args: Record<string, any>, ctx: ToolContext) => ConfirmationRequest | null;
     execute: (args: Record<string, any>, ctx: ToolContext) => Promise<ToolOutcome>;

@@ -10,6 +10,7 @@ import {
     getPomodoroPresetOptions,
     isRepeatingTask,
     isTaskActionable,
+    getBlockedTaskIds,
     PomodoroAutoStartOptions,
     POMODORO_ADJUST_STEP_MINUTES,
     resetPomodoroState,
@@ -94,9 +95,10 @@ export function PomodoroPanel({ tasks }: PomodoroPanelProps) {
 
 
     const pickerTasks = useMemo(() => {
+        const blockedIds = getBlockedTaskIds(useTaskStore.getState()._allTasks);
         const focusTasks = tasks.flatMap((task) => {
             const liveTask = actionableTasksById.get(task.id);
-            return liveTask ? [liveTask] : [];
+            return liveTask && !blockedIds.has(liveTask.id) ? [liveTask] : [];
         });
         return selectedTask && !focusTasks.some((task) => task.id === selectedTask.id)
             ? [selectedTask, ...focusTasks]

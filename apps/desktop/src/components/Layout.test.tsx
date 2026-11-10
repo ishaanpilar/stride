@@ -242,7 +242,7 @@ describe('Layout content width', () => {
         const { container, rerender, getByRole } = renderLayout(view);
         expect(container.querySelector('[data-view-sidebar-slot]')).not.toBeNull();
         expect(container.querySelector('aside')).toHaveStyle({ width: '256px' });
-        expect(container.querySelectorAll('[data-sidebar-section-toggle]')).toHaveLength(4);
+        expect(container.querySelectorAll('[data-sidebar-section-toggle]')).toHaveLength(2);
         expect(getByRole('button', { name: 'More' })).toBeInTheDocument();
         expect(document.querySelector('button.btn-gradient[title="Capture (Ctrl+K)"]')).not.toBeNull();
         rerender(<LanguageProvider><KeybindingProvider currentView="inbox" onNavigate={onNavigate}><Layout currentView="inbox" onViewChange={vi.fn()}><div /></Layout></KeybindingProvider></LanguageProvider>);
@@ -377,13 +377,27 @@ describe('Layout Obsidian nav visibility', () => {
         expect(queryByRole('button', { name: 'Obsidian' })).not.toBeInTheDocument();
     });
 
-    it('shows Obsidian when the integration is enabled', () => {
+    it('hides Obsidian when it is enabled but no vault is connected', () => {
+        act(() => {
+            useObsidianStore.setState((state) => ({
+                ...state,
+                config: { ...state.config, enabled: true, vaultPath: null },
+            }));
+        });
+
+        const { container } = renderLayout();
+
+        expect(container.querySelector('[data-view="obsidian"]')).toBeNull();
+    });
+
+    it('shows Obsidian in More when a vault is connected', () => {
         act(() => {
             useObsidianStore.setState((state) => ({
                 ...state,
                 config: {
                     ...state.config,
                     enabled: true,
+                    vaultPath: '/Users/me/Vault',
                 },
             }));
         });
@@ -1436,13 +1450,254 @@ describe('Sidebar hidden views (#1115)', () => {
     });
 });
 
+describe('Layout sidebar groups', () => {
+    const sectionViews = (container: HTMLElement, key: string) => Array.from(
+        container.querySelectorAll(`#sidebar-section-${key} [data-sidebar-item]`),
+    ).map((element) => element.getAttribute('data-view'));
+    const storeCollapsed = (value: unknown) => {
+        window.localStorage.setItem('stride:sidebar:collapsedSections', JSON.stringify(value));
+    };
+    const taskDrag = (taskId = '') => ({
+        dataTransfer: {
+            types: [CALENDAR_TASK_DRAG_MIME],
+            getData: (type: string) => (type === CALENDAR_TASK_DRAG_MIME ? taskId : ''),
+            dropEffect: 'none',
+        },
+    });
+
+    it('puts each view in its group, in order, with no header on the top group', () => {
+        act(() => {
+            useTaskStore.setState((state) => ({
+                ...state,
+                settings: { ...state.settings, features: { ...state.settings?.features, timeline: true } },
+            }));
+        });
+        const { container, getByRole } = renderLayout();
+
+        expect(sectionViews(container, 'primary')).toEqual(['agenda', 'inbox', 'projects', 'calendar', 'review']);
+        expect(sectionViews(container, 'lists')).toEqual(['next', 'waiting', 'someday']);
+        expect(sectionViews(container, 'secondary')).toEqual(['reference', 'board', 'timeline', 'contexts', 'history', 'trash']);
+        expect(container.querySelector('[aria-controls="sidebar-section-primary"]')).toBeNull();
+        expect(Array.from(container.querySelectorAll('[data-sidebar-section-toggle]')).map((toggle) => toggle.textContent))
+            .toEqual(['Lists', 'More']);
+        expect(getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    });
+
+    it('folds Lists and More for a new user and keeps the top group open', () => {
+        const { container } = renderLayout();
+
+        expect(container.querySelector('#sidebar-section-primary')).not.toHaveClass('hidden');
+        expect(container.querySelector('#sidebar-section-lists')).toHaveClass('hidden');
+        expect(container.querySelector('#sidebar-section-secondary')).toHaveClass('hidden');
+    });
+
+    it('keeps the Inbox count on its row', () => {
+        act(() => {
+            const task = { id: 'task-1', title: 'Buy milk', status: 'inbox', tags: [], contexts: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+            useTaskStore.setState({ tasks: [task], _allTasks: [task] } as never);
+        });
+        const { container } = renderLayout();
+
+        expect(container.querySelector('[data-view="inbox"] .tabular-nums')).toHaveTextContent('1');
+    });
+
+    it('remembers a folded or unfolded group across a remount', () => {
+        const first = renderLayout();
+        fireEvent.click(first.getByRole('button', { name: 'Lists' }));
+        expect(JSON.parse(window.localStorage.getItem('stride:sidebar:collapsedSections') ?? '[]')).toEqual(['secondary']);
+        first.unmount();
+
+        const second = renderLayout();
+        expect(second.getByRole('button', { name: 'Lists' })).toHaveAttribute('aria-expanded', 'true');
+        expect(second.getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('reads saved keys from the old groups without folding anything new, and drops unknown ones', () => {
+        storeCollapsed(['focus', 'organize', 'nonsense', 42]);
+        const { container, getByRole } = renderLayout();
+
+        expect(container.querySelector('#sidebar-section-primary')).not.toHaveClass('hidden');
+        expect(getByRole('button', { name: 'Lists' })).toHaveAttribute('aria-expanded', 'true');
+        expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'true');
+        expect(JSON.parse(window.localStorage.getItem('stride:sidebar:collapsedSections') ?? 'null')).toEqual([]);
+    });
+
+    it('keeps a saved Lists fold and maps a saved Archive fold onto More', () => {
+        storeCollapsed(['lists', 'archive']);
+        const { getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: 'Lists' })).toHaveAttribute('aria-expanded', 'false');
+        expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('falls back to the default folds when the saved value is unreadable', () => {
+        window.localStorage.setItem('stride:sidebar:collapsedSections', '{not json');
+        const { getByRole } = renderLayout();
+
+        expect(getByRole('button', { name: 'Lists' })).toHaveAttribute('aria-expanded', 'false');
+        expect(getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it.each([
+        ['next', 'Lists'],
+        ['waiting', 'Lists'],
+        ['someday', 'Lists'],
+        ['contexts', 'More'],
+        ['done', 'More'],
+    ])('unfolds the group holding %s when it is opened by shortcut', async (view, groupLabel) => {
+        const { getByRole } = renderLayout(view);
+
+        await waitFor(() => expect(getByRole('button', { name: groupLabel })).toHaveAttribute('aria-expanded', 'true'));
+    });
+
+    it('leaves a group folded when a count changes while its view is open', async () => {
+        const { getByRole } = renderLayout('next');
+        const lists = getByRole('button', { name: 'Lists' });
+        await waitFor(() => expect(lists).toHaveAttribute('aria-expanded', 'true'));
+
+        fireEvent.click(lists);
+        expect(lists).toHaveAttribute('aria-expanded', 'false');
+        act(() => {
+            const task = { id: 'task-2', title: 'New', status: 'inbox', tags: [], contexts: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+            useTaskStore.setState({ tasks: [task], _allTasks: [task] } as never);
+        });
+
+        expect(lists).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('unfolds Lists and More in turn under a dragged task, then folds both when the drag ends', () => {
+        const { container, getByRole } = renderLayout();
+        const lists = getByRole('button', { name: 'Lists' });
+        const more = getByRole('button', { name: 'More' });
+        const listsPanel = container.querySelector('#sidebar-section-lists')!;
+        const morePanel = container.querySelector('#sidebar-section-secondary')!;
+
+        dispatchDragStartFromRow(true);
+        fireEvent.dragEnter(lists, taskDrag());
+        expect(listsPanel).not.toHaveAttribute('hidden');
+        fireEvent.dragEnter(more, taskDrag());
+        expect(morePanel).not.toHaveAttribute('hidden');
+        // The first group stays open so the row under the cursor does not jump.
+        expect(listsPanel).not.toHaveAttribute('hidden');
+
+        dispatchDrag('dragend', true);
+        expect(listsPanel).toHaveAttribute('hidden');
+        expect(morePanel).toHaveAttribute('hidden');
+        expect(window.localStorage.getItem('stride:sidebar:collapsedSections')).toContain('lists');
+    });
+
+    it('ignores a non-task drag over a folded header', () => {
+        const { container, getByRole } = renderLayout();
+
+        fireEvent.dragEnter(getByRole('button', { name: 'Lists' }), { dataTransfer: { types: ['text/plain'], getData: () => '' } });
+
+        expect(container.querySelector('#sidebar-section-lists')).toHaveAttribute('hidden');
+    });
+
+    it('marks a folded group that accepts drops while a task is dragged', () => {
+        const { getByRole } = renderLayout();
+        const lists = getByRole('button', { name: 'Lists' });
+        expect(lists.className).not.toContain('outline-dashed');
+
+        dispatchDragStartFromRow(true);
+        expect(lists.className).toContain('outline-dashed');
+        fireEvent.dragEnter(lists, taskDrag());
+        expect(lists.className).not.toContain('outline-dashed');
+        dispatchDrag('dragend', true);
+    });
+
+    it('accepts a drop on a row in a group the drag unfolded', async () => {
+        const moveTask = vi.fn().mockResolvedValue({ success: true });
+        const task = { id: 'task-1', title: 'Buy milk', status: 'inbox' };
+        useTaskStore.setState({
+            tasks: [task],
+            _allTasks: [task],
+            _tasksById: new Map([[task.id, task]]),
+            moveTask,
+            settings: {},
+        } as never);
+        const { container, getByRole } = renderLayout();
+
+        dispatchDragStartFromRow(true);
+        fireEvent.dragEnter(getByRole('button', { name: 'Lists' }), taskDrag('task-1'));
+        fireEvent.drop(container.querySelector('[data-view="someday"]')!, taskDrag('task-1'));
+
+        await waitFor(() => expect(moveTask).toHaveBeenCalledWith('task-1', 'someday'));
+    });
+
+    it('shows every view as an icon in the rail, with no group headers and no folded groups', () => {
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, settings: { ...state.settings, sidebarCollapsed: true } }));
+        });
+        const { container } = renderLayout();
+
+        expect(container.querySelector('aside')).toHaveStyle({ width: '64px' });
+        expect(container.querySelectorAll('[data-sidebar-section-toggle]')).toHaveLength(0);
+        for (const key of ['primary', 'lists', 'secondary']) {
+            expect(container.querySelector(`#sidebar-section-${key}`)).not.toHaveAttribute('hidden');
+        }
+        expect(container.querySelector('[data-view="waiting"]')).toBeVisible();
+        expect(container.querySelector('[data-view="assistant"]')).toBeNull();
+    });
+});
+
 describe('Layout assistant dock', () => {
-    it('renders the Assistant dock on the right, open by default, and the sidebar item opens/focuses it', () => {
+    const stubNarrowWindow = () => {
+        vi.stubGlobal('matchMedia', (query: string) => ({
+            matches: query.includes('max-width'),
+            media: query,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+        }));
+    };
+
+    it('renders the Assistant dock on the right, open by default, and the toolbar reopens it', () => {
         const { getByTestId, getByRole, queryByTestId } = renderLayout('inbox');
         expect(getByTestId('assistant-dock')).toBeInTheDocument();
         fireEvent.click(getByRole('button', { name: 'Collapse assistant' }));
         expect(queryByTestId('assistant-dock')).not.toBeInTheDocument();
         fireEvent.click(getByRole('button', { name: 'Open assistant' }));
+        expect(getByTestId('assistant-dock')).toBeInTheDocument();
+    });
+
+    it('is not a sidebar entry', () => {
+        const { container } = renderLayout('inbox');
+
+        expect(container.querySelector('[data-view="assistant"]')).toBeNull();
+        expect(container.querySelector('aside')).not.toHaveTextContent('Assistant');
+    });
+
+    it('can be reopened from the toolbar while the sidebar is the icon rail', () => {
+        act(() => {
+            useTaskStore.setState((state) => ({ ...state, settings: { ...state.settings, sidebarCollapsed: true } }));
+            useAssistantDockStore.getState().setOpen(false);
+        });
+        const { getByTestId } = renderLayout('inbox');
+
+        fireEvent.click(getByTestId('assistant-toggle'));
+
+        expect(useAssistantDockStore.getState().open).toBe(true);
+        expect(getByTestId('assistant-dock')).toBeInTheDocument();
+    });
+
+    it('opens as a drawer from the toolbar in a narrow window', () => {
+        stubNarrowWindow();
+        const { getByTestId, queryByTestId } = renderLayout('inbox');
+        expect(queryByTestId('assistant-drawer')).not.toBeInTheDocument();
+
+        fireEvent.click(getByTestId('assistant-toggle'));
+
+        expect(getByTestId('assistant-drawer')).toBeInTheDocument();
+        expect(queryByTestId('assistant-toggle')).not.toBeInTheDocument();
+    });
+
+    it('opens from the keyboard shortcut', () => {
+        act(() => { useAssistantDockStore.getState().setOpen(false); });
+        const { getByTestId, queryByTestId } = renderLayout('inbox');
+        expect(queryByTestId('assistant-dock')).not.toBeInTheDocument();
+
+        fireEvent.keyDown(window, { key: 'J', metaKey: true, shiftKey: true });
+
         expect(getByTestId('assistant-dock')).toBeInTheDocument();
     });
 });

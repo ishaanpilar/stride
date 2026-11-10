@@ -213,3 +213,61 @@ describe('applyInboxProcessSuggestions', () => {
         expect(port.addProject).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('Process Inbox dependencies', () => {
+    const pair = [{ id: 'a', title: 'Print the part' }, { id: 'b', title: 'Test the part' }, { id: 'c', title: 'Buy milk' }];
+    const context = { now: NOW, projects: ['Aircraft'], areas: [], contexts: [] };
+    const parse = (entries: unknown[]) => parseInboxProcessResponse(JSON.stringify({ items: entries, summary: '' }), pair, context);
+    const filed = (extra: Record<string, unknown>) => ({ kind: 'next', project: 'Aircraft', ...extra });
+
+    it('links two items filed into the same project', () => {
+        const out = parse([filed({ id: 't1' }), filed({ id: 't2', after: 't1' })]);
+        expect(out?.items.find((item) => item.taskId === 'b')?.blockedByTaskId).toBe('a');
+    });
+
+    it('drops links across destinations, unknown ids, self-links and loops', () => {
+        const across = parse([filed({ id: 't1' }), { id: 't2', kind: 'next', project: 'Other', after: 't1' }]);
+        expect(across?.items.find((item) => item.taskId === 'b')?.blockedByTaskId).toBeUndefined();
+        const unknown = parse([filed({ id: 't1', after: 't9' })]);
+        expect(unknown?.items[0].blockedByTaskId).toBeUndefined();
+        const self = parse([filed({ id: 't1', after: 't1' })]);
+        expect(self?.items[0].blockedByTaskId).toBeUndefined();
+        const loop = parse([filed({ id: 't1', after: 't2' }), filed({ id: 't2', after: 't1' })]);
+        expect(loop?.items.filter((item) => item.blockedByTaskId)).toHaveLength(1);
+    });
+
+    it('sets the blocker when both are applied, undoes it, and skips it when one stays behind', async () => {
+        const base = (id: string, title: string) => ({ id, title, status: 'inbox' as const, tags: [], contexts: [], createdAt: '', updatedAt: '' });
+        const project = { id: 'p', title: 'Aircraft', status: 'active', color: '#fff', order: 0, tagIds: [], createdAt: '', updatedAt: '' } as Project;
+        const makePort = () => {
+            const tasks = [base('a', 'Print the part'), base('b', 'Test the part')] as Task[];
+            const port = {
+                getSnapshot: () => ({ tasks: tasks.map((t) => ({ ...t })), projects: [project], areas: [] as Area[] }),
+                updateTask: async (id: string, updates: Partial<Task>) => {
+                    const task = tasks.find((t) => t.id === id)!;
+                    for (const [key, value] of Object.entries(updates)) {
+                        if (value === undefined) delete (task as any)[key];
+                        else (task as any)[key] = value;
+                    }
+                    return { success: true };
+                },
+                deleteTask: async () => ({ success: true }),
+                addProject: async () => project,
+                addArea: async () => null,
+            };
+            return { tasks, port };
+        };
+        const parsed = parse([filed({ id: 't1' }), filed({ id: 't2', after: 't1' })])!;
+        const first = makePort();
+        const result = await applyInboxProcessSuggestions(parsed.items, first.port as unknown as AssistantStorePort);
+        expect(first.tasks.find((t) => t.id === 'b')?.blockedByTaskIds).toEqual(['a']);
+        const log = new AssistantChangeLog();
+        const entry = log.record('m', 'process_inbox', { label: 'x', undoOps: result.undoOps, changes: result.changes });
+        await log.undo(entry.id, first.port as unknown as AssistantStorePort);
+        expect(first.tasks.find((t) => t.id === 'b')).not.toHaveProperty('blockedByTaskIds');
+
+        const second = makePort();
+        await applyInboxProcessSuggestions(parsed.items.filter((item) => item.taskId === 'b'), second.port as unknown as AssistantStorePort);
+        expect(second.tasks.find((t) => t.id === 'b')).not.toHaveProperty('blockedByTaskIds');
+    });
+});

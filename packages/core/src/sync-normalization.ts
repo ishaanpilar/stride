@@ -9,6 +9,7 @@ import { normalizeProjectSequentialScope, normalizeProjectTaskSortBy } from './p
 import { normalizeProjectLifecycleFields } from './project-status';
 import { logInfo } from './logger';
 import { normalizeTaskForLoad } from './task-status';
+import { normalizeBlockedByTaskIds } from './task-dependencies';
 import { isTaskSectionProjectArchiveReference } from './store-helpers';
 import { SYNC_REPAIR_REV_BY } from './sync-types';
 import { MAX_SYNC_REVISION, isValidRevision, nextRevision, normalizeRevision } from './sync-revision';
@@ -250,6 +251,7 @@ export const normalizeTaskForSyncMerge = (
         sectionId: normalizeOptionalString(normalized.sectionId),
         viewSectionIds: normalized.viewSectionIds,
         areaId: normalized.areaId,
+        blockedByTaskIds: normalizeBlockedByTaskIds(normalized.blockedByTaskIds, normalized.id),
         isFocusedToday: normalizeSyncedBoolean(normalized.isFocusedToday),
         timeEstimate: normalized.timeEstimate,
         timeSpentMinutes: normalized.timeSpentMinutes,
@@ -285,6 +287,7 @@ export const normalizeTaskForSyncMerge = (
 
     if (candidate.revBy === undefined) delete candidate.revBy;
     if (!hasOwnKey(normalized, 'viewSectionIds')) delete candidate.viewSectionIds;
+    if (candidate.blockedByTaskIds === undefined) delete candidate.blockedByTaskIds;
     return sameShallowRecord(task, candidate) ? task : candidate;
 };
 

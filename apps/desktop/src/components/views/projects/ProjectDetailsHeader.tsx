@@ -1,10 +1,11 @@
 import { format } from 'date-fns';
 import { isProjectTitleLong, safeParseDate, tFallback, type Project } from '@stride/core';
-import { Calendar, CheckCircle, Copy, FolderOpenDot, FolderPlus, Loader2, MoreHorizontal, RotateCcw, Signal, SlidersHorizontal, Trash2, XCircle } from 'lucide-react';
+import { Calendar, CheckCircle, Copy, FolderOpenDot, FolderPlus, Loader2, MoreHorizontal, RotateCcw, Signal, SlidersHorizontal, Sparkles, Trash2, XCircle } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../../lib/ime';
 import { ExitGhost } from '../../ui/ExitGhost';
+import { Switch } from '../../ui/Switch';
 import { ProjectTitleLengthHint, getShortenTitleAction } from './ShortenProjectTitleDialog';
 
 type ProjectProgress = {
@@ -20,6 +21,8 @@ type ProjectDetailsHeaderProps = {
     projectColor: string;
     areaLabel?: string;
     isSequential: boolean;
+    /** Shows the "Next action only" switch (Project.isSequential) when set. */
+    onNextActionOnlyChange?: (enabled: boolean) => void;
     dueDate?: string;
     reviewAt?: string;
     editTitle: string;
@@ -41,6 +44,8 @@ type ProjectDetailsHeaderProps = {
     projectProgress?: ProjectProgress | null;
     /** Opens the Shorten title dialog (offered once the title passes the soft limit). */
     onShortenTitle?: () => void;
+    /** "Order this project" with AI; hidden when undefined (AI off or archived project). */
+    onOrderProject?: () => void;
     /** AI is on: the Shorten action is "Shorten with AI" (sparkles); otherwise the heuristic. */
     shortenWithAi?: boolean;
     t: (key: string) => string;
@@ -54,6 +59,8 @@ export function ProjectDetailsHeader({
     project,
     projectColor,
     areaLabel,
+    isSequential,
+    onNextActionOnlyChange,
     dueDate,
     editTitle,
     onEditTitleChange,
@@ -73,6 +80,7 @@ export function ProjectDetailsHeader({
     readOnlyHint,
     projectProgress,
     onShortenTitle,
+    onOrderProject,
     shortenWithAi = false,
     t,
 }: ProjectDetailsHeaderProps) {
@@ -90,6 +98,7 @@ export function ProjectDetailsHeader({
           ? `${projectProgress.doneCount}/${projectProgress.total} ${t('status.done')} • ${projectProgress.remainingCount} ${t('process.remaining')}`
           : t('projects.noActiveTasks');
     const detailsLabel = tFallback(t, 'taskEdit.details', 'Details');
+    const nextActionOnlyLabel = tFallback(t, 'projects.nextActionOnly', 'Next action only');
     const moreOptionsLabel = tFallback(t, 'taskEdit.moreOptions', 'More options');
 
 
@@ -276,6 +285,17 @@ export function ProjectDetailsHeader({
                                 className="motion-popover z-50 min-w-[180px] rounded-control bg-card shadow-soft-sm p-1 shadow-lg"
                             >
                                 <ExitGhost />
+                                {onOrderProject && (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => runMenuAction(onOrderProject)}
+                                        className={MENU_ITEM_CLASS}
+                                    >
+                                        <Sparkles className="w-4 h-4" aria-hidden="true" />
+                                        {tFallback(t, 'aiOrganise.orderProject', 'Order this project')}
+                                    </button>
+                                )}
                                 {shortenAction && onShortenTitle && (
                                     <button
                                         type="button"
@@ -381,6 +401,17 @@ export function ProjectDetailsHeader({
                             );
                         })}
                     </div>
+                    {onNextActionOnlyChange && project.status !== 'archived' && (
+                        <span className="inline-flex items-center gap-2 text-sm text-muted-foreground" title={tFallback(t, 'projects.nextActionOnlyHint', "Only this project's next step shows in Focus; later steps wait their turn.")}>
+                            {nextActionOnlyLabel}
+                            <Switch
+                                aria-label={nextActionOnlyLabel}
+                                checked={isSequential}
+                                disabled={readOnly}
+                                onCheckedChange={onNextActionOnlyChange}
+                            />
+                        </span>
+                    )}
             </div>
         </header>
     );

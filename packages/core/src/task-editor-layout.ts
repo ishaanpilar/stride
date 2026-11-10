@@ -65,6 +65,7 @@ export const DEFAULT_TASK_EDITOR_SECTION_BY_FIELD: Record<TaskEditorFieldId, Tas
     textDirection: 'details',
     attachments: 'details',
     checklist: 'details',
+    blockedBy: 'organization',
 };
 
 export const TASK_EDITOR_SECTIONABLE_FIELDS: TaskEditorFieldId[] = DEFAULT_TASK_EDITOR_ORDER.filter(

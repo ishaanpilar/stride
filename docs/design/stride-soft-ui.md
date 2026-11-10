@@ -112,17 +112,23 @@ Dark is its own palette, not an inversion. Shadows become a subtle top highlight
 | Chips, sidebar group titles | 12 / 16 | Medium (group titles semibold, sentence case, muted) |
 
 Minimum on screen: 11px. No all-caps tiny letter-spaced labels; group titles are sentence case
-("Plan", "Do", "Organise").
+("Lists", "More").
 
 ## Layout and components (match the mockup)
 
 - **Window**: overlay title bar (traffic lights inside the sidebar, no title text), sidebar about
   260px, content area on `background`.
 - **Sidebar**: app mark (rounded square, gradient) + "Stride" at 20px bold; a full-width soft
-  **Capture** button (surface, `+` icon, label, `⌘K` hint right); groups "Plan" (Today, Calendar),
-  "Do" (Inbox, Next Actions, Waiting, Someday), "Organise" (Projects, ...); 36px rows with outline
-  icon, label and count right-aligned (muted, tabular numbers); selected row = accent-soft pill. A soft
-  accent glow (radial gradient of `--accent` at ~15%) at the bottom-left of the sidebar.
+  **Capture** button (surface, `+` icon, label, `⌘K` hint right); a top group with no title, always
+  open (Focus, Inbox, Projects, Calendar, Review); then two groups that fold, both folded for a new
+  user: "Lists" (Next Actions, Waiting For, Someday/Maybe) and "More" (Reference, Obsidian when a vault
+  is connected, Board View, Timeline, Contexts, History, Trash). A group holding the current view
+  unfolds on navigation; a task dragged over a folded group's header unfolds it until the drag ends.
+  The Assistant is not in the sidebar: it is the right-hand dock, opened from the toolbar or `⌘⇧J`.
+  36px rows with outline icon, label and count right-aligned (muted, tabular numbers); selected row =
+  accent-soft pill. The 64px icon rail shows every row with no group titles. A soft accent glow (radial
+  gradient of `--accent` at ~15%) at the bottom-left of the sidebar. Area switcher and Settings stay at
+  the bottom.
 - **Toolbar** (top of content, no divider line): back/forward pair as one soft segmented control; a
   wide search field in a well with a magnifier and the `⌘F` hint; then right-aligned icon buttons
   (filter, more) and the gradient **Capture ⌘K** button.

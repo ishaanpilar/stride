@@ -33,6 +33,7 @@ export function createAssistantStorePort(
         restoreArea: (id) => st().restoreArea(id),
         addPerson: (name) => st().addPerson(name),
         deletePerson: (id) => st().deletePerson(id),
+        reorderProjectTasks: (projectId, orderedIds) => st().reorderProjectTasks(projectId, orderedIds),
         ...(getRoutingCorrections ? { getRoutingCorrections } : {}),
     };
 }

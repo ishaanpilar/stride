@@ -255,6 +255,7 @@ pub(crate) fn create_menubar_panel_window(app: &tauri::AppHandle) -> Result<(), 
         .visible(false)
         .build()
         .map(|window| {
+            crate::install_renderer_recovery(&window);
             let handle = app.clone();
             window.on_window_event(move |event| match event {
                 tauri::WindowEvent::Focused(focused) if *focused => {
@@ -306,6 +307,7 @@ struct IconAnchor {
 }
 
 fn show_panel(app: &tauri::AppHandle, window: &tauri::WebviewWindow, anchor: Option<IconAnchor>) {
+    crate::recover_pending_renderer(window);
     let monitor = match &anchor {
         Some(a) => app.monitor_from_point(a.click.x, a.click.y).ok().flatten(),
         None => app

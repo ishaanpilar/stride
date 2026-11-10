@@ -54,7 +54,7 @@ const validTask = (value: unknown): value is Task => {
         if (part === null) continue;
         if (numbers.has(name)) { if (typeof part !== 'number' || !Number.isFinite(part)) return false; continue; }
         if (booleans.has(name)) { if (typeof part !== 'boolean') return false; continue; }
-        if (['tags', 'contexts'].includes(name)) continue;
+        if (['tags', 'contexts', 'blockedByTaskIds'].includes(name)) continue;
         if (name === 'checklist') {
             if (!Array.isArray(part) || !part.every(row => record(row) && exact(row, ['id', 'title', 'isCompleted'])
                 && text(row.id) && typeof row.title === 'string' && typeof row.isCompleted === 'boolean')) return false;

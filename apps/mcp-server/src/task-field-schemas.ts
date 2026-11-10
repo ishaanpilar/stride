@@ -15,6 +15,7 @@ import { viewSectionIdsSchema } from './view-sections.js';
 
 const TASK_FIELD_ZOD_SCHEMAS: Partial<Record<keyof Task, z.ZodTypeAny>> = {
   viewSectionIds: viewSectionIdsSchema,
+  blockedByTaskIds: z.array(z.string().trim().min(1)).max(50).describe('IDs of tasks that must finish before this one can start'),
   cancelledAt: z.string().datetime({ offset: true }).describe('Cancellation time in ISO format; archives the task without completion or another recurrence'),
   taskMode: z.enum(['task', 'list']).describe('Task mode: task or list (checklist-first)'),
   relativeStartOffset: relativeStartOffsetInputSchema.describe(

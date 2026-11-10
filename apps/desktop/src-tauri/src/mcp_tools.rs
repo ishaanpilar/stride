@@ -32,6 +32,7 @@ const TASK_FIELDS: &[&str] = &[
     "repeatReminderMinutes",
     "dueReminderLeadMinutes",
     "startReminderLeadMinutes",
+    "blockedByTaskIds",
     "reviewAt",
     "cancelledAt",
     "order",
@@ -111,6 +112,9 @@ fn field_schema(field: &str, project: bool) -> Value {
         "sortOrder" => json!({"enum":["asc","desc"]}),
         "contexts" | "tags" => {
             json!({"type":"array", "items":{"type":"string", "minLength":1, "maxLength":500}})
+        }
+        "blockedByTaskIds" => {
+            json!({"type":"array", "maxItems":50, "items":{"type":"string", "minLength":1, "maxLength":500}, "description":"IDs of tasks that must finish before this one can start."})
         }
         "isSequential"
         | "isFocusedToday"

@@ -114,6 +114,13 @@ export function createFakePort(seed: { tasks?: Partial<Task>[]; projects?: Parti
             people.push(person);
             return person;
         },
+        async reorderProjectTasks(projectId, orderedIds) {
+            calls.push('reorderProjectTasks');
+            orderedIds.forEach((id, index) => {
+                const t = tasks.find((x) => x.id === id && x.projectId === projectId);
+                if (t) { t.order = index; t.orderNum = index; }
+            });
+        },
         async deletePerson(id) {
             calls.push('deletePerson');
             const person = people.find((x) => x.id === id);

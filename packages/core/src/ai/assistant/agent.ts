@@ -113,11 +113,20 @@ export async function runToolCall(params: {
     if (!parsed.ok) return { ok: false, content: json({ error: parsed.error }) };
     const checked = validateAgainstSchema(tool.parameters, parsed.value);
     if (!checked.ok) return { ok: false, content: json({ error: checked.error }) };
-    const args = checked.value as Record<string, any>;
+    let args = checked.value as Record<string, any>;
     try {
         const semantic = tool.validate?.(args, ctx);
         if (semantic) return { ok: false, content: json({ error: semantic }) };
         if (!params.skipConfirmation) {
+            if (tool.prepare) {
+                const prepared = await tool.prepare(args, ctx);
+                if ('outcome' in prepared) {
+                    return prepared.outcome.ok
+                        ? { ok: true, content: json(prepared.outcome.data ?? { ok: true }) }
+                        : { ok: false, content: json({ error: prepared.outcome.error ?? 'Tool failed' }) };
+                }
+                args = prepared.args;
+            }
             const gate = tool.confirmation?.(args, ctx);
             if (gate) {
                 const snapshot = ctx.port.getSnapshot().tasks;

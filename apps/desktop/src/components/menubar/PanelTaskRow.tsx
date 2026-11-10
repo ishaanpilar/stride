@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, MoreHorizontal, Play, Plus, Repeat } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, Lock, MoreHorizontal, Play, Plus, Repeat } from 'lucide-react';
+import { useTaskWaitsForLabel } from '../../lib/task-dependency-ui';
 import { hasTimeComponent, safeFormatDate, type Area, type DropPlacement, type Project, type Task } from '@stride/core';
 import { cn } from '../../lib/utils';
 import { Pill } from '../ui/Pill';
@@ -33,6 +34,7 @@ export interface PanelRowReorderLabels {
 export type PanelRowTone = 'overdue' | 'today' | 'default';
 
 export interface PanelRowLabels {
+    waitsForT?: (key: string) => string;
     complete: string;
     markNotDone: string;
     today: string;
@@ -202,12 +204,13 @@ export function PanelTaskRow({
         if (rect && more) setMenu({ x: Math.max(4, more.right - rect.left - 148), y: more.bottom - rect.top + 2 });
     };
     const meta = metaLabel(task, tone, labels.today, dateFormat);
+    const waitsForLabel = useTaskWaitsForLabel(task, labels.waitsForT ?? ((key) => key));
     const projectColor = project ? (project.colorOverride || project.color) : undefined;
     const place = project ? { name: project.title, color: projectColor } : area ? { name: area.name, color: area.color } : null;
     const showPriority = Boolean(priorityLabel) && (task.priority === 'high' || task.priority === 'urgent');
     // A task with no date, project or area still says something useful: its first context.
     const context = !meta && !place ? task.contexts?.[0] : undefined;
-    const hasMeta = Boolean(meta || repeatLabel || place || showPriority || focused || context);
+    const hasMeta = Boolean(meta || repeatLabel || place || showPriority || focused || context || waitsForLabel);
     const open = !completing;
     const actionClass = 'motion-press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control transition-[color,background-color,scale] duration-200 ease-out motion-reduce:transition-none focus-ring';
     return (
@@ -321,6 +324,11 @@ export function PanelTaskRow({
                         {focused && (
                             <Pill tone="neutral" className={cn(pillClass, 'text-foreground')} icon={<FocusStarIcon filled />} data-testid="menubar-row-focus">
                                 {labels.focus}
+                            </Pill>
+                        )}
+                        {waitsForLabel && (
+                            <Pill tone="neutral" className={cn(pillClass, 'max-w-[210px]')} icon={<Lock className="h-3 w-3" aria-hidden />} data-testid="menubar-row-waits-for">
+                                <span className="truncate">{waitsForLabel}</span>
                             </Pill>
                         )}
                         {place && (

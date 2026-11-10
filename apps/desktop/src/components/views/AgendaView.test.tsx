@@ -89,6 +89,7 @@ describe('AgendaView', () => {
         useUiStore.setState({
             listOptions: {
                 showDetails: false,
+                focusLayout: 'tasks',
                 focusGroupBy: 'none', inboxGroupBy: 'none', nextGroupBy: 'none',
                 waitingGroupBy: 'none', somedayGroupBy: 'none',
                 referenceGroupBy: 'area', doneGroupBy: 'none', archivedGroupBy: 'none',

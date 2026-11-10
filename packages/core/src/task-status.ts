@@ -3,6 +3,7 @@ import { normalizeRecurrenceForLoad } from './recurrence';
 import { normalizeDueReminderLeadMinutes, normalizeStartReminderLeadMinutes, normalizeRepeatReminderMinutes } from './schedule-utils';
 import { normalizeTimeSpentMinutes } from './time-spent';
 import { normalizeRelativeStartOffset } from './task-relative-start';
+import { normalizeBlockedByTaskIds } from './task-dependencies';
 import { preserveShallowIdentity, sameShallowRecord } from './shallow-identity';
 import { safeParseDate } from './date';
 import type { FocusDateProjection } from './task-utils';
@@ -229,6 +230,11 @@ export function normalizeTaskForLoad(task: Task, nowIso: string = new Date().toI
         completedAt: lifecycle.completedAt,
         ...lifecycle.focus,
     };
+    if ('blockedByTaskIds' in task) {
+        const blockedByTaskIds = normalizeBlockedByTaskIds(task.blockedByTaskIds, task.id);
+        if (blockedByTaskIds) next.blockedByTaskIds = blockedByTaskIds;
+        else delete next.blockedByTaskIds;
+    }
 
 
     if (next.isFocusedToday && isFutureStart(next, new Date(nowIso), temporal)) {

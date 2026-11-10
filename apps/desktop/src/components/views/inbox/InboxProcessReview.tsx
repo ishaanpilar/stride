@@ -125,6 +125,7 @@ export function InboxProcessReview({ t, controller, projectNames, areaNames, tit
                                 projectNames={projectNames}
                                 areaNames={areaNames}
                                 duplicateTitle={row.duplicateOf ? titleFor(row.duplicateOf) : undefined}
+                                afterTitle={row.blockedByTaskId ? titleFor(row.blockedByTaskId) : undefined}
                                 disabled={applying}
                             />
                         ))}
@@ -145,10 +146,11 @@ type ReviewRowProps = {
     projectNames: string[];
     areaNames: string[];
     duplicateTitle?: string;
+    afterTitle?: string;
     disabled: boolean;
 };
 
-function ReviewRow({ t, row, editing, onEdit, onCloseEdit, controller, projectNames, areaNames, duplicateTitle, disabled }: ReviewRowProps) {
+function ReviewRow({ t, row, editing, onEdit, onCloseEdit, controller, projectNames, areaNames, duplicateTitle, afterTitle, disabled }: ReviewRowProps) {
     const accepted = row.decision === 'accept';
     const checkboxId = useId();
     const projectLabel = row.projectName ?? row.newProjectTitle;
@@ -195,6 +197,7 @@ function ReviewRow({ t, row, editing, onEdit, onCloseEdit, controller, projectNa
                                     : projectLabel}
                             </Pill>
                         ) : null}
+                        {afterTitle ? <Pill>{t('inboxHub.afterChip', 'After: {{title}}', { title: afterTitle })}</Pill> : null}
                         {areaLabel ? (
                             <Pill tone={row.newAreaName && !row.areaName ? 'warning' : 'neutral'}>
                                 {row.newAreaName && !row.areaName

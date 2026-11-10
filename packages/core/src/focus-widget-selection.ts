@@ -2,6 +2,7 @@
 
 
 import { deriveFocusTaskLists, type FocusPools } from './focus-sections';
+import { getBlockedTaskIds } from './task-dependencies';
 import { TASK_LIST_SORT_OPTIONS } from './task-list-sort-options';
 import { isTaskFocusedNow, shouldShowTaskForStart, sortTasksBy } from './task-utils';
 import type { Project, Section, Task, TaskSortBy } from './types';
@@ -40,6 +41,7 @@ export function computeTodayFocusTasks({
         schedule: activeTasks,
         upcoming: [],
         base: activeTasks,
+        dependencyBlockedIds: getBlockedTaskIds(activeTasks),
     };
     const lists = deriveFocusTaskLists(pools, {
         now,

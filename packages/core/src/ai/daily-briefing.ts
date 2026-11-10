@@ -2,6 +2,7 @@ import { endOfDay, startOfDay } from 'date-fns';
 
 import { safeParseDate, safeParseDueDate } from '../date';
 import { isTaskInActiveProject } from '../project-utils';
+import { getBlockedTaskIds } from '../task-dependencies';
 import { isTaskActionable } from '../task-status';
 import { isTaskFocusedNow } from '../task-utils';
 import type { AppData, Project, Task } from '../types';
@@ -97,8 +98,10 @@ export function buildDailyBriefingInput(tasks: Task[], projects: Project[] = [],
         overdue: [], dueToday: [], scheduled: [], focus: [], upcoming: [], waiting: [], nextActions: [],
     };
 
+    const dependencyBlockedIds = getBlockedTaskIds(tasks);
+
     for (const task of tasks) {
-        if (task.deletedAt || !isTaskActionable(task)) continue;
+        if (task.deletedAt || !isTaskActionable(task) || dependencyBlockedIds.has(task.id)) continue;
         if (task.status === 'someday' || (task.status === 'inbox' && !task.dueDate && !task.startTime)) continue;
         if (!isTaskInActiveProject(task, projectMap)) continue;
 

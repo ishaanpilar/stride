@@ -205,7 +205,8 @@ function validateTaskPropValues(value: Record<string, unknown>): string | null {
         ?? validateTaskTimeSpentMinutes(value)
         ?? validateTaskRelativeStartOffset(value)
         ?? validateTaskRecurrence(value)
-        ?? validateViewSectionIds(value, 'task');
+        ?? validateViewSectionIds(value, 'task')
+        ?? validateBlockedByTaskIds(value);
 }
 
 const isStringArrayOrNullish = (value: unknown): boolean =>
@@ -216,6 +217,14 @@ function validateAreaPropValues(value: Record<string, unknown>): string | null {
     if (!isStringArrayOrNullish(value.keywords)) return 'Invalid area keywords: expected an array of strings';
     if (!isStringArrayOrNullish(value.peopleIds)) return 'Invalid area peopleIds: expected an array of strings';
     return null;
+}
+
+function validateBlockedByTaskIds(value: Record<string, unknown>): string | null {
+    if (!hasOwnField(value, 'blockedByTaskIds') || value.blockedByTaskIds === null || value.blockedByTaskIds === undefined) return null;
+    const ids = value.blockedByTaskIds;
+    return Array.isArray(ids) && ids.length <= 50 && ids.every((id) => typeof id === 'string' && id.trim().length > 0 && id !== value.id)
+        ? null
+        : 'Invalid task blockedByTaskIds: expected up to 50 task ids';
 }
 
 function validateProjectPropValues(value: Record<string, unknown>): string | null {

@@ -1,4 +1,5 @@
 import { retainProjectTaxonomy, retainTaxonomyEffects } from '../taxonomy-catalog';
+import { remapBlockerIds } from '../task-dependencies';
 import { getAttachmentUnrecoverablePatch } from '../mobile-attachment-availability';
 import {
     applyProjectLifecycleTransition,
@@ -91,6 +92,7 @@ export const projectDuplicateEffect = (scope: PreparedProjectDuplicate['scope'],
         return { ...section, id, projectId: project.id, createdAt: now, updatedAt: now,
             deletedAt: undefined, rev: 1, revBy: deviceId };
     });
+    const taskIdMap = new Map<string, string>();
     const tasks = scope.tasks.filter((task) => !task.deletedAt).map((task) => {
         const checklist = task.checklist?.map((item) => ({
             ...item, id: nextId(), isCompleted: false,
@@ -122,8 +124,11 @@ export const projectDuplicateEffect = (scope: PreparedProjectDuplicate['scope'],
             rev: 1,
             revBy: deviceId,
         };
+        taskIdMap.set(task.id, result.id);
         return result;
-    });
+    }).map((task) => (
+        task.blockedByTaskIds?.length ? { ...task, blockedByTaskIds: remapBlockerIds(task, taskIdMap) } : task
+    ));
     return { project, sections, tasks };
 };
 

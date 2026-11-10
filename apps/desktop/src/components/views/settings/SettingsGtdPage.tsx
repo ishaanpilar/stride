@@ -246,9 +246,10 @@ export function SettingsGtdPage({
     const defaultScheduleTime = normalizeClockTimeInput(safeSettings.gtd?.defaultScheduleTime) || '';
     const focusTaskLimit = normalizeFocusTaskLimit(safeSettings.gtd?.focusTaskLimit);
     const focusIncludeStartDates = safeSettings.gtd?.focusIncludeStartDates !== false;
-    const defaultProjectFlowMode: DefaultProjectFlowMode = safeSettings.gtd?.defaultProjectFlowMode === 'sequential'
-        ? 'sequential'
-        : 'parallel';
+    // Unset means the desktop default for new projects: Next action only (lib/new-project-defaults.ts).
+    const defaultProjectFlowMode: DefaultProjectFlowMode = safeSettings.gtd?.defaultProjectFlowMode === 'parallel'
+        ? 'parallel'
+        : 'sequential';
     const pomodoroEnabled = resolvedFeatureFlags.pomodoro;
     const pomodoroCustomDurations = sanitizePomodoroDurations(safeSettings.gtd?.pomodoro?.customDurations);
     const pomodoroLinkTask = safeSettings.gtd?.pomodoro?.linkTask === true;

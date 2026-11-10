@@ -12,6 +12,7 @@ import {
     type AreaVisibilityContext,
 } from './area-filter';
 import { isTaskInActiveProject } from './project-utils';
+import { getBlockedTaskIds } from './task-dependencies';
 import { compareTasksByProjectOrder, getSequentialFirstTaskIds, getTaskSequencing, isSequentialChainStatus, isTaskSequenceBlocked, shouldShowTaskForStart, sortTasksBy } from './task-utils';
 import { isTaskActionable, isTaskCompleted } from './task-status';
 import { normalizeTimeSpentMinutes } from './time-spent';
@@ -378,8 +379,10 @@ export function getDailyReviewBuckets(
     const addCandidate = (task: Task) => {
         if (!candidatesById.has(task.id)) candidatesById.set(task.id, task);
     };
+    const dependencyBlockedIds = getBlockedTaskIds(tasks as Task[]);
     activeTasks.forEach((task) => {
         if (task.isFocusedToday && shouldShowTaskForStart(task, opts)) addCandidate(task);
+        if (dependencyBlockedIds.has(task.id)) return;
         const due = safeParseDueDate(task.dueDate);
         if (due && (due < now || due.toDateString() === todayStr)) {
             addCandidate(task);

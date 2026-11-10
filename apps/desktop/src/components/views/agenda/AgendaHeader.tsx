@@ -1,16 +1,20 @@
 import { ChevronsDown, ChevronsUp, Filter, List } from 'lucide-react';
 import { DEFAULT_FOCUS_SORT_BY, FOCUS_SORT_OPTIONS, tFallback, type SortField } from '@stride/core';
 
+import { SegmentedControl } from '../../ui/SegmentedControl';
 import { ViewHeader } from '../../ui/ViewHeader';
 import { ToolbarButton } from '../list/list-toolbar';
 import { ViewControls } from '../list/ViewControls';
 import { FOCUS_AXES, type NextGroupBy } from '../list/next-grouping';
+import type { FocusLayoutMode } from '../../../store/ui-store';
 
 type AgendaHeaderProps = {
     filterCount: number;
     filtersOpen: boolean;
     nextActionsCount: number;
     nextGroupBy: NextGroupBy;
+    focusLayout?: FocusLayoutMode;
+    onChangeFocusLayout?: (value: FocusLayoutMode) => void;
     focusSortBy: SortField;
     canToggleOtherSections: boolean;
     collapseOtherSections: boolean;
@@ -30,6 +34,8 @@ export function AgendaHeader({
     filtersOpen,
     nextActionsCount,
     nextGroupBy,
+    focusLayout = 'tasks',
+    onChangeFocusLayout,
     focusSortBy,
     canToggleOtherSections,
     collapseOtherSections,
@@ -58,6 +64,18 @@ export function AgendaHeader({
             count={`${nextActionsCount} ${tFallback(t, 'list.next', t('agenda.nextActions'))}`}
             actions={
             <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+                {onChangeFocusLayout && (
+                    <SegmentedControl
+                        aria-label={tFallback(t, 'agenda.layout', 'Focus layout')}
+                        size="sm"
+                        value={focusLayout}
+                        onChange={onChangeFocusLayout}
+                        options={[
+                            { value: 'projects', label: tFallback(t, 'agenda.layoutProjects', 'Projects') },
+                            { value: 'tasks', label: tFallback(t, 'agenda.layoutAllTasks', 'All tasks') },
+                        ]}
+                    />
+                )}
                 <ToolbarButton
                     onClick={onToggleOtherSections}
                     disabled={!canToggleOtherSections}
@@ -90,7 +108,7 @@ export function AgendaHeader({
                     sortByOptions={FOCUS_SORT_OPTIONS}
                     onChangeSortBy={onChangeSortBy}
                     manualSort={manualSort}
-                    groupBy={nextGroupBy}
+                    groupBy={focusLayout === 'projects' && onChangeFocusLayout ? undefined : nextGroupBy}
                     defaultGroupBy="none"
                     groupByOptions={FOCUS_AXES}
                     onChangeGroupBy={onChangeGroupBy}

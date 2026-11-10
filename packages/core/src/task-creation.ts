@@ -3,6 +3,7 @@ import type { Task, TaskStatus } from './types';
 import type { TaskStore } from './store-types';
 import { getReferenceTaskFieldClears, getTaskOrder, resolveCaptureStatusForStart, type ProjectOrderReserver } from './store-helpers';
 import { normalizeOptionalContainerId, resolveTaskContainerAssignment } from './task-container-rules';
+import { normalizeBlockedByTaskIds } from './task-dependencies';
 import { resolveDefaultNewTaskAreaId } from './area-utils';
 import { normalizeCancellationTimestamp, normalizeTaskLifecycleFields } from './task-status';
 import { normalizeRecurrenceForLoad } from './recurrence';
@@ -102,6 +103,9 @@ export function buildNewTask({
         order: resolvedOrder,
         orderNum: resolvedOrder,
     };
+    const blockedByTaskIds = normalizeBlockedByTaskIds(initialTaskProps.blockedByTaskIds, id);
+    if (blockedByTaskIds) newTask.blockedByTaskIds = blockedByTaskIds;
+    else delete newTask.blockedByTaskIds;
 
     if (newTask.isFocusedToday === true) {
         const creationTime = new Date(now);

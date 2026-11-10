@@ -206,6 +206,22 @@ describe('ListView', () => {
     }));
   });
 
+  it('hides tasks waiting on an open blocker from Next Actions but not once it is done', () => {
+    const blocker = makeTask('blocker', { title: 'Blocker task' });
+    const blocked = makeTask('blocked', { title: 'Blocked task', blockedByTaskIds: ['blocker'] });
+    const tasks = [blocker, blocked];
+    useTaskStore.setState({ tasks, _allTasks: tasks, _tasksById: new Map(tasks.map((task) => [task.id, task])) });
+    const view = renderListView('next');
+    expect(view.queryByText('Blocker task')).not.toBeNull();
+    expect(view.queryByText('Blocked task')).toBeNull();
+    view.unmount();
+
+    const finished = [{ ...blocker, status: 'done' as const }, blocked];
+    useTaskStore.setState({ tasks: finished, _allTasks: finished, _tasksById: new Map(finished.map((task) => [task.id, task])) });
+    const released = renderListView('next');
+    expect(released.queryByText('Blocked task')).not.toBeNull();
+  });
+
   it('renders the view title', () => {
     const html = renderStaticListView('inbox', 'Inbox');
     expect(html).toContain('Inbox');

@@ -235,6 +235,12 @@ type ReorderableTaskRowProps = {
     enabled?: boolean;
     locked?: boolean;
     dragLabel?: string;
+    /** This row holds other reorderable rows in this group (a project card): their drags are not for it. */
+    nestedGroupKey?: string;
+    /** This row sits inside another reorderable row: drags from other groups are left to that outer row. */
+    leavesForeignDragsToParent?: boolean;
+    hideGrip?: boolean;
+    gripClassName?: string;
     children: ReactNode;
 };
 
@@ -245,6 +251,10 @@ export const ReorderableTaskRow = memo(function ReorderableTaskRow({
     enabled = true,
     locked = false,
     dragLabel,
+    nestedGroupKey,
+    leavesForeignDragsToParent = false,
+    hideGrip = false,
+    gripClassName,
     children,
 }: ReorderableTaskRowProps) {
     const controller = useContext(ReorderContext);
@@ -267,6 +277,10 @@ export const ReorderableTaskRow = memo(function ReorderableTaskRow({
     );
     const signature = useMemo(() => siblingIds.join('|'), [siblingIds]);
     const active = Boolean(controller) && enabled;
+    const leftToOtherRow = useCallback((state: ReorderState) => (
+        state.groupKey !== null
+        && (state.groupKey === nestedGroupKey || (leavesForeignDragsToParent && state.groupKey !== groupKey))
+    ), [groupKey, leavesForeignDragsToParent, nestedGroupKey]);
 
     useEffect(() => {
         if (!controller || !enabled || locked) return;
@@ -308,7 +322,7 @@ export const ReorderableTaskRow = memo(function ReorderableTaskRow({
     const handleDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
         if (!controller || !enabled) return;
         const state = controller.getState();
-        if (!state.dragId) return;
+        if (!state.dragId || leftToOtherRow(state)) return;
         const verdict = dropVerdict(controller, state, groupKey, locked);
         if (state.dragId === taskId) {
             if (verdict === true) event.preventDefault();
@@ -327,17 +341,17 @@ export const ReorderableTaskRow = memo(function ReorderableTaskRow({
         const rect = row.getBoundingClientRect();
         const nextPlacement: DropPlacement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
         controller.set({ ...state, targetId: taskId, targetGroupKey: groupKey, placement: nextPlacement, blocked: null, zoneKey: null });
-    }, [controller, enabled, groupKey, locked, taskId]);
+    }, [controller, enabled, groupKey, leftToOtherRow, locked, taskId]);
 
     const handleDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
         if (!controller || !enabled) return;
         const state = controller.getState();
-        if (!state.dragId) return;
+        if (!state.dragId || leftToOtherRow(state)) return;
         if (dropVerdict(controller, state, groupKey, locked) !== true) return;
         event.preventDefault();
         event.stopPropagation();
         finishDrop(controller, state, groupKey, siblingIds, taskId, event.clientY);
-    }, [controller, enabled, groupKey, locked, siblingIds, taskId]);
+    }, [controller, enabled, groupKey, leftToOtherRow, locked, siblingIds, taskId]);
 
     const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
         if (!controller || !enabled || locked || !event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
@@ -376,11 +390,14 @@ export const ReorderableTaskRow = memo(function ReorderableTaskRow({
             )}
         >
             {placement === 'before' && <DropLine position="top" />}
-            {!locked && (
+            {!locked && !hideGrip && (
                 <span
                     aria-hidden="true"
                     title={dragLabel}
-                    className="pointer-events-none absolute -left-5 top-1/2 hidden -translate-y-1/2 text-tertiary opacity-0 transition-opacity duration-200 group-hover/reorder:opacity-100 sm:block motion-reduce:transition-none"
+                    className={cn(
+                        'pointer-events-none absolute -left-5 top-1/2 hidden -translate-y-1/2 text-tertiary opacity-0 transition-opacity duration-200 group-hover/reorder:opacity-100 sm:block motion-reduce:transition-none',
+                        gripClassName,
+                    )}
                 >
                     <GripVertical className="h-4 w-4" />
                 </span>

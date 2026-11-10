@@ -59,6 +59,7 @@ import { DesktopOnboardingFlow } from './components/DesktopOnboardingFlow';
 import { openExternalLink } from './lib/external-link';
 import { Dialog, DialogBody, DialogFooter } from './components/ui/Dialog';
 import { useLanguage } from './contexts/language-context';
+import { startDesktopDependencyUnblockNotifier } from './lib/dependency-unblock-notifier';
 import { KeybindingProvider } from './contexts/keybinding-context';
 import { QuickAddModal } from './components/QuickAddModal';
 import { QuickCaptureModal } from './components/QuickCaptureModal';
@@ -335,6 +336,9 @@ function App() {
     const showToast = useUiStore((state) => state.showToast);
     const { requestConfirmation, confirmModal } = useConfirmDialog();
     const { t, language, setLanguage } = useLanguage();
+    const dependencyToastTranslate = useRef(t);
+    dependencyToastTranslate.current = t;
+    useEffect(() => startDesktopDependencyUnblockNotifier((key) => dependencyToastTranslate.current(key)), []);
 
 
     usePomodoroAlerts();

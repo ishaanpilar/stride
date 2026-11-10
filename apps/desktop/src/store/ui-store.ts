@@ -36,9 +36,15 @@ type ListNextGroupBy = NextGroupBy;
 type ListReferenceGroupBy = ReferenceGroupBy;
 type ListDoneGroupBy = DoneGroupBy;
 type ListSomedayGroupBy = SomedayGroupBy;
+export type FocusLayoutMode = 'projects' | 'tasks';
+export const DEFAULT_FOCUS_LAYOUT: FocusLayoutMode = 'projects';
+export const normalizeFocusLayout = (value: unknown): FocusLayoutMode => (value === 'tasks' ? 'tasks' : DEFAULT_FOCUS_LAYOUT);
+
 type ListOptions = {
     showDetails: boolean;
 
+    /** Focus: projects as cards ('projects') or every next action in one list ('tasks'). Per device. */
+    focusLayout?: FocusLayoutMode;
 
     focusGroupBy: ListNextGroupBy;
     inboxGroupBy: ListNextGroupBy;
@@ -64,6 +70,7 @@ export const PROJECT_LAYOUTS_STORAGE_KEY = 'stride:project-layouts:v1';
 
 const DEFAULT_LIST_OPTIONS: ListOptions = {
     showDetails: false,
+    focusLayout: DEFAULT_FOCUS_LAYOUT,
     focusGroupBy: 'none',
     inboxGroupBy: 'none',
     nextGroupBy: 'none',
@@ -96,6 +103,7 @@ function readStoredListOptions(): ListOptions {
         const perViewAxis = (value: unknown) => sanitizeAxis(FOCUS_AXES, value ?? parsed?.nextGroupBy, DEFAULT_LIST_OPTIONS.nextGroupBy);
         return {
             showDetails: typeof parsed?.showDetails === 'boolean' ? parsed.showDetails : DEFAULT_LIST_OPTIONS.showDetails,
+            focusLayout: normalizeFocusLayout(parsed?.focusLayout),
             focusGroupBy: perViewAxis(parsed?.focusGroupBy),
             inboxGroupBy: perViewAxis(parsed?.inboxGroupBy),
             nextGroupBy: sanitizeAxis(FOCUS_AXES, parsed?.nextGroupBy, DEFAULT_LIST_OPTIONS.nextGroupBy),

@@ -1464,14 +1464,35 @@ extern "C" {
         window_kind: i32,
         callback: extern "C" fn(i32, i32),
     ) -> bool;
+    fn stride_macos_recover_pending_renderer(webview: *mut std::ffi::c_void);
+}
+
+/// Window kind passed to the macOS bridge. Kinds 2 and up recover silently (no "display stopped" alert).
+#[cfg(any(target_os = "macos", test))]
+fn renderer_window_kind(label: &str) -> i32 {
+    match label {
+        QUICK_ADD_WINDOW_LABEL => 1,
+        menubar_panel::MENUBAR_PANEL_WINDOW_LABEL => 2,
+        floating_timer::FOCUS_FLOAT_WINDOW_LABEL => 3,
+        _ => 0,
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn renderer_window_name(window_kind: i32) -> Option<&'static str> {
+    match window_kind {
+        0 => Some("main"),
+        1 => Some("quick-add"),
+        2 => Some("menubar-panel"),
+        3 => Some("focus-float"),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "macos")]
 extern "C" fn renderer_recovery_event(window_kind: i32, event: i32) {
-    let window = match window_kind {
-        0 => "main",
-        1 => "quick-add",
-        _ => return,
+    let Some(window) = renderer_window_name(window_kind) else {
+        return;
     };
     let outcome = match event {
         0 => "installed",
@@ -1517,11 +1538,7 @@ extern "C" fn renderer_recovery_event(window_kind: i32, event: i32) {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn install_renderer_recovery(window: &tauri::WebviewWindow) {
-    let window_kind = if window.label() == QUICK_ADD_WINDOW_LABEL {
-        1
-    } else {
-        0
-    };
+    let window_kind = renderer_window_kind(window.label());
     if window
         .with_webview(move |webview| {
             if !unsafe {
@@ -1542,6 +1559,17 @@ pub(crate) fn install_renderer_recovery(window: &tauri::WebviewWindow) {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn install_renderer_recovery(_window: &tauri::WebviewWindow) {}
+
+/// Before showing a usually-hidden window: reload it if its renderer died and could not be restarted.
+#[cfg(target_os = "macos")]
+pub(crate) fn recover_pending_renderer(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        stride_macos_recover_pending_renderer(webview.inner());
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn recover_pending_renderer(_window: &tauri::WebviewWindow) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -2351,6 +2379,30 @@ pub fn run() {
                 crate::workspaces::relaunch_if_switching(app);
             }
         });
+}
+
+#[cfg(test)]
+mod renderer_recovery_window_tests {
+    use super::{renderer_window_kind, renderer_window_name};
+
+    #[test]
+    fn every_recoverable_window_has_a_distinct_kind_and_name() {
+        let cases = [
+            ("main", 0, "main"),
+            ("quick-add", 1, "quick-add"),
+            ("menubar-panel", 2, "menubar-panel"),
+            ("focus-float", 3, "focus-float"),
+        ];
+        for (label, kind, name) in cases {
+            assert_eq!(renderer_window_kind(label), kind, "{label}");
+            assert_eq!(renderer_window_name(kind), Some(name), "{label}");
+        }
+    }
+
+    #[test]
+    fn unknown_kinds_are_not_logged() {
+        assert_eq!(renderer_window_name(4), None);
+    }
 }
 
 #[cfg(test)]

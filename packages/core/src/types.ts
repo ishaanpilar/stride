@@ -70,6 +70,7 @@ export type TaskEditorFieldId =
     | 'reviewAt'
     | 'description'
     | 'textDirection'
+    | 'blockedBy'
     | 'attachments'
     | 'checklist';
 
@@ -250,6 +251,7 @@ export interface Task {
     sectionId?: string;
     viewSectionIds?: ViewSectionIds;
     areaId?: string;
+    blockedByTaskIds?: string[];
     isFocusedToday?: boolean;
     timeEstimate?: TimeEstimate;
     timeSpentMinutes?: number;

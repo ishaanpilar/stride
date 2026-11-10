@@ -9,6 +9,7 @@ import { hasRecurrenceRule } from './recurrence';
 import { timeEstimateToMinutes } from './calendar-scheduling';
 import { isTaskActionable, isTaskFinished, TASK_STATUS_ORDER } from './task-status';
 import { isTaskInActiveProject } from './project-utils';
+import { getBlockedTaskIds } from './task-dependencies';
 import type { Language } from './i18n/i18n-types';
 
 
@@ -127,7 +128,7 @@ export type TaskFocusEligibilityOptions = {
     allowFutureStart?: boolean;
 };
 
-type SequentialTaskOrderFields = Pick<Task, 'createdAt' | 'order' | 'orderNum'>;
+type SequentialTaskOrderFields = Pick<Task, 'createdAt' | 'order' | 'orderNum'> & Partial<Pick<Task, 'dueDate'>>;
 type SequentialGroupingFields = Pick<Task, 'projectId'> & Partial<Pick<Task, 'sectionId'>>;
 type SequentialSection = Pick<Section, 'id' | 'projectId' | 'order' | 'title'> & Partial<Pick<Section, 'deletedAt' | 'isSequential'>>;
 
@@ -375,10 +376,21 @@ export function getProjectDeadlineBoosts(
 }
 
 
+/** Tasks nobody has ordered: creation time says nothing about what comes first, so the nearest date does. */
+function compareByNearestDue(a: Pick<Task, 'dueDate'>, b: Pick<Task, 'dueDate'>): number {
+    const aDue = safeParseDueDate(a.dueDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bDue = safeParseDueDate(b.dueDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+    return aDue === bDue ? 0 : aDue < bDue ? -1 : 1;
+}
+
 export function compareTasksByProjectOrder<T extends SequentialTaskOrderFields & Pick<Task, 'id'>>(a: T, b: T): number {
     const aOrder = Number.isFinite(a.order) ? (a.order as number) : Number.isFinite(a.orderNum) ? (a.orderNum as number) : Number.POSITIVE_INFINITY;
     const bOrder = Number.isFinite(b.order) ? (b.order as number) : Number.isFinite(b.orderNum) ? (b.orderNum as number) : Number.POSITIVE_INFINITY;
     if (aOrder !== bOrder) return aOrder - bOrder;
+    if (aOrder === Number.POSITIVE_INFINITY) {
+        const due = compareByNearestDue(a, b);
+        if (due !== 0) return due;
+    }
     const aCreated = safeParseDate(a.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY;
     const bCreated = safeParseDate(b.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY;
     if (aCreated !== bCreated) return aCreated - bCreated;
@@ -442,12 +454,12 @@ function getSequentialTaskOrderKey<T extends SequentialTaskOrderFields>(task: T,
         : (safeParseDate(task.createdAt)?.getTime() ?? Number.POSITIVE_INFINITY);
 }
 
-type SequentialSectionOrder = {
+export type SequentialSectionOrder = {
     sectionById: ReadonlyMap<string, SequentialSection>;
     rankById: ReadonlyMap<string, number>;
 };
 
-function buildSequentialSectionOrder(sections?: readonly SequentialSection[]): SequentialSectionOrder | undefined {
+export function buildSequentialSectionOrder(sections?: readonly SequentialSection[]): SequentialSectionOrder | undefined {
     if (!sections) return undefined;
     const sectionById = new Map<string, SequentialSection>();
     const rankById = new Map<string, number>();
@@ -483,6 +495,23 @@ function getSequentialTaskSectionId<T extends SequentialGroupingFields>(
     return section && section.projectId === task.projectId ? section.id : null;
 }
 
+export function compareTasksBySectionOrder<T extends SequentialGroupingFields>(
+    a: T,
+    b: T,
+    sectionOrder?: SequentialSectionOrder,
+): number {
+    if (!sectionOrder || a.projectId !== b.projectId) return 0;
+    const aSectionId = getSequentialTaskSectionId(a, sectionOrder);
+    const bSectionId = getSequentialTaskSectionId(b, sectionOrder);
+    const aSectionRank = aSectionId ? (sectionOrder.rankById.get(aSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+    const bSectionRank = bSectionId ? (sectionOrder.rankById.get(bSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+    if (aSectionRank !== bSectionRank) return aSectionRank - bSectionRank;
+    if (aSectionId !== bSectionId) {
+        return textCollator.compare(aSectionId ?? NO_SECTION_GROUP, bSectionId ?? NO_SECTION_GROUP);
+    }
+    return 0;
+}
+
 function compareSequentialManualHierarchy<
     T extends SequentialTaskOrderFields & SequentialGroupingFields & Pick<Task, 'id'>
 >(
@@ -491,17 +520,13 @@ function compareSequentialManualHierarchy<
     hasOrder: boolean,
     sectionOrder?: SequentialSectionOrder,
 ): number {
-    if (sectionOrder && a.projectId === b.projectId) {
-        const aSectionId = getSequentialTaskSectionId(a, sectionOrder);
-        const bSectionId = getSequentialTaskSectionId(b, sectionOrder);
-        const aSectionRank = aSectionId ? (sectionOrder.rankById.get(aSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-        const bSectionRank = bSectionId ? (sectionOrder.rankById.get(bSectionId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-        if (aSectionRank !== bSectionRank) return aSectionRank - bSectionRank;
-        if (aSectionId !== bSectionId) {
-            return textCollator.compare(aSectionId ?? NO_SECTION_GROUP, bSectionId ?? NO_SECTION_GROUP);
-        }
-    }
+    const sectionComparison = compareTasksBySectionOrder(a, b, sectionOrder);
+    if (sectionComparison !== 0) return sectionComparison;
 
+    if (!hasOrder) {
+        const due = compareByNearestDue(a, b);
+        if (due !== 0) return due;
+    }
     const aOrderKey = getSequentialTaskOrderKey(a, hasOrder);
     const bOrderKey = getSequentialTaskOrderKey(b, hasOrder);
     if (aOrderKey !== bOrderKey) return aOrderKey - bOrderKey;
@@ -1463,8 +1488,9 @@ export function getCalendarPlanningCandidates<T extends Task>(
         { now, sectionScopedProjectIds, sequentialSectionKeys, sections: options.sections },
     );
 
+    const dependencyBlockedIds = getBlockedTaskIds(tasks);
     const candidates = tasks.filter((task) => {
-        if (task.deletedAt) return false;
+        if (task.deletedAt || dependencyBlockedIds.has(task.id)) return false;
         if (task.status !== 'next') return false;
         if (task.isFocusedToday) return false;
         if (task.startTime) return false;

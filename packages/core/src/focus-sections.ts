@@ -21,6 +21,7 @@ import {
     type ProjectDeadlineBoost,
     type UpcomingDeferredTask,
 } from './task-utils';
+import { getBlockedTaskIds } from './task-dependencies';
 import type { FilterCriteria, Project, Section, SortField, Task, TaskPriority } from './types';
 
 export const DEFAULT_FOCUS_SORT_BY: SortField = 'default';
@@ -62,6 +63,8 @@ export interface FocusPools {
 
 
     base: Task[];
+
+    dependencyBlockedIds?: ReadonlySet<string>;
 }
 
 export interface BuildFocusPoolsInput {
@@ -77,6 +80,8 @@ export interface BuildFocusPoolsInput {
     keep?: (task: Task) => boolean;
 
     isAreaVisible?: (task: Task) => boolean;
+
+    allTasks?: readonly Task[];
 }
 
 export function buildFocusPools({
@@ -87,6 +92,7 @@ export function buildFocusPools({
     now,
     keep,
     isAreaVisible,
+    allTasks,
 }: BuildFocusPoolsInput): FocusPools & { selection: FocusSelection } {
     const narrow = (pool: Task[]) => applyFilter(
         keep ? pool.filter(keep) : pool,
@@ -105,6 +111,7 @@ export function buildFocusPools({
 
         upcoming: getUpcomingDeferredTasks(narrow(visibleTasks), { now }),
         base: visibleTasks,
+        dependencyBlockedIds: getBlockedTaskIds(allTasks ? [...allTasks] : [...visibleTasks, ...tasks]),
     };
 }
 
@@ -184,13 +191,14 @@ export function deriveFocusTaskLists(pools: FocusPools, ctx: FocusListContext): 
         sections,
     });
     const isSequentialBlocked = (task: Task) => isTaskSequenceBlocked(task, sequencing, sequentialFirstTaskIds);
+    const isDependencyBlocked = (task: Task) => pools.dependencyBlockedIds?.has(task.id) === true;
 
 
     const todayBounds = getTodayBounds(now);
     const scheduleItems = pools.schedule.filter((task) => {
         if (task.isFocusedToday) return false;
         if (task.status !== 'next') return false;
-        if (isSequentialBlocked(task)) return false;
+        if (isSequentialBlocked(task) || isDependencyBlocked(task)) return false;
         return isTodayScheduleCandidate(task, now, todayBounds, ctx.focusIncludeStartDates !== false);
     });
     const scheduleIds = new Set(scheduleItems.map((task) => task.id));
@@ -198,13 +206,14 @@ export function deriveFocusTaskLists(pools: FocusPools, ctx: FocusListContext): 
     const reviewDueItems = pools.active.filter((task) => (
         !task.isFocusedToday
         && !scheduleIds.has(task.id)
+        && !isDependencyBlocked(task)
         && isDueForReview(task.reviewAt, now)
     ));
     const reviewDueIds = new Set(reviewDueItems.map((task) => task.id));
 
     const nextItems = pools.active.filter((task) => {
         if (task.status !== 'next' || task.isFocusedToday) return false;
-        if (isSequentialBlocked(task)) return false;
+        if (isSequentialBlocked(task) || isDependencyBlocked(task)) return false;
         return !scheduleIds.has(task.id) && !reviewDueIds.has(task.id);
     });
     const projectDeadlineBoosts = isDefaultSort
@@ -234,7 +243,7 @@ export function deriveFocusTaskLists(pools: FocusPools, ctx: FocusListContext): 
             : sortBySavedPerspective(nextItems),
 
 
-        upcoming: pools.upcoming.map((entry) => entry.task).filter((task) => !isSequentialBlocked(task)),
+        upcoming: pools.upcoming.map((entry) => entry.task).filter((task) => !isSequentialBlocked(task) && !isDependencyBlocked(task)),
         projectDeadlineBoosts,
         sequentialBlockedIds: new Set(
             pools.base.filter(isSequentialBlocked).map((task) => task.id),

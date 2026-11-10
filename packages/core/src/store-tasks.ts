@@ -3,6 +3,7 @@ import { retainTaskTaxonomy, retainTaxonomyEffects } from './taxonomy-catalog';
 import { rawReadProjectSnapshot } from './sqlite-raw-snapshot';
 import { referenceBatchModules, type ReferenceBatchValidator } from './store-reference-batch-modules';
 import { buildNewTask } from './task-creation';
+import { formatDependencyRefusal, normalizeBlockedByTaskIds, validateBlockerChange, withoutBlockers } from './task-dependencies';
 import { TASK_SQLITE_COLUMNS, taskFromSqliteRow, taskToSqliteRow } from './task-sync-schema';
 import { taskEditValuesEqual } from './json-value-equality';
 export { taskEditValuesEqual } from './json-value-equality';
@@ -267,6 +268,18 @@ export const planTaskMutations = <TState,>({
     };
     return compactPurgedTaskForLocalStorage(updatedTask);
 });
+
+const clearPurgedBlockerReferences = async (
+    context: Pick<TaskActionContext, 'set' | 'debouncedSave'>,
+    purgedIds: ReadonlySet<string>,
+): Promise<void> => {
+    await mutateTasks(context, {
+        selectTasks: (state) => state._allTasks.filter((task) => (
+            !task.purgedAt && Boolean(task.blockedByTaskIds?.some((id) => purgedIds.has(id)))
+        )),
+        buildUpdates: (task) => ({ blockedByTaskIds: withoutBlockers(task, purgedIds) }),
+    });
+};
 
 export const mutateTasks = async (
     { set, debouncedSave }: Pick<TaskActionContext, 'set' | 'debouncedSave'>,
@@ -584,6 +597,7 @@ export const planTaskBatchUpdateEffects = ({
             deviceId,
             getTaskOrder(task),
             projectOrderReserver,
+            newAllTasksBase,
         );
         onTaskUpdated?.(task, updatedTask);
 
@@ -656,6 +670,7 @@ export const planTaskUpdateEffects = ({
         getTaskOrder(task),
 
         (projectId) => getNextProjectOrder(projectId, allTasks),
+        allTasks,
     );
     const recurringDuplicateTask = findExistingRecurringFollowUp(allTasks, stampedNextRecurringTask, task.id);
     const recurringFollowUpTask = recurringDuplicateTask
@@ -751,7 +766,7 @@ export const planSkippedRecurringOccurrence = ({ task, allTasks, now, deviceId, 
         projection === undefined
             ? createNextRecurringTask(task, now, task.status, { advanceOne: true, createId })
             : buildNextRecurringTask(task, now, task.status, projection, createId),
-        deviceId, getTaskOrder(task), (projectId) => getNextProjectOrder(projectId, allTasks),
+        deviceId, getTaskOrder(task), (projectId) => getNextProjectOrder(projectId, allTasks), allTasks,
     );
     const recurringDuplicateTask = findExistingRecurringFollowUp(allTasks, recurringCandidateTask, task.id);
     const recurringFollowUpTask = recurringDuplicateTask ? null : recurringCandidateTask;
@@ -2487,6 +2502,18 @@ export function createTaskActions({ set, get, getStorage, debouncedSave, flushPe
             set({ error: message });
             return actionFail(message);
         }
+        if (hasOwnField(updates, 'blockedByTaskIds')) {
+            const dependencyCheck = validateBlockerChange(
+                existingTask,
+                normalizeBlockedByTaskIds(updates.blockedByTaskIds, id) ?? [],
+                currentState._tasksById,
+            );
+            if (!dependencyCheck.ok && dependencyCheck.reason === 'cycle') {
+                const message = formatDependencyRefusal(dependencyCheck, (key) => key);
+                set({ error: message });
+                return actionFail(message);
+            }
+        }
         const optimisticRetryProjectIds = collectOptimisticReactivationRetryProjectIds(
             [{ task: existingTask, updates }],
             currentState,
@@ -2834,7 +2861,10 @@ export function createTaskActions({ set, get, getStorage, debouncedSave, flushPe
             },
             missingMessage: 'Task not found',
         });
-        if (refusal.purged === null) return result;
+        if (refusal.purged === null) {
+            if (result.success) await clearPurgedBlockerReferences({ set, debouncedSave }, new Set([id]));
+            return result;
+        }
         logWarn('Purge refused for a task not in Trash', {
             scope: 'store',
             category: 'storage',
@@ -2859,7 +2889,7 @@ export function createTaskActions({ set, get, getStorage, debouncedSave, flushPe
 
     purgeTasks: async (ids: string[]) => {
         const idSet = new Set(ids);
-        return mutateTasks({ set, debouncedSave }, {
+        const result = await mutateTasks({ set, debouncedSave }, {
             selectTasks: (state) => state._allTasks.filter((task) => idSet.has(task.id) && task.deletedAt && !task.purgedAt),
             buildUpdates: (_task, { now }) => ({
                 purgedAt: now,
@@ -2872,11 +2902,14 @@ export function createTaskActions({ set, get, getStorage, debouncedSave, flushPe
             },
             missingMessage: 'Tasks not found',
         });
+        if (result.success) await clearPurgedBlockerReferences({ set, debouncedSave }, idSet);
+        return result;
     },
 
 
     purgeDeletedTasks: async () => {
-        return mutateTasks({ set, debouncedSave }, {
+        const purgedIds = new Set(get()._allTasks.filter((task) => task.deletedAt && !task.purgedAt).map((task) => task.id));
+        const result = await mutateTasks({ set, debouncedSave }, {
             selectTasks: (state) => state._allTasks.filter((task) => task.deletedAt && !task.purgedAt),
             buildUpdates: (_task, { now }) => ({
                 purgedAt: now,
@@ -2889,6 +2922,8 @@ export function createTaskActions({ set, get, getStorage, debouncedSave, flushPe
             },
             ensureDeviceIdWhenEmpty: true,
         });
+        if (result.success) await clearPurgedBlockerReferences({ set, debouncedSave }, purgedIds);
+        return result;
     },
 
 

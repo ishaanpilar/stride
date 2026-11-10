@@ -46,6 +46,7 @@ import { useLanguage } from '../../../contexts/language-context';
 import { useLocalDayKey } from '../../../hooks/useLocalDayKey';
 import { usePerformanceMonitor } from '../../../hooks/usePerformanceMonitor';
 import { reportError } from '../../../lib/report-error';
+import { askRepeatTickInToast, needsRepeatTickConfirm } from '../../../lib/repeating-completion';
 import { useUiStore } from '../../../store/ui-store';
 import { getTaskAccentColor as resolveTaskAccentColor } from '../../../lib/task-accent-color';
 import { resolveCalendarLocale } from '../calendar-locale';
@@ -340,8 +341,12 @@ export function useDesktopCalendarController() {
     const markTaskDone = useCallback((taskId: string) => {
         const task = calendarTaskData.visibleTasks.find((candidate) => candidate.id === taskId);
         if (isProjectedRecurringTask(task)) return;
-        updateTask(taskId, { status: 'done', isFocusedToday: false })
-            .catch((error) => reportError('Failed to mark task done', error));
+        const complete = () => {
+            updateTask(taskId, { status: 'done', isFocusedToday: false })
+                .catch((error) => reportError('Failed to mark task done', error));
+        };
+        if (needsRepeatTickConfirm(taskId)) askRepeatTickInToast([taskId], complete);
+        else complete();
     }, [calendarTaskData.visibleTasks, updateTask]);
 
     const createTaskFromExternalEvent = useCallback(async (event: ExternalCalendarEvent) => {

@@ -11,6 +11,7 @@ import {
     buildFocusCoachInput,
     canAdjustPomodoroPhase,
     isTaskActionable,
+    getBlockedTaskIds,
     POMODORO_ADJUST_STEP_MINUTES,
     resetPomodoroState,
     translateWithFallback,
@@ -83,9 +84,12 @@ export function FocusSessionHost() {
     const [breakSkipped, setBreakSkipped] = useState(false);
     /** The stage put the window into true full screen (so leaving the stage undoes it). */
     const [fullscreen, setFullscreen] = useState(false);
-    const pickerTasks = useMemo(() => liveTasks
-        .filter(isTaskActionable)
-        .sort((a, b) => Number(b.isFocusedToday === true) - Number(a.isFocusedToday === true)), [liveTasks]);
+    const pickerTasks = useMemo(() => {
+        const blockedIds = getBlockedTaskIds(useTaskStore.getState()._allTasks);
+        return liveTasks
+            .filter((task) => isTaskActionable(task) && !blockedIds.has(task.id))
+            .sort((a, b) => Number(b.isFocusedToday === true) - Number(a.isFocusedToday === true));
+    }, [liveTasks]);
 
     // Any Start opens the stage: focus or break, with or without a task, from the Today card,
     // a task row or the menu bar (shared snapshot). Re-opening is allowed once the timer stops.

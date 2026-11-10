@@ -3,16 +3,16 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { shallow, useTaskStore, TaskPriority, TimeEstimate, TIME_ESTIMATE_OPTIONS, buildFocusPools, compareProjectsByOrder, planFocusFilterCriterionRemoval, formatFocusTaskLimitText,
+import { shallow, useTaskStore, TaskPriority, TimeEstimate, TIME_ESTIMATE_OPTIONS, buildFocusPools, buildFocusProjectLayout, compareProjectsByOrder, formatI18nTemplate, planFocusFilterCriterionRemoval, formatFocusTaskLimitText,
     getFocusHiddenByAreaLabel, logInfo, getFocusStarBlockedText, formatTimeEstimateLabel, generateUUID, getUsedTaskTokens, deriveFocusTaskLists, getProjectDeadlineBoostLabel, getTaskMetadataFilterVisibility, isTaskFutureFocusCandidate, markSavedFilterDeleted, normalizeFocusTaskLimit, resolveFeatureFlags, resolveTaskPerspectiveForFeatures, safeFormatDate, safeParseDate, selectFocusSavedFilters, isDueForReview, shouldShowTaskForStart, splitTodayTasksByStartTime, translateWithFallback, tFallback, updateSettingsFromLatest } from '@stride/core';
 import { DEFAULT_FOCUS_SORT_BY } from '@stride/core';
 import { moveIdToTop, retainCompletedInSections, sortTasksByFocusOrder, sortTasksByManualOrder, type SectionMembership } from '@stride/core';
-import type { MultiValueFilterMatchMode, SavedFilter, SortField, Task, TaskEnergyLevel } from '@stride/core';
+import type { MultiValueFilterMatchMode, Project, SavedFilter, SortField, Task, TaskEnergyLevel } from '@stride/core';
 import { useTaskFilterSelections } from '@stride/core/task-filter-selections';
 import { buildAdvancedChips, buildSelectionChips, type ActiveFilterChipDeps } from './list/active-filter-chips';
 import { useLanguage } from '../../contexts/language-context';
 import { cn } from '../../lib/utils';
-import { useUiStore } from '../../store/ui-store';
+import { normalizeFocusLayout, useUiStore, type FocusLayoutMode } from '../../store/ui-store';
 import { AlertCircle, CalendarDays, ChevronDown, ChevronRight, Clock, ArrowRight, Folder, CheckCircle2, MoreHorizontal, Trash2 } from 'lucide-react';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
@@ -24,11 +24,23 @@ import { PomodoroPanel } from './PomodoroPanel';
 import { AgendaFiltersPanel, type AgendaActiveFilterChip, type AgendaProjectFilterOption } from './agenda/AgendaFiltersPanel';
 import { AgendaHeader } from './agenda/AgendaHeader';
 import { DailyBriefingCard } from './agenda/DailyBriefingCard';
+import {
+    areaIdFromProjectCardGroup,
+    FocusProjectCards,
+    isCardExpanded,
+    PROJECT_CARD_GROUP_PREFIX,
+    PROJECT_TASK_GROUP_PREFIX,
+    projectIdFromTaskGroup,
+} from './agenda/FocusProjectCards';
 import { AgendaCollapsibleSection, AgendaProjectSection } from './agenda/AgendaSections';
 import { ReorderDropZone, ReorderProvider, ReorderableTaskRow, useReorderController, type CrossGroupDropCheck, type ReorderHandler } from './list/task-reorder';
-import { commitBoardOrder, MANUAL_ORDER_KEYS, snapshotBoardOrder, statusesOf, switchedToManualOrderMessage, switchToManualOrderWithUndo, useManualOrderMode } from '../../lib/manual-order';
+import { commitBoardOrder, MANUAL_ORDER_KEYS, restoreProjectOrder, snapshotBoardOrder, snapshotProjectOrder, statusesOf, switchedToManualOrderMessage, switchToManualOrderWithUndo, useManualOrderMode, writeManualOrder } from '../../lib/manual-order';
 import { addTaskToFocusFromDrop, focusDropBlockedReason } from '../../lib/focus-drop';
 import { showUndoToast } from '../../lib/undo-registry';
+import { setProjectNextActionOnly } from '../../lib/project-next-action-only';
+import { LooseGroupingBanner } from '../ai-organise/LooseGroupingBanner';
+import { LooseGroupingSheet } from '../ai-organise/LooseGroupingSheet';
+import { ProjectOrderSheet } from '../ai-organise/ProjectOrderSheet';
 import { reportError } from '../../lib/report-error';
 import { useCompletionRetention } from '../../lib/completion-retention';
 import { StoreTaskItem } from './list/StoreTaskItem';
@@ -44,6 +56,7 @@ import {
     sanitizeCollapsedGroups,
     type CollapsedGroups,
     type NextGroupBy,
+    type TaskGroup,
 } from './list/next-grouping';
 import { PromptModal } from '../PromptModal';
 import { dispatchNavigateEvent } from '../../lib/navigation-events';
@@ -68,6 +81,8 @@ type SetFocusCollapsedGroups = (
 type FocusPersistedViewState = {
     expandedSections: Record<FocusSectionKey, boolean>;
     collapsedGroups: CollapsedGroups<NextGroupBy>;
+    /** Project cards open in the Projects layout, by project id. */
+    expandedProjectCards: Record<string, boolean>;
 };
 
 const DEFAULT_FOCUS_VIEW_STATE: FocusPersistedViewState = {
@@ -80,6 +95,7 @@ const DEFAULT_FOCUS_VIEW_STATE: FocusPersistedViewState = {
         reviewProjects: true,
     },
     collapsedGroups: emptyCollapsedGroups(FOCUS_AXES),
+    expandedProjectCards: {},
 };
 
 function sanitizeFocusViewState(value: unknown, fallback: FocusPersistedViewState): FocusPersistedViewState {
@@ -99,11 +115,32 @@ function sanitizeFocusViewState(value: unknown, fallback: FocusPersistedViewStat
             reviewProjects: typeof expandedSections.reviewProjects === 'boolean' ? expandedSections.reviewProjects : fallback.expandedSections.reviewProjects,
         },
         collapsedGroups: sanitizeCollapsedGroups(FOCUS_AXES, parsed.collapsedGroups, fallback.collapsedGroups),
+        expandedProjectCards: sanitizeExpandedProjectCards(parsed.expandedProjectCards),
     };
+}
+
+function sanitizeExpandedProjectCards(value: unknown): Record<string, boolean> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([, expanded]) => expanded === true)) as Record<string, boolean>;
 }
 
 function normalizeAgendaGroupBy(value: unknown): NextGroupBy {
     return sanitizeAxis(FOCUS_AXES, value, 'none');
+}
+
+function formatFocusProjectCount(
+    counts: { projects: number; looseTasks: number },
+    t: (key: string) => string,
+): string {
+    const projects = counts.projects === 1
+        ? tFallback(t, 'agenda.projectCountOne', '1 project')
+        : formatI18nTemplate(tFallback(t, 'agenda.projectCountOther', '{{count}} projects'), { count: counts.projects });
+    const tasks = counts.looseTasks === 1
+        ? tFallback(t, 'agenda.taskCountOne', '1 task')
+        : formatI18nTemplate(tFallback(t, 'agenda.taskCountOther', '{{count}} tasks'), { count: counts.looseTasks });
+    if (counts.projects === 0) return tasks;
+    if (counts.looseTasks === 0) return projects;
+    return `${projects} · ${tasks}`;
 }
 
 function getAgendaScrollElement(containerElement: HTMLDivElement | null): HTMLElement | null {
@@ -404,8 +441,9 @@ function AgendaTaskList({
 
 export function AgendaView() {
     const perf = usePerformanceMonitor('AgendaView');
-    const { projects, sections: projectSections, areas, updateTask, reorderFocusedTasks, settings, error, highlightTaskId, setHighlightTask, taskChangeToken, hasAnyTasks } = useTaskStore(
+    const { allTasks, projects, sections: projectSections, areas, updateTask, reorderFocusedTasks, settings, error, highlightTaskId, setHighlightTask, taskChangeToken, hasAnyTasks } = useTaskStore(
         (state) => ({
+            allTasks: state._allTasks,
             projects: state.projects,
             sections: state.sections,
             areas: state.areas,
@@ -428,11 +466,12 @@ export function AgendaView() {
         projectMap,
         tasksById,
     } = getDerivedState();
-    const { t } = useLanguage();
+    const { t, language } = useLanguage();
     const { requestConfirmation, confirmModal } = useConfirmDialog();
     const localDayKey = useLocalDayKey();
-    const { showListDetails, focusGroupBy, setListOptions, collapseAllTaskDetails, setProjectView, showToast } = useUiStore((state) => ({
+    const { showListDetails, focusLayoutValue, focusGroupBy, setListOptions, collapseAllTaskDetails, setProjectView, showToast } = useUiStore((state) => ({
         showListDetails: state.listOptions.showDetails,
+        focusLayoutValue: state.listOptions.focusLayout,
         focusGroupBy: state.listOptions.focusGroupBy,
         setListOptions: state.setListOptions,
         collapseAllTaskDetails: state.collapseAllTaskDetails,
@@ -450,6 +489,8 @@ export function AgendaView() {
         sanitizeFocusViewState
     );
     const expandedSections = persistedViewState.expandedSections;
+    const focusLayout: FocusLayoutMode = normalizeFocusLayout(focusLayoutValue);
+    const projectsLayout = focusLayout === 'projects';
     const {
         priorities: prioritiesEnabled,
         timeEstimates: timeEstimatesEnabled,
@@ -682,6 +723,7 @@ export function AgendaView() {
         const now = new Date();
         const pools = buildFocusPools({
             tasks: globalFocusedTasks,
+            allTasks: useTaskStore.getState()._allTasks,
             visibleTasks: baseActiveTasks,
             isAreaVisible: (task) => taskMatchesAreaFilterSelection(task, resolvedAreaFilter, projectMap, areaById),
             projects,
@@ -785,7 +827,7 @@ export function AgendaView() {
             view: 'focus',
             criteria: currentFilterCriteria,
             ...(effectiveFocusSortBy !== DEFAULT_FOCUS_SORT_BY ? { sortBy: effectiveFocusSortBy } : {}),
-            ...(effectiveNextGroupBy !== 'none' ? { groupBy: effectiveNextGroupBy } : {}),
+            ...(!projectsLayout && effectiveNextGroupBy !== 'none' ? { groupBy: effectiveNextGroupBy } : {}),
             createdAt: nowIso,
             updatedAt: nowIso,
         };
@@ -795,7 +837,7 @@ export function AgendaView() {
             setSaveFilterPromptOpen(false);
             applySavedSelections(nextFilter);
         }).catch(() => undefined);
-    }, [applySavedSelections, canSaveFocusPerspective, currentFilterCriteria, effectiveFocusSortBy, effectiveNextGroupBy]);
+    }, [applySavedSelections, canSaveFocusPerspective, currentFilterCriteria, effectiveFocusSortBy, effectiveNextGroupBy, projectsLayout]);
     const handleDeleteSavedFilter = useCallback(async (filter: SavedFilter) => {
         const confirmed = await requestConfirmation({
             title: resolveText('savedFilters.deleteTitle', 'Delete saved filter?'),
@@ -882,6 +924,31 @@ export function AgendaView() {
     }, [baseSections, heldOccurrenceIds, sessionCompletions, settledCompletionIds, tasksById]);
     const focusedTasks = sections.focusedTasks;
     const focusedOpenTasks = useMemo(() => focusedTasks.filter((task) => task.status !== 'done'), [focusedTasks]);
+    const [projectCardsManual, setProjectCardsManual] = useManualOrderMode(MANUAL_ORDER_KEYS.focusProjects);
+    const projectLayout = useMemo(() => {
+        void localDayKey;
+        return buildFocusProjectLayout({
+            nextActions: sections.nextActions,
+            allTasks,
+            lockedTasks: focusPools.active.filter((task) => task.status === 'next' && sections.sequentialBlockedIds.has(task.id)),
+            projects,
+            sections: projectSections,
+            areas,
+            settledDoneIds: settledCompletionIds,
+            now: new Date(),
+            prioritiesEnabled,
+            manualProjectOrder: projectCardsManual,
+        });
+    }, [allTasks, areas, focusPools.active, localDayKey, prioritiesEnabled, projectCardsManual, projectSections, projects, sections.nextActions, sections.sequentialBlockedIds, settledCompletionIds]);
+    const looseAreaGroups = useMemo<TaskGroup[]>(() => projectLayout.looseGroups.map(({ areaId, tasks }) => {
+        const area = areaId ? areaById.get(areaId) : undefined;
+        return {
+            id: area ? `area:${area.id}` : 'general',
+            title: area?.name ?? tFallback(t, 'taskEdit.noAreaOption', 'No Area'),
+            tasks,
+            dotColor: area?.color,
+        };
+    }), [areaById, projectLayout.looseGroups, t]);
     const nextActionGroups = useMemo(() => (
         groupTasks(effectiveNextGroupBy, { tasks: sections.nextActions, areas, projectMap, t, theme: settings?.theme })
     ), [areas, effectiveNextGroupBy, projectMap, sections.nextActions, settings?.theme, t]);
@@ -912,6 +979,30 @@ export function AgendaView() {
         collapsedGroups: persistedViewState.collapsedGroups,
         setCollapsedGroups,
     });
+    const {
+        collapsedGroupIds: collapsedLooseGroupIds,
+        getSectionDomId: getLooseSectionDomId,
+        toggleGroup: toggleLooseGroup,
+        visibleTasks: visibleLooseTasks,
+    } = useTaskGroupCollapse({
+        axis: 'area' as NextGroupBy,
+        groups: looseAreaGroups,
+        tasks: projectLayout.looseTasks,
+        idPrefix: 'agenda-loose-group',
+        collapsedGroups: persistedViewState.collapsedGroups,
+        setCollapsedGroups,
+    });
+    const projectLayoutVisibleTasks = useMemo(() => {
+        const visible: Task[] = [];
+        projectLayout.cards.forEach((card) => {
+            visible.push(card.nextAction);
+            if (isCardExpanded(card, persistedViewState.expandedProjectCards, highlightTaskId)) {
+                visible.push(...card.moreActions, ...card.lockedTasks);
+            }
+        });
+        visible.push(...visibleLooseTasks);
+        return visible;
+    }, [highlightTaskId, persistedViewState.expandedProjectCards, projectLayout.cards, visibleLooseTasks]);
     const getProjectDeadlineLabel = useCallback((taskId: string) => (
         getProjectDeadlineBoostLabel(sections.projectDeadlineBoosts.get(taskId), resolveText)
     ), [resolveText, sections.projectDeadlineBoosts]);
@@ -929,7 +1020,7 @@ export function AgendaView() {
     const visibleTasks = useMemo(() => {
         const visible = expandedSections.focus ? [...focusedTasks] : [];
         if (expandedSections.schedule) visible.push(...orderedTodayTasks);
-        if (expandedSections.nextActions) visible.push(...visibleNextActions);
+        if (expandedSections.nextActions) visible.push(...(projectsLayout ? projectLayoutVisibleTasks : visibleNextActions));
         if (expandedSections.reviewDue) visible.push(...sections.reviewDue);
         if (expandedSections.upcoming) visible.push(...sections.upcoming);
         return visible;
@@ -937,6 +1028,8 @@ export function AgendaView() {
         expandedSections,
         focusedTasks,
         orderedTodayTasks,
+        projectLayoutVisibleTasks,
+        projectsLayout,
         sections,
         visibleNextActions,
     ]);
@@ -992,6 +1085,26 @@ export function AgendaView() {
         return { ...toggle, canToggle: false, title, ariaLabel: title };
     }, [buildFocusToggle, focusTaskLimit, t]);
 
+    const handleFocusLayoutChange = useCallback((value: FocusLayoutMode) => {
+        setListOptions({ focusLayout: value });
+    }, [setListOptions]);
+    const toggleProjectCard = useCallback((projectId: string) => {
+        setPersistedViewState((current) => {
+            const expandedProjectCards = { ...current.expandedProjectCards };
+            if (expandedProjectCards[projectId]) delete expandedProjectCards[projectId];
+            else expandedProjectCards[projectId] = true;
+            return { ...current, expandedProjectCards };
+        });
+    }, [setPersistedViewState]);
+    const handleNextActionOnlyChange = useCallback((project: Project, enabled: boolean) => {
+        void setProjectNextActionOnly(project, enabled, t);
+    }, [t]);
+    const aiEnabled = settings?.ai?.enabled === true;
+    const [orderingProject, setOrderingProject] = useState<Project | null>(null);
+    const [groupingTasks, setGroupingTasks] = useState<readonly Task[] | null>(null);
+    const handleGroupLooseTasks = useCallback(() => {
+        setGroupingTasks(projectLayout.looseTasks.filter((task) => task.status !== 'done'));
+    }, [projectLayout.looseTasks]);
     const toggleSection = useCallback((sectionKey: FocusSectionKey) => {
         setPersistedViewState((current) => ({
             ...current,
@@ -1046,10 +1159,10 @@ export function AgendaView() {
         setListOptions({ showDetails: true });
     }, [collapseAllTaskDetails, setListOptions, showListDetails]);
     const [reorderAnnouncement, setReorderAnnouncement] = useState('');
-    const announceReorder = useCallback((change: { nextIds: readonly string[]; movedId: string; source: 'drag' | 'keyboard' }) => {
+    const announceReorder = useCallback((change: { nextIds: readonly string[]; movedId: string; source: 'drag' | 'keyboard' }, label?: string) => {
         if (change.source !== 'keyboard') return;
         const position = change.nextIds.indexOf(change.movedId) + 1;
-        setReorderAnnouncement(`${tFallback(t, 'list.reorder.moved', 'Task moved')} (${position}/${change.nextIds.length})`);
+        setReorderAnnouncement(`${label ?? tFallback(t, 'list.reorder.moved', 'Task moved')} (${position}/${change.nextIds.length})`);
     }, [t]);
     const sortRestoreRef = useRef({ applySavedSelections, setFocusSortBy });
     sortRestoreRef.current = { applySavedSelections, setFocusSortBy };
@@ -1075,6 +1188,29 @@ export function AgendaView() {
     }, [reorderFocusedTasks]);
     const handleAgendaReorder = useCallback<ReorderHandler>((change) => {
         const { groupKey, sourceGroupKey, nextIds, movedId } = change;
+        if (groupKey.startsWith(PROJECT_CARD_GROUP_PREFIX)) {
+            if (sourceGroupKey !== groupKey) return;
+            const areaId = areaIdFromProjectCardGroup(groupKey);
+            if (!projectCardsManual) {
+                const snapshot = snapshotProjectOrder(areaId);
+                setProjectCardsManual(true);
+                showUndoToast(switchedToManualOrderMessage(t), () => {
+                    writeManualOrder(MANUAL_ORDER_KEYS.focusProjects, false);
+                    void restoreProjectOrder(snapshot).catch((error) => reportError('Failed to restore the previous order', error));
+                }, t);
+            }
+            void Promise.resolve(useTaskStore.getState().reorderProjects(nextIds, areaId))
+                .catch((error) => reportError('Failed to reorder projects', error));
+            announceReorder(change, tFallback(t, 'agenda.projectMoved', 'Project moved'));
+            return;
+        }
+        if (groupKey.startsWith(PROJECT_TASK_GROUP_PREFIX)) {
+            if (sourceGroupKey !== groupKey) return;
+            void Promise.resolve(useTaskStore.getState().reorderProjectTasks(projectIdFromTaskGroup(groupKey), nextIds, undefined, movedId))
+                .catch((error) => reportError('Failed to reorder tasks', error));
+            announceReorder(change);
+            return;
+        }
         if (groupKey === FOCUS_REORDER_GROUP) {
             if (sourceGroupKey !== FOCUS_REORDER_GROUP) {
                 void addTaskToFocusFromDrop(movedId, t, () => nextIds);
@@ -1110,9 +1246,9 @@ export function AgendaView() {
         }
         void commitBoardOrder(nextIds, movedId).catch((error) => reportError('Failed to reorder tasks', error));
         announceReorder(change);
-    }, [announceReorder, captureSortRestore, commitFocusOrder, globalFocusedTasks, isDefaultFocusSort, nextManualFlag, t, todayManualFlag, updateFocusSortBy]);
-    const canDropAcrossAgenda = useCallback<CrossGroupDropCheck>(({ movedId, targetGroupKey }) => {
-        if (targetGroupKey !== FOCUS_REORDER_GROUP) return false;
+    }, [announceReorder, captureSortRestore, commitFocusOrder, globalFocusedTasks, isDefaultFocusSort, nextManualFlag, projectCardsManual, setProjectCardsManual, t, todayManualFlag, updateFocusSortBy]);
+    const canDropAcrossAgenda = useCallback<CrossGroupDropCheck>(({ movedId, sourceGroupKey, targetGroupKey }) => {
+        if (targetGroupKey !== FOCUS_REORDER_GROUP || sourceGroupKey.startsWith(PROJECT_CARD_GROUP_PREFIX)) return false;
         return focusDropBlockedReason(movedId, t) ?? true;
     }, [t]);
     const agendaReorderLabels = useMemo(() => ({
@@ -1138,18 +1274,20 @@ export function AgendaView() {
     }, [focusOpenIds, handleAgendaReorder]);
     const manualSortOption = useMemo(() => ({
         label: tFallback(t, 'sort.manual', 'Manual'),
-        selected: isDefaultFocusSort && (nextManualFlag || todayManualFlag),
+        selected: isDefaultFocusSort && (nextManualFlag || todayManualFlag || (projectsLayout && projectCardsManual)),
         onSelect: () => {
             if (!isDefaultFocusSort) updateFocusSortBy(DEFAULT_FOCUS_SORT_BY);
             setNextManualFlag(true);
             setTodayManualFlag(true);
+            setProjectCardsManual(true);
         },
-    }), [isDefaultFocusSort, nextManualFlag, setNextManualFlag, setTodayManualFlag, t, todayManualFlag, updateFocusSortBy]);
+    }), [isDefaultFocusSort, nextManualFlag, projectCardsManual, projectsLayout, setNextManualFlag, setProjectCardsManual, setTodayManualFlag, t, todayManualFlag, updateFocusSortBy]);
     const handleChangeFocusSortBy = useCallback((value: SortField) => {
         setNextManualFlag(false);
         setTodayManualFlag(false);
+        setProjectCardsManual(false);
         updateFocusSortBy(value);
-    }, [setNextManualFlag, setTodayManualFlag, updateFocusSortBy]);
+    }, [setNextManualFlag, setProjectCardsManual, setTodayManualFlag, updateFocusSortBy]);
 
     const focusListBody = (
         <div className="flex flex-col gap-2.5">
@@ -1219,6 +1357,8 @@ export function AgendaView() {
                 filtersOpen={filtersOpen}
                 nextActionsCount={nextActionsCount}
                 nextGroupBy={effectiveNextGroupBy}
+                focusLayout={focusLayout}
+                onChangeFocusLayout={handleFocusLayoutChange}
                 focusSortBy={effectiveFocusSortBy}
                 canToggleOtherSections={canToggleOtherSections}
                 collapseOtherSections={collapseOtherSections}
@@ -1379,7 +1519,81 @@ export function AgendaView() {
                     </AgendaCollapsibleSection>
                 )}
 
-                {effectiveNextGroupBy === 'none' ? (
+                {projectsLayout ? (
+                    sections.nextActions.length > 0 && (
+                        <AgendaCollapsibleSection
+                            title={t('agenda.nextActions')}
+                            icon={ArrowRight}
+                            color="text-muted-foreground"
+                            count={formatFocusProjectCount(projectLayout.counts, t)}
+                            expanded={expandedSections.nextActions}
+                            onToggle={() => toggleSection('nextActions')}
+                            controlsId="agenda-section-nextActions"
+                        >
+                            <div className="flex flex-col gap-4">
+                                {projectLayout.cards.length > 0 && (
+                                    <FocusProjectCards
+                                        cards={projectLayout.cards}
+                                        areaById={areaById}
+                                        expandedProjectIds={persistedViewState.expandedProjectCards}
+                                        highlightTaskId={highlightTaskId}
+                                        showListDetails={showListDetails}
+                                        dragLabel={reorderDragLabel}
+                                        buildFocusToggle={buildFocusToggle}
+                                        getProjectDeadlineLabel={getProjectDeadlineLabel}
+                                        onToggleExpanded={toggleProjectCard}
+                                        onOpenProject={handleOpenReviewProject}
+                                        onNextActionOnlyChange={handleNextActionOnlyChange}
+                                        onOrderProject={aiEnabled ? setOrderingProject : undefined}
+                                        t={t}
+                                    />
+                                )}
+                                {aiEnabled && (
+                                    <LooseGroupingBanner looseCount={projectLayout.counts.looseTasks} t={t} onGroup={handleGroupLooseTasks} />
+                                )}
+                                {looseAreaGroups.length > 0 ? (
+                                    <div className="space-y-3">
+                                        {looseAreaGroups.map((group, index) => {
+                                            const collapsed = collapsedLooseGroupIds.has(group.id);
+                                            const controlsId = getLooseSectionDomId(group, index);
+                                            return (
+                                                <div key={group.id}>
+                                                    <GroupedTaskSectionHeader
+                                                        group={group}
+                                                        collapsed={collapsed}
+                                                        controlsId={controlsId}
+                                                        onToggleGroup={toggleLooseGroup}
+                                                    />
+                                                    {!collapsed && (
+                                                        <div id={controlsId}>
+                                                            <AgendaTaskList
+                                                                tasks={group.tasks}
+                                                                buildFocusToggle={buildFocusToggle}
+                                                                getProjectDeadlineLabel={getProjectDeadlineLabel}
+                                                                showListDetails={showListDetails}
+                                                                highlightTaskId={highlightTaskId}
+                                                                reorder={{ groupKey: `${NEXT_REORDER_GROUP}:${group.id}`, dragLabel: reorderDragLabel }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : projectLayout.looseTasks.length > 0 && (
+                                    <AgendaTaskList
+                                        tasks={projectLayout.looseTasks}
+                                        buildFocusToggle={buildFocusToggle}
+                                        getProjectDeadlineLabel={getProjectDeadlineLabel}
+                                        showListDetails={showListDetails}
+                                        highlightTaskId={highlightTaskId}
+                                        reorder={{ groupKey: NEXT_REORDER_GROUP, dragLabel: reorderDragLabel }}
+                                    />
+                                )}
+                            </div>
+                        </AgendaCollapsibleSection>
+                    )
+                ) : effectiveNextGroupBy === 'none' ? (
                     sections.nextActions.length > 0 && (
                         <AgendaCollapsibleSection
                             title={t('agenda.nextActions')}
@@ -1525,6 +1739,12 @@ export function AgendaView() {
             </div>
             </ReorderDropZone>
             </ReorderProvider>
+            {orderingProject && (
+                <ProjectOrderSheet project={orderingProject} language={language} t={t} onClose={() => setOrderingProject(null)} />
+            )}
+            {groupingTasks && (
+                <LooseGroupingSheet tasks={groupingTasks} language={language} t={t} onClose={() => setGroupingTasks(null)} />
+            )}
         </ErrorBoundary>
     );
 }

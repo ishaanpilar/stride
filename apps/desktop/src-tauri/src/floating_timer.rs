@@ -318,6 +318,7 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
         .visible(false)
         .build()
         .map_err(|error| format!("Failed to create the floating timer window: {error}"))?;
+    crate::install_renderer_recovery(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => schedule_settle(&handle),
@@ -338,6 +339,7 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
 
 fn show(app: &tauri::AppHandle) -> Result<(), String> {
     let window = ensure_window(app)?;
+    crate::recover_pending_renderer(&window);
     let was_visible = window.is_visible().unwrap_or(false);
     let height = float_height(EXPANDED.load(Ordering::SeqCst));
     let _ = window.set_size(tauri::LogicalSize::new(FLOAT_WIDTH, height));

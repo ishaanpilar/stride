@@ -10,7 +10,9 @@ import {
     type Language,
 } from '@stride/core';
 import { buildAIConfig, loadAIKey } from './ai-config';
+import { generateProjectOrderProposalById } from './ai-organise-generate';
 import { loadRoutingCorrections } from './ai-routing';
+import { getCurrentUiLanguage } from '../contexts/language-context';
 
 export type AssistantReadiness =
     | { ready: true }
@@ -18,7 +20,10 @@ export type AssistantReadiness =
 
 /** Tools run through the same Zustand store actions the UI uses, so sync/undo/UI stay consistent. */
 export function createStoreAssistantPort(): AssistantStorePort {
-    return createAssistantStorePort(() => useTaskStore.getState(), () => loadRoutingCorrections());
+    return {
+        ...createAssistantStorePort(() => useTaskStore.getState(), () => loadRoutingCorrections()),
+        generateProjectOrder: (projectId) => generateProjectOrderProposalById(projectId, getCurrentUiLanguage()),
+    };
 }
 
 export async function getAssistantReadiness(): Promise<AssistantReadiness> {

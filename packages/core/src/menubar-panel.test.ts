@@ -215,3 +215,31 @@ describe('menu bar manual order', () => {
         expect(getMenuBarReorderIds([focused, plain, done], 'today', NOW)).toEqual(['p']);
     });
 });
+
+describe('sequential blocking in the menu bar panel', () => {
+    const project = { id: 'seq', title: 'Sequential', status: 'active', isSequential: true } as Project;
+    const seqTask = (id: string, order: number, extra: Partial<Task> = {}) => task(id, { projectId: 'seq', order, ...extra });
+
+    it('hides blocked steps from All tasks, showing only the next one', () => {
+        const view = selectMenuBarPanelView([seqTask('step-1', 0), seqTask('step-2', 1), seqTask('step-3', 2)], { now: NOW, projects: [project] });
+        expect(view.all.flatMap((group) => ids(group.tasks))).toEqual(['step-1']);
+        expect(view.counts.all).toBe(1);
+    });
+
+    it('shows the current step in Now the way Focus does: a due-today step, or a star ahead of it', () => {
+        const dueStep = selectMenuBarPanelView([
+            seqTask('step-1', 0),
+            seqTask('due', 1, { dueDate: at(0, 18) }),
+            seqTask('later', 2),
+        ], { now: NOW, projects: [project] });
+        expect(ids(dueStep.now)).toEqual(['due']);
+        expect(dueStep.all).toEqual([]);
+
+        const starred = selectMenuBarPanelView([
+            seqTask('step-1', 0),
+            seqTask('due', 1, { dueDate: at(0, 18) }),
+            seqTask('starred', 3, { isFocusedToday: true }),
+        ], { now: NOW, projects: [project] });
+        expect(ids(starred.now)).toEqual(['starred']);
+    });
+});

@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import type { AppData, Task, TaskDraft, TaskEditorFieldId } from '@stride/core';
+import { hasTaskBlockers } from '@stride/core';
 import {
     DEFAULT_TASK_EDITOR_HIDDEN,
     REFERENCE_HIDDEN_TASK_FIELDS,
@@ -131,6 +132,8 @@ export function useTaskItemFieldLayout({
                 return visibleEditAttachmentsLength > 0;
             case 'checklist':
                 return (task.checklist || []).length > 0;
+            case 'blockedBy':
+                return hasTaskBlockers(task);
             default:
                 return false;
         }
@@ -153,6 +156,7 @@ export function useTaskItemFieldLayout({
         editTimeEstimate,
         prioritiesEnabled,
         task.areaId,
+        task.blockedByTaskIds,
         task.checklist,
         task.projectId,
         task.sectionId,
@@ -163,6 +167,7 @@ export function useTaskItemFieldLayout({
     const isFieldVisible = useCallback(
         (fieldId: TaskEditorFieldId) => {
             if (isReference && referenceHiddenFields.has(fieldId)) return false;
+            if (fieldId === 'blockedBy') return !isReference && (revealedFields.has('blockedBy') || hasValue('blockedBy'));
             if (fieldId === 'assignedTo' && editStatus === 'waiting' && !isAssignedToExplicitlyHidden) return true;
             if (revealedFields.has(fieldId) && !disabledFields.has(fieldId)) return true;
             return !hiddenSet.has(fieldId) || hasValue(fieldId);
@@ -170,10 +175,10 @@ export function useTaskItemFieldLayout({
         [disabledFields, editStatus, hasValue, hiddenSet, isAssignedToExplicitlyHidden, isReference, referenceHiddenFields, revealedFields]
     );
     const addableFields = useMemo(
-        () => taskEditorOrder.filter((fieldId) => (
+        () => [...taskEditorOrder.filter((fieldId) => (
             !NEVER_ADDABLE.has(fieldId) && !disabledFields.has(fieldId) && !isFieldVisible(fieldId)
             && !(isReference && referenceHiddenFields.has(fieldId))
-        )),
+        )), ...(!isReference && !isFieldVisible('blockedBy') ? ['blockedBy' as const] : [])],
         [disabledFields, isFieldVisible, isReference, referenceHiddenFields, taskEditorOrder]
     );
     const showProjectField = isFieldVisible('project');
@@ -225,7 +230,7 @@ export function useTaskItemFieldLayout({
         [isFieldVisible, orderFields, sectionAssignments, taskEditorOrder]
     );
     const organizationFields = useMemo(
-        () => orderFields(taskEditorOrder.filter((fieldId) => sectionAssignments[fieldId] === 'organization')).filter(isFieldVisible),
+        () => orderFields([...taskEditorOrder.filter((fieldId) => sectionAssignments[fieldId] === 'organization'), 'blockedBy']).filter(isFieldVisible),
         [isFieldVisible, orderFields, sectionAssignments, taskEditorOrder]
     );
     const detailsFields = useMemo(

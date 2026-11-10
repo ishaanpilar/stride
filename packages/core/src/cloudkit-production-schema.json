@@ -50,7 +50,7 @@
     "archivedAt",
     "reminderPolicy"
    ],
-   "pendingProduction": ["dueReminderLeadMinutes", "startReminderLeadMinutes"]
+   "pendingProduction": ["dueReminderLeadMinutes", "startReminderLeadMinutes", "blockedByTaskIds"]
   },
   "StrideProject": {
    "deployed": [

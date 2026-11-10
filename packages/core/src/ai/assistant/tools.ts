@@ -2,6 +2,7 @@ import { generateUUID } from '../../uuid';
 import type { Area, ChecklistItem, Project, Task, TaskPriority, TaskStatus } from '../../types';
 import { cleanReason } from '../mind-sweep-ai';
 import { projectPurpose } from '../routing-context';
+import { MAX_TASK_BLOCKERS, canAddDependency, createTaskLookup, getBlockers, getOpenBlockers, isBlockerOpen, normalizeBlockedByTaskIds, type TaskLookup } from '../../task-dependencies';
 import { addLocalDays, dayKeyOf, formatWhen, hasTimeOf, parseWhen, shiftWhen, startOfLocalDay, toLocalDay } from './dates';
 import type {
     AssistantTool,
@@ -68,8 +69,9 @@ export const reasonOf = (value: unknown): string | undefined => cleanReason(valu
 
 export const reasonProp: JsonSchema = { type: 'string', maxLength: 160, description: 'Short why for the area/project you chose (at most 12 words), e.g. "mentions Akash -> Mauvi Labs". Shown to the user.' };
 
-export const compact = (t: Task, projects: Project[]) => {
+export const compact = (t: Task, projects: Project[], lookup?: TaskLookup) => {
     const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined;
+    const openBlockers = lookup && isActive(t) ? getOpenBlockers(t, lookup) : [];
     return {
         id: shortId(t.id),
         title: t.title,
@@ -79,6 +81,7 @@ export const compact = (t: Task, projects: Project[]) => {
         ...(t.priority ? { priority: t.priority } : {}),
         ...(project ? { project: project.title } : {}),
         ...(t.contexts?.length ? { contexts: t.contexts } : {}),
+        ...(openBlockers.length ? { waitsFor: openBlockers.map((b) => ({ id: shortId(b.id), title: b.title })) } : {}),
     };
 };
 
@@ -130,6 +133,49 @@ export const normWhen = (ctx: ToolContext, v: string) => {
     const r = parseWhen(v, ctx.now, { allowPast: true });
     return r.ok ? r.value : v;
 };
+
+export const blockedByProp: JsonSchema = {
+    type: 'array',
+    maxItems: MAX_TASK_BLOCKERS,
+    items: { type: 'string', minLength: 1 },
+    description: 'Tasks that must finish first: id from list_tasks, or an exact task title. The task stays hidden from Focus and Next until they are done.',
+};
+
+function findBlockerTask(ctx: ToolContext, ref: string): { task: Task } | { error: string } {
+    const byId = findTask(ctx, ref);
+    if ('task' in byId) return byId;
+    const lower = ref.trim().toLowerCase();
+    const live = ctx.port.getSnapshot().tasks.filter(isLive);
+    const named = live.filter((t) => t.title.trim().toLowerCase() === lower);
+    const open = named.filter(isActive);
+    const matches = open.length > 0 ? open : named;
+    if (matches.length === 1) return { task: matches[0] };
+    if (matches.length > 1) return { error: `Several tasks are titled "${ref}": ${matches.slice(0, 5).map((t) => shortId(t.id)).join(', ')}. Pass the id.` };
+    return { error: `Unknown task "${ref}". Use list_tasks to find the task that must finish first.` };
+}
+
+export function resolveBlockers(ctx: ToolContext, refs: unknown, task?: Task): { tasks: Task[] } | { error: string } {
+    if (!Array.isArray(refs)) return { error: 'blockedBy must be a list of task ids or exact titles.' };
+    if (refs.length > MAX_TASK_BLOCKERS) return { error: `A task can wait for at most ${MAX_TASK_BLOCKERS} other tasks.` };
+    const lookup = createTaskLookup(ctx.port.getSnapshot().tasks);
+    const resolved: Task[] = [];
+    for (const ref of refs as string[]) {
+        const found = findBlockerTask(ctx, ref);
+        if ('error' in found) return found;
+        const blocker = found.task;
+        const stillOpen: boolean = isBlockerOpen(blocker);
+        if (!stillOpen) return { error: `"${blocker.title}" is already finished, so it cannot block anything.` };
+        if (task) {
+            const check = canAddDependency(task.id, blocker.id, lookup);
+            if (!check.ok && check.reason === 'self') return { error: 'A task cannot wait for itself.' };
+            if (!check.ok && check.reason === 'cycle') {
+                return { error: `"${task.title}" cannot wait for "${blocker.title}": "${blocker.title}" already waits for "${task.title}" (directly or through other tasks), which would block both forever.` };
+            }
+        }
+        if (!resolved.some((t) => t.id === blocker.id)) resolved.push(blocker);
+    }
+    return { tasks: resolved };
+}
 
 function checklistFrom(steps: string[]): ChecklistItem[] {
     return steps.map((title) => ({ id: generateUUID(), title, isCompleted: false }));
@@ -192,7 +238,8 @@ const listTasks: AssistantTool = {
         const prio = { urgent: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
         rows.sort((x, y) => (x.dueDate ?? '9999').localeCompare(y.dueDate ?? '9999') || (prio[x.priority ?? ''] ?? 4) - (prio[y.priority ?? ''] ?? 4));
         const limit = a.limit ?? 30;
-        return { ok: true, data: { total: rows.length, shown: Math.min(limit, rows.length), tasks: rows.slice(0, limit).map((t) => compact(t, projects)) } };
+        const lookup = createTaskLookup(tasks);
+        return { ok: true, data: { total: rows.length, shown: Math.min(limit, rows.length), tasks: rows.slice(0, limit).map((t) => compact(t, projects, lookup)) } };
     },
 };
 
@@ -205,11 +252,14 @@ const getTask: AssistantTool = {
         const found = findTask(ctx, a.id);
         if ('error' in found) return fail(found.error);
         const t = found.task;
+        const lookup = createTaskLookup(ctx.port.getSnapshot().tasks);
+        const blockers = getBlockers(t, lookup);
         return {
             ok: true,
             data: {
-                ...compact(t, ctx.port.getSnapshot().projects),
+                ...compact(t, ctx.port.getSnapshot().projects, lookup),
                 fullId: t.id,
+                ...(blockers.length ? { blockedBy: blockers.map((b) => ({ id: shortId(b.id), title: b.title, status: b.status, blocking: isBlockerOpen(b) })) } : {}),
                 notes: t.description,
                 tags: t.tags,
                 checklist: t.checklist?.map((c) => ({ title: c.title, done: c.isCompleted })),
@@ -241,6 +291,7 @@ const addTask: AssistantTool = {
             tags: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             description: { type: 'string', maxLength: 4000, description: 'Notes.' },
             checklist: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 30 },
+            blockedBy: blockedByProp,
         },
     },
     validate: (a, ctx) => {
@@ -255,10 +306,13 @@ const addTask: AssistantTool = {
             if (a.projectId) return 'Pass projectId or areaId, not both (a project already belongs to its area).';
             const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error;
         }
+        if (a.blockedBy !== undefined) { const blockers = resolveBlockers(ctx, a.blockedBy); if ('error' in blockers) return blockers.error; }
         return null;
     },
     execute: async (a, ctx) => {
         const props: Partial<Task> = {};
+        const blockers = a.blockedBy !== undefined ? resolveBlockers(ctx, a.blockedBy) : undefined;
+        if (blockers && 'tasks' in blockers && blockers.tasks.length > 0) props.blockedByTaskIds = blockers.tasks.map((t) => t.id);
         const project = a.projectId ? (findProject(ctx, a.projectId) as { project: Project }).project : undefined;
         const area = a.areaId ? (findArea(ctx, a.areaId) as { area: Area }).area : undefined;
         if (project) props.projectId = project.id;
@@ -279,13 +333,14 @@ const addTask: AssistantTool = {
         if (!res.success || !res.id) return fail(res.error ?? 'Could not create the task');
         const when = props.dueDate ?? props.startTime;
         const reason = project || area ? reasonOf(a.reason) : undefined;
+        const blockedNote = props.blockedByTaskIds?.length ? ' · waits for other tasks' : '';
         const where = project ? ` · ${project.title}` : area ? ` · ${area.name}` : '';
         return {
             ok: true,
             data: { id: shortId(res.id), title: a.title, status: props.status, due: props.dueDate, start: props.startTime, reminder: props.reminderPolicy === 'send', ...(project ? { project: project.title } : {}), ...(area ? { area: area.name } : {}) },
             change: {
                 ...(reason ? { reason } : {}),
-                label: `Added '${a.title}'${where}${when ? ` · ${formatWhen(when)}` : ''}${props.reminderPolicy === 'send' ? ' · reminder' : ''}`,
+                label: `Added '${a.title}'${where}${when ? ` · ${formatWhen(when)}` : ''}${props.reminderPolicy === 'send' ? ' · reminder' : ''}${blockedNote}`,
                 undoOps: [{ kind: 'deleteTask', taskId: res.id }],
                 changes: [{ taskId: res.id, title: a.title, before: {}, after: { ...props } }],
             },
@@ -314,6 +369,7 @@ const updateTask: AssistantTool = {
             tags: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10 },
             description: { type: 'string', maxLength: 4000 },
             remind: { type: 'boolean', description: 'true = send reminders, false = skip them.' },
+            blockedBy: { ...blockedByProp, nullable: true, description: `${blockedByProp.description} Replaces the current list; null clears it.` },
         },
     },
     validate: (a, ctx) => {
@@ -332,6 +388,7 @@ const updateTask: AssistantTool = {
             if (typeof a.projectId === 'string') return 'Pass projectId or areaId, not both (a project already belongs to its area).';
             const ar = findArea(ctx, a.areaId); if ('error' in ar) return ar.error;
         }
+        if (Array.isArray(a.blockedBy)) { const blockers = resolveBlockers(ctx, a.blockedBy, found.task); if ('error' in blockers) return blockers.error; }
         return null;
     },
     execute: async (a, ctx) => {
@@ -349,6 +406,11 @@ const updateTask: AssistantTool = {
         if (a.contexts) updates.contexts = dedupe(normContexts(a.contexts));
         if (a.tags) updates.tags = dedupe(normTags(a.tags));
         if (a.remind !== undefined) updates.reminderPolicy = a.remind ? 'send' : 'skip';
+        if (a.blockedBy !== undefined) {
+            updates.blockedByTaskIds = Array.isArray(a.blockedBy)
+                ? normalizeBlockedByTaskIds((resolveBlockers(ctx, a.blockedBy, task) as { tasks: Task[] }).tasks.map((t) => t.id), task.id)
+                : undefined;
+        }
         const r = await applyUpdate(ctx, task, updates as Partial<Task>);
         if ('error' in r) return fail(r.error!);
         const { projects, areas } = ctx.port.getSnapshot();
@@ -356,6 +418,7 @@ const updateTask: AssistantTool = {
             if (k === 'dueDate') return `due ${updates.dueDate ? formatWhen(updates.dueDate as string) : 'cleared'}`;
             if (k === 'projectId' && updates.projectId) return `→ ${projects.find((p) => p.id === updates.projectId)?.title ?? 'project'}`;
             if (k === 'areaId' && updates.areaId) return `→ ${areas.find((x) => x.id === updates.areaId)?.name ?? 'area'}`;
+            if (k === 'blockedByTaskIds') return updates.blockedByTaskIds ? 'waits for other tasks' : 'no longer blocked';
             return k;
         });
         const routed = Boolean(updates.projectId || updates.areaId);
@@ -370,13 +433,24 @@ const updateTask: AssistantTool = {
 
 const completeTask: AssistantTool = {
     name: 'complete_task',
-    description: 'Mark one task done.',
+    description: 'Mark one task done. A task still waiting for other tasks needs user confirmation first.',
     mutating: true,
     parameters: { type: 'object', required: ['id'], properties: { id: idProp } },
     validate: (a, ctx) => {
         const f = findTask(ctx, a.id);
         if ('error' in f) return f.error;
         return f.task.status === 'done' ? `'${f.task.title}' is already done.` : null;
+    },
+    confirmation: (a, ctx) => {
+        const { task } = findTask(ctx, a.id) as { task: Task };
+        const open = getOpenBlockers(task, createTaskLookup(ctx.port.getSnapshot().tasks));
+        if (open.length === 0) return null;
+        const titles = open.slice(0, 3).map((blocker) => `'${blocker.title}'`).join(', ');
+        return {
+            reason: 'This task is still waiting for other tasks',
+            summary: `Mark '${task.title}' done, even though it is waiting for ${titles}`,
+            affectedTaskIds: [task.id],
+        };
     },
     execute: async (a, ctx) => {
         const task = (findTask(ctx, a.id) as { task: Task }).task;

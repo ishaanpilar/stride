@@ -16,7 +16,7 @@ function checkSteps(raw: any[], tools: AssistantTool[], ctx: ToolContext) {
     const valid: Array<{ step: PlanStep; tool: AssistantTool; args: Record<string, any> }> = [];
     const skipped: string[] = [];
     for (const [i, entry] of raw.entries()) {
-        const tool = tools.find((t) => t.name === entry?.tool && t.mutating);
+        const tool = tools.find((t) => t.name === entry?.tool && t.mutating && !t.prepare);
         if (!tool) { skipped.push(`step ${i + 1}: "${entry?.tool}" is not an allowed action`); continue; }
         const parsed = typeof entry.args === 'string' ? parseToolArguments(entry.args) : { ok: true as const, value: entry.args ?? {} };
         if (!parsed.ok) { skipped.push(`step ${i + 1} (${tool.name}): ${parsed.error}`); continue; }

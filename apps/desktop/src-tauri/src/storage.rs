@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   purgedAt TEXT,
   reminderPolicy TEXT,
   dueReminderLeadMinutes INTEGER,
-  startReminderLeadMinutes INTEGER
+  startReminderLeadMinutes INTEGER,
+  blockedByTaskIds TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -485,6 +486,7 @@ fn sqlite_schema_state_is_current(
         // legacy suppressMindwtrReminders column; force the migration path so the renamed column
         // is added and backfilled.
         && has_column(conn, "tasks", "suppressStrideReminders")?
+        && has_column(conn, "tasks", "blockedByTaskIds")?
         // Area routing context (description, keywords, linked people) was added later; a database
         // whose generation is current but lacks these columns must still take the migration path,
         // otherwise every save fails with "table areas has no column named description".
@@ -539,6 +541,7 @@ fn initialize_sqlite_schema(conn: &mut Connection) -> Result<i64, String> {
         ensure_column(&transaction, "tasks", "repeatReminderMinutes", "INTEGER")?;
         ensure_column(&transaction, "tasks", "dueReminderLeadMinutes", "INTEGER")?;
         ensure_column(&transaction, "tasks", "startReminderLeadMinutes", "INTEGER")?;
+        ensure_column(&transaction, "tasks", "blockedByTaskIds", "TEXT")?;
         ensure_column(&transaction, "tasks", "timeSpentMinutes", "INTEGER")?;
         ensure_column(&transaction, "tasks", "cancelledAt", "TEXT")?;
         ensure_column(&transaction, "tasks", "archivedAt", "TEXT")?;
@@ -1751,6 +1754,14 @@ fn json_str(value: Option<&Value>) -> Option<String> {
     value.and_then(|v| serde_json::to_string(v).ok())
 }
 
+fn blocked_by_task_ids_json(task: &Value) -> Option<String> {
+    let ids = task.get("blockedByTaskIds")?.as_array()?;
+    if ids.is_empty() {
+        return None;
+    }
+    serde_json::to_string(ids).ok()
+}
+
 fn json_str_or_default(value: Option<&Value>, default: &str) -> String {
     json_str(value).unwrap_or_else(|| default.to_string())
 }
@@ -1799,7 +1810,7 @@ fn replace_task_row(conn: &Connection, task: &Value) -> Result<(), String> {
     let execute_insert =
         |sql: &str, values: &[&dyn ToSql]| conn.prepare_cached(sql)?.execute(values);
     execute_insert(
-        "INSERT OR REPLACE INTO tasks (id, title, status, priority, energyLevel, assignedTo, taskMode, startTime, relativeStartOffset, dueDate, recurrence, showFutureRecurrence, pushCount, tags, contexts, checklist, description, textDirection, attachments, location, projectId, sectionId, viewSectionIds, areaId, orderNum, boardOrder, focusOrder, isFocusedToday, timeEstimate, suppressStrideReminders, repeatReminderMinutes, reviewAt, completedAt, cancelledAt, statusBeforeProjectArchive, completedAtBeforeProjectArchive, isFocusedTodayBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt, deletedAt, purgedAt, timeSpentMinutes, archivedAt, reminderPolicy, dueReminderLeadMinutes, startReminderLeadMinutes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49)",
+        "INSERT OR REPLACE INTO tasks (id, title, status, priority, energyLevel, assignedTo, taskMode, startTime, relativeStartOffset, dueDate, recurrence, showFutureRecurrence, pushCount, tags, contexts, checklist, description, textDirection, attachments, location, projectId, sectionId, viewSectionIds, areaId, orderNum, boardOrder, focusOrder, isFocusedToday, timeEstimate, suppressStrideReminders, repeatReminderMinutes, reviewAt, completedAt, cancelledAt, statusBeforeProjectArchive, completedAtBeforeProjectArchive, isFocusedTodayBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt, deletedAt, purgedAt, timeSpentMinutes, archivedAt, reminderPolicy, dueReminderLeadMinutes, startReminderLeadMinutes, blockedByTaskIds) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50)",
         params![
             task.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
             task.get("title").and_then(|v| v.as_str()).unwrap_or_default(),
@@ -1864,6 +1875,7 @@ fn replace_task_row(conn: &Connection, task: &Value) -> Result<(), String> {
             task.get("reminderPolicy").and_then(Value::as_str).filter(|policy| matches!(*policy, "inherit" | "send" | "skip")),
             task.get("dueReminderLeadMinutes").and_then(Value::as_i64).filter(|minutes| (0..=10080).contains(minutes)),
             task.get("startReminderLeadMinutes").and_then(Value::as_i64).filter(|minutes| matches!(minutes, 0 | 5 | 15 | 30 | 60)),
+            blocked_by_task_ids_json(task),
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -2056,6 +2068,12 @@ fn row_to_task_value(row: &rusqlite::Row<'_>) -> Result<Value, rusqlite::Error> 
     if let Ok(Some(minutes)) = row.get::<_, Option<i64>>("dueReminderLeadMinutes") {
         if (0..=10080).contains(&minutes) {
             map.insert("dueReminderLeadMinutes".to_string(), Value::Number(minutes.into()));
+        }
+    }
+    if let Ok(Some(raw)) = row.get::<_, Option<String>>("blockedByTaskIds") {
+        let ids = parse_json_array(Some(raw));
+        if ids.as_array().is_some_and(|items| !items.is_empty()) {
+            map.insert("blockedByTaskIds".to_string(), ids);
         }
     }
     if let Ok(Some(minutes)) = row.get::<_, Option<i64>>("startReminderLeadMinutes") {
@@ -3488,7 +3506,7 @@ fn replace_prepared_data_in_transaction(
         let attachments_json = json_str(task.get("attachments"));
         let view_section_ids_json = json_str(task.get("viewSectionIds"));
         execute_insert(
-            "INSERT OR REPLACE INTO tasks (id, title, status, priority, energyLevel, assignedTo, taskMode, startTime, relativeStartOffset, dueDate, recurrence, showFutureRecurrence, pushCount, tags, contexts, checklist, description, textDirection, attachments, location, projectId, sectionId, viewSectionIds, areaId, orderNum, boardOrder, focusOrder, isFocusedToday, timeEstimate, suppressStrideReminders, repeatReminderMinutes, reviewAt, completedAt, cancelledAt, statusBeforeProjectArchive, completedAtBeforeProjectArchive, isFocusedTodayBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt, deletedAt, purgedAt, timeSpentMinutes, archivedAt, reminderPolicy, dueReminderLeadMinutes, startReminderLeadMinutes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49)",
+            "INSERT OR REPLACE INTO tasks (id, title, status, priority, energyLevel, assignedTo, taskMode, startTime, relativeStartOffset, dueDate, recurrence, showFutureRecurrence, pushCount, tags, contexts, checklist, description, textDirection, attachments, location, projectId, sectionId, viewSectionIds, areaId, orderNum, boardOrder, focusOrder, isFocusedToday, timeEstimate, suppressStrideReminders, repeatReminderMinutes, reviewAt, completedAt, cancelledAt, statusBeforeProjectArchive, completedAtBeforeProjectArchive, isFocusedTodayBeforeProjectArchive, projectArchivedAt, rev, revBy, createdAt, updatedAt, deletedAt, purgedAt, timeSpentMinutes, archivedAt, reminderPolicy, dueReminderLeadMinutes, startReminderLeadMinutes, blockedByTaskIds) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50)",
             params![
                 task.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
                 task.get("title").and_then(|v| v.as_str()).unwrap_or_default(),
@@ -3553,6 +3571,7 @@ fn replace_prepared_data_in_transaction(
             task.get("reminderPolicy").and_then(Value::as_str).filter(|policy| matches!(*policy, "inherit" | "send" | "skip")),
             task.get("dueReminderLeadMinutes").and_then(Value::as_i64).filter(|minutes| (0..=10080).contains(minutes)),
             task.get("startReminderLeadMinutes").and_then(Value::as_i64).filter(|minutes| matches!(minutes, 0 | 5 | 15 | 30 | 60)),
+            blocked_by_task_ids_json(&task),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -6420,7 +6439,7 @@ mod tests {
     fn due_advance_migrates_and_round_trips_explicit_off() {
         use serde_json::json;
         let mut conn = Connection::open_in_memory().unwrap();
-        let legacy_schema = SQLITE_SCHEMA.replace("  reminderPolicy TEXT,\n  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER\n);", "  reminderPolicy TEXT\n);");
+        let legacy_schema = SQLITE_SCHEMA.replace("  reminderPolicy TEXT,\n  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER,\n  blockedByTaskIds TEXT\n);", "  reminderPolicy TEXT\n);");
         assert_ne!(legacy_schema, SQLITE_SCHEMA);
         conn.execute_batch(&legacy_schema).unwrap();
         let generation = sqlite_schema_generation(&conn).unwrap();
@@ -6443,7 +6462,7 @@ mod tests {
         use serde_json::json;
         let mut conn = Connection::open_in_memory().unwrap();
         let legacy_schema = SQLITE_SCHEMA.replace(
-            "  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER\n);",
+            "  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER,\n  blockedByTaskIds TEXT\n);",
             "  dueReminderLeadMinutes INTEGER\n);",
         );
         assert_ne!(legacy_schema, SQLITE_SCHEMA);
@@ -6483,7 +6502,7 @@ mod tests {
     fn reminder_policy_migration_keeps_legacy_absence_and_round_trips_new_values() {
         let mut conn = Connection::open_in_memory().unwrap();
         let legacy_schema = SQLITE_SCHEMA.replace(
-            "  purgedAt TEXT,\n  reminderPolicy TEXT,\n  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER\n);",
+            "  purgedAt TEXT,\n  reminderPolicy TEXT,\n  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER,\n  blockedByTaskIds TEXT\n);",
             "  purgedAt TEXT\n);",
         );
         assert_ne!(legacy_schema, SQLITE_SCHEMA);
@@ -6941,6 +6960,86 @@ mod tests {
             .query_row("SELECT suppressStrideReminders FROM tasks WHERE id='a'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn schema_state_is_not_current_when_blocked_by_column_is_missing() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        conn.execute_batch("ALTER TABLE tasks DROP COLUMN blockedByTaskIds;").unwrap();
+        let generation = sqlite_schema_generation(&conn).unwrap();
+        record_sqlite_schema_state(&conn, generation).unwrap();
+        assert!(!sqlite_schema_state_is_current(&conn, generation).unwrap());
+
+        initialize_sqlite_schema(&mut conn).unwrap();
+        assert!(has_column(&conn, "tasks", "blockedByTaskIds").unwrap());
+        let generation = sqlite_schema_generation(&conn).unwrap();
+        assert!(sqlite_schema_state_is_current(&conn, generation).unwrap());
+    }
+
+    #[test]
+    fn blocked_by_task_ids_migrate_and_round_trip_without_empty_arrays() {
+        use serde_json::json;
+        let mut conn = Connection::open_in_memory().unwrap();
+        let legacy_schema = SQLITE_SCHEMA.replace(
+            "  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER,\n  blockedByTaskIds TEXT\n);",
+            "  dueReminderLeadMinutes INTEGER,\n  startReminderLeadMinutes INTEGER\n);",
+        );
+        assert_ne!(legacy_schema, SQLITE_SCHEMA);
+        conn.execute_batch(&legacy_schema).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id,title,status,createdAt,updatedAt) VALUES ('legacy','Legacy','next','2026-01-01','2026-01-01')",
+            [],
+        )
+        .unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        assert!(has_column(&conn, "tasks", "blockedByTaskIds").unwrap());
+
+        let legacy = conn
+            .query_row("SELECT * FROM tasks WHERE id='legacy'", [], row_to_task_value)
+            .unwrap();
+        assert!(legacy.get("blockedByTaskIds").is_none());
+
+        let blocked = json!({"id":"blocked", "title":"Blocked", "status":"next", "tags":[], "contexts":[],
+            "createdAt":"2026-01-01", "updatedAt":"2026-01-01", "blockedByTaskIds":["a", "b"]});
+        replace_task_row(&conn, &blocked).unwrap();
+        let read = conn
+            .query_row("SELECT * FROM tasks WHERE id='blocked'", [], row_to_task_value)
+            .unwrap();
+        assert_eq!(read["blockedByTaskIds"], json!(["a", "b"]));
+
+        let cleared = json!({"id":"plain", "title":"Plain", "status":"next", "tags":[], "contexts":[],
+            "createdAt":"2026-01-01", "updatedAt":"2026-01-01", "blockedByTaskIds":[]});
+        replace_task_row(&conn, &cleared).unwrap();
+        let stored: Option<String> = conn
+            .query_row("SELECT blockedByTaskIds FROM tasks WHERE id='plain'", [], |row| row.get(0))
+            .unwrap();
+        assert!(stored.is_none());
+        let plain = conn
+            .query_row("SELECT * FROM tasks WHERE id='plain'", [], row_to_task_value)
+            .unwrap();
+        assert!(plain.get("blockedByTaskIds").is_none());
+    }
+
+    #[test]
+    fn blocked_by_task_ids_survive_a_full_json_import() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_sqlite_schema(&mut conn).unwrap();
+        let data = serde_json::json!({
+            "projects": [], "sections": [], "areas": [], "people": [], "settings": {},
+            "tasks": [
+                {"id": "a", "title": "A", "status": "next", "tags": [], "contexts": [],
+                 "createdAt": "2026-11-01T00:00:00.000Z", "updatedAt": "2026-11-01T00:00:00.000Z"},
+                {"id": "b", "title": "B", "status": "next", "tags": [], "contexts": [], "blockedByTaskIds": ["a"],
+                 "createdAt": "2026-11-01T00:00:00.000Z", "updatedAt": "2026-11-01T00:00:00.000Z"}
+            ]
+        });
+        migrate_json_to_sqlite(&mut conn, &data).unwrap();
+        let read = read_sqlite_data(&conn).unwrap();
+        let tasks = read["tasks"].as_array().unwrap();
+        let by_id = |id: &str| tasks.iter().find(|task| task["id"] == id).unwrap().clone();
+        assert_eq!(by_id("b")["blockedByTaskIds"], serde_json::json!(["a"]));
+        assert!(by_id("a").get("blockedByTaskIds").is_none());
     }
 
     #[test]

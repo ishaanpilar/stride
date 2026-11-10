@@ -1,5 +1,6 @@
 import { getClipboardImageFiles, getImageExtension, isEmptyPasteEvent, readAsyncClipboardImageFiles } from '../../lib/clipboard-images';
 import { Calendar, CalendarClock, CalendarDays, Navigation, type LucideIcon } from 'lucide-react';
+import { BlockedByField } from './BlockedByField';
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
 import {
     applyMarkdownKeyboardShortcut,
@@ -1186,6 +1187,8 @@ export function TaskItemFieldRenderer({
             return <PriorityField t={t} value={editPriority} onChange={setEditPriority} />;
         case 'energyLevel':
             return <EnergyLevelField t={t} value={editEnergyLevel} onChange={setEditEnergyLevel} />;
+        case 'blockedBy':
+            return <BlockedByField task={task} t={t} />;
         case 'assignedTo':
             return <AssignedToField t={t} value={editAssignedTo} options={assignedToOptions} onChange={setEditAssignedTo} onCreatePerson={createAssignedToPerson} />;
         case 'recurrence':

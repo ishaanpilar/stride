@@ -80,7 +80,7 @@ afterEach(() => {
 describe('native Pomodoro integration with the SQLite and store write gates', () => {
     it('cold-loads and replays a committed schema4 receipt unchanged after policy and advance-reminder edits', async () => {
         const env = await open(); const legacy = structuredClone(env.plan);
-        expect(TASK_SQLITE_COLUMNS).toHaveLength(49); expect(TASK_SQLITE_COLUMNS[46]).toBe('reminderPolicy');
+        expect(TASK_SQLITE_COLUMNS).toHaveLength(50); expect(TASK_SQLITE_COLUMNS[46]).toBe('reminderPolicy');
         legacy.target!.row = legacy.target!.row!.slice(0, 46);
         const payload = JSON.stringify(['pomodoroTransition', legacy]);
         await env.sql.client.run('UPDATE tasks SET timeSpentMinutes=?,rev=?,revBy=?,updatedAt=?,reminderPolicy=?,dueReminderLeadMinutes=?,startReminderLeadMinutes=?,title=? WHERE id=?',

@@ -55,7 +55,7 @@ const TASK_FIELDS = new Set([
   'assignedTo', 'timeEstimate', 'taskMode', 'relativeStartOffset', 'showFutureRecurrence',
   'pushCount', 'checklist', 'textDirection', 'location', 'isFocusedToday',
   'timeSpentMinutes', 'suppressStrideReminders', 'reminderPolicy', 'repeatReminderMinutes', 'dueReminderLeadMinutes', 'startReminderLeadMinutes',
-  'viewSectionIds', 'reviewAt', 'cancelledAt', 'order', 'boardOrder', 'focusOrder', 'attachments',
+  'viewSectionIds', 'blockedByTaskIds', 'reviewAt', 'cancelledAt', 'order', 'boardOrder', 'focusOrder', 'attachments',
 ]);
 const taskStatusSchema = z.enum(TASK_STATUS_VALUES as [TaskStatus, ...TaskStatus[]]);
 const titleSchema = z.string().trim().min(1).max(MAX_TASK_TITLE_LENGTH);

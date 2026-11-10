@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   repeatReminderMinutes INTEGER,
   dueReminderLeadMinutes INTEGER,
   startReminderLeadMinutes INTEGER,
+  blockedByTaskIds TEXT,
   reviewAt TEXT,
   completedAt TEXT,
   cancelledAt TEXT,

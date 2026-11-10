@@ -11,7 +11,7 @@ It does not change task storage, synchronization, or lifecycle rules.
   existing behavior. Trash is separate from History, with its existing
   retention policy. Archived tasks do not gain an expiry date.
 - Desktop Board and Reference remain reachable from secondary navigation;
-  Contexts stays under Organize. Mobile Menu uses a three-column, two-row grid
+  Contexts moved to More with them. Mobile Menu uses a three-column, two-row grid
   for Waiting, Review, Someday, Calendar, Contexts, and Reference, with History,
   Trash, Board, and Settings as smaller shortcuts. Context filtering remains
   available within task lists.

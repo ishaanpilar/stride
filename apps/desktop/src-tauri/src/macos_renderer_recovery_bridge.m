@@ -18,7 +18,12 @@ enum {
     StrideRendererFallbackUnavailable = 8,
 };
 
+/// Window kinds from here up (menu bar panel, floating timer) are small windows that are usually
+/// hidden: they recover silently and never raise the "display stopped" alert.
+enum { StrideFirstQuietWindowKind = 2 };
+
 static char crashCountKey;
+static char pendingRecoveryKey;
 static char reloadNavigationKey;
 static char alertOpenKey;
 static char windowKindKey;
@@ -60,9 +65,20 @@ static WKNavigation *startRecoveryLoad(WKWebView *webView) {
     return navigation;
 }
 
+static bool isQuietWindow(WKWebView *webView) {
+    NSNumber *kind = objc_getAssociatedObject(webView, &windowKindKey);
+    return kind.intValue >= StrideFirstQuietWindowKind;
+}
+
 static void showFallback(WKWebView *webView);
 
 static void showFallback(WKWebView *webView) {
+    if (isQuietWindow(webView)) {
+        // No alert for a window that may be hidden: try again the next time it is opened.
+        objc_setAssociatedObject(webView, &pendingRecoveryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        emit(webView, StrideRendererFallbackUnavailable);
+        return;
+    }
     if ([objc_getAssociatedObject(webView, &alertOpenKey) boolValue]) {
         return;
     }
@@ -151,6 +167,7 @@ static void rendererDidFinish(id self, SEL command, WKWebView *webView, WKNaviga
     rememberURL(webView);
     if (navigation != nil && navigation == objc_getAssociatedObject(webView, &reloadNavigationKey)) {
         objc_setAssociatedObject(webView, &reloadNavigationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(webView, &pendingRecoveryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(webView, &lastRecoveryKey, [NSDate date], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         emit(webView, StrideRendererReloadFinished);
     }
@@ -170,6 +187,24 @@ static void rendererDidFail(id self, SEL command, WKWebView *webView,
 
         emit(webView, StrideRendererReloadFailed);
         showFallback(webView);
+    }
+}
+
+/// Called just before a quiet window is shown: reloads it if its earlier recovery did not succeed.
+void stride_macos_recover_pending_renderer(void *rawWebView) {
+    if (rawWebView == NULL || ![NSThread isMainThread]) {
+        return;
+    }
+    WKWebView *webView = (__bridge WKWebView *)rawWebView;
+    if (![objc_getAssociatedObject(webView, &pendingRecoveryKey) boolValue]) {
+        return;
+    }
+    objc_setAssociatedObject(webView, &pendingRecoveryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(webView, &crashCountKey, @0, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    emit(webView, StrideRendererManualReloadStarted);
+    if (startRecoveryLoad(webView) == nil) {
+        objc_setAssociatedObject(webView, &pendingRecoveryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        emit(webView, StrideRendererReloadUnavailable);
     }
 }
 

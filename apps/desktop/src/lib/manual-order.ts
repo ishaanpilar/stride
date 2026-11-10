@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react';
-import { sortTasksByBoardOrder, splitOrderedIdsByStatus, tFallback, useTaskStore, type TaskStatus, type TranslateFn } from '@stride/core';
+import { compareProjectsByOrder, sortTasksByBoardOrder, splitOrderedIdsByStatus, tFallback, useTaskStore, type TaskStatus, type TranslateFn } from '@stride/core';
 import { reportError } from './report-error';
 import { showUndoToast } from './undo-registry';
 
@@ -8,6 +8,7 @@ export const MANUAL_ORDER_KEYS = {
     next: 'next',
     today: 'focus-today',
     upcoming: 'menubar-upcoming',
+    focusProjects: 'focus-projects',
 } as const;
 
 const storageKey = (viewKey: string) => `stride:view:manual-order:${viewKey}:v1`;
@@ -79,6 +80,21 @@ export async function restoreBoardOrder(snapshot: BoardOrderSnapshot): Promise<v
     for (const { status, ids } of snapshot) {
         if (ids.length > 0) await state.reorderBoardTasks(status, ids);
     }
+}
+
+export type ProjectOrderSnapshot = { areaId: string | undefined; ids: string[] };
+
+/** One area's project order, for Undo (a project's order is per area: see reorderProjects). */
+export function snapshotProjectOrder(areaId: string | undefined): ProjectOrderSnapshot {
+    const ids = useTaskStore.getState()._allProjects
+        .filter((project) => (project.areaId ?? undefined) === areaId && !project.deletedAt)
+        .sort(compareProjectsByOrder)
+        .map((project) => project.id);
+    return { areaId, ids };
+}
+
+export async function restoreProjectOrder({ areaId, ids }: ProjectOrderSnapshot): Promise<void> {
+    if (ids.length > 0) await useTaskStore.getState().reorderProjects(ids, areaId);
 }
 
 export function statusesOf(ids: readonly string[]): TaskStatus[] {

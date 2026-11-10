@@ -88,6 +88,7 @@ export function useMenuBarPanelBridge({ enabled, language }: { enabled: boolean;
 
     const tasks = useTaskStore((state) => state.tasks);
     const projects = useTaskStore((state) => state.projects);
+    const projectSections = useTaskStore((state) => state.sections);
     const showCount = useTaskStore((state) => state.settings?.window?.showTrayCount !== false);
     const locked = useAppLockStore((state) => state.locked);
     const [minuteTick, setMinuteTick] = useState(0);
@@ -100,8 +101,8 @@ export function useMenuBarPanelBridge({ enabled, language }: { enabled: boolean;
 
     const count = useMemo(() => {
         void minuteTick;
-        return countMenuBarPanelTasks(tasks, { projects });
-    }, [tasks, projects, minuteTick]);
+        return countMenuBarPanelTasks(tasks, { projects, sections: projectSections });
+    }, [tasks, projects, projectSections, minuteTick]);
 
     useEffect(() => {
         if (!enabled || !isTauriRuntime()) return;

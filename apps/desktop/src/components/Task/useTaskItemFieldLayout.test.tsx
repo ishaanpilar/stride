@@ -386,4 +386,31 @@ describe('useTaskItemFieldLayout', () => {
             details: false,
         });
     });
+
+    it('offers Blocked by through Add field and shows it once set or revealed', () => {
+        const plain = renderHook(() => useTaskItemFieldLayout(buildParams({ task: baseTask })));
+        expect(plain.result.current.addableFields).toContain('blockedBy');
+        expect(plain.result.current.organizationFields).not.toContain('blockedBy');
+
+        const withBlocker = renderHook(() => useTaskItemFieldLayout(buildParams({
+            task: { ...baseTask, blockedByTaskIds: ['other'] },
+        })));
+        expect(withBlocker.result.current.organizationFields).toContain('blockedBy');
+        expect(withBlocker.result.current.addableFields).not.toContain('blockedBy');
+
+        const revealed = renderHook(() => useTaskItemFieldLayout({
+            ...buildParams({ task: baseTask }),
+            revealedFields: new Set(['blockedBy'] as const),
+        }));
+        expect(revealed.result.current.organizationFields).toContain('blockedBy');
+        expect(revealed.result.current.addableFields).not.toContain('blockedBy');
+    });
+
+    it('never offers Blocked by on reference tasks', () => {
+        const { result } = renderHook(() => useTaskItemFieldLayout(buildParams({
+            task: { ...baseTask, status: 'reference' },
+            draft: { status: 'reference' },
+        })));
+        expect(result.current.addableFields).not.toContain('blockedBy');
+    });
 });
